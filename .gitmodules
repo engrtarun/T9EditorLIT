@@ -1,0 +1,5 @@
+[submodule "modules/T_Dubber"]
+	path = modules/T_Dubber
+	url = https://github.com/engrtarun/T_Dubber.git
+	update = none
+	ignore = all

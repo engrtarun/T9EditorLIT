@@ -1,0 +1,25 @@
+# Build artifacts.
+# NOTE: only ignore the built binary by path, never the bare name "t9cloud" —
+# a bare pattern also matches the ./cmd/t9cloud/ package directory and would
+# silently drop the daemon's main.go from the repo.
+bin/
+/t9cloud
+/t9cloud.exe
+
+# Coverage
+coverage.out
+coverage.html
+
+# Local secrets — the daemon reads the same .env as the desktop app
+.env
+.env.*
+!.env.example
+
+# Go workspace files
+go.work
+go.work.sum
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

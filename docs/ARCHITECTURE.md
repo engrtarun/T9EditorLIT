@@ -57,16 +57,29 @@ T9EditorLIT/
 │               ├── CutMode.svelte     # preview │ transcript │ timeline
 │               └── PolishMode.svelte  # music & text (Chunk 5)
 │
-└── src-tauri/                   # ── Backend: Rust
-    ├── Cargo.toml
-    ├── tauri.conf.json
-    ├── capabilities/default.json
-    └── src/
-        ├── main.rs
-        ├── lib.rs               # #[tauri::command] surface
-        ├── ffmpeg.rs            # child-process wrappers, encoder detection
-        ├── media.rs             # ffprobe → MediaInfo  (has unit tests)
-        └── memory.rs            # sysinfo probe, app-tree RAM  (has unit tests)
+├── src-tauri/                   # ── Backend: Rust
+│   ├── Cargo.toml
+│   ├── tauri.conf.json
+│   ├── capabilities/default.json
+│   └── src/
+│       ├── main.rs
+│       ├── lib.rs               # #[tauri::command] surface
+│       ├── ffmpeg.rs            # child-process wrappers, encoder detection
+│       ├── media.rs             # ffprobe → MediaInfo  (has unit tests)
+│       └── memory.rs            # sysinfo probe, app-tree RAM  (has unit tests)
+│
+└── go/                          # ── Cloud worker daemon: t9cloud (Go)
+    ├── go.mod                   # zero third-party dependencies
+    ├── Makefile                 # fmt / vet / test / race / build / docker
+    ├── Dockerfile               # distroless-ish, non-root, healthcheck
+    ├── cmd/t9cloud/main.go      # flags, wiring, graceful shutdown
+    └── internal/
+        ├── model/               # types crossing the HTTP boundary
+        ├── config/              # .env parsing, loopback enforcement
+        ├── queue/               # bounded worker pool, retry, backoff
+        ├── cloud/               # Groq + Gemini clients, ✕ flag analysis
+        ├── vault/               # Telegram split planner (MTProto: Chunk 5)
+        └── api/                 # HTTP surface + job store
 ```
 
 `.env`, `media/`, `workspace-data/`, `*.db` and all media files are git-ignored.
@@ -141,8 +154,8 @@ ffprobe inspection working, CI building a Windows `.exe` on GitHub.
 ### Chunk 5 — Polish mode and Telegram vault
 
 - Music deck with speech ducking; text and heading overlays.
-- MTProto backup via Rust `grammers`, split into ≤2 GB parts — unlike the Bot
-  API's 50 MB ceiling.
+- MTProto backup via Go daemon `t9cloud` (`go/internal/vault`) or Rust `grammers`, split into ≤1.9 GB parts.
+- Multi-connection MTProto socket pooling and logic adapted from `modules/T_Dubber` (see `docs/TELEGRAM_INTEGRATION_T_DUBBER.md`). Strictly NO Python.
 
 ---
 
@@ -158,12 +171,38 @@ All secrets live in `.env` (git-ignored). Copy from `.env.example`.
 | `GEMINI_API_KEY`                                                                    | Retake / wrong-example detection | 2     |
 | `GEMINI_MODEL`                                                                      | Model selection                  | 2     |
 | `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_PHONE` / `TELEGRAM_TARGET_CHAT` | MTProto vault                    | 5     |
+| `T9CLOUD_ADDR` / `T9CLOUD_WORKERS` / `T9CLOUD_QUEUE_CAPACITY`                       | Daemon tuning                    | 1     |
 
 None of these are needed to run the Chunk 1 app.
 
 ---
 
-## 6. Rules of thumb
+## 6. The Go daemon boundary
+
+```
+Svelte ──ipc.ts──▶ Rust (Tauri) ──HTTP 127.0.0.1:8787──▶ t9cloud (Go)
+```
+
+| Concern                    | Owner | Why not the other side                        |
+| -------------------------- | ----- | --------------------------------------------- |
+| Reading / splitting media  | Rust  | Disk + CPU bound; needs a hard process kill   |
+| Uploading chunks to Groq   | Go    | Long-running, retryable, bounded queue        |
+| Gemini retake analysis     | Go    | Long-running, retryable                       |
+| Telegram MTProto session   | Go    | **Sessions are stateful; a UI can be closed** |
+| Transcript + cut decisions | Rust  | SQLite on disk, must outlive any daemon       |
+
+Three invariants the daemon must never break:
+
+1. **Paths, not bytes.** It receives chunk _paths_. The 5 GB video never crosses
+   the boundary, and chunks stream through an `io.Pipe` — never buffered whole.
+2. **Loopback only.** It holds API keys and has no authentication, so it refuses
+   any non-loopback bind address — enforced in both `config` and `main`.
+3. **Backpressure over buffering.** The queue is bounded; a full queue answers
+   `429` so the client slows down rather than the daemon growing without limit.
+
+---
+
+## 7. Rules of thumb
 
 - **Adding a panel?** Decide which mode owns it. Two modes must never be
   resident at once.
