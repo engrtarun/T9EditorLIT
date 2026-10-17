@@ -84,8 +84,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23"
+          # cache-dependency-path is deliberately omitted: the daemon has zero
+          # third-party dependencies, so there is no go.sum to hash and
+          # pointing at a missing file makes setup-go log an error every run.
 
+      # `shell: bash` matters here: this job runs on windows-latest, whose
+      # default shell is PowerShell, where $(...) and [ -n ] are not valid.
+      # Written in plain PowerShell it fails to parse, and the job dies on a
+      # syntax error that looks nothing like a formatting problem.
       - name: Check formatting (gofmt)
+        shell: bash
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -93,15 +101,24 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+          echo "gofmt clean"
 
       - name: Vet
         run: go vet ./...
 
       - name: Test
-        run: go test -race -coverprofile=coverage.out ./...
+        shell: bash
+        run: |
+          if [ "$(go env CGO_ENABLED)" = "1" ]; then
+            go test -race -coverprofile=coverage.out ./...
+          else
+            echo "cgo unavailable on this runner — running without -race"
+            go test -coverprofile=coverage.out ./...
+          fi
 
       - name: Upload coverage
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: go-coverage
