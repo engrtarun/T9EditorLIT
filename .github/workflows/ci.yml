@@ -165,17 +165,22 @@ jobs:
           GOARCH: ${{ matrix.arch }}
         run: |
           mkdir -p dist
+          bin="dist/t9cloud-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}"
           # -trimpath keeps build paths out of the binary so it is reproducible.
-          go build -trimpath -ldflags "-s -w" \
-            -o "dist/t9cloud-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}" \
-            ./cmd/t9cloud
+          go build -trimpath -ldflags "-s -w" -o "$bin" ./cmd/t9cloud
 
-          # A binary that cannot run is worse than no binary: fail the build.
+          # Verify the artifact without trying to EXECUTE it. The runner is
+          # x86_64, so an arm64 binary cannot run here and `-version` would
+          # fail for a perfectly good build. Instead assert on the header.
+          chmod +x "$bin"
           if [ "${{ matrix.os }}" = "windows" ]; then
-            file "dist/t9cloud-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}"
+            file "$bin" | grep -qi "pe32"
           else
-            chmod +x "dist/t9cloud-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}"
-            ./"dist/t9cloud-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}" -version
+            file "$bin"
+            # Only the build host (linux/amd64) can actually run its own output.
+            if [ "${{ matrix.arch }}" = "amd64" ]; then
+              "./$bin" -version
+            fi
           fi
 
       - name: Upload binary
