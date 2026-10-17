@@ -7,11 +7,13 @@
 
 mod audio;
 mod cache;
+mod env;
 mod export;
 mod ffmpeg;
 mod keyframes;
 mod media;
 mod memory;
+mod polish;
 mod thumbnail;
 mod transcript;
 mod waveform;
@@ -23,6 +25,7 @@ use tauri::{Emitter, Manager, State};
 
 type ExportCancel = Mutex<Option<Arc<AtomicBool>>>;
 
+pub use env::{EnvEntry, EnvInfo};
 pub use export::{ExportOptions, ExportPlan, ExportProgress, ExportRequest, ExportResult, Piece, Segment};
 
 pub use audio::AudioChunk;
@@ -30,6 +33,7 @@ pub use ffmpeg::HardwareSupport;
 pub use media::{MediaInfo, StreamInfo};
 pub use memory::MemoryStats;
 pub use thumbnail::ThumbnailStrip;
+pub use polish::{PolishResult, PolishSettings};
 pub use transcript::{TranscriptLine, Project};
 pub use waveform::WaveformData;
 
@@ -214,6 +218,20 @@ fn update_project_opened(db_path: String, source_path: String, last_opened: i64)
     transcript::update_project_opened(&conn, &source_path, last_opened)
 }
 
+/// Polish render: background music with optional sidechain ducking and text
+/// overlay. Streams through FFmpeg; nothing is buffered in this process.
+#[tauri::command]
+async fn polish_render(
+    app: tauri::AppHandle,
+    source: String,
+    output: String,
+    settings: PolishSettings,
+) -> Result<PolishResult, String> {
+    let source = PathBuf::from(source);
+    let output = PathBuf::from(output);
+    polish::run_polish(&app, &source, &output, &settings)
+}
+
 /// Start a smart hybrid export. Runs synchronously on a worker thread; progress
 /// is streamed to the UI via the `export-progress` event.
 #[tauri::command]
@@ -268,7 +286,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(memory::MemoryProbe::new()))
         .manage(Mutex::new(None::<Arc<AtomicBool>>))
-        .invoke_handler(tauri::generate_handler![
+.invoke_handler(tauri::generate_handler![
             get_memory_stats,
             probe_media,
             detect_hardware,

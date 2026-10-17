@@ -13,6 +13,7 @@
   import RecordPanel from "./RecordPanel.svelte";
   import TextPanel from "./TextPanel.svelte";
   import VaultCard from "./VaultCard.svelte";
+  import SettingsPanel from "./SettingsPanel.svelte";
 
   const TITLES: Record<string, string> = {
     media: "My media",
@@ -22,6 +23,7 @@
     text: "Text",
     transitions: "Transitions",
     vault: "Cloud vault",
+    settings: "Settings",
   };
 
   // Drag the right edge to resize — Clipchamp's "Resize panel" separator.
@@ -81,6 +83,8 @@
         <LibraryPanel />
       {:else if cc.railTab === "vault"}
         <VaultCard />
+      {:else if cc.railTab === "settings"}
+        <SettingsPanel />
       {:else}
         <!-- Templates / Transitions: same shell, catalogue comes later. -->
         <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center">

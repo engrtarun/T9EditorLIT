@@ -8,9 +8,12 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import type {
   AudioChunk,
   CloudJob,
+  EnvEntry,
+  EnvInfo,
   ExportPlan,
   ExportProgress,
   ExportRequest,
@@ -19,6 +22,8 @@ import type {
   LoginChallenge,
   MediaInfo,
   MemoryStats,
+  PolishResult,
+  PolishSettings,
   Project,
   ThumbnailStrip,
   TranscriptLine,
@@ -230,4 +235,45 @@ export function vaultUpload(path: string, chat?: string): Promise<CloudJob> {
 /** Poll a vault job for live progress. GET /v1/jobs/{id}. */
 export function vaultJob(id: string): Promise<CloudJob> {
   return vaultJson<CloudJob>(`/v1/jobs/${id}`);
+}
+
+/** Open the native file picker for an audio file. Returns the selected path. */
+export async function pickAudioFile(): Promise<string | null> {
+  const selected = await open({
+    multiple: false,
+    filters: [
+      {
+        name: "Audio",
+        extensions: ["mp3", "wav", "aac", "m4a", "ogg"],
+      },
+    ],
+  });
+  if (Array.isArray(selected)) {
+    return selected[0] ?? null;
+  }
+  return selected ?? null;
+}
+
+/** Render a polish pass: music + optional ducking + text overlay. */
+export function polishRender(
+  source: string,
+  output: string,
+  settings: PolishSettings,
+): Promise<PolishResult> {
+  return invoke<PolishResult>("polish_render", { source, output, settings });
+}
+
+/** Absolute path to the .env file in app_data. */
+export function envPath(): Promise<string> {
+  return invoke<string>("env_path");
+}
+
+/** Read the .env file, returning entries and whether it exists. */
+export function readEnvFile(path: string): Promise<EnvInfo> {
+  return invoke<EnvInfo>("read_env_file", { path });
+}
+
+/** Write entries back to the .env file. */
+export function writeEnvFile(path: string, entries: EnvEntry[]): Promise<void> {
+  return invoke<void>("write_env_file", { path, entries });
 }

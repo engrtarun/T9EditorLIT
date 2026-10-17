@@ -254,3 +254,43 @@ export interface VaultResult {
   totalBytes: number;
   completedAt: number | null;
 }
+
+/** Position presets for the polish text overlay. */
+export type TextPosition = "bottom-left" | "top-left" | "center";
+
+/** Polish mode settings: background music + auto-ducking + text overlay. */
+export interface PolishSettings {
+  musicPath: string | null;
+  musicVolume: number; // 0.0 – 1.0
+  musicLoop: boolean;
+  duckEnabled: boolean;
+  duckDb: number; // dB to duck by, e.g. -14.0
+  duckAttackMs: number;
+  duckReleaseMs: number;
+  text: string;
+  textPosition: TextPosition;
+}
+
+/** Result of a polish render. */
+export interface PolishResult {
+  output: string;
+  durationSecs: number;
+  sizeBytes: number;
+  warnings: string[];
+}
+
+/**
+ * One entry in the .env file. Comments and blank lines are preserved with
+ * `key` set to the raw line and `value` empty, so the file round-trips.
+ */
+export interface EnvEntry {
+  key: string;
+  value: string;
+}
+
+/** Snapshot of the .env file, returned by read_env_file. */
+export interface EnvInfo {
+  path: string;
+  entries: EnvEntry[];
+  exists: boolean;
+}
