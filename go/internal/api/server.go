@@ -71,15 +71,32 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("POST /v1/transcribe", s.handleTranscribe)
 	s.mux.HandleFunc("POST /v1/analyze", s.handleAnalyze)
-	s.mux.HandleFunc("POST /v1/vault/upload", s.handleVaultUpload)
-	s.mux.HandleFunc("GET /v1/jobs/{id}", s.handleJob)
+
+	// Telegram vault. Authorisation is a QR scan, so login is three calls:
+	// ask for a code, poll for the phase, and read the status that says
+	// whether the stored session is still good.
 	s.mux.HandleFunc("POST /v1/vault/authorise", s.handleVaultAuthorise)
+	s.mux.HandleFunc("GET /v1/vault/authorise/{id}", s.handleVaultLoginPoll)
+	s.mux.HandleFunc("GET /v1/vault/status", s.handleVaultStatus)
+	s.mux.HandleFunc("POST /v1/vault/upload", s.handleVaultUpload)
+
+	s.mux.HandleFunc("GET /v1/jobs/{id}", s.handleJob)
 }
 
 // ServeHTTP applies a defensive outer layer: generous body limits, panic
 // recovery, and request logging. A worker crash must never take the daemon
 // down mid-upload.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Loopback daemon, but the Tauri webview is a different origin, so allow
+	// CORS for local development and the desktop app.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	start := time.Now()
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 
@@ -215,6 +232,9 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path string `json:"path"`
+		// Chat overrides TELEGRAM_TARGET_CHAT for this upload only, so the UI
+		// can offer "send to Saved Messages" without a settings change.
+		Chat string `json:"chat,omitempty"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -230,6 +250,13 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refuse before queuing when the session cannot work. A job that fails
+	// twenty minutes later, after hashing the whole file, is a bad trade.
+	if reason := s.vaultBlocked(); reason != "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": reason})
+		return
+	}
+
 	parts, size, err := s.deps.Vault.Planned(req.Path)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -238,15 +265,25 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request) {
 
 	job := s.store.create(model.JobVault, len(parts))
 
+	// A per-job copy of the Vault carries this job's progress sink. The shared
+	// one is untouched, so two uploads cannot interleave their reporting.
+	v := *s.deps.Vault
+	if req.Chat != "" {
+		v.ChatID = req.Chat
+	}
+	v.OnProgress = func(p vault.Progress) {
+		s.store.progressVault(job.ID, p)
+	}
+
 	err = s.deps.Queue.Submit(r.Context(), queue.Task{
 		ID:        job.ID,
 		Retryable: true,
 		Run: func(ctx context.Context) error {
-			uploaded, ids, err := s.deps.Vault.Upload(ctx, req.Path)
+			uploaded, ids, err := v.Upload(ctx, req.Path)
 			if err != nil {
 				return err
 			}
-			s.store.finishVault(job.ID, uploaded, ids, size)
+			s.store.finishVault(job.ID, v.ChatID, uploaded, ids, size)
 			return nil
 		},
 	})
@@ -259,18 +296,109 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, job)
 }
 
+// vaultBlocked is the reason an upload cannot start right now, or "" if it can.
+//
+// Checked at submit time so the failure lands while the user is still looking
+// at the button.
+func (s *Server) vaultBlocked() string {
+	if s.deps.Vault == nil || s.deps.Vault.Uploader == nil {
+		return vault.ErrNotConfigured.Error()
+	}
+	if !s.deps.Vault.Uploader.Authorised() {
+		return vault.ErrNotAuthorised.Error()
+	}
+	if s.deps.Vault.ChatID == "" {
+		return "no Telegram chat configured; set TELEGRAM_TARGET_CHAT"
+	}
+	return ""
+}
+
+// handleVaultAuthorise starts a QR login.
+//
+// The response carries the tg://login?token=… URL and the desktop app renders
+// it as a QR. No phone number, no code, nothing typed: Telegram sends a login
+// code the moment a code-based flow starts, and on a machine with no console
+// that code can only be wasted.
 func (s *Server) handleVaultAuthorise(w http.ResponseWriter, r *http.Request) {
-	if s.deps.Vault.Uploader == nil {
+	starter, ok := s.deps.Vault.LoginStarter()
+	if !ok {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": vault.ErrNotConfigured.Error(),
 		})
 		return
 	}
-	if err := s.deps.Vault.Uploader.Authorise(r.Context()); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+
+	challenge, err := starter.BeginLogin(r.Context())
+	if err != nil {
+		writeVaultError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"authorised": true})
+	writeJSON(w, http.StatusOK, challenge)
+}
+
+// handleVaultLoginPoll reports where a scan stands.
+//
+// The URL in the response changes as Telegram rotates the token — roughly every
+// 30 seconds — so the UI must redraw when the returned URL differs from the one
+// it is showing rather than caching it.
+func (s *Server) handleVaultLoginPoll(w http.ResponseWriter, r *http.Request) {
+	starter, ok := s.deps.Vault.LoginStarter()
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": vault.ErrNotConfigured.Error(),
+		})
+		return
+	}
+
+	id := r.PathValue("id")
+	challenge, err := starter.PollLogin(r.Context(), id)
+	if err != nil {
+		writeVaultError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, challenge)
+}
+
+// handleVaultStatus reports what the vault can do right now.
+//
+// This is the call that distinguishes "a key exists on disk" from "the key
+// still works". Only this one talks to Telegram, which is why it is a separate
+// endpoint rather than a field on /healthz.
+func (s *Server) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Vault == nil {
+		writeJSON(w, http.StatusOK, vault.Status{PartBytes: vault.DefaultPartBytes})
+		return
+	}
+
+	starter, ok := s.deps.Vault.LoginStarter()
+	if !ok {
+		writeJSON(w, http.StatusOK, vault.Status{PartBytes: vault.DefaultPartBytes})
+		return
+	}
+
+	// The status body is useful even when the check itself failed: the UI can
+	// show "unknown" rather than pretending everything is fine, which is why a
+	// failure here is a 200 with a detail string.
+	status, _ := starter.Status(r.Context())
+	writeJSON(w, http.StatusOK, status)
+}
+
+// writeVaultError maps an auth error onto a status code the UI can act on.
+func writeVaultError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, vault.ErrNotConfigured):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+	case errors.Is(err, vault.ErrLoginInProgress):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, vault.ErrPasswordRequired):
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+	case errors.Is(err, vault.ErrSessionRevoked), errors.Is(err, vault.ErrNotAuthorised):
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": err.Error()})
+	default:
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+	}
 }
 
 func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {

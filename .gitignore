@@ -54,6 +54,8 @@ Clipchamp Clone/evidence/rea-big-bundles.json
 .env
 .env.*
 !.env.example
+gemini.jpg
+groq.jpg
 *_key.pem
 *_key.pub
 *.session

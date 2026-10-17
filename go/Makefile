@@ -1,8 +1,9 @@
 # T9EditorLIT — Go cloud worker daemon
 #
 # Windows note: the developer machine is an i3 / 8 GB box. `make build` here is
-# cheap (the daemon has zero third-party dependencies), but the Windows installer
-# for the desktop app is built by GitHub Actions, never here.
+# cheap (the daemon's only third-party dependency is gotd/td, already in the
+# module cache), but the Windows installer for the desktop app is built by
+# GitHub Actions, never here.
 
 BINARY  := t9cloud
 CMD     := ./cmd/t9cloud

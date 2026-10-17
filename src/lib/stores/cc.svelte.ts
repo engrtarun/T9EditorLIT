@@ -10,7 +10,8 @@
 
 export type CcView = "home" | "editor";
 
-export type RailTab = "media" | "record" | "library" | "templates" | "text" | "transitions";
+export type RailTab =
+  "media" | "record" | "library" | "templates" | "text" | "transitions" | "vault";
 
 export type HomeTab = "home" | "templates";
 

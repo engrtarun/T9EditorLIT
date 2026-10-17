@@ -10,7 +10,7 @@
  * simultaneously — we never do.
  */
 
-export type Mode = "cut" | "polish";
+export type Mode = "cut" | "polish" | "export";
 
 export interface ModeDescriptor {
   id: Mode;
@@ -32,6 +32,12 @@ export const MODES: ModeDescriptor[] = [
     label: "Polish",
     hint: "Music & Text",
     resident: "Music deck · text/pipeline panel",
+  },
+  {
+    id: "export",
+    label: "Export",
+    hint: "Smart Hybrid Render",
+    resident: "Keyframe plan · progress · output",
   },
 ];
 

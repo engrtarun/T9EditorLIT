@@ -168,10 +168,9 @@ jobs:
         run: cargo test
 
   # ── Lane 3: Go cloud daemon ───────────────────────────────────────────
-  # Independent of the Rust lane on purpose: the daemon has zero third-party
-  # dependencies, so it checks in seconds, and a regression in it should not
-  # wait behind a Rust toolchain download. Ubuntu, not Windows: `test -race`
-  # needs gcc and the script below is bash.
+  # Independent of the Rust lane on purpose: it checks in seconds, and a
+  # regression in it should not wait behind a Rust toolchain download. Ubuntu,
+  # not Windows: `test -race` needs gcc and the script below is bash.
   go:
     name: Go daemon
     runs-on: ubuntu-latest
@@ -187,8 +186,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go/go.mod
-          # No go.sum exists (stdlib only), so there is nothing to cache.
-          cache: false
+          # The vault pulls in gotd/td, so there IS a go.sum to cache now —
+          # the module cache is what keeps this lane fast.
+          cache: true
+          cache-dependency-path: go/go.sum
 
       - name: Check formatting (gofmt)
         run: |
@@ -215,9 +216,8 @@ jobs:
           retention-days: 7
 
   # ── Daemon binaries for every platform ────────────────────────────────
-  # Plain GOOS/GOARCH cross-compilation: CGO is off, the daemon is stdlib
-  # only, so each target is a ~5 second `go build`. Docker + buildx + QEMU
-  # (the old approach) took minutes and could not even resolve a Windows
+  # Plain GOOS/GOARCH cross-compilation with CGO off. Docker + buildx + QEMU (the
+  # old approach) took minutes and could not even resolve a Windows
   # base image for the windows/amd64 entry.
   go-build:
     name: Build t9cloud (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -246,7 +246,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go/go.mod
-          cache: false
+          cache: true
+          cache-dependency-path: go/go.sum
 
       - name: Cross-compile
         env:

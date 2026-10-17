@@ -76,7 +76,17 @@ func run() error {
 		Config: cfg,
 		Queue:  q,
 		Log:    log,
-		Vault:  buildVault(cfg, log),
+		Vault:  vault.Unconfigured(),
+	}
+
+	v, transport := buildVault(cfg, log)
+	deps.Vault = v
+	// The Telegram client outlives the listener on purpose: an MTProto session
+	// is stateful and expensive to rebuild, so closing it on every app quit
+	// would mean another QR scan. This is the one resource the daemon holds
+	// open for its whole life.
+	if transport != nil {
+		defer transport.Close()
 	}
 
 	if cfg.HasGroq() {
@@ -142,26 +152,59 @@ func run() error {
 }
 
 // buildVault returns a wired vault when Telegram credentials exist, and an
-// explicitly unconfigured one otherwise. The Chunk 5 transport slots in here.
-func buildVault(cfg *config.Config, log *slog.Logger) *vault.Vault {
+// explicitly unconfigured one otherwise.
+//
+// The transport is returned separately so the caller can close it: the vault
+// value is copied per job for progress reporting, and copying must not lose the
+// one thing that has a Close.
+func buildVault(cfg *config.Config, log *slog.Logger) (*vault.Vault, *vault.Telegram) {
 	v := vault.Unconfigured()
 
 	if !cfg.HasTelegram() {
-		log.Warn("telegram vault disabled", "reason", "TELEGRAM_API_ID / API_HASH / TARGET_CHAT not set")
-		return v
+		log.Warn("telegram vault disabled", "reason", "TELEGRAM_API_ID / API_HASH not set")
+		return v, nil
 	}
 
 	if err := os.MkdirAll(cfg.SessionDir, 0o700); err != nil {
 		log.Error("could not create the telegram session directory",
 			"dir", cfg.SessionDir, "err", err)
-		return v
+		return v, nil
 	}
 
-	// Chunk 5 attaches the MTProto Uploader implementation here. Until then the
-	// vault plans splits correctly and refuses uploads with a clear reason.
-	log.Info("telegram session directory ready",
-		"dir", cfg.SessionDir, "chat", cfg.TelegramChat, "transport", "pending chunk 5")
-	return v
+	transport := vault.New(vault.TelegramOptions{
+		APIID:       cfg.TelegramAPIID,
+		APIHash:     cfg.TelegramAPIHash,
+		SessionDir:  cfg.SessionDir,
+		Chat:        cfg.TelegramChat,
+		Password:    cfg.TelegramPassword,
+		Connections: cfg.TelegramConnections,
+		Log:         log,
+	})
+
+	v.Uploader = transport
+	v.ChatID = cfg.TelegramChat
+	v.SessionDir = cfg.SessionDir
+	v.SessionOn = true
+
+	// A session on disk means the daemon can upload without the user doing
+	// anything, which is the whole point of keeping it alive between launches.
+	if transport.Authorised() {
+		log.Info("telegram vault ready",
+			"session", transport.SessionPath(),
+			"chat", cfg.TelegramChat,
+			"connections", transport.Connections(),
+			"authorised", true)
+	} else {
+		log.Info("telegram vault waiting for a QR scan",
+			"session", transport.SessionPath(),
+			"connections", transport.Connections(),
+			"authorised", false)
+	}
+	if !cfg.HasTelegramChat() {
+		log.Warn("telegram vault has no destination chat",
+			"reason", "TELEGRAM_TARGET_CHAT not set; uploads will be refused")
+	}
+	return v, transport
 }
 
 // requireLoopback double-checks the bind address independently of config,

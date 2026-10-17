@@ -5,7 +5,7 @@
  * and re-probing a 5 GB file for every consumer would be wasteful.
  */
 
-import { errorMessage, probeMedia } from "../ipc";
+import { errorMessage, probeMedia, defaultDbPath, saveProject } from "../ipc";
 import type { MediaInfo } from "../types";
 
 class ProjectStore {
@@ -33,6 +33,12 @@ class ProjectStore {
     this.error = null;
     try {
       this.info = await probeMedia(path);
+      // Persist to Recent Projects so it shows on the Home Screen next time.
+      const dbPath = await defaultDbPath();
+      const name = path.split(/[\\/]/).pop() ?? path;
+      const id = path;
+      const now = Date.now();
+      await saveProject(dbPath, id, name, path, this.info.durationSecs, now);
     } catch (err) {
       this.error = errorMessage(err);
       this.info = null;

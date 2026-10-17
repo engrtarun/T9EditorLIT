@@ -22,6 +22,7 @@
   import Timeline from "./Timeline.svelte";
   import CutMode from "../modes/CutMode.svelte";
   import PolishMode from "../modes/PolishMode.svelte";
+  import ExportMode from "../modes/ExportMode.svelte";
   import { mode } from "../../stores/mode.svelte";
 </script>
 
@@ -38,7 +39,7 @@
       <Timeline />
     </div>
 
-    <!-- Right: the resident editing mode (transcript | music & text). -->
+    <!-- Right: the resident editing mode (transcript | music & text | export). -->
     <aside
       class="flex w-[300px] shrink-0 flex-col overflow-hidden border-l border-cc-line
         bg-cc-surface"
@@ -47,6 +48,8 @@
       {#key mode.current}
         {#if mode.current === "cut"}
           <CutMode />
+        {:else if mode.current === "export"}
+          <ExportMode />
         {:else}
           <PolishMode />
         {/if}

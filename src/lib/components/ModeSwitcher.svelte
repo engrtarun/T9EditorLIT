@@ -19,10 +19,12 @@
     if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
     if (target?.isContentEditable) return;
 
-    // Ctrl+1 / Ctrl+2 jump straight to a mode.
-    if (event.ctrlKey && (event.key === "1" || event.key === "2")) {
+    // Ctrl+1 / Ctrl+2 / Ctrl+3 jump straight to a mode.
+    if (event.ctrlKey && (event.key === "1" || event.key === "2" || event.key === "3")) {
       event.preventDefault();
-      const target2 = MODES.find((m) => m.id === (event.key === "1" ? "cut" : "polish"));
+      const target2 = MODES.find(
+        (m) => m.id === (event.key === "1" ? "cut" : event.key === "2" ? "polish" : "export"),
+      );
       if (target2) mode.set(target2.id);
     }
   };

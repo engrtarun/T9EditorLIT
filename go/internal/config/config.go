@@ -41,8 +41,17 @@ type Config struct {
 	// Telegram credentials enable the Chunk 5 vault.
 	TelegramAPIID   int
 	TelegramAPIHash string
-	TelegramPhone   string
 	TelegramChat    string
+	// TelegramPassword is the account's Two-Step Verification cloud password.
+	//
+	// There is deliberately no phone-number setting: authorisation happens by
+	// scanning a QR from an already-logged-in phone, so no login code is ever
+	// requested and none can be wasted. 2FA is the only thing a scan cannot
+	// cover, and it needs this one value.
+	TelegramPassword string
+	// TelegramConnections is how many MTProto connections share one auth key.
+	// This is the bandwidth-delay fix: one socket cannot fill a home uplink.
+	TelegramConnections int
 	// SessionDir holds the MTProto session file so it survives a restart.
 	SessionDir string
 }
@@ -77,21 +86,22 @@ func Load(envPath string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Addr:            pick(get("T9CLOUD_ADDR"), "127.0.0.1:8787"),
-		Workers:         pickInt(get("T9CLOUD_WORKERS"), 2),
-		QueueCapacity:   pickInt(get("T9CLOUD_QUEUE_CAPACITY"), 32),
-		MaxAttempts:     pickInt(get("T9CLOUD_MAX_ATTEMPTS"), 3),
-		BaseBackoff:     pickDuration(get("T9CLOUD_BASE_BACKOFF"), time.Second),
-		GroqAPIKey:      get("GROQ_API_KEY"),
-		GroqTranscribe:  pick(get("GROQ_TRANSCRIBE_MODEL"), "whisper-large-v3"),
-		GroqMaxChunkMB:  pickInt(get("GROQ_MAX_CHUNK_MB"), 15),
-		GeminiAPIKey:    get("GEMINI_API_KEY"),
-		GeminiModel:     pick(get("GEMINI_MODEL"), "gemini-2.5-flash"),
-		TelegramAPIID:   pickInt(get("TELEGRAM_API_ID"), 0),
-		TelegramAPIHash: get("TELEGRAM_API_HASH"),
-		TelegramPhone:   get("TELEGRAM_PHONE"),
-		TelegramChat:    get("TELEGRAM_TARGET_CHAT"),
-		SessionDir:      pick(get("T9CLOUD_SESSION_DIR"), defaultSessionDir()),
+		Addr:                pick(get("T9CLOUD_ADDR"), "127.0.0.1:8787"),
+		Workers:             pickInt(get("T9CLOUD_WORKERS"), 2),
+		QueueCapacity:       pickInt(get("T9CLOUD_QUEUE_CAPACITY"), 32),
+		MaxAttempts:         pickInt(get("T9CLOUD_MAX_ATTEMPTS"), 3),
+		BaseBackoff:         pickDuration(get("T9CLOUD_BASE_BACKOFF"), time.Second),
+		GroqAPIKey:          get("GROQ_API_KEY"),
+		GroqTranscribe:      pick(get("GROQ_TRANSCRIBE_MODEL"), "whisper-large-v3"),
+		GroqMaxChunkMB:      pickInt(get("GROQ_MAX_CHUNK_MB"), 15),
+		GeminiAPIKey:        get("GEMINI_API_KEY"),
+		GeminiModel:         pick(get("GEMINI_MODEL"), "gemini-2.5-flash"),
+		TelegramAPIID:       pickInt(get("TELEGRAM_API_ID"), 0),
+		TelegramAPIHash:     get("TELEGRAM_API_HASH"),
+		TelegramChat:        get("TELEGRAM_TARGET_CHAT"),
+		TelegramPassword:    get("TELEGRAM_2FA_PASSWORD"),
+		TelegramConnections: pickInt(get("TELEGRAM_CONNECTIONS"), 3),
+		SessionDir:          pick(get("T9CLOUD_SESSION_DIR"), defaultSessionDir()),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -122,17 +132,25 @@ func (c *Config) HasGroq() bool { return c.GroqAPIKey != "" }
 // HasGemini reports whether analysis is usable.
 func (c *Config) HasGemini() bool { return c.GeminiAPIKey != "" }
 
-// HasTelegram reports whether the vault is usable.
+// HasTelegram reports whether the vault transport can be built at all.
+//
+// API credentials alone are enough to log in by QR; the destination chat is
+// only needed to upload, so the two are checked separately and the UI can tell
+// the user which half is missing.
 func (c *Config) HasTelegram() bool {
-	return c.TelegramAPIID != 0 && c.TelegramAPIHash != "" && c.TelegramChat != ""
+	return c.TelegramAPIID != 0 && c.TelegramAPIHash != ""
 }
+
+// HasTelegramChat reports whether uploads have somewhere to go.
+func (c *Config) HasTelegramChat() bool { return c.TelegramChat != "" }
 
 // Capabilities describes which pipelines are live, for GET /healthz.
 func (c *Config) Capabilities() map[string]string {
 	out := map[string]string{}
 	out["transcribe"] = status(c.HasGroq(), "ready", "GROQ_API_KEY not set")
 	out["analyze"] = status(c.HasGemini(), "ready", "GEMINI_API_KEY not set")
-	out["vault"] = status(c.HasTelegram(), "ready", "Telegram credentials not set")
+	out["vault"] = status(c.HasTelegram(), "ready", "TELEGRAM_API_ID / API_HASH not set")
+	out["vault_upload"] = status(c.HasTelegramChat(), "ready", "TELEGRAM_TARGET_CHAT not set")
 	return out
 }
 

@@ -7,6 +7,9 @@
    * scenario performed against the real app (docs/CLIPCHAMP_REA_REFERENCE.md).
    */
   import { cc } from "../../stores/cc.svelte";
+  import { project } from "../../stores/project.svelte";
+  import { defaultDbPath, loadProjects, saveProject, updateProjectOpened } from "../../ipc";
+  import type { Project } from "../../types";
 
   const QUICK = [
     { title: "Record yourself", detail: "Use your microphone, screen or webcam" },
@@ -22,6 +25,41 @@
     "Birthday",
     "Celebrations",
   ];
+
+  let projects = $state<Project[]>([]);
+  let loading = $state(false);
+
+  async function loadRecentProjects() {
+    loading = true;
+    try {
+      const dbPath = await defaultDbPath();
+      projects = await loadProjects(dbPath);
+    } catch {
+      projects = [];
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function openProject(p: Project) {
+    await project.load(p.sourcePath);
+    const dbPath = await defaultDbPath();
+    const now = Date.now();
+    await saveProject(
+      dbPath,
+      p.id,
+      p.name,
+      p.sourcePath,
+      project.info?.durationSecs ?? p.durationSecs,
+      now,
+    );
+    await updateProjectOpened(dbPath, p.sourcePath, now);
+    cc.openEditor();
+  }
+
+  $effect(() => {
+    void loadRecentProjects();
+  });
 </script>
 
 <div class="flex min-h-0 flex-1">
@@ -208,18 +246,35 @@
       <!-- Projects -->
       <section>
         <h2 class="mb-3 text-[17px] font-semibold text-cc-text">Your videos</h2>
-        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-          {#each Array(4) as _, i (i)}
-            <button type="button" class="group text-left" onclick={() => cc.openEditor()}>
-              <div
-                class="aspect-video w-full rounded-lg border border-cc-line bg-cc-tint
-                transition group-hover:border-cc-purple"
-              ></div>
-              <div class="mt-1.5 text-[12.5px] font-medium text-cc-text">Video Project {i + 1}</div>
-              <div class="text-[11.5px] text-cc-text-3">Draft</div>
-            </button>
-          {/each}
-        </div>
+        {#if loading}
+          <div class="flex items-center justify-center p-4">
+            <span class="mono text-[11px] text-cc-text-3">loading recent projects…</span>
+          </div>
+        {:else if projects.length === 0}
+          <div class="flex flex-col items-center justify-center gap-1.5 p-4 text-center">
+            <span class="text-[12.5px] text-cc-text-3">no recent projects</span>
+            <span class="mono text-[10px] text-cc-text-4"> import a video to see it here </span>
+          </div>
+        {:else}
+          <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            {#each projects as p (p.id)}
+              <button type="button" class="group text-left" onclick={() => openProject(p)}>
+                <div
+                  class="aspect-video w-full rounded-lg border border-cc-line bg-cc-tint
+                  transition group-hover:border-cc-purple"
+                ></div>
+                <div class="mt-1.5 truncate text-[12.5px] font-medium text-cc-text">
+                  {p.name}
+                </div>
+                <div class="truncate text-[11.5px] text-cc-text-3">
+                  {Math.floor(p.durationSecs / 60)}:{String(
+                    Math.floor(p.durationSecs % 60),
+                  ).padStart(2, "0")}
+                </div>
+              </button>
+            {/each}
+          </div>
+        {/if}
       </section>
     {:else}
       <!-- Templates tab: the gallery grid. -->

@@ -69,3 +69,188 @@ export interface TranscriptLine {
   /** Why the AI flagged it, when it did — silence, fumble, retake, wrong example. */
   flag: "none" | "silence" | "fumble" | "retake" | "wrong_example";
 }
+
+/** One recently opened project, for the Home Screen grid. */
+export interface Project {
+  id: string;
+  name: string;
+  sourcePath: string;
+  durationSecs: number;
+  lastOpened: number;
+}
+
+/** One extracted audio chunk produced by FFmpeg, ready for Whisper. */
+export interface AudioChunk {
+  index: number;
+  path: string;
+  offsetSecs: number;
+  durationSecs: number;
+}
+
+/**
+ * A ~1 fps thumbnail strip cached as JPEGs on disk. `dir` holds the frames
+ * (`thumb_00001.jpg`, …); the frontend derives each path and loads it through
+ * the Tauri asset protocol, so the images never enter JS memory.
+ */
+export interface ThumbnailStrip {
+  durationSecs: number;
+  fps: number;
+  count: number;
+  width: number;
+  height: number;
+  dir: string;
+}
+
+/**
+ * Waveform peaks for the timeline, one per bucket, normalized 0–1. Cached as
+ * JSON on disk keyed by source mtime, so a reload skips FFmpeg entirely.
+ */
+export interface WaveformData {
+  durationSecs: number;
+  bars: number;
+  peaks: number[];
+  cachePath?: string;
+}
+
+/** Segment shape returned by the t9cloud Go daemon (snake_case JSON). */
+export interface CloudSegment {
+  id: string;
+  start_secs: number;
+  end_secs: number;
+  text: string;
+  flag: "none" | "silence" | "fumble" | "retake" | "wrong_example";
+  keep: boolean;
+  reason?: string;
+}
+
+/** Job shape returned by t9cloud. */
+export interface CloudJob {
+  id: string;
+  kind: string;
+  state: "queued" | "running" | "done" | "failed" | "partial";
+  createdUnix: number;
+  updatedUnix: number;
+  total: number;
+  completed: number;
+  error: string | null;
+  transcript?: CloudSegment[];
+  analysis?: CloudSegment[];
+  vaultProgress: VaultProgress | null;
+  vaultResult: VaultResult | null;
+}
+
+/** One kept segment handed to the export engine. */
+export interface ExportSegment {
+  start: number;
+  end: number;
+}
+
+/** What kind of piece: stream copy or micro-encode. */
+export type PieceKind = "copy" | "encode";
+
+/** One piece of work in the export plan. */
+export interface ExportPiece {
+  index: number;
+  segmentIndex: number;
+  start: number;
+  end: number;
+  kind: PieceKind;
+  durationSecs: number;
+}
+
+/** The full export plan returned by plan_export. */
+export interface ExportPlan {
+  source: string;
+  output: string;
+  mode: string;
+  durationSecs: number;
+  outputDurationSecs: number;
+  segments: ExportSegment[];
+  pieces: ExportPiece[];
+  copyPieces: number;
+  encodePieces: number;
+  encoder: string | null;
+  keyframeCount: number;
+  audioCopied: boolean;
+  estimatedSizeBytes: number;
+  warnings: string[];
+}
+
+/** Export options. */
+export interface ExportOptions {
+  mode?: string;
+  alignToleranceMs?: number;
+}
+
+/** Export request. */
+export interface ExportRequest {
+  source: string;
+  segments: ExportSegment[];
+  output: string;
+  options?: ExportOptions;
+  dbPath?: string | null;
+}
+
+/** Export result. */
+export interface ExportResult {
+  output: string;
+  durationSecs: number;
+  sizeBytes: number;
+  pieceCount: number;
+  encoder: string | null;
+  warnings: string[];
+}
+
+/** Export progress event payload. */
+export interface ExportProgress {
+  stage: string;
+  pieceIndex: number;
+  pieceCount: number;
+  percent: number;
+  message: string;
+}
+
+/** Telegram Vault connection status, from GET /v1/vault/status. */
+export interface VaultStatus {
+  configured: boolean;
+  authorised: boolean;
+  account: string | null;
+  chat: string | null;
+  connections: number;
+  partBytes: number;
+  sessionPath: string | null;
+  detail: string | null;
+}
+
+/** QR login challenge, from POST /v1/vault/authorise or GET /v1/vault/authorise/{id}. */
+export interface LoginChallenge {
+  id: string;
+  url: string | null;
+  expiresUnix: number | null;
+  phase: "waiting" | "authorised" | "expired" | "password_needed" | "failed";
+  detail: string | null;
+  rotations: number;
+  account: string | null;
+}
+
+/** One snapshot of a running vault upload, from GET /v1/jobs/{id}.vault_progress. */
+export interface VaultProgress {
+  phase: "hashing" | "uploading" | "done";
+  partsDone: number;
+  partCount: number;
+  partIndex: number;
+  bytesDone: number;
+  bytesTotal: number;
+  bytesPerSec: number;
+  connections: number;
+  message: string | null;
+}
+
+/** Upload outcome for a completed vault job. */
+export interface VaultResult {
+  chatId: string | null;
+  messageIds: number[];
+  partCount: number;
+  totalBytes: number;
+  completedAt: number | null;
+}

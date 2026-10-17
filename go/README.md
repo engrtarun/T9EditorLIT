@@ -18,7 +18,7 @@ owns only the work that genuinely should not live in a window the user can close
 Exactly one reason, and it is a real one: **Telegram MTProto sessions are stateful.**
 
 A desktop app that gets closed loses its authorised session, and the user has to
-re-enter an OTP. A long-lived daemon keeps that session alive on disk. That is the
+authorise again. A long-lived daemon keeps that session alive on disk. That is the
 entire justification for a third language.
 
 Everything else stays in Rust:
@@ -59,14 +59,16 @@ keys. It refuses to bind anything but a loopback address, checked twice — once
 
 ## API
 
-| Method | Path                  | Purpose                                               |
-| ------ | --------------------- | ----------------------------------------------------- |
-| `GET`  | `/healthz`            | Liveness, queue depth, which pipelines are configured |
-| `POST` | `/v1/transcribe`      | Queue a transcription over a list of audio chunks     |
-| `POST` | `/v1/analyze`         | Queue Gemini retake/wrong-example detection           |
-| `POST` | `/v1/vault/upload`    | Queue a Telegram backup (Chunk 5)                     |
-| `POST` | `/v1/vault/authorise` | Interactive MTProto login (Chunk 5)                   |
-| `GET`  | `/v1/jobs/{id}`       | Poll job state, progress and results                  |
+| Method | Path                       | Purpose                                              |
+| ------ | -------------------------- | ---------------------------------------------------- |
+| `GET`  | `/healthz`                 | Liveness, queue depth, which pipelines are ready     |
+| `POST` | `/v1/transcribe`           | Queue a transcription over a list of audio chunks    |
+| `POST` | `/v1/analyze`              | Queue Gemini retake/wrong-example detection          |
+| `GET`  | `/v1/vault/status`         | Whether the stored Telegram session still works      |
+| `POST` | `/v1/vault/authorise`      | Start a QR login; returns the `tg://login` URL       |
+| `GET`  | `/v1/vault/authorise/{id}` | Poll that login for phase, current code and rotation |
+| `POST` | `/v1/vault/upload`         | Queue a Telegram backup of a file path               |
+| `GET`  | `/v1/jobs/{id}`            | Poll job state, progress and results                 |
 
 Transcribe request:
 
@@ -106,10 +108,42 @@ place. See [`../.env.example`](../.env.example).
 | `T9CLOUD_QUEUE_CAPACITY` | `32`                          | Pending jobs before `429`                 |
 | `T9CLOUD_MAX_ATTEMPTS`   | `3`                           | Total tries per job                       |
 | `T9CLOUD_BASE_BACKOFF`   | `1s`                          | First retry delay, doubling               |
-| `T9CLOUD_SESSION_DIR`    | `$T9EDITOR_DATA_DIR/telegram` | MTProto session location                  |
+| `T9CLOUD_SESSION_DIR`    | `$T9EDITOR_DATA_DIR/telegram` | MTProto session + resume manifests        |
 
-Zero third-party dependencies — only the standard library. `go build` works offline
-and CI needs no module cache.
+The one third-party dependency is `github.com/gotd/td`, the MTProto client. It is
+the reason the vault exists in Go at all: writing an MTProto implementation — the
+auth key exchange, the DC migration, the salted encryption — is not something to
+attempt when the language was chosen for something else entirely.
+
+## The Telegram vault
+
+**Split, hash, send, record.** A 5 GB source exceeds Telegram's 2 GB per-file
+ceiling, so it is sent as three 1.9 GB parts. Before anything moves, every part is
+hashed with a streaming SHA-256 and the digests go into a manifest that is
+rewritten on disk after each part lands. That is what makes an interrupted run
+cost one part instead of 5 GB — and what lets a restore verify the bytes it got
+back.
+
+**Three connections, not three goroutines.** One TCP socket cannot fill a home
+uplink: T_Dubber measured 2.06 MB/s on a 3.76 MB/s line because a single MTProto
+connection's window (~232 KB) is smaller than the bandwidth-delay product
+(~404 KB at 110 ms RTT). Goroutines on one client share that window and change
+nothing. Separate _connections_ each carry their own, which is why the pool is the
+mechanism and `TELEGRAM_CONNECTIONS` exists.
+
+**Nothing is buffered.** A part is an `io.SectionReader` over its own file handle,
+read by gotd's uploader in 512 KB × 3 buffers. Peak upload memory is about
+1.5 MB per connection — a 1.9 GB part costs the same as a 512 KB one, and hashing
+uses a fixed 512 KB buffer per part. The target machine has 8 GB of RAM that is
+already 80% occupied.
+
+**Authorisation is a QR scan, never an OTP.** `auth.exportLoginToken` is the same
+call Telegram Desktop makes for "Link Desktop Device": the daemon returns a
+`tg://login?token=…` URL, the app renders it as a QR, the phone scans and taps
+confirm. No phone number is stored and no login code is ever requested — so an
+abandoned attempt costs nothing. Two-Step Verification is the one case a scan does
+not cover; `TELEGRAM_2FA_PASSWORD` answers it, or the API says so plainly rather
+than stalling.
 
 ## Development
 
@@ -124,14 +158,17 @@ make docker   # container image
 
 ## Status
 
-| Piece                                              | State           |
-| -------------------------------------------------- | --------------- |
-| Bounded queue with retry/backoff                   | ✅ done, tested |
-| Groq Whisper client (streaming, offset timestamps) | ✅ done, tested |
-| Gemini analysis + `✕` flag parsing                 | ✅ done, tested |
-| Telegram split planner                             | ✅ done, tested |
-| MTProto transport                                  | ⬜ Chunk 5      |
+| Piece                                              | State                   |
+| -------------------------------------------------- | ----------------------- |
+| Bounded queue with retry/backoff                   | ✅ done, tested         |
+| Groq Whisper client (streaming, offset timestamps) | ✅ done, tested         |
+| Gemini analysis + `✕` flag parsing                 | ✅ done, tested         |
+| Telegram split planner (1.9 GB parts)              | ✅ done, tested         |
+| MTProto transport (pool, streaming, resume)        | ✅ done, tested offline |
+| QR authorisation, no OTP                           | ✅ done, tested offline |
 
-The vault currently plans splits correctly and refuses uploads with
-`ErrNotConfigured`. The MTProto transport slots in behind the `vault.Uploader`
-interface without touching the API, the queue, or the tests above.
+The vault unit tests run entirely offline: they cover the split, the digests, the
+resume manifests, peer parsing and the progress accounting. The two things that
+cannot be tested without a Telegram account are the handshake itself and the
+measured throughput, so those are documented claims, not verified ones —
+`go build` proves the wiring, not the speed.

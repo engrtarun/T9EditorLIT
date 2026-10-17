@@ -110,15 +110,44 @@ func (s *jobStore) fail(id string, err error) {
 	})
 }
 
+// progressVault records the live state of an upload.
+//
+// Byte-level rather than part-level on purpose: an upload is three parts of
+// 1.9 GB each, so counting parts shows 33% for a quarter of an hour and then
+// snaps to done. The rate is kept too, because "12 minutes left" is the number
+// a person actually wants while a backup runs.
+func (s *jobStore) progressVault(id string, p vault.Progress) {
+	s.mutate(id, func(j *model.Job) {
+		j.Completed = p.PartsDone
+		j.VaultProgress = &model.VaultProgress{
+			Phase:       p.Phase,
+			PartsDone:   p.PartsDone,
+			PartCount:   p.PartCount,
+			PartIndex:   p.PartIndex,
+			BytesDone:   p.BytesDone,
+			BytesTotal:  p.BytesTotal,
+			BytesPerSec: p.BytesPerSec,
+			Connections: p.Connections,
+			Message:     p.Message,
+		}
+		j.Updated = time.Now().Unix()
+	})
+}
+
 // finishVault records an upload outcome.
-func (s *jobStore) finishVault(id string, parts []vault.Part, ids []int, totalBytes int64) {
+func (s *jobStore) finishVault(id, chat string, parts []vault.Part, ids []int, totalBytes int64) {
 	s.mutate(id, func(j *model.Job) {
 		j.VaultResult = &model.VaultResult{
-			ChatID:      "",
+			ChatID:      chat,
 			MessageIDs:  ids,
 			PartCount:   len(parts),
 			TotalBytes:  totalBytes,
 			CompletedAt: time.Now().Unix(),
+		}
+		if j.VaultProgress != nil {
+			j.VaultProgress.Phase = "done"
+			j.VaultProgress.BytesDone = totalBytes
+			j.VaultProgress.PartsDone = len(parts)
 		}
 		j.Completed = j.Total
 		j.State = model.StateDone
@@ -173,6 +202,10 @@ func cloneJob(j *model.Job) *model.Job {
 		v := *j.VaultResult
 		v.MessageIDs = append([]int(nil), j.VaultResult.MessageIDs...)
 		c.VaultResult = &v
+	}
+	if j.VaultProgress != nil {
+		p := *j.VaultProgress
+		c.VaultProgress = &p
 	}
 	return &c
 }

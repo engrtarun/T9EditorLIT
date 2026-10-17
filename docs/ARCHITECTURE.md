@@ -44,10 +44,14 @@ T9EditorLIT/
 │   └── lib/
 │       ├── types.ts             # mirrors of the Rust structs (camelCase)
 │       ├── ipc.ts               # the only place `invoke` is called
+│       ├── timeline-utils.ts    # pure strip/waveform math (tested)
 │       ├── stores/
 │       │   ├── mode.svelte.ts   # Mode-Based Panel Isolation
 │       │   ├── memory.svelte.ts # RAM meter polling state
-│       │   └── project.svelte.ts# loaded source + ffprobe facts
+│       │   ├── project.svelte.ts# loaded source + ffprobe facts
+│       │   ├── player.svelte.ts # playhead + phantom-cut skip list
+│       │   ├── timeline.svelte.ts# waveform peaks + thumbnail strip
+│       │   └── transcript.svelte.ts
 │       └── components/
 │           ├── TopBar.svelte    # identity · mode switch · RAM meter
 │           ├── ModeSwitcher.svelte
@@ -66,6 +70,11 @@ T9EditorLIT/
 │       ├── lib.rs               # #[tauri::command] surface
 │       ├── ffmpeg.rs            # child-process wrappers, encoder detection
 │       ├── media.rs             # ffprobe → MediaInfo  (has unit tests)
+│       ├── audio.rs             # mono 16 kHz chunk extraction
+│       ├── waveform.rs          # streaming PCM → peaks (Chunk 3)
+│       ├── thumbnail.rs         # ~1 fps JPEG strip cache (Chunk 3)
+│       ├── cache.rs             # content-addressed derived-media cache
+│       ├── transcript.rs        # SQLite transcript/cut store
 │       └── memory.rs            # sysinfo probe, app-tree RAM  (has unit tests)
 │
 └── go/                          # ── Cloud worker daemon: t9cloud (Go)
@@ -140,8 +149,10 @@ ffprobe inspection working, CI building a Windows `.exe` on GitHub.
 - Virtual scroll: only the ~30 lines in the viewport are in the DOM.
 - Clicking `✕` performs a **phantom cut** — a SQLite write plus a skip
   instruction for the player. The 5 GB file is not touched until export.
-- Waveform from FFmpeg-extracted peak data on a small canvas.
-- Thumbnail strip sampled at ~1 fps, cached to disk on load.
+- **Waveform ✅** — FFmpeg streams raw PCM through a child process; Rust keeps
+  one running peak per bucket and caches the normalized array as JSON.
+- **Thumbnail strip ✅** — ~1 fps JPEGs at 160 px cached per source under
+  `<app_data>/cache/thumbs/<key>/`, served to the timeline via the asset protocol.
 - Keyboard: `Space`/`K` play, `J`/`L` scrub, `X` cut, `V` keep, `Ctrl+Z` undo.
 
 ### Chunk 4 — Smart hybrid export
@@ -163,15 +174,18 @@ ffprobe inspection working, CI building a Windows `.exe` on GitHub.
 
 All secrets live in `.env` (git-ignored). Copy from `.env.example`.
 
-| Variable                                                                            | Used by                          | Chunk |
-| ----------------------------------------------------------------------------------- | -------------------------------- | ----- |
-| `GROQ_API_KEY`                                                                      | Whisper transcription            | 2     |
-| `GROQ_TRANSCRIBE_MODEL`                                                             | Model selection                  | 2     |
-| `GROQ_MAX_CHUNK_MB`                                                                 | Audio chunk sizing               | 2     |
-| `GEMINI_API_KEY`                                                                    | Retake / wrong-example detection | 2     |
-| `GEMINI_MODEL`                                                                      | Model selection                  | 2     |
-| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_PHONE` / `TELEGRAM_TARGET_CHAT` | MTProto vault                    | 5     |
-| `T9CLOUD_ADDR` / `T9CLOUD_WORKERS` / `T9CLOUD_QUEUE_CAPACITY`                       | Daemon tuning                    | 1     |
+| Variable                                                      | Used by                          | Chunk |
+| ------------------------------------------------------------- | -------------------------------- | ----- |
+| `GROQ_API_KEY`                                                | Whisper transcription            | 2     |
+| `GROQ_TRANSCRIBE_MODEL`                                       | Model selection                  | 2     |
+| `GROQ_MAX_CHUNK_MB`                                           | Audio chunk sizing               | 2     |
+| `GEMINI_API_KEY`                                              | Retake / wrong-example detection | 2     |
+| `GEMINI_MODEL`                                                | Model selection                  | 2     |
+| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`                       | MTProto vault app credentials    | 5     |
+| `TELEGRAM_TARGET_CHAT`                                        | Where backups are posted         | 5     |
+| `TELEGRAM_2FA_PASSWORD`                                       | Only for 2FA accounts            | 5     |
+| `TELEGRAM_CONNECTIONS`                                        | MTProto connection pool size     | 5     |
+| `T9CLOUD_ADDR` / `T9CLOUD_WORKERS` / `T9CLOUD_QUEUE_CAPACITY` | Daemon tuning                    | 1     |
 
 None of these are needed to run the Chunk 1 app.
 

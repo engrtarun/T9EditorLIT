@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -349,7 +350,7 @@ func TestJobEndpointReturnsSubmittedJob(t *testing.T) {
 
 // ── Vault ───────────────────────────────────────────────────────────────
 
-func TestVaultUploadAcceptedWithoutUploader(t *testing.T) {
+func TestVaultUploadRefusedWithoutTransport(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "blob.bin")
 	if err := os.WriteFile(f, make([]byte, 100), 0o600); err != nil {
 		t.Fatal(err)
@@ -357,12 +358,13 @@ func TestVaultUploadAcceptedWithoutUploader(t *testing.T) {
 
 	s, _ := newTestServer(t, baseConfig(), nil)
 
-	// Accepted as a job, then fails cleanly in the worker — the MTProto
-	// transport is Chunk 5.
+	// Refused here, at submit time. When the transport was still a stub this
+	// returned 202 and failed later in a worker, which meant hashing a whole
+	// file before the user learned the session was unusable.
 	rec := do(t, s, http.MethodPost, "/v1/vault/upload",
 		jsonBody(t, map[string]string{"path": f}))
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }
 
@@ -373,6 +375,176 @@ func TestVaultAuthoriseRefusedWithoutUploader(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
+}
+
+func TestVaultLoginPollRefusedWithoutUploader(t *testing.T) {
+	s, _ := newTestServer(t, baseConfig(), nil)
+
+	rec := do(t, s, http.MethodGet, "/v1/vault/authorise/abc123", "")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestVaultStatusWithoutUploaderStillAnswers(t *testing.T) {
+	s, _ := newTestServer(t, baseConfig(), nil)
+
+	// Status must answer even with no transport: the UI asks it on launch to
+	// decide whether to show "Connect Telegram" or "Ready".
+	rec := do(t, s, http.MethodGet, "/v1/vault/status", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var st vault.Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if st.Authorised {
+		t.Error("authorised = true with no transport")
+	}
+	if st.PartBytes != vault.DefaultPartBytes {
+		t.Errorf("part_bytes = %d, want %d", st.PartBytes, vault.DefaultPartBytes)
+	}
+}
+
+// A session that does not exist must stop the upload here. The old behaviour
+// queued it, hashed the whole 5 GB, and only then found nothing to send it with.
+func TestVaultUploadRefusedWithoutASession(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "blob.bin")
+	if err := os.WriteFile(f, make([]byte, 100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := newTestServer(t, baseConfig(), nil)
+	s.deps.Vault = &vault.Vault{
+		Uploader:  &unAuthorisedUploader{},
+		PartSize:  vault.DefaultPartBytes,
+		ChatID:    "@cloud",
+		SessionOn: true,
+	}
+
+	rec := do(t, s, http.MethodPost, "/v1/vault/upload",
+		jsonBody(t, map[string]string{"path": f}))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "not authorised") {
+		t.Errorf("body = %s, want it to say a scan is needed", rec.Body.String())
+	}
+}
+
+// An authorised session with no destination is refused too: "which chat?" is not
+// a question to discover while 1.9 GB is on the wire.
+func TestVaultUploadRefusedWithoutADestination(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "blob.bin")
+	if err := os.WriteFile(f, make([]byte, 100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := newTestServer(t, baseConfig(), nil)
+	s.deps.Vault = &vault.Vault{
+		Uploader: &authorisedUploader{},
+		PartSize: vault.DefaultPartBytes,
+	}
+
+	rec := do(t, s, http.MethodPost, "/v1/vault/upload",
+		jsonBody(t, map[string]string{"path": f}))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "TELEGRAM_TARGET_CHAT") {
+		t.Errorf("body = %s, want it to name the missing setting", rec.Body.String())
+	}
+}
+
+// stubUploader counts sends, so "accepted" can be told apart from "refused"
+// without a real transport.
+type stubUploader struct {
+	mu   sync.Mutex
+	sent int
+}
+
+func (s *stubUploader) Send(_ context.Context, _, _ string, _, _ int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sent++
+	return s.sent, nil
+}
+
+func (s *stubUploader) Authorise(context.Context) error { return nil }
+func (s *stubUploader) Authorised() bool                { return false }
+
+// authorisedUploader is a session that has been scanned.
+type authorisedUploader struct{ stubUploader }
+
+func (a *authorisedUploader) Authorised() bool { return true }
+
+// unAuthorisedUploader is a session that has not.
+type unAuthorisedUploader struct{ stubUploader }
+
+func (u *unAuthorisedUploader) Authorised() bool { return false }
+
+// An accepted upload must leave a job that reports byte-level progress, because
+// three parts of 1.9 GB is not a progress bar.
+func TestVaultJobReportsByteProgress(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "blob.bin")
+	if err := os.WriteFile(f, make([]byte, 100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := newTestServer(t, baseConfig(), nil)
+	s.deps.Vault = &vault.Vault{
+		Uploader:   &authorisedUploader{},
+		PartSize:   50,
+		ChatID:     "@cloud",
+		SessionDir: t.TempDir(),
+	}
+
+	rec := do(t, s, http.MethodPost, "/v1/vault/upload",
+		jsonBody(t, map[string]string{"path": f}))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", rec.Code, rec.Body.String())
+	}
+
+	var job model.Job
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Total != 2 {
+		t.Errorf("total parts = %d, want 2", job.Total)
+	}
+
+	// The queue has a single worker and may take a moment, so poll rather than
+	// assuming a fixed delay.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got := do(t, s, http.MethodGet, "/v1/jobs/"+job.ID, "")
+		var snapshot model.Job
+		if err := json.Unmarshal(got.Body.Bytes(), &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.VaultProgress != nil && snapshot.VaultProgress.BytesTotal != 100 {
+			t.Errorf("bytes_total = %d, want the file size", snapshot.VaultProgress.BytesTotal)
+		}
+		if snapshot.State.Terminal() {
+			if snapshot.VaultResult == nil {
+				t.Fatal("finished job has no vault_result")
+			}
+			if snapshot.VaultResult.ChatID != "@cloud" {
+				t.Errorf("chat_id = %q, want the destination recorded", snapshot.VaultResult.ChatID)
+			}
+			if len(snapshot.VaultResult.MessageIDs) != 2 {
+				t.Errorf("message_ids = %v, want two", snapshot.VaultResult.MessageIDs)
+			}
+			if p := snapshot.Progress(); p != 1 {
+				t.Errorf("progress = %v, want 1 on a finished upload", p)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the upload job never reached a terminal state")
 }
 
 // ── Robustness ──────────────────────────────────────────────────────────

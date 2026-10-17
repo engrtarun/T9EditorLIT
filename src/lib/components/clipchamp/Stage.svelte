@@ -8,9 +8,76 @@
    * buffered into RAM. Until then it carries the same empty-state promise the
    * original CutMode made about ffprobe.
    */
+  import { convertFileSrc } from "@tauri-apps/api/core";
   import { project } from "../../stores/project.svelte";
+  import { transcript } from "../../stores/transcript.svelte";
+  import { player } from "../../stores/player.svelte";
+  import { mode } from "../../stores/mode.svelte";
 
   let { busy = false }: { busy?: boolean } = $props();
+
+  const videoSrc = $derived(
+    project.hasMedia && project.info ? convertFileSrc(project.info.path) : null,
+  );
+
+  let skipPending = $state(false);
+
+  function handleExport() {
+    if (!project.hasMedia) return;
+    mode.set("export");
+  }
+
+  function findCutSegment(t: number) {
+    return transcript.lines.find((l) => !l.keep && t >= l.startSecs && t < l.endSecs);
+  }
+
+  function findNextKept(start: number) {
+    return transcript.lines.find((l) => l.keep && l.startSecs >= start);
+  }
+
+  function handleTimeUpdate(e: Event) {
+    const video = e.currentTarget as HTMLVideoElement;
+    if (skipPending) return;
+    const cut = findCutSegment(video.currentTime);
+    if (!cut) return;
+    const next = findNextKept(cut.endSecs);
+    if (next) {
+      skipPending = true;
+      video.currentTime = next.startSecs;
+    }
+  }
+
+  function handleSeeked() {
+    skipPending = false;
+  }
+
+  $effect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          void transcript.redo();
+        } else {
+          void transcript.undo();
+        }
+        return;
+      }
+      if (e.code === "Space") {
+        e.preventDefault();
+        player.togglePlay();
+      } else if (e.key === "j" || e.key === "J") {
+        e.preventDefault();
+        player.scrub(-5);
+      } else if (e.key === "l" || e.key === "L") {
+        e.preventDefault();
+        player.scrub(5);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 </script>
 
 <section class="flex min-h-0 flex-1 flex-col" aria-label="Stage">
@@ -140,7 +207,8 @@
         type="button"
         class="cc-btn cc-btn-primary"
         disabled={!project.hasMedia || busy}
-        title={project.hasMedia ? "Export via FFmpeg" : "Import media first"}
+        title={project.hasMedia ? "Open Export panel" : "Import media first"}
+        onclick={handleExport}
       >
         <svg
           width="13"
@@ -177,8 +245,18 @@
             ffprobe, never loaded into memory.
           </p>
         </div>
-      {:else}
-        <span class="mono text-[11px] text-white/50">preview streams from disk here</span>
+      {:else if videoSrc}
+        <video
+          src={videoSrc}
+          controls
+          class="h-full w-full object-contain"
+          preload="metadata"
+          bind:this={player.element}
+          ontimeupdate={handleTimeUpdate}
+          onseeked={handleSeeked}
+        >
+          <track kind="captions" />
+        </video>
       {/if}
     </div>
   </div>

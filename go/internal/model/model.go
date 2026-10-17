@@ -135,14 +135,42 @@ type Job struct {
 	Analysis []Segment `json:"analysis,omitempty"`
 	// VaultResult describes the upload outcome for vault jobs.
 	VaultResult *VaultResult `json:"vault_result,omitempty"`
+	// VaultProgress is the live state of an upload, including the byte-level
+	// detail a 5 GB transfer needs. Three parts is a useless progress bar;
+	// bytes and a rate are what the user actually reads.
+	VaultProgress *VaultProgress `json:"vault_progress,omitempty"`
 }
 
 // Progress returns 0.0–1.0 completion, or 0 when the job has no total yet.
+//
+// Vault jobs prefer bytes: their unit is 1.9 GB per part, so counting parts
+// would show 33% for a quarter of an hour and then jump to done.
 func (j *Job) Progress() float64 {
+	if j.Kind == JobVault && j.VaultProgress != nil && j.VaultProgress.BytesTotal > 0 {
+		return float64(j.VaultProgress.BytesDone) / float64(j.VaultProgress.BytesTotal)
+	}
 	if j.Total <= 0 {
 		return 0
 	}
 	return float64(j.Completed) / float64(j.Total)
+}
+
+// VaultProgress is one snapshot of a running upload.
+type VaultProgress struct {
+	// Phase is "hashing", "uploading" or "done".
+	Phase string `json:"phase"`
+	// PartsDone out of PartCount.
+	PartsDone int `json:"parts_done"`
+	PartCount int `json:"part_count"`
+	PartIndex int `json:"part_index"`
+	// BytesDone out of BytesTotal, hashed or sent so far.
+	BytesDone   int64   `json:"bytes_done"`
+	BytesTotal  int64   `json:"bytes_total"`
+	BytesPerSec float64 `json:"bytes_per_sec"`
+	// Connections is how many TCP sockets are carrying the bytes at once.
+	Connections int `json:"connections"`
+	// Message is a short note for the UI.
+	Message string `json:"message,omitempty"`
 }
 
 // VaultResult reports where a file landed in Telegram.
