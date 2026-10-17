@@ -1,0 +1,43 @@
+{
+  "browser": {
+    "mode": "launch",
+    "executable_path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+  },
+  "start_url": { "url": "http://127.0.0.1:1420/", "query": [] },
+  "environment": {
+    "viewport": { "width": 1536, "height": 864, "device_scale_factor": 1 },
+    "color_scheme": "light"
+  },
+  "actions": [
+    { "step_id": "home_boot", "action": "wait_for_timeout", "duration_ms": 5000 },
+    {
+      "step_id": "click_new_video",
+      "action": "click",
+      "locator": {
+        "kind": "role",
+        "role": "button",
+        "name": "Create a new video Start from scratch +"
+      },
+      "timeout_ms": 15000
+    },
+    { "step_id": "editor_boot", "action": "wait_for_timeout", "duration_ms": 3000 },
+    {
+      "step_id": "tab_text",
+      "action": "click",
+      "locator": { "kind": "role", "role": "tab", "name": "Text" },
+      "timeout_ms": 10000
+    },
+    { "step_id": "text_panel", "action": "wait_for_timeout", "duration_ms": 1500 },
+    {
+      "step_id": "tab_media",
+      "action": "click",
+      "locator": { "kind": "role", "role": "tab", "name": "My media" },
+      "timeout_ms": 10000
+    },
+    { "step_id": "media_panel", "action": "wait_for_timeout", "duration_ms": 1500 }
+  ],
+  "capture": {
+    "after_each_step": ["screenshot", "accessibility", "url"],
+    "at_end": ["url"]
+  }
+}

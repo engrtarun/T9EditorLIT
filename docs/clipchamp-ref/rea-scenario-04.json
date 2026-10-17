@@ -1,0 +1,42 @@
+{
+  "browser": {
+    "mode": "launch",
+    "executable_path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+  },
+  "start_url": {
+    "url": "https://app.clipchamp.com/consumer/editor/?driveId=CA2372DA03CE11C3&itemId=CA2372DA03CE11C3%21s4fff6e50c5bc41b4a2f47ae87c3a7a1d&folderId=CA2372DA03CE11C3%21sf9be20c14de04781883ada6ca3af7653",
+    "query": []
+  },
+  "environment": {
+    "viewport": { "width": 1600, "height": 900, "device_scale_factor": 1 },
+    "color_scheme": "light"
+  },
+  "actions": [
+    { "step_id": "editor_boot", "action": "wait_for_timeout", "duration_ms": 14000 },
+    {
+      "step_id": "tab_text",
+      "action": "click",
+      "locator": { "kind": "role", "role": "tab", "name": "Text" },
+      "timeout_ms": 15000
+    },
+    { "step_id": "text_panel", "action": "wait_for_timeout", "duration_ms": 4000 },
+    {
+      "step_id": "tab_record",
+      "action": "click",
+      "locator": { "kind": "role", "role": "tab", "name": "Record & create" },
+      "timeout_ms": 15000
+    },
+    { "step_id": "record_panel", "action": "wait_for_timeout", "duration_ms": 4000 },
+    {
+      "step_id": "tab_library",
+      "action": "click",
+      "locator": { "kind": "role", "role": "tab", "name": "Content library" },
+      "timeout_ms": 15000
+    },
+    { "step_id": "library_panel", "action": "wait_for_timeout", "duration_ms": 5000 }
+  ],
+  "capture": {
+    "after_each_step": ["screenshot", "accessibility", "url"],
+    "at_end": ["screenshot", "accessibility", "url"]
+  }
+}

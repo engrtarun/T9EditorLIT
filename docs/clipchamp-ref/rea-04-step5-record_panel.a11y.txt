@@ -1,0 +1,59 @@
+﻿- document:
+  - button "App launcher": ∩ôá
+  - button "Clipchamp home": Clipchamp
+  - heading "Video Project 4" [level=1]
+  - button "Video Project 4"
+  - button "Cloud backup"
+  - button "Premium Buy Microsoft 365":
+    - img "Premium"
+    - text: Buy Microsoft 365
+  - button "feedback"
+  - button "Settings"
+  - button "Help"
+  - button "TD":
+    - img "TD"
+  - main:
+    - text: Video Project 4
+    - navigation "Sidebar navigation":
+      - tablist:
+        - tab "My media"
+        - tab "Record & create" [selected]
+        - tab "Content library"
+        - tab "Templates"
+        - tab "Text"
+        - tab "Transitions"
+    - region "Content sidebar":
+      - text: Record & create
+      - button "Collapse toolbar"
+      - separator
+      - tabpanel:
+        - heading "Record" [level=2]
+        - menu "Record":
+          - menuitem "Screen and camera"
+          - menuitem "Camera"
+          - menuitem "Screen"
+          - menuitem "Audio"
+        - heading "Create" [level=2]
+        - menu "Create":
+          - menuitem "Text to speech"
+      - separator "Resize panel"
+    - status: Sidebar panel expanded
+    - region "Stage":
+      - button "Undo ctrl+z" [disabled]
+      - button "Redo ctrl+y" [disabled]
+      - region "Stage media drop zone"
+      - toolbar:
+        - button "Change aspect ratio":
+          - paragraph: Size
+        - button "Background color"
+        - button "Add audio to use autocaptions" [disabled]:
+          - img
+      - button "Share"
+      - button "Export" [disabled]
+    - region "Timeline":
+      - button "Seek to start ctrl+ΓåÉ" [disabled]
+      - button "Seek back 5 seconds shift+ΓåÉ" [disabled]
+      - button "Seek forward 5 seconds shift+ΓåÆ" [disabled]
+      - button "Play SPACE" [disabled]
+      - 'group "Player time input. Time at current position: 0 minutes, 0 seconds, 0 milliseconds, out of 0 minutes, 0 seconds" [disabled]'
+      - grid

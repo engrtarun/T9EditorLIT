@@ -1,19 +1,19 @@
 <script lang="ts">
   /**
-   * Application shell.
+   * Application shell — Clipchamp clone.
    *
-   * The important line is the `{#key mode.current}` block below. It does not
-   * merely swap which component is visible — it destroys the outgoing mode's
-   * component tree and builds a fresh one. That is what releases its DOM and
-   * lets the WebView reclaim the memory, which is the whole reason this app can
-   * run on an 8 GB machine.
+   * `{#key cc.view}` below does not merely swap which screen is visible: it
+   * destroys the outgoing screen's component tree and builds a fresh one, so
+   * the WebView releases its DOM. Home and Editor never coexist in RAM, and
+   * inside the editor two more `{#key}` blocks (rail tab, editing mode) keep
+   * the resident footprint flat. That is the zero-RAM rule from AGENTS.md §1
+   * applied at every level, not just at the mode switch.
    */
-  import SourceBar from "$lib/components/SourceBar.svelte";
-  import TopBar from "$lib/components/TopBar.svelte";
-  import CutMode from "$lib/components/modes/CutMode.svelte";
-  import PolishMode from "$lib/components/modes/PolishMode.svelte";
+  import CcTopBar from "$lib/components/clipchamp/CcTopBar.svelte";
+  import EditorShell from "$lib/components/clipchamp/EditorShell.svelte";
+  import HomeScreen from "$lib/components/clipchamp/HomeScreen.svelte";
+  import { cc } from "$lib/stores/cc.svelte";
   import { memory } from "$lib/stores/memory.svelte.ts";
-  import { mode } from "$lib/stores/mode.svelte.ts";
 
   $effect(() => {
     memory.start();
@@ -21,15 +21,18 @@
   });
 </script>
 
-<div class="flex h-screen flex-col overflow-hidden bg-base-950">
-  <TopBar />
-  <SourceBar />
+<div class="cc-shell flex h-screen flex-col overflow-hidden">
+  <!-- EditorShell carries its own top bar (mode switcher + RAM meter live
+       there); home renders the shared search variant here. -->
+  {#if cc.view === "home"}
+    <CcTopBar variant="home" />
+  {/if}
 
-  {#key mode.current}
-    {#if mode.current === "cut"}
-      <CutMode />
+  {#key cc.view}
+    {#if cc.view === "home"}
+      <HomeScreen />
     {:else}
-      <PolishMode />
+      <EditorShell />
     {/if}
   {/key}
 </div>

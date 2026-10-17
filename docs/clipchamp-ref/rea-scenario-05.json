@@ -1,0 +1,22 @@
+{
+  "browser": {
+    "mode": "launch",
+    "executable_path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+  },
+  "start_url": {
+    "url": "https://app.clipchamp.com/consumer/editor/?driveId=CA2372DA03CE11C3&itemId=CA2372DA03CE11C3%21s4fff6e50c5bc41b4a2f47ae87c3a7a1d&folderId=CA2372DA03CE11C3%21sf9be20c14de04781883ada6ca3af7653",
+    "query": []
+  },
+  "environment": {
+    "viewport": { "width": 1600, "height": 900, "device_scale_factor": 1 },
+    "color_scheme": "light"
+  },
+  "actions": [
+    { "step_id": "boot", "action": "wait_for_timeout", "duration_ms": 14000 },
+    { "step_id": "settle", "action": "wait_for_timeout", "duration_ms": 5000 }
+  ],
+  "capture": {
+    "after_each_step": ["url"],
+    "at_end": ["dom", "url"]
+  }
+}

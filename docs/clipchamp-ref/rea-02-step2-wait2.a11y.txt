@@ -1,0 +1,153 @@
+﻿- document:
+  - button "App launcher": ∩ôá
+  - button "Clipchamp home": Clipchamp
+  - textbox "Search templates"
+  - button "Premium Buy Microsoft 365":
+    - img "Premium"
+    - text: Buy Microsoft 365
+  - button "feedback"
+  - button "Settings"
+  - button "Help"
+  - button "TD":
+    - img "TD"
+  - navigation "Sidebar menu":
+    - tablist:
+      - tab "Home" [selected]
+      - tab "Templates"
+  - complementary:
+    - text: Cloud storage
+    - progressbar "Cloud storage"
+    - button "1.50 GB used of 5 GB (28%)"
+    - button "Get more storage"
+    - link "Install desktop app Close button":
+      - /url: /consumer/home
+      - paragraph: Install desktop app
+      - button "Close button"
+  - main:
+    - heading "Good to see you again" [level=1]
+    - button "Create a new video":
+      - text: Create a new video
+      - paragraph: Start from scratch
+    - button "Create a video with AI Quickly auto compose a video using your own media":
+      - text: Create a video with AI
+      - paragraph: Quickly auto compose a video using your own media
+      - img
+    - region "Get inspired with a template":
+      - heading "Get started with these easy edits" [level=2]
+      - group:
+        - img "Record quick action"
+        - heading "Record yourself" [level=3]
+        - paragraph: Use your microphone, screen or webcam
+        - button "Try it"
+      - group:
+        - img "Text to speech quick action"
+        - heading "Text to speech" [level=3]
+        - paragraph: Explore lifelike voices in over 80 languages
+        - button "Try it"
+      - heading "Get inspired with a template" [level=2]
+      - button "All templates"
+      - tablist:
+        - tab "Show all YouTube templates":
+          - paragraph: YouTube
+        - tab "Show all Instagram templates":
+          - paragraph: Instagram
+        - tab "Show all Intro & outro templates templates":
+          - paragraph: Intro & outro templates
+        - tab "Show all Gaming templates":
+          - paragraph: Gaming
+        - tab "Show all Corporate templates templates":
+          - paragraph: Corporate templates
+        - tab "Show all Slideshows templates":
+          - paragraph: Slideshows
+        - tab "Show all Birthday templates":
+          - paragraph: Birthday
+        - tab "Show all Celebrations templates":
+          - paragraph: Celebrations
+        - tab "Show all Text overlays templates":
+          - paragraph: Text overlays
+        - tab "Show all Minecraft templates templates":
+          - paragraph: Minecraft templates
+        - tab "Show all TikTok templates":
+          - paragraph: TikTok
+        - tab "Show all Social media ads templates":
+          - paragraph: Social media ads
+        - tab "Show all Facebook ads templates":
+          - paragraph: Facebook ads
+        - tab "Show all Social handles templates":
+          - paragraph: Social handles
+        - tab "Show all Wedding templates templates":
+          - paragraph: Wedding templates
+        - tab "Show all Layouts templates":
+          - paragraph: Layouts
+        - tab "Show all Sale ads templates":
+          - paragraph: Sale ads
+        - tab "Show all Marketing templates":
+          - paragraph: Marketing
+        - tab "Show all Video meme templates templates":
+          - paragraph: Video meme templates
+        - tab "Show all Quotes templates":
+          - paragraph: Quotes
+        - tab "Show all Real estate templates":
+          - paragraph: Real estate
+        - tab "Show all Pinterest templates":
+          - paragraph: Pinterest
+        - tab "Show all Christmas templates templates":
+          - paragraph: Christmas templates
+        - tab "Show all Pride templates templates":
+          - paragraph: Pride templates
+        - tab "Show all Hanukkah templates templates":
+          - paragraph: Hanukkah templates
+        - tab "Show all Sea of Thieves templates templates":
+          - paragraph: Sea of Thieves templates
+        - tab "Show all Father's Day templates templates":
+          - paragraph: Father's Day templates
+        - tab "Show all Diwali templates templates":
+          - paragraph: Diwali templates
+        - tab "Show all Halloween templates templates":
+          - paragraph: Halloween templates
+        - tab "Show all Back to school templates templates":
+          - paragraph: Back to school templates
+        - tab "Show all Eid Mubarak templates":
+          - paragraph: Eid Mubarak
+      - button "Next"
+    - text: 0 projects found for query
+    - region "Your videos":
+      - heading "Your videos" [level=2]
+      - progressbar
+      - region:
+        - article:
+          - group:
+            - group:
+              - button [disabled]
+        - article:
+          - group:
+            - group:
+              - button [disabled]
+        - article:
+          - group:
+            - group:
+              - button [disabled]
+        - article:
+          - group:
+            - group:
+              - button [disabled]
+        - article:
+          - group:
+            - group:
+              - button [disabled]
+        - article:
+          - group:
+            - group:
+              - button [disabled]
+        - article:
+          - group:
+            - group:
+              - button [disabled]
+        - article:
+          - group:
+            - group:
+              - button [disabled]
+        - article:
+          - group:
+            - group:
+              - button [disabled]

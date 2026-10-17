@@ -1,0 +1,26 @@
+[package]
+name = "clipchamp-clone"
+version = "0.1.0"
+description = "Clipchamp Clone — multi-track video editor"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "clipchamp_clone_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+# Never read the parent T9EditorLIT workspace by accident.
+[workspace]

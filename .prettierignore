@@ -17,6 +17,16 @@ workspace-data/
 *.mkv
 *.wav
 
+# Reverse-engineering evidence: generated artifacts, never hand-formatted
+Clipchamp Clone/evidence/*.json
+Clipchamp Clone/evidence/web-assets/
+Clipchamp Clone/src-tauri/target/
+Clipchamp Clone/src-tauri/gen/
+
+# Extracted third-party zip (vendored, not our code) + captured REA payloads
+_unzip_T9UI/
+docs/clipchamp-ref/
+
 # Secrets
 .env
 *.session

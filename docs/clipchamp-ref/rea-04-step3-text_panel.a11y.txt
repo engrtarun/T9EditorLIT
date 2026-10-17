@@ -1,0 +1,167 @@
+﻿- document:
+  - button "App launcher": ∩ôá
+  - button "Clipchamp home": Clipchamp
+  - heading "Video Project 4" [level=1]
+  - button "Video Project 4"
+  - button "Cloud backup"
+  - button "Premium Buy Microsoft 365":
+    - img "Premium"
+    - text: Buy Microsoft 365
+  - button "feedback"
+  - button "Settings"
+  - button "Help"
+  - button "TD":
+    - img "TD"
+  - main:
+    - text: Video Project 4
+    - navigation "Sidebar navigation":
+      - tablist:
+        - tab "My media"
+        - tab "Record & create"
+        - tab "Content library"
+        - tab "Templates"
+        - tab "Text" [selected]
+        - tab "Transitions"
+    - region "Content sidebar":
+      - text: Text
+      - button "Collapse toolbar"
+      - separator
+      - tabpanel:
+        - region "Plain text":
+          - text: Plain text
+          - option "Text"
+          - button "Add Text to timeline"
+        - separator
+        - region "Text styles":
+          - button "Text styles See all"
+          - listbox "Text styles":
+            - option "Creator"
+            - button "Add Creator to timeline"
+            - option "Text box"
+            - button "Add Text box to timeline"
+            - option "Pride"
+            - button "Add Pride to timeline"
+            - option "Button"
+            - button "Add Button to timeline"
+            - option "Bubble"
+            - button "Add Bubble to timeline"
+            - option "Retro"
+            - button "Add Retro to timeline"
+        - separator
+        - region "Title":
+          - text: Title
+          - application "Add Typewriter to timeline"
+          - button "Add to timeline"
+          - application "Add Circular to timeline"
+          - button "Add to timeline"
+          - application "Add Groovy to timeline"
+          - button "Add to timeline"
+          - application "Add Fireworks to timeline"
+          - button "Add to timeline"
+          - application "Add Smoke to timeline"
+          - button "Add to timeline"
+          - application "Add Fade to timeline"
+          - button "Add to timeline"
+          - application "Add Clean to timeline"
+          - button "Add to timeline"
+          - application "Add Tidal to timeline"
+          - button "Add to timeline"
+          - application "Add Glitch to timeline"
+          - button "Add to timeline"
+          - application "Add Double lines to timeline"
+          - button "Add to timeline"
+          - application "Add Push through to timeline"
+          - button "Add to timeline"
+          - application "Add Large heading to timeline"
+          - button "Add to timeline"
+          - application "Add Outline shadow to timeline"
+          - button "Add to timeline"
+          - application "Add Quick peek to timeline"
+          - button "Add to timeline"
+          - application "Add Stencil to timeline"
+          - button "Add to timeline"
+          - application "Add Glow to timeline"
+          - button "Add to timeline"
+          - application "Add Statement to timeline"
+          - button "Add to timeline"
+        - region "Two Line":
+          - text: Two Line
+          - application "Add Mirror to timeline"
+          - button "Add to timeline"
+          - application "Add Bouncing to timeline"
+          - button "Add to timeline"
+          - application "Add Gliding to timeline"
+          - button "Add to timeline"
+          - application "Add Funky to timeline"
+          - button "Add to timeline"
+          - application "Add Modern to timeline"
+          - button "Add to timeline"
+          - application "Add Fade in and zoom to timeline"
+          - button "Add to timeline"
+        - region "Caption":
+          - text: Caption
+          - application "Add Subtitle to timeline"
+          - button "Add to timeline"
+          - application "Add Karaoke to timeline"
+          - button "Add to timeline"
+          - application "Add Multiline to timeline"
+          - button "Add to timeline"
+          - application "Add Plunging to timeline"
+          - button "Add to timeline"
+          - application "Add Lower third split to timeline"
+          - button "Add to timeline"
+          - application "Add Lower third to timeline"
+          - button "Add to timeline"
+          - application "Add Lower third minimalist to timeline"
+          - button "Add to timeline"
+          - application "Add Rapid fire subtitle to timeline"
+          - button "Add to timeline"
+        - region "Special":
+          - text: Special
+          - application "Add Quote to timeline"
+          - button "Add to timeline"
+          - application "Add Rating to timeline"
+          - button "Add to timeline"
+          - application "Add Credits roll to timeline"
+          - button "Add to timeline"
+          - application "Add Countdown timer to timeline"
+          - button "Add to timeline"
+          - application "Add Sale to timeline"
+          - button "Add to timeline"
+          - application "Add Meme to timeline"
+          - button "Add to timeline"
+        - region "Intro / Outro":
+          - text: Intro / Outro
+          - application "Add Mirror to timeline"
+          - button "Add to timeline"
+          - application "Add Funky to timeline"
+          - button "Add to timeline"
+          - application "Add Clean to timeline"
+          - button "Add to timeline"
+          - application "Add Plunging to timeline"
+          - button "Add to timeline"
+          - application "Add Plunging (right) to timeline"
+          - button "Add to timeline"
+      - separator "Resize panel"
+    - status: Sidebar panel expanded
+    - region "Stage":
+      - button "Undo ctrl+z" [disabled]
+      - button "Redo ctrl+y" [disabled]
+      - region "Stage media drop zone"
+      - toolbar:
+        - button "Change aspect ratio":
+          - paragraph: Size
+        - button "Background color"
+        - button "Add audio to use autocaptions" [disabled]:
+          - img
+      - button "Share"
+      - button "Export" [disabled]
+    - region "Timeline":
+      - button "Seek to start ctrl+ΓåÉ" [disabled]
+      - button "Seek back 5 seconds shift+ΓåÉ" [disabled]
+      - button "Seek forward 5 seconds shift+ΓåÆ" [disabled]
+      - button "Play SPACE" [disabled]
+      - 'group "Player time input. Time at current position: 0 minutes, 0 seconds, 0 milliseconds, out of 0 minutes, 0 seconds" [disabled]'
+      - grid:
+        - img
+        - paragraph: Drag & drop text here

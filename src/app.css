@@ -144,3 +144,164 @@
     font-variant-numeric: tabular-nums;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   Clipchamp port (light).
+
+   Tokens below were extracted from the shipped app with REA — see
+   docs/CLIPCHAMP_REA_REFERENCE.md for the Evidence and how to replay
+   the captures. The ramp and neutrals are the real ones, not eyeballed.
+   ══════════════════════════════════════════════════════════════════ */
+
+@theme {
+  /* Surfaces, top to bottom. */
+  --color-cc-bg: #f4f4f4;
+  --color-cc-surface: #ffffff;
+  --color-cc-sunken: #faf9f8;
+  --color-cc-tint: #f3f2f1;
+
+  /* Hairlines. Clipchamp separates panels with warm greys, never black. */
+  --color-cc-line: #e1dfdd;
+  --color-cc-line-soft: #edebe9;
+
+  /* Text. */
+  --color-cc-text: #252423;
+  --color-cc-text-2: #484644;
+  --color-cc-text-3: #605e5c;
+  --color-cc-text-4: #959595;
+
+  /* The purple ramp — every accent in the app comes from here. */
+  --color-cc-purple: #7611f0;
+  --color-cc-purple-2: #9136f2;
+  --color-cc-purple-3: #a966ff;
+  --color-cc-lilac: #b76aff;
+  --color-cc-blush: #ecb4ff;
+}
+
+@layer components {
+  /* Everything below lives inside .cc-shell, so the Nanami dark chrome
+     (top bar, mode panels) keeps its own untouched palette. */
+  .cc-shell {
+    background-color: var(--color-cc-bg);
+    color: var(--color-cc-text);
+    font-family: "Segoe UI", "Inter", system-ui, sans-serif;
+    color-scheme: light;
+  }
+
+  .cc-shell ::-webkit-scrollbar {
+    background-color: transparent;
+  }
+  .cc-shell ::-webkit-scrollbar-thumb {
+    background-color: var(--color-cc-line);
+  }
+  .cc-shell ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-cc-text-4);
+  }
+
+  /* Raised white card — the unit every Clipchamp panel is built from. */
+  .cc-panel {
+    background-color: var(--color-cc-surface);
+    border: 1px solid var(--color-cc-line-soft);
+    border-radius: 9px;
+  }
+
+  .cc-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-cc-text);
+  }
+
+  .cc-sub {
+    font-size: 12px;
+    color: var(--color-cc-text-3);
+  }
+
+  .cc-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.8rem;
+    border: 1px solid var(--color-cc-line);
+    border-radius: 4px;
+    background-color: var(--color-cc-surface);
+    color: var(--color-cc-text);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease;
+  }
+  .cc-btn:hover:not(:disabled) {
+    background-color: var(--color-cc-tint);
+  }
+  .cc-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* The one filled control: Import media, Try it, New video. */
+  .cc-btn-primary {
+    background-color: var(--color-cc-purple);
+    border-color: var(--color-cc-purple);
+    color: #ffffff;
+  }
+  .cc-btn-primary:hover:not(:disabled) {
+    background-color: var(--color-cc-purple-2);
+    border-color: var(--color-cc-purple-2);
+  }
+
+  /* Icon-rail entry: flat until selected, then a white pill with the
+     purple indicator bar down its left edge. */
+  .cc-rail-btn {
+    position: relative;
+    display: flex;
+    width: 100%;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 9px 2px 7px;
+    border-radius: 8px;
+    color: var(--color-cc-text-3);
+    font-size: 10px;
+    line-height: 1.15;
+    text-align: center;
+    cursor: pointer;
+    transition: background-color 120ms ease;
+  }
+  .cc-rail-btn:hover {
+    background-color: var(--color-cc-tint);
+    color: var(--color-cc-text);
+  }
+  .cc-rail-btn[aria-selected="true"] {
+    background-color: var(--color-cc-surface);
+    color: var(--color-cc-text);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  }
+  .cc-rail-btn[aria-selected="true"]::before {
+    content: "";
+    position: absolute;
+    left: -8px;
+    top: 6px;
+    bottom: 6px;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background-color: var(--color-cc-purple);
+  }
+
+  /* Checkerboard behind text-style tiles = "transparent background". */
+  .cc-checker {
+    background-image:
+      linear-gradient(45deg, var(--color-cc-line-soft) 25%, transparent 25%),
+      linear-gradient(-45deg, var(--color-cc-line-soft) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, var(--color-cc-line-soft) 75%),
+      linear-gradient(-45deg, transparent 75%, var(--color-cc-line-soft) 75%);
+    background-size: 12px 12px;
+    background-position:
+      0 0,
+      0 6px,
+      6px -6px,
+      -6px 0;
+  }
+}

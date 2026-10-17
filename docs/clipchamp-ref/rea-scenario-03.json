@@ -1,0 +1,26 @@
+{
+  "browser": {
+    "mode": "launch",
+    "executable_path": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+  },
+  "start_url": { "url": "https://app.clipchamp.com/consumer/home", "query": [] },
+  "environment": {
+    "viewport": { "width": 1600, "height": 900, "device_scale_factor": 1 },
+    "color_scheme": "light"
+  },
+  "actions": [
+    { "step_id": "home_settle", "action": "wait_for_timeout", "duration_ms": 9000 },
+    {
+      "step_id": "click_new_video",
+      "action": "click",
+      "locator": { "kind": "role", "role": "button", "name": "Create a new video" },
+      "timeout_ms": 15000
+    },
+    { "step_id": "editor_load", "action": "wait_for_timeout", "duration_ms": 12000 },
+    { "step_id": "editor_settle", "action": "wait_for_timeout", "duration_ms": 6000 }
+  ],
+  "capture": {
+    "after_each_step": ["screenshot", "accessibility", "url"],
+    "at_end": ["screenshot", "accessibility", "url"]
+  }
+}

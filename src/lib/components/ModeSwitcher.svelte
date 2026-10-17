@@ -5,8 +5,13 @@
    * Clicking a mode destroys the other mode's component tree entirely. Svelte
    * unmounts the DOM and the WebView is free to collect it, which is what keeps
    * the transcript panel and the music/text panel from ever coexisting in RAM.
+   *
+   * `compact` drops the hint line so the switch is a single row — the form the
+   * Clipchamp top bar uses, where vertical space is 48 px and not one more.
    */
   import { MODES, mode } from "../stores/mode.svelte.ts";
+
+  let { compact = false }: { compact?: boolean } = $props();
 
   const onKeydown = (event: KeyboardEvent) => {
     const target = event.target as HTMLElement | null;
@@ -42,7 +47,9 @@
       >
         {m.label}
       </span>
-      <span class="block text-[9px] leading-tight tracking-wide text-ink-500">{m.hint}</span>
+      {#if !compact}
+        <span class="block text-[9px] leading-tight tracking-wide text-ink-500">{m.hint}</span>
+      {/if}
       {#if active}
         <span
           class="absolute inset-x-1.5 -bottom-px h-px rounded-full"

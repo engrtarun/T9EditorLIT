@@ -1,0 +1,111 @@
+﻿- document:
+  - button "App launcher": ∩ôá
+  - button "Clipchamp home": Clipchamp
+  - heading "Video Project 4" [level=1]
+  - button "Video Project 4"
+  - button "Cloud backup"
+  - button "Premium Buy Microsoft 365":
+    - img "Premium"
+    - text: Buy Microsoft 365
+  - button "feedback"
+  - button "Settings"
+  - button "Help"
+  - button "TD":
+    - img "TD"
+  - main:
+    - text: Video Project 4
+    - navigation "Sidebar navigation":
+      - tablist:
+        - tab "My media"
+        - tab "Record & create"
+        - tab "Content library" [selected]
+        - tab "Templates"
+        - tab "Text"
+        - tab "Transitions"
+    - region "Content sidebar":
+      - text: Content library
+      - button "Collapse toolbar"
+      - tabpanel:
+        - text: Search
+        - textbox "Search"
+        - button "clear"
+        - button "Filter"
+        - button "All"
+        - button "Audio"
+        - button "Audio"
+        - button "Visuals"
+        - button "Visuals"
+        - separator
+        - heading "Featured" [level=2]
+        - button "Shapes 227 items Square Add Square to timeline Rectangle Add Rectangle to timeline Circle Add Circle to timeline Triangle isosceles Add Triangle isosceles to timeline Triangle right angle Add Triangle right angle to timeline Diamond Add Diamond to timeline Pentagon Add Pentagon to timeline Hexagon Add Hexagon to timeline":
+          - heading "Shapes" [level=3]
+          - text: 227 items
+          - option "Square"
+          - button "Add Square to timeline"
+          - option "Rectangle"
+          - button "Add Rectangle to timeline"
+          - option "Circle"
+          - button "Add Circle to timeline"
+          - option "Triangle isosceles"
+          - button "Add Triangle isosceles to timeline"
+          - option "Triangle right angle"
+          - button "Add Triangle right angle to timeline"
+          - option "Diamond"
+          - button "Add Diamond to timeline"
+          - option "Pentagon"
+          - button "Add Pentagon to timeline"
+          - option "Hexagon"
+          - button "Add Hexagon to timeline"
+        - button "Red 50 items":
+          - heading "Red" [level=3]
+          - text: 50 items
+        - button "Curve 48 items":
+          - heading "Curve" [level=3]
+          - text: 48 items
+        - heading "All content" [level=2]
+        - button "Music":
+          - heading "Music" [level=3]
+        - button "Annotations":
+          - heading "Annotations" [level=3]
+        - button "Videos":
+          - heading "Videos" [level=3]
+        - button "Stickers":
+          - heading "Stickers" [level=3]
+        - button "Backgrounds":
+          - heading "Backgrounds" [level=3]
+        - button "Images":
+          - heading "Images" [level=3]
+        - button "Frames & borders Upgrade to use this content":
+          - heading "Frames & borders" [level=3]
+        - button "Sound effects":
+          - heading "Sound effects" [level=3]
+        - button "Overlays":
+          - heading "Overlays" [level=3]
+        - button "GIPHY":
+          - heading "GIPHY" [level=3]:
+            - img
+            - text: GIPHY
+      - separator "Resize panel"
+    - status: Sidebar panel expanded
+    - region "Stage":
+      - button "Undo ctrl+z" [disabled]
+      - button "Redo ctrl+y" [disabled]
+      - region "Stage media drop zone"
+      - toolbar:
+        - button "Change aspect ratio":
+          - paragraph: Size
+        - button "Background color"
+        - button "Add audio to use autocaptions" [disabled]:
+          - img
+      - button "Share"
+      - button "Export" [disabled]
+    - region "Timeline":
+      - button "Seek to start ctrl+ΓåÉ" [disabled]
+      - button "Seek back 5 seconds shift+ΓåÉ" [disabled]
+      - button "Seek forward 5 seconds shift+ΓåÆ" [disabled]
+      - button "Play SPACE" [disabled]
+      - 'group "Player time input. Time at current position: 0 minutes, 0 seconds, 0 milliseconds, out of 0 minutes, 0 seconds" [disabled]'
+      - grid:
+        - img "Thumbnail placeholder"
+        - img
+        - paragraph: Drag & drop media here

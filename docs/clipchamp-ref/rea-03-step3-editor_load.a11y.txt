@@ -1,0 +1,54 @@
+﻿- document:
+  - button "App launcher": ∩ôá
+  - button "Clipchamp home": Clipchamp
+  - heading "Video Project 3" [level=1]
+  - button "Video Project 3"
+  - button "Cloud backup"
+  - button "Premium Buy Microsoft 365":
+    - img "Premium"
+    - text: Buy Microsoft 365
+  - button "feedback"
+  - button "Settings"
+  - button "Help"
+  - button "TD":
+    - img "TD"
+  - main:
+    - text: Video Project 3
+    - navigation "Sidebar navigation":
+      - tablist:
+        - tab "My media" [selected]
+        - tab "Record & create"
+        - tab "Content library"
+        - tab "Templates"
+        - tab "Text"
+        - tab "Transitions"
+    - region "Content sidebar":
+      - text: My media
+      - button "Collapse toolbar"
+      - tabpanel:
+        - button "Import media"
+        - button "Import media"
+        - separator
+        - text: Drag & drop media from your device to import
+        - paragraph: Videos, audio, images, GIFs
+      - separator "Resize panel"
+    - status: Sidebar panel expanded
+    - region "Stage":
+      - button "Undo ctrl+z" [disabled]
+      - button "Redo ctrl+y" [disabled]
+      - region "Stage media drop zone"
+      - toolbar:
+        - button "Change aspect ratio":
+          - paragraph: Size
+        - button "Background color"
+        - button "Add audio to use autocaptions" [disabled]:
+          - img
+      - button "Share"
+      - button "Export" [disabled]
+    - region "Timeline":
+      - button "Seek to start ctrl+ΓåÉ" [disabled]
+      - button "Seek back 5 seconds shift+ΓåÉ" [disabled]
+      - button "Seek forward 5 seconds shift+ΓåÆ" [disabled]
+      - button "Play SPACE" [disabled]
+      - 'group "Player time input. Time at current position: 0 minutes, 0 seconds, 0 milliseconds, out of 0 minutes, 0 seconds" [disabled]'
+      - grid
