@@ -1,0 +1,24 @@
+# Normalize line endings to LF everywhere.
+# Matches .editorconfig and Prettier's default; without this, a Windows
+# checkout rewrites text files to CRLF and `prettier --check` starts failing
+# on files that are correct on the machine that committed them.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary — never touched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.mp4 binary
+*.mkv binary
+*.mov binary
+*.webm binary
+*.wav binary
+*.mp3 binary

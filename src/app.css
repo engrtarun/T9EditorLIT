@@ -1,0 +1,146 @@
+@import "tailwindcss";
+
+/* ══════════════════════════════════════════════════════════════════
+   Nanami Kento theme.
+
+   Dark, low-chroma base on purpose: the video preview must be the
+   brightest thing on screen, so the chrome around it stays neutral and
+   recedes. Colour is reserved almost entirely for the two decisions that
+   matter while cutting — keep (gold) and cut (red).
+   ══════════════════════════════════════════════════════════════════ */
+
+@theme {
+  /* Base neutrals — deliberately desaturated so the UI never competes
+     with the footage for attention. */
+  --color-base-950: #0f1114;
+  --color-base-900: #14161a;
+  --color-base-850: #191c21;
+  --color-base-800: #1c1f25;
+  --color-base-700: #23272e;
+  --color-base-600: #2e333c;
+  --color-base-500: #3d434e;
+
+  /* Text */
+  --color-ink-100: #e9e7e4;
+  --color-ink-300: #b4b2ae;
+  --color-ink-500: #85858a;
+
+  /* Nanami Kento accents — soft, warm, low-saturation. */
+  --color-nanami-rose: #d4a5a5;
+  --color-nanami-blush: #f0dcd8;
+  --color-nanami-sage: #a8c5c0;
+  --color-nanami-teal: #7fa8a0;
+  --color-nanami-cream: #faf3e0;
+
+  /* Decision colours. These are the only saturated hues in the app. */
+  --color-keep: #e0b64c;
+  --color-keep-dim: #6b5520;
+  --color-cut: #e0645f;
+  --color-cut-dim: #6e2f2d;
+
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, "Noto Sans", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    overflow: hidden; /* a desktop app should never page-scroll */
+  }
+
+  body {
+    background-color: var(--color-base-950);
+    color: var(--color-ink-100);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-synthesis: none;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-nanami-rose) 40%, transparent);
+  }
+
+  /* Thin scrollbars — the transcript panel is scroll-heavy and a chunky
+     scrollbar eats 15px of an already narrow panel. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-base-600) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--color-base-600);
+    border-radius: 4px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-base-500);
+  }
+}
+
+@layer components {
+  /* Panel chrome shared by every region of the cut panel. */
+  .panel {
+    background-color: var(--color-base-900);
+    border: 1px solid var(--color-base-700);
+    border-radius: 6px;
+  }
+
+  .panel-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--color-ink-500);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
+    border-radius: 5px;
+    border: 1px solid var(--color-base-600);
+    background-color: var(--color-base-800);
+    color: var(--color-ink-100);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease;
+  }
+
+  .btn:hover:not(:disabled) {
+    background-color: var(--color-base-700);
+    border-color: var(--color-base-500);
+  }
+
+  .btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background-color: color-mix(in oklab, var(--color-nanami-rose) 22%, var(--color-base-800));
+    border-color: color-mix(in oklab, var(--color-nanami-rose) 40%, transparent);
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background-color: color-mix(in oklab, var(--color-nanami-rose) 32%, var(--color-base-800));
+    border-color: var(--color-nanami-rose);
+  }
+
+  .mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}

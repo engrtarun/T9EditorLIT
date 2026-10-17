@@ -1,0 +1,22 @@
+# Generated / vendored
+node_modules/
+build/
+dist/
+.svelte-kit/
+src-tauri/target/
+src-tauri/gen/
+
+# Lockfiles are formatting-stable but huge in diff noise
+package-lock.json
+
+# Media and local data — never formatted, never committed
+media/
+cache/
+workspace-data/
+*.mp4
+*.mkv
+*.wav
+
+# Secrets
+.env
+*.session

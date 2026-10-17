@@ -1,0 +1,105 @@
+name: CI
+
+# ─────────────────────────────────────────────────────────────────────────
+# Everything here runs on GitHub's free runners, never on the contributor's
+# machine. That is deliberate: compiling a Tauri + Rust tree is heavy, and the
+# target machine is an i3 with 8 GB of RAM that is already ~80% occupied.
+# The developer never has to run `cargo build` to get a working .exe.
+# ─────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Fast gate: types, formatting, lints, unit tests ──────────────────
+  check:
+    name: Check
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Check formatting (frontend)
+        run: npm run lint
+
+      - name: Type-check (svelte-check + tsc)
+        run: npm run check
+
+      - name: Check formatting (Rust)
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Lint (clippy)
+        working-directory: src-tauri
+        # -D warnings turns CI into a hard gate: a slow or memory-leaky
+        # snippet cannot merge quietly.
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: src-tauri
+        run: cargo test
+
+  # ── Release build: Windows installer, produced on GitHub ─────────────
+  build:
+    name: Build Windows installer
+    runs-on: windows-latest
+    needs: check
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # windows-latest already includes the MSVC toolchain and WebView2, which
+      # are the only Windows prerequisites Tauri v2 needs.
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run tauri build
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: T9EditorLIT-windows
+          path: src-tauri/target/release/bundle/**/*.exe
+          if-no-files-found: error
+          retention-days: 30
