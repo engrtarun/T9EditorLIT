@@ -5,6 +5,7 @@ dist/
 .svelte-kit/
 src-tauri/target/
 src-tauri/gen/
+.kilo/
 
 # Lockfiles are formatting-stable but huge in diff noise
 package-lock.json

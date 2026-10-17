@@ -4,10 +4,10 @@ This file is the shared handoff board for parallel agents. Update it before and 
 touching a lane so two agents never edit the same files.
 
 ## ⚠️ Mandatory Agent Git Rule
+
 1. **Commit locally upon finishing:** When your work passes `npm run verify:fast`, make a local git commit with your agent name:
    `git commit -m "feat(<scope>): <description>" --author="Agent <YourName> <agent@local>"`
 2. **DO NOT PUSH:** Agents must **NEVER** run `git push`. Pushing to remote is reserved exclusively for the human user.
-
 
 ## Agent 1 (this session) — "Rust media + disk transcript core"
 
