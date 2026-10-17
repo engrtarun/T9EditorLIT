@@ -180,6 +180,8 @@ npm run tauri dev    # full desktop app
 npm run check        # svelte-check + TypeScript
 npm run lint         # prettier --check
 npm run format       # prettier --write
+npm run test         # node --test (Node's built-in runner, no framework)
+npm run verify:fast  # everything CI's code lanes run — ~57 s warm
 
 npm run tauri build  # production build -> src-tauri/target/release/bundle
 ```
@@ -195,16 +197,28 @@ make build           # -> go/bin/t9cloud.exe
 
 ### Build on GitHub instead of your PC
 
-Pushing to `main` runs, on GitHub's free runners:
+Pushing to `main` runs, on GitHub's free runners — **only the lanes your change
+can actually break**, all in parallel:
 
-| Job        | Checks                                                                                            |
-| ---------- | ------------------------------------------------------------------------------------------------- |
-| `check`    | `prettier --check`, `svelte-check`, `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` |
-| `go`       | `gofmt -l`, `go vet`, `go test -race` (independent — seconds, no Rust toolchain wait)             |
-| `go-build` | `t9cloud` binaries for linux/amd64, linux/arm64, windows/amd64                                    |
-| `build`    | Windows `.exe` installer → downloadable artifact (needs `check` **and** `go`)                     |
+| Job        | Runs when                                            | Checks                                                                                               |
+| ---------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `frontend` | `src/**`, configs, or `*.md` changed                 | `prettier --check` (all files incl. Markdown); plus `svelte-check` and `node --test` if code changed |
+| `rust`     | `src-tauri/**` changed                               | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`                                        |
+| `go`       | `go/**` changed                                      | `gofmt -l`, `go vet`, `go test -race`                                                                |
+| `go-build` | `go/**` changed                                      | `t9cloud` cross-compiled for linux/amd64, linux/arm64, windows/amd64                                 |
+| `gate`     | always                                               | **the one check to look at** — fails if any lane that ran failed                                     |
+| `build`    | push to `main` only (not PRs), after code lanes pass | Windows `.exe` installer → downloadable artifact                                                     |
 
-Your i3 never compiles the Rust tree.
+A README-only fix gets a green check in ~30 s; the Rust compiler never runs for
+it. Your i3 never compiles the Rust tree.
+
+### Verify locally before pushing
+
+```bash
+npm run verify:fast   # prettier + svelte-check + node --test + cargo check
+                      # ≈ 57 s warm — if this is green, CI's code lanes are green
+npm run test          # node --test only, ~1 s
+```
 
 ---
 

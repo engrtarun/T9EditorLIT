@@ -32,7 +32,7 @@ footprint grows while you idle, something has been loaded that should not be.
 
 ```
 T9EditorLIT/
-├── .github/workflows/ci.yml     # type-check, lint, clippy, test, Windows build
+├── .github/workflows/ci.yml     # path-filtered parallel lanes + `gate` + Windows build
 ├── .env.example                 # every secret the app will ever need
 │
 ├── src/                         # ── Frontend: TypeScript + Svelte 5 + Tailwind 4

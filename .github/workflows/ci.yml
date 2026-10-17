@@ -5,6 +5,22 @@ name: CI
 # machine. That is deliberate: compiling a Tauri + Rust tree is heavy, and the
 # target machine is an i3 with 8 GB of RAM that is already ~80% occupied.
 # The developer never has to run `cargo build` to get a working .exe.
+#
+# Layout: detect what changed → run only the lanes that can be affected, in
+# parallel → report one green check (`gate`). An agent pushing a one-line
+# Markdown fix never waits behind the Rust compiler; an agent touching Rust
+# never waits behind `npm ci`.
+#
+#   changes ──┬── frontend   ubuntu   prettier · svelte-check · node --test
+#             ├── rust       windows  fmt · clippy -D warnings · cargo test
+#             ├── go         ubuntu   gofmt · vet · test -race
+#             ├── go-build   ubuntu   cross-compile t9cloud × 3 targets
+#             └── gate       ubuntu   ← the single check to look at
+#   build     windows  installer — push to main only, after frontend + rust
+#
+# `build` is intentionally NOT part of `gate`: it is a release artifact, not
+# a merge gate. A failing installer must stay visible but must not make every
+# agent wait 10 minutes for a green tick.
 # ─────────────────────────────────────────────────────────────────────────
 
 on:
@@ -13,6 +29,10 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -23,10 +43,66 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # ── Fast gate: types, formatting, lints, unit tests ──────────────────
-  check:
-    name: Check
-    runs-on: windows-latest
+  # ── Which lanes can this change possibly break? ───────────────────────
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      # `|| steps.all.…` covers workflow_dispatch, where there is no diff to
+      # filter against — a manual run means "check everything".
+      frontend: ${{ steps.filter.outputs.frontend || steps.all.outputs.frontend }}
+      rust: ${{ steps.filter.outputs.rust || steps.all.outputs.rust }}
+      go: ${{ steps.filter.outputs.go || steps.all.outputs.go }}
+      docs: ${{ steps.filter.outputs.docs || steps.all.outputs.docs }}
+      ci: ${{ steps.filter.outputs.ci || steps.all.outputs.ci }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        if: github.event_name != 'workflow_dispatch'
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'src/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'vite.config.js'
+              - 'svelte.config.js'
+              - 'tsconfig.json'
+              - '.prettierrc'
+              - '.prettierignore'
+              - '.editorconfig'
+              - '.gitattributes'
+            rust:
+              - 'src-tauri/**'
+            go:
+              - 'go/**'
+            docs:
+              - '**/*.md'
+            ci:
+              - '.github/workflows/**'
+
+      - name: Manual run checks everything
+        if: github.event_name == 'workflow_dispatch'
+        id: all
+        run: |
+          echo "frontend=true" >> "$GITHUB_OUTPUT"
+          echo "rust=true" >> "$GITHUB_OUTPUT"
+          echo "go=true" >> "$GITHUB_OUTPUT"
+          echo "docs=true" >> "$GITHUB_OUTPUT"
+          echo "ci=true" >> "$GITHUB_OUTPUT"
+
+  # ── Lane 1: types, formatting, unit tests (ubuntu boots in seconds) ───
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      needs.changes.outputs.frontend == 'true' ||
+      needs.changes.outputs.docs == 'true' ||
+      needs.changes.outputs.ci == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +112,39 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Prettier owns every text file in the repo — .ts, .svelte, .json,
+      # .yml and .md alike. This single step is also the Markdown gate.
+      - name: Check formatting (all files, including Markdown)
+        run: npm run lint
+
+      # Docs-only changes skip type-check and tests: nothing there can break
+      # them, and this is what keeps a README fix at ~30 seconds.
+      - name: Type-check (svelte-check + tsc)
+        if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.ci == 'true'
+        run: npm run check
+
+      - name: Unit tests (node --test, no framework)
+        if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.ci == 'true'
+        run: npm test
+
+  # ── Lane 2: Rust — on Windows because the product IS Windows ──────────
+  # Stays on windows-latest on purpose, not sloth: T9EditorLIT only ever
+  # ships as a Windows .exe, and `memory.rs` measures the Windows process
+  # tree. Testing that on Linux would be a green tick about the wrong OS.
+  # The speed comes from running in parallel with `frontend`, not from
+  # switching OS.
+  rust:
+    name: Rust
+    runs-on: windows-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -43,15 +152,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Check formatting (frontend)
-        run: npm run lint
-
-      - name: Type-check (svelte-check + tsc)
-        run: npm run check
 
       - name: Check formatting (Rust)
         working-directory: src-tauri
@@ -67,13 +167,16 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
-  # ── Go cloud worker daemon ────────────────────────────────────────────
-  # Independent of the desktop gate on purpose: the daemon has zero
-  # third-party dependencies, so it checks in seconds, and a regression in it
-  # should not wait behind a Rust toolchain download.
+  # ── Lane 3: Go cloud daemon ───────────────────────────────────────────
+  # Independent of the Rust lane on purpose: the daemon has zero third-party
+  # dependencies, so it checks in seconds, and a regression in it should not
+  # wait behind a Rust toolchain download. Ubuntu, not Windows: `test -race`
+  # needs gcc and the script below is bash.
   go:
-    name: Check Go daemon
-    runs-on: windows-latest
+    name: Go daemon
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.ci == 'true'
     defaults:
       run:
         working-directory: go
@@ -83,18 +186,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
-          # go.mod rather than go.sum: the daemon has zero third-party
-          # dependencies, so no go.sum exists. setup-go needs a real file to
-          # hash, and pointing at a missing one errors on every run.
-          cache-dependency-path: go/go.mod
+          go-version-file: go/go.mod
+          # No go.sum exists (stdlib only), so there is nothing to cache.
+          cache: false
 
-      # `shell: bash` matters here: this job runs on windows-latest, whose
-      # default shell is PowerShell, where $(...) and [ -n ] are not valid.
-      # Written in plain PowerShell it fails to parse, and the job dies on a
-      # syntax error that looks nothing like a formatting problem.
       - name: Check formatting (gofmt)
-        shell: bash
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -102,127 +198,98 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
-          echo "gofmt clean"
 
       - name: Vet
         run: go vet ./...
 
       - name: Test
-        shell: bash
-        run: |
-          if [ "$(go env CGO_ENABLED)" = "1" ]; then
-            go test -race -coverprofile=coverage.out ./...
-          else
-            echo "cgo unavailable on this runner — running without -race"
-            go test -coverprofile=coverage.out ./...
-          fi
+        run: go test -race -coverprofile=coverage.out ./...
 
       - name: Upload coverage
         if: always()
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: go-coverage
           path: go/coverage.out
+          if-no-files-found: ignore
           retention-days: 7
 
-  # ── Daemon binaries for every platform ───────────────────────────────
-  # Cross-compiled with the Go toolchain, NOT via Docker. The daemon is a
-  # static CGO_ENABLED=0 binary with no third-party dependencies, so Docker
-  # adds nothing but a second moving part — and alpine has no windows/amd64
-  # manifest, which failed the whole matrix on the previous run.
+  # ── Daemon binaries for every platform ────────────────────────────────
+  # Plain GOOS/GOARCH cross-compilation: CGO is off, the daemon is stdlib
+  # only, so each target is a ~5 second `go build`. Docker + buildx + QEMU
+  # (the old approach) took minutes and could not even resolve a Windows
+  # base image for the windows/amd64 entry.
   go-build:
-    name: Build t9cloud
+    name: Build t9cloud (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
-    needs: go
+    needs: [changes, go]
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.ci == 'true'
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: linux
-            arch: amd64
-            ext: ""
-          - os: linux
-            arch: arm64
-            ext: ""
-          - os: windows
-            arch: amd64
-            ext: ".exe"
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+
+    defaults:
+      run:
+        working-directory: go
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version-file: go/go.mod
+          cache: false
 
       - name: Cross-compile
-        working-directory: go
         env:
           CGO_ENABLED: "0"
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
-          mkdir -p dist
-          bin="dist/t9cloud-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}"
-          # -trimpath keeps build paths out of the binary so it is reproducible.
-          go build -trimpath -ldflags "-s -w" -o "$bin" ./cmd/t9cloud
+          ext=""
+          if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
+          out="bin/t9cloud-${GOOS}-${GOARCH}${ext}"
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/engrtarun/T9EditorLIT/go/internal/api.Version=${GITHUB_SHA::7}" \
+            -o "$out" ./cmd/t9cloud
+          echo "OUT=$out" >> "$GITHUB_ENV"
 
-          # Verify the artifact without trying to EXECUTE it. The runner is
-          # x86_64, so an arm64 binary cannot run here and `-version` would
-          # fail for a perfectly good build. Instead assert on the header.
-          chmod +x "$bin"
-          if [ "${{ matrix.os }}" = "windows" ]; then
-            file "$bin" | grep -qi "pe32"
-          else
-            file "$bin"
-            # Only the build host (linux/amd64) can actually run its own output.
-            if [ "${{ matrix.arch }}" = "amd64" ]; then
-              "./$bin" -version
-            fi
-          fi
+      # Run what we built — but only where the binary matches this runner.
+      - name: Smoke test
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: ./bin/t9cloud-linux-amd64 -version
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: t9cloud-${{ matrix.os }}-${{ matrix.arch }}
-          path: go/dist/
-          if-no-files-found: error
+          name: t9cloud-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: go/bin/t9cloud-*
           retention-days: 30
 
-  # ── Container image (linux only — alpine has no Windows manifest) ─────
-  go-docker:
-    name: Build t9cloud image
-    runs-on: ubuntu-latest
-    needs: go
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build image
-        uses: docker/build-push-action@v6
-        with:
-          context: go
-          platforms: linux/amd64
-          push: false
-          outputs: type=oci,dest=/tmp/t9cloud-image.tar
-
-      - name: Upload image
-        uses: actions/upload-artifact@v4
-        with:
-          name: t9cloud-image-linux-amd64
-          path: /tmp/t9cloud-image.tar
-          if-no-files-found: error
-          retention-days: 30
-
-  # ── Release build: Windows installer, produced on GitHub ─────────────
+  # ── Release build: Windows installer, produced on GitHub ──────────────
+  # PRs stop at `gate` (fast feedback); the installer is built for pushes
+  # to main and for manual runs, once the two code lanes have passed.
   build:
     name: Build Windows installer
     runs-on: windows-latest
-    needs: [check, go]
+    needs: [changes, frontend, rust]
+    if: >-
+      always() &&
+      !cancelled() &&
+      github.event_name != 'pull_request' &&
+      needs.frontend.result != 'failure' &&
+      needs.rust.result != 'failure' &&
+      (needs.changes.outputs.frontend == 'true' ||
+       needs.changes.outputs.rust == 'true' ||
+       needs.changes.outputs.ci == 'true')
 
     steps:
       - uses: actions/checkout@v4
@@ -254,3 +321,32 @@ jobs:
           path: src-tauri/target/release/bundle/**/*.exe
           if-no-files-found: error
           retention-days: 30
+
+  # ── The one check to look at ───────────────────────────────────────────
+  # Every lane above is path-filtered, so on any given push some are skipped.
+  # Required checks that go missing block merges forever — this job always
+  # runs and fails if any lane that DID run failed. Point branch protection
+  # (and every AI agent) at `All checks passed` and nothing else.
+  gate:
+    name: All checks passed
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [changes, frontend, rust, go, go-build]
+
+    steps:
+      - name: Every lane succeeded or was intentionally skipped
+        env:
+          RESULTS: >-
+            ${{ needs.changes.result }}
+            ${{ needs.frontend.result }}
+            ${{ needs.rust.result }}
+            ${{ needs.go.result }}
+            ${{ needs.go-build.result }}
+        run: |
+          echo "lane results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" != "success" ] && [ "$r" != "skipped" ]; then
+              echo "::error::a required lane ended as '$r'"
+              exit 1
+            fi
+          done

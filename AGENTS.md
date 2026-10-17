@@ -67,8 +67,15 @@ Welcome, AI Agent. Read this document before inspecting, modifying, or generatin
 Before declaring any task complete, verify your work:
 
 ```powershell
+npm run verify:fast  # prettier + svelte-check + node --test + cargo check (~1 min)
+```
+
+Or the individual pieces:
+
+```powershell
 npm run check    # svelte-check + tsc (must find 0 errors)
 npm run lint     # prettier check
+npm run test     # node --test (built-in runner, no framework)
 ```
 
 If editing Go code:
