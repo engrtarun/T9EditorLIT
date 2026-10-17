@@ -5,11 +5,31 @@
   const GEMINI_KEY = "t9.geminiApiKey";
   const GROQ_KEY = "t9.groqApiKey";
 
-  let gemini = $state(localStorage.getItem(GEMINI_KEY) ?? "");
-  let groq = $state(localStorage.getItem(GROQ_KEY) ?? "");
+  const DEFAULT_GEMINI = "";
+  const DEFAULT_GROQ = "";
+
+  let gemini = $state(localStorage.getItem(GEMINI_KEY) || DEFAULT_GEMINI);
+  let groq = $state(localStorage.getItem(GROQ_KEY) || DEFAULT_GROQ);
   let showGemini = $state(false);
   let showGroq = $state(false);
   let saved = $state(false);
+  let daemonStatus = $state<"checking" | "online" | "offline">("checking");
+
+  async function checkDaemon() {
+    try {
+      const res = await fetch("http://127.0.0.1:8787/healthz");
+      if (res.ok) daemonStatus = "online";
+      else daemonStatus = "offline";
+    } catch {
+      daemonStatus = "offline";
+    }
+  }
+
+  $effect(() => {
+    if (!localStorage.getItem(GEMINI_KEY)) localStorage.setItem(GEMINI_KEY, DEFAULT_GEMINI);
+    if (!localStorage.getItem(GROQ_KEY)) localStorage.setItem(GROQ_KEY, DEFAULT_GROQ);
+    void checkDaemon();
+  });
 
   function save() {
     localStorage.setItem(GEMINI_KEY, gemini.trim());
@@ -28,7 +48,13 @@
 
 <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
   <div class="flex flex-col gap-1">
-    <h3 class="text-[13px] font-semibold text-cc-text">API keys</h3>
+    <div class="flex items-center justify-between">
+      <h3 class="text-[13px] font-semibold text-cc-text">API keys</h3>
+      <span class="inline-flex items-center gap-1.5 text-[11px] {daemonStatus === 'online' ? 'text-emerald-500' : 'text-amber-500'}">
+        <span class="h-2 w-2 rounded-full {daemonStatus === 'online' ? 'bg-emerald-500' : 'bg-amber-500'}"></span>
+        {daemonStatus === 'online' ? 'Daemon Online' : 'Daemon Offline'}
+      </span>
+    </div>
     <p class="text-[11.5px] text-cc-text-3">
       Stored locally on this device. Used by the cloud daemon for transcription & analysis.
     </p>

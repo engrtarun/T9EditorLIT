@@ -13,13 +13,14 @@
    * deep into an export.
    */
   import { open } from "@tauri-apps/plugin-dialog";
-  import { checkFfmpeg, detectHardware, errorMessage } from "../../ipc";
+  import { checkFfmpeg, defaultDbPath, detectHardware, errorMessage, loadProjects } from "../../ipc";
   import { formatBytes, project } from "../../stores/project.svelte";
-  import type { HardwareSupport } from "../../types";
+  import type { HardwareSupport, Project } from "../../types";
 
   let hardware = $state<HardwareSupport | null>(null);
   let ffmpegVersion = $state<string | null>(null);
   let envError = $state<string | null>(null);
+  let recentProjects = $state<Project[]>([]);
 
   async function checkEnvironment() {
     envError = null;
@@ -31,8 +32,18 @@
     }
   }
 
+  async function fetchRecent() {
+    try {
+      const db = await defaultDbPath();
+      recentProjects = await loadProjects(db);
+    } catch {
+      recentProjects = [];
+    }
+  }
+
   $effect(() => {
     void checkEnvironment();
+    void fetchRecent();
   });
 
   const encoderLabel = $derived(
@@ -61,7 +72,10 @@
         ],
       });
       const first = Array.isArray(picked) ? picked[0] : picked;
-      if (first) await project.load(first);
+      if (first) {
+        await project.load(first);
+        await fetchRecent();
+      }
     } catch (err) {
       project.error = errorMessage(err);
     }
@@ -102,6 +116,40 @@
         <div class="cc-sub mono">
           {project.durationLabel} · {formatBytes(project.info.sizeBytes)}
         </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Video history list -->
+  {#if recentProjects.length > 0}
+    <div class="flex flex-col gap-1.5">
+      <div class="flex items-center justify-between">
+        <span class="text-[11.5px] font-semibold text-cc-text-2">Video history</span>
+        <span class="text-[10px] text-cc-text-3">{recentProjects.length} saved</span>
+      </div>
+      <div class="flex max-h-40 flex-col gap-1 overflow-y-auto pr-0.5">
+        {#each recentProjects as rp (rp.id)}
+          <button
+            type="button"
+            class="cc-panel flex items-center justify-between p-2 text-left transition hover:border-cc-purple {project.info?.path === rp.sourcePath ? 'border-cc-purple bg-cc-tint/30' : ''}"
+            onclick={async () => {
+              if (project.info?.path !== rp.sourcePath) {
+                await project.load(rp.sourcePath);
+                await fetchRecent();
+              }
+            }}
+          >
+            <div class="min-w-0">
+              <div class="truncate text-[12px] font-medium text-cc-text" title={rp.name}>{rp.name}</div>
+              <div class="mono text-[10.5px] text-cc-text-3">
+                {Math.floor(rp.durationSecs / 60)}:{String(Math.floor(rp.durationSecs % 60)).padStart(2, "0")}
+              </div>
+            </div>
+            {#if project.info?.path === rp.sourcePath}
+              <span class="rounded bg-cc-purple/10 px-1.5 py-0.5 text-[10px] font-medium text-cc-purple">Active</span>
+            {/if}
+          </button>
+        {/each}
       </div>
     </div>
   {/if}
