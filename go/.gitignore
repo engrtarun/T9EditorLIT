@@ -10,6 +10,9 @@ bin/
 coverage.out
 coverage.html
 
+# Cross-compiled binaries produced by CI
+dist/
+
 # Local secrets — the daemon reads the same .env as the desktop app
 .env
 .env.*

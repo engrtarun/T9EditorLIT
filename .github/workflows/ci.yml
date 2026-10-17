@@ -84,9 +84,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23"
-          # cache-dependency-path is deliberately omitted: the daemon has zero
-          # third-party dependencies, so there is no go.sum to hash and
-          # pointing at a missing file makes setup-go log an error every run.
+          # go.mod rather than go.sum: the daemon has zero third-party
+          # dependencies, so no go.sum exists. setup-go needs a real file to
+          # hash, and pointing at a missing one errors on every run.
+          cache-dependency-path: go/go.mod
 
       # `shell: bash` matters here: this job runs on windows-latest, whose
       # default shell is PowerShell, where $(...) and [ -n ] are not valid.
@@ -126,20 +127,28 @@ jobs:
           retention-days: 7
 
   # ── Daemon binaries for every platform ───────────────────────────────
+  # Cross-compiled with the Go toolchain, NOT via Docker. The daemon is a
+  # static CGO_ENABLED=0 binary with no third-party dependencies, so Docker
+  # adds nothing but a second moving part — and alpine has no windows/amd64
+  # manifest, which failed the whole matrix on the previous run.
   go-build:
     name: Build t9cloud
     runs-on: ubuntu-latest
     needs: go
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: linux
             arch: amd64
+            ext: ""
           - os: linux
             arch: arm64
+            ext: ""
           - os: windows
             arch: amd64
+            ext: ".exe"
 
     steps:
       - uses: actions/checkout@v4
@@ -148,21 +157,60 @@ jobs:
         with:
           go-version: "1.23"
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Cross-compile
+        working-directory: go
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          # -trimpath keeps build paths out of the binary so it is reproducible.
+          go build -trimpath -ldflags "-s -w" \
+            -o "dist/t9cloud-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}" \
+            ./cmd/t9cloud
 
-      - name: Build and package
-        uses: docker/build-push-action@v6
-        with:
-          context: go
-          platforms: ${{ matrix.os }}/${{ matrix.arch }}
-          push: false
-          outputs: type=local,dest=out/
+          # A binary that cannot run is worse than no binary: fail the build.
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            file "dist/t9cloud-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}"
+          else
+            chmod +x "dist/t9cloud-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}"
+            ./"dist/t9cloud-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}" -version
+          fi
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: t9cloud-${{ matrix.os }}-${{ matrix.arch }}
-          path: out/usr/local/bin/t9cloud*
+          path: go/dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  # ── Container image (linux only — alpine has no Windows manifest) ─────
+  go-docker:
+    name: Build t9cloud image
+    runs-on: ubuntu-latest
+    needs: go
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: go
+          platforms: linux/amd64
+          push: false
+          outputs: type=oci,dest=/tmp/t9cloud-image.tar
+
+      - name: Upload image
+        uses: actions/upload-artifact@v4
+        with:
+          name: t9cloud-image-linux-amd64
+          path: /tmp/t9cloud-image.tar
+          if-no-files-found: error
           retention-days: 30
 
   # ── Release build: Windows installer, produced on GitHub ─────────────
