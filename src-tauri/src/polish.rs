@@ -159,17 +159,15 @@ fn map_args(has_video_filter: bool, has_audio_filter: bool) -> Vec<String> {
 /// Run one FFmpeg polish render. Streams through a child process; progress is
 /// emitted via the `export-progress` event so the UI can show a live bar.
 pub fn run_polish(
-    app: &tauri::AppHandle,
+    _app: &tauri::AppHandle,
     source: &Path,
     output: &Path,
     settings: &PolishSettings,
 ) -> Result<PolishResult, String> {
     let info = crate::media::MediaInfo::probe(source)?;
-    let duration = info.duration_secs;
 
     let has_audio = info.has_audio;
     let has_music = settings.music_path.as_ref().map_or(false, |p| !p.is_empty());
-    let has_text = !settings.text.trim().is_empty();
 
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),

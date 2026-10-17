@@ -305,7 +305,8 @@ pub fn run() {
             extract_waveform,
             start_export,
             cancel_export,
-            plan_export
+            plan_export,
+            polish_render
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
