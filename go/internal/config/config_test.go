@@ -116,6 +116,39 @@ func TestCapabilitiesReflectsMissingKeys(t *testing.T) {
 	}
 }
 
+func TestAutocorrectNeedsBothGroqKeyAndChatModel(t *testing.T) {
+	// A transcribe key alone must still transcribe — autocorrect is an
+	// enhancement, not a dependency.
+	t.Setenv("GROQ_API_KEY", "k")
+	t.Setenv("GROQ_CHAT_MODEL", "")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.HasGroq() {
+		t.Error("transcription should be ready with just the Groq key")
+	}
+	if cfg.HasAutocorrect() {
+		t.Error("autocorrect cannot run without a chat model")
+	}
+	if cfg.Capabilities()["autocorrect"] == "ready" {
+		t.Error("autocorrect capability should not advertise ready without a chat model")
+	}
+
+	t.Setenv("GROQ_CHAT_MODEL", "openai/gpt-oss-120b")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.HasAutocorrect() {
+		t.Error("autocorrect should be ready with both set")
+	}
+	if got := cfg.GroqChat; got != "openai/gpt-oss-120b" {
+		t.Errorf("GroqChat = %q", got)
+	}
+}
+
 func TestPickIntFallsBackOnGarbage(t *testing.T) {
 	if got := pickInt("not-a-number", 7); got != 7 {
 		t.Errorf("pickInt(garbage) = %d, want 7", got)

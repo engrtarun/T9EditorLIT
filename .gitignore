@@ -49,6 +49,8 @@ cache/
 Clipchamp Clone/evidence/web-assets/
 Clipchamp Clone/evidence/rea-js-analysis.json
 Clipchamp Clone/evidence/rea-big-bundles.json
+WebClipchamp_Clone/
+
 
 # ---------- Secrets ----------
 .env

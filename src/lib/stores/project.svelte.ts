@@ -32,9 +32,11 @@ class ProjectStore {
     this.loading = true;
     this.error = null;
     try {
+      // dbPath resolves in parallel with probeMedia so the save doesn't wait.
+      const dbPathPromise = defaultDbPath();
       this.info = await probeMedia(path);
+      const dbPath = await dbPathPromise;
       // Persist to Recent Projects so it shows on the Home Screen next time.
-      const dbPath = await defaultDbPath();
       const name = path.split(/[\\/]/).pop() ?? path;
       const id = path;
       const now = Date.now();

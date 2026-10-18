@@ -24,6 +24,10 @@ class ClipchampStore {
   sidebarOpen = $state(true);
   /** Content sidebar width in px; Clipchamp's panel edge is draggable. */
   sidebarWidth = $state(248);
+  /** Right-hand editing panel (transcript/export) width in px; draggable. */
+  panelWidth = $state(300);
+  /** Timeline height in px; its top edge is draggable. */
+  timelineHeight = $state(168);
   projectName = $state("Video Project 1");
 
   openEditor(): void {

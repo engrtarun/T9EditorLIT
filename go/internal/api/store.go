@@ -92,6 +92,26 @@ func (s *jobStore) succeed(id string, transcript, analysis []model.Segment, fail
 	})
 }
 
+// succeedCorrect attaches an autocorrected transcript.
+//
+// Like succeed, a non-empty failures slice downgrades to StatePartial: most
+// batches corrected fine, and the rest simply kept Whisper's spelling, which is
+// a working transcript rather than a failure.
+func (s *jobStore) succeedCorrect(id string, corrected []model.Segment, failures []string) {
+	s.mutate(id, func(j *model.Job) {
+		j.Corrected = corrected
+		j.Completed = j.Total
+		j.Updated = time.Now().Unix()
+
+		if len(failures) > 0 {
+			j.State = model.StatePartial
+			j.Error = joinErrors(failures)
+		} else {
+			j.State = model.StateDone
+		}
+	})
+}
+
 // finish is the queue's OnDone hook. It is the single place a job reaches a
 // terminal state from the worker side.
 func (s *jobStore) finish(id string, _ int, err error) {
@@ -194,6 +214,9 @@ func cloneJob(j *model.Job) *model.Job {
 	c := *j
 	if j.Transcript != nil {
 		c.Transcript = append([]model.Segment(nil), j.Transcript...)
+	}
+	if j.Corrected != nil {
+		c.Corrected = append([]model.Segment(nil), j.Corrected...)
 	}
 	if j.Analysis != nil {
 		c.Analysis = append([]model.Segment(nil), j.Analysis...)

@@ -105,6 +105,19 @@ fn extract_audio_chunks(
     audio::extract_chunks(&source, &out, segment_secs.unwrap_or(300.0))
 }
 
+/// Detect silent spans (dead air) in a source's audio with FFmpeg.
+///
+/// Returns time ranges so the frontend can mark them cut. Pass
+/// `minSecs` ≥ ~0.8 to only remove real pauses, keeping the edit natural.
+#[tauri::command]
+fn detect_silence(
+    path: String,
+    noise_db: Option<f64>,
+    min_secs: Option<f64>,
+) -> Result<Vec<audio::SilenceRange>, String> {
+    audio::detect_silence(&PathBuf::from(path), noise_db.unwrap_or(-30.0), min_secs.unwrap_or(0.8))
+}
+
 /// Default on-disk SQLite path for transcript/cut state.
 #[tauri::command]
 fn default_db_path(app: tauri::AppHandle) -> Result<String, String> {
@@ -296,6 +309,7 @@ pub fn run() {
             detect_hardware,
             check_ffmpeg,
             extract_audio_chunks,
+            detect_silence,
             default_db_path,
             default_chunk_dir,
             default_cache_dir,

@@ -5,11 +5,8 @@
   const GEMINI_KEY = "t9.geminiApiKey";
   const GROQ_KEY = "t9.groqApiKey";
 
-  const DEFAULT_GEMINI = "";
-  const DEFAULT_GROQ = "";
-
-  let gemini = $state(localStorage.getItem(GEMINI_KEY) || DEFAULT_GEMINI);
-  let groq = $state(localStorage.getItem(GROQ_KEY) || DEFAULT_GROQ);
+  let gemini = $state(localStorage.getItem(GEMINI_KEY) || "");
+  let groq = $state(localStorage.getItem(GROQ_KEY) || "");
   let showGemini = $state(false);
   let showGroq = $state(false);
   let saved = $state(false);
@@ -26,8 +23,6 @@
   }
 
   $effect(() => {
-    if (!localStorage.getItem(GEMINI_KEY)) localStorage.setItem(GEMINI_KEY, DEFAULT_GEMINI);
-    if (!localStorage.getItem(GROQ_KEY)) localStorage.setItem(GROQ_KEY, DEFAULT_GROQ);
     void checkDaemon();
   });
 

@@ -68,6 +68,12 @@ export interface TranscriptLine {
   keep: boolean;
   /** Why the AI flagged it, when it did — silence, fumble, retake, wrong example. */
   flag: "none" | "silence" | "fumble" | "retake" | "wrong_example";
+  /**
+   * The pre-autocorrect Whisper text, set only where autocorrect actually
+   * changed the line. Empty means "never corrected" — which is why the UI can
+   * mark a fixed line without marking every line.
+   */
+  originalText?: string;
 }
 
 /** One recently opened project, for the Home Screen grid. */
@@ -121,6 +127,14 @@ export interface CloudSegment {
   flag: "none" | "silence" | "fumble" | "retake" | "wrong_example";
   keep: boolean;
   reason?: string;
+  /** Pre-autocorrect Whisper text. Present only on lines that were changed. */
+  original_text?: string;
+}
+
+/** A detected silent span (dead air) in the source audio. */
+export interface SilenceRange {
+  start: number;
+  end: number;
 }
 
 /** Job shape returned by t9cloud. */
@@ -134,6 +148,8 @@ export interface CloudJob {
   completed: number;
   error: string | null;
   transcript?: CloudSegment[];
+  /** Populated for autocorrect jobs — the same lines with spelling fixed. */
+  corrected?: CloudSegment[];
   analysis?: CloudSegment[];
   vaultProgress: VaultProgress | null;
   vaultResult: VaultResult | null;
@@ -180,6 +196,8 @@ export interface ExportPlan {
 export interface ExportOptions {
   mode?: string;
   alignToleranceMs?: number;
+  /** Quality preset for re-encoded pieces. */
+  quality?: "original" | "high" | "balanced" | "small";
 }
 
 /** Export request. */

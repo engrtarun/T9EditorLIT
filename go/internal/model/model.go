@@ -11,6 +11,7 @@ type JobKind string
 
 const (
 	JobTranscribe JobKind = "transcribe"
+	JobCorrect    JobKind = "correct"
 	JobAnalyze    JobKind = "analyze"
 	JobVault      JobKind = "vault"
 )
@@ -69,6 +70,12 @@ type Segment struct {
 	Keep bool `json:"keep"`
 	// Reason is free-text justification shown on hover in the UI.
 	Reason string `json:"reason,omitempty"`
+	// OriginalText is the pre-autocorrect Whisper output for this line.
+	//
+	// Set ONLY when autocorrect actually changed something — a line that came
+	// through untouched leaves it empty. That distinction is what lets the UI
+	// show "this was fixed" without claiming every line was.
+	OriginalText string `json:"original_text,omitempty"`
 }
 
 // Duration returns the segment length in seconds, never negative.
@@ -104,6 +111,15 @@ type TranscribeRequest struct {
 	Prompt string `json:"prompt,omitempty"`
 }
 
+// CorrectRequest asks for Whisper's spelling to be cleaned up.
+//
+// It runs between transcription and analysis, because the analyser judges what
+// was *said* — feeding it phonetically broken text makes its verdicts worse.
+type CorrectRequest struct {
+	SourcePath string    `json:"source_path"`
+	Segments   []Segment `json:"segments"`
+}
+
 // AnalyzeRequest asks Gemini to flag retakes and wrong examples.
 type AnalyzeRequest struct {
 	SourcePath string    `json:"source_path"`
@@ -131,6 +147,9 @@ type Job struct {
 
 	// Transcript is populated for transcribe jobs.
 	Transcript []Segment `json:"transcript,omitempty"`
+	// Corrected is populated for correct jobs — the same lines with their
+	// spelling fixed and OriginalText filled in where the text changed.
+	Corrected []Segment `json:"corrected,omitempty"`
 	// Analysis is populated for analyze jobs.
 	Analysis []Segment `json:"analysis,omitempty"`
 	// VaultResult describes the upload outcome for vault jobs.

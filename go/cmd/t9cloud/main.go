@@ -90,8 +90,14 @@ func run() error {
 	}
 
 	if cfg.HasGroq() {
-		deps.Groq = cloud.NewGroq(cfg.GroqAPIKey, cfg.GroqTranscribe, cloud.GroqTranscribeURL)
+		deps.Groq = cloud.NewGroq(cfg.GroqAPIKey, cfg.GroqTranscribe, cfg.GroqChat, cloud.GroqTranscribeURL)
 		log.Info("transcription ready", "model", cfg.GroqTranscribe)
+		if cfg.GroqChat != "" {
+			log.Info("autocorrect ready", "model", cfg.GroqChat)
+		} else {
+			log.Warn("autocorrect disabled",
+				"reason", "GROQ_CHAT_MODEL not set; transcript keeps Whisper's spelling")
+		}
 	} else {
 		log.Warn("transcription disabled", "reason", "GROQ_API_KEY not set")
 	}

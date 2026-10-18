@@ -24,6 +24,23 @@
   import PolishMode from "../modes/PolishMode.svelte";
   import ExportMode from "../modes/ExportMode.svelte";
   import { mode } from "../../stores/mode.svelte";
+  import { cc } from "../../stores/cc.svelte";
+
+  // Drag the panel's left edge to resize it (the "splitter" handle).
+  function startPanelResize(event: PointerEvent) {
+    const startX = event.clientX;
+    const startW = cc.panelWidth;
+    const move = (e: PointerEvent) => {
+      // Dragging left (negative delta) widens the panel.
+      cc.panelWidth = Math.min(560, Math.max(220, startW - (e.clientX - startX)));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -41,10 +58,19 @@
 
     <!-- Right: the resident editing mode (transcript | music & text | export). -->
     <aside
-      class="flex w-[300px] shrink-0 flex-col overflow-hidden border-l border-cc-line
+      class="relative flex shrink-0 flex-col overflow-hidden border-l border-cc-line
         bg-cc-surface"
+      style="width: {cc.panelWidth}px"
       aria-label="Editing panel"
     >
+      <!-- Drag handle on the panel's left edge. -->
+      <div
+        class="absolute inset-y-0 -left-[3px] z-20 w-[6px] cursor-col-resize hover:bg-cc-purple/50"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize editing panel"
+        onpointerdown={startPanelResize}
+      ></div>
       {#key mode.current}
         {#if mode.current === "cut"}
           <CutMode />

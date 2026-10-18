@@ -25,6 +25,7 @@ import type {
   PolishResult,
   PolishSettings,
   Project,
+  SilenceRange,
   ThumbnailStrip,
   TranscriptLine,
   VaultProgress,
@@ -58,6 +59,19 @@ export function extractAudioChunks(
     outDir,
     segmentSecs,
   });
+}
+
+/**
+ * Detect silent spans (dead air) in a source's audio.
+ * `noiseDb` is the RMS threshold (dB, e.g. -30) and `minSecs` the floor on
+ * what counts as silence, so short breaths are kept and the cut stays natural.
+ */
+export function detectSilence(
+  path: string,
+  noiseDb?: number,
+  minSecs?: number,
+): Promise<SilenceRange[]> {
+  return invoke<SilenceRange[]>("detect_silence", { path, noiseDb, minSecs });
 }
 
 /** Default SQLite path for transcript/cut state. */

@@ -146,6 +146,109 @@ fn round3(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
 }
 
+/// A detected silent span in the source audio.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SilenceRange {
+    pub start: f64,
+    pub end: f64,
+}
+
+/// Detect silent spans in a source using FFmpeg's `silencedetect` filter.
+///
+/// Streams the audio through a throwaway FFmpeg child (no video decode, no
+/// output file), so a 5 GB source never lands in this process's heap. Only
+/// the silence markers on stderr are parsed into ranges.
+///
+/// `noise_db` is the RMS threshold in dB — speech above it counts as sound;
+/// anything below for at least `min_secs` counts as silence. `min_secs` is
+/// the floor on what counts as "dead air": short inter-sentence breaths stay
+/// so the result feels natural rather than clipped.
+pub fn detect_silence(
+    source: &Path,
+    noise_db: f64,
+    min_secs: f64,
+) -> Result<Vec<SilenceRange>, String> {
+    if !source.exists() {
+        return Err(format!("source file not found: {}", source.display()));
+    }
+    let p = source.to_string_lossy().into_owned();
+    let noise = format!("{noise_db}");
+    let min = format!("{min_secs}");
+    let filter = format!("silencedetect=noise={noise}dB:d={min}");
+
+    // `-map 0:a:0` decodes only the first audio track and `-f null -` discards
+    // the output, so this is a fast pass, not a render.
+    let out = crate::ffmpeg::run(
+        "ffmpeg",
+        &[
+            "-hide_banner",
+            "-nostdin",
+            "-i",
+            &p,
+            "-map",
+            "0:a:0",
+            "-af",
+            &filter,
+            "-f",
+            "null",
+            "-",
+        ],
+    )?;
+
+    // FFmpeg reports silence on stderr; a non-zero status here (e.g. no audio
+    // stream) yields no markers, which we surface as an empty result.
+    let total = probe_duration(source).unwrap_or(0.0);
+    Ok(parse_silence_markers(&out.stderr, total))
+}
+
+/// Parse `silence_start` / `silence_end` markers emitted by `silencedetect`.
+fn parse_silence_markers(stderr: &str, total_secs: f64) -> Vec<SilenceRange> {
+    let mut ranges: Vec<SilenceRange> = Vec::new();
+    let mut pending_start: Option<f64> = None;
+
+    for line in stderr.lines() {
+        if let Some(rest) = line.split("silence_start:").nth(1) {
+            if let Some(v) = rest
+                .split_whitespace()
+                .next()
+                .and_then(|t| t.parse::<f64>().ok())
+            {
+                pending_start = Some(v);
+            }
+        } else if let Some(rest) = line.split("silence_end:").nth(1) {
+            if let Some(end) = rest
+                .split_whitespace()
+                .next()
+                .and_then(|t| t.parse::<f64>().ok())
+            {
+                if let Some(start) = pending_start.take() {
+                    // A marker pair with end <= start is noise, not a range.
+                    if end > start {
+                        ranges.push(SilenceRange {
+                            start: round3(start),
+                            end: round3(end),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // A trailing silence that runs to the end of the file never gets an
+    // `silence_end` marker; close it against the media duration.
+    if let Some(start) = pending_start {
+        if total_secs > start {
+            ranges.push(SilenceRange {
+                start: round3(start),
+                end: round3(total_secs),
+            });
+        }
+    }
+
+    ranges
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +257,39 @@ mod tests {
     fn round3_trims_noise() {
         assert_eq!(round3(1.234567), 1.235);
         assert_eq!(round3(0.0), 0.0);
+    }
+
+    #[test]
+    fn parses_silence_marker_pairs() {
+        let stderr = "\
+[silencedetect @ 0x1] silence_start: 1.5
+[silencedetect @ 0x1] silence_end: 4.25 | silence_duration: 2.75
+[silencedetect @ 0x1] silence_start: 10
+[silencedetect @ 0x1] silence_end: 12.5 | silence_duration: 2.5
+";
+        let ranges = parse_silence_markers(stderr, 30.0);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].start, 1.5);
+        assert_eq!(ranges[0].end, 4.25);
+        assert_eq!(ranges[1].start, 10.0);
+        assert_eq!(ranges[1].end, 12.5);
+    }
+
+    #[test]
+    fn closes_trailing_silence_against_duration() {
+        let stderr = "[silencedetect @ 0x1] silence_start: 20\n";
+        let ranges = parse_silence_markers(stderr, 25.0);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].start, 20.0);
+        assert_eq!(ranges[0].end, 25.0);
+    }
+
+    #[test]
+    fn ignores_inverted_markers() {
+        let stderr = "\
+[silencedetect @ 0x1] silence_start: 5
+[silencedetect @ 0x1] silence_end: 3 | silence_duration: -2
+";
+        assert!(parse_silence_markers(stderr, 30.0).is_empty());
     }
 }

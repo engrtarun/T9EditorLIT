@@ -44,7 +44,11 @@ func newTestServer(t *testing.T, cfg *config.Config, groqSrv *httptest.Server) (
 		Vault:  vault.Unconfigured(),
 	}
 	if groqSrv != nil {
-		deps.Groq = cloud.NewGroq("test-key", "whisper-large-v3", groqSrv.URL)
+		deps.Groq = cloud.NewGroq("test-key", "whisper-large-v3", "test-chat", groqSrv.URL)
+		// Point the autocorrect endpoint at the same stub so one server can
+		// stand in for both of Groq's APIs. The path is kept distinct
+		// because the stub tells the two APIs apart by it.
+		deps.Groq.ChatURL = groqSrv.URL + "/chat/completions"
 	}
 
 	return New(deps), q
@@ -69,6 +73,7 @@ func baseConfig() *config.Config {
 		MaxAttempts:    1,
 		GroqTranscribe: "whisper-large-v3",
 		GeminiModel:    "gemini-2.5-flash",
+		GroqChat:       "test-chat",
 		GroqMaxChunkMB: 15,
 		SessionDir:     os.TempDir(),
 		TelegramAPIID:  0,
@@ -280,6 +285,107 @@ func TestTranscribeProducesTranscript(t *testing.T) {
 	if !got.Transcript[0].Keep {
 		t.Error("segments must default to keep")
 	}
+}
+
+// ── Autocorrect ─────────────────────────────────────────────────────────
+
+// stubChatGroq answers both the transcribe and the chat endpoint, which is all
+// the autocorrect job needs.
+func stubChatGroq(t *testing.T, reply string) *httptest.Server {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "chat") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]string{"content": reply},
+				}},
+			})
+			return
+		}
+		_, _ = w.Write([]byte(`{"segments":[{"id":0,"start":0,"end":2,"text":"hello"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestCorrectRefusedWithoutGroqClient(t *testing.T) {
+	cfg := baseConfig()
+	cfg.GroqAPIKey = "k"
+	s, _ := newTestServer(t, cfg, nil)
+
+	rec := do(t, s, http.MethodPost, "/v1/correct",
+		jsonBody(t, model.CorrectRequest{Segments: []model.Segment{{ID: "1", Text: "hi"}}}))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestCorrectRejectsEmptySegmentList(t *testing.T) {
+	s, _ := newTestServer(t, baseConfig(), stubChatGroq(t, "[]"))
+
+	rec := do(t, s, http.MethodPost, "/v1/correct", jsonBody(t, model.CorrectRequest{SourcePath: "x.mp4"}))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestCorrectProducesSpellingFixes(t *testing.T) {
+	s, _ := newTestServer(t, baseConfig(),
+		stubChatGroq(t, `[{"i":0,"text":"JavaScript ek language hai."}]`))
+
+	rec := do(t, s, http.MethodPost, "/v1/correct", jsonBody(t, model.CorrectRequest{
+		SourcePath: "x.mp4",
+		Segments:   []model.Segment{{ID: "1", Text: "javas cript ek language hai", Keep: true}},
+	}))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var job model.Job
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if job.Kind != model.JobCorrect || job.Total != 1 {
+		t.Errorf("bad job: %+v", job)
+	}
+
+	got := waitForJob(t, s, job.ID)
+	if got.State != model.StateDone {
+		t.Fatalf("state = %q (error %q), want done", got.State, got.Error)
+	}
+	if len(got.Corrected) != 1 {
+		t.Fatalf("got %d segments, want 1", len(got.Corrected))
+	}
+	if got.Corrected[0].Text != "JavaScript ek language hai." {
+		t.Errorf("text = %q", got.Corrected[0].Text)
+	}
+	if got.Corrected[0].OriginalText != "javas cript ek language hai" {
+		t.Errorf("OriginalText = %q, want the raw Whisper line", got.Corrected[0].OriginalText)
+	}
+}
+
+// waitForJob polls until the job reaches a terminal state.
+func waitForJob(t *testing.T, s *Server, id string) model.Job {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	var got model.Job
+	for time.Now().Before(deadline) {
+		r := do(t, s, http.MethodGet, "/v1/jobs/"+id, "")
+		if r.Code != http.StatusOK {
+			t.Fatalf("job fetch status = %d", r.Code)
+		}
+		if err := json.Unmarshal(r.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.State.Terminal() {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("job %s never finished", id)
+	return got
 }
 
 // ── Backpressure ────────────────────────────────────────────────────────

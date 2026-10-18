@@ -42,7 +42,7 @@ func TestGroqTranscribeChunkOffsetsTimestamps(t *testing.T) {
 
 	chunk := writeChunk(t, "chunk0.m4a")
 
-	client := NewGroq("test-key", "whisper-large-v3", srv.URL)
+	client := NewGroq("test-key", "whisper-large-v3", "", srv.URL)
 	segments, err := client.TranscribeChunk(context.Background(), chunk, 60.5, "", "")
 	if err != nil {
 		t.Fatalf("TranscribeChunk: %v", err)
@@ -90,7 +90,7 @@ func TestGroqErrorClassifiesRetryability(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":"nope"}`))
 		}))
 
-		client := NewGroq("k", "m", srv.URL)
+		client := NewGroq("k", "m", "", srv.URL)
 		_, err := client.TranscribeChunk(context.Background(), writeChunk(t, "c.m4a"), 0, "", "")
 		srv.Close()
 

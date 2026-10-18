@@ -69,6 +69,10 @@ pub struct ExportOptions {
     pub mode: String,
     /// How close a cut point may sit to a keyframe and still count as aligned.
     pub align_tolerance_ms: f64,
+    /// Output quality preset for re-encoded pieces: `original` (near-lossless)
+    /// · `high` (default) · `balanced` · `small`. Stream-copied pieces ignore
+    /// this — they keep the source bits verbatim.
+    pub quality: String,
 }
 
 impl Default for ExportOptions {
@@ -76,6 +80,7 @@ impl Default for ExportOptions {
         Self {
             mode: "hybrid".to_string(),
             align_tolerance_ms: 40.0,
+            quality: "high".to_string(),
         }
     }
 }
@@ -128,6 +133,8 @@ pub struct ExportPlan {
     /// identically in every piece (a concat must not change codec midway).
     pub audio_copied: bool,
     pub estimated_size_bytes: u64,
+    /// Quality preset handed to the encoder for re-encoded pieces.
+    pub quality: String,
     pub warnings: Vec<String>,
 }
 
@@ -603,6 +610,7 @@ pub fn build_plan(req: &ExportRequest, info: &MediaInfo, kfs: &[f64]) -> Result<
         keyframe_count: keyframes.len(),
         audio_copied: audio_copy,
         estimated_size_bytes: estimate_size(info, &outcome.pieces),
+        quality: req.options.quality.clone(),
         warnings,
         pieces: outcome.pieces,
     })
@@ -614,6 +622,7 @@ impl ExportOptions {
         ExportOptions {
             mode: mode.to_string(),
             align_tolerance_ms: self.align_tolerance_ms,
+            quality: self.quality.clone(),
         }
     }
 }
@@ -636,6 +645,7 @@ fn piece_args(
     audio_copied: bool,
     pix_fmt: Option<&str>,
     encoder: Option<&str>,
+    quality: &str,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
@@ -682,7 +692,7 @@ fn piece_args(
             let enc = encoder.unwrap_or("libx264");
             args.push("-c:v".into());
             args.push(enc.to_string());
-            args.extend(encoder_args(enc));
+            args.extend(encoder_args(enc, quality));
             if let Some(fmt) = pix_fmt {
                 args.push("-pix_fmt".into());
                 args.push(fmt.to_string());
@@ -711,25 +721,37 @@ fn piece_args(
     args
 }
 
-/// Per-encoder quality settings. Micro-encodes are 1–2 s long, so quality is
-/// set generously — the CPU cost is irrelevant, the boundary fidelity is not.
-fn encoder_args(encoder: &str) -> Vec<String> {
+/// Per-encoder quality settings, driven by the user's quality preset.
+///
+/// `original` is near-lossless (visually indistinguishable), `high` is the
+/// default, `balanced` trades a little fidelity for a smaller file, and
+/// `small` optimises hard for size. Micro-encodes are 1–2 s long, so even the
+/// generous presets cost little CPU — the boundary fidelity is what matters.
+fn encoder_args(encoder: &str, quality: &str) -> Vec<String> {
+    // CRF ladder per preset, indexed by the tables below. Lower = better
+    // quality / bigger file.
+    let crf = match quality {
+        "original" => 14,
+        "balanced" => 23,
+        "small" => 28,
+        _ => 18, // "high" and anything unknown
+    };
     let mut v: Vec<String> = Vec::new();
     let add = |v: &mut Vec<String>, k: &str, val: &str| {
         v.push(k.to_string());
         v.push(val.to_string());
     };
     match encoder {
-        "libx264" => add(&mut v, "-crf", "17"),
-        "libx265" => add(&mut v, "-crf", "20"),
+        "libx264" => add(&mut v, "-crf", &crf.to_string()),
+        "libx265" => add(&mut v, "-crf", &(crf + 3).to_string()),
         "h264_qsv" | "hevc_qsv" => {
             add(&mut v, "-preset", "medium");
-            add(&mut v, "-global_quality", "22");
+            add(&mut v, "-global_quality", &(crf + 4).to_string());
         }
         "h264_nvenc" | "hevc_nvenc" => {
             add(&mut v, "-preset", "p4");
             add(&mut v, "-rc", "vbr");
-            add(&mut v, "-cq", "23");
+            add(&mut v, "-cq", &(crf + 5).to_string());
         }
         "h264_amf" | "hevc_amf" => {
             add(&mut v, "-usage", "transcoding");
@@ -1175,6 +1197,7 @@ fn run_piece(
         plan.audio_copied,
         info.pix_fmt.as_deref(),
         encoder,
+        &plan.quality,
     );
     let piece_dur = piece.duration_secs.max(0.001);
     let mut last_out = 0.0f64;
@@ -1221,6 +1244,7 @@ mod tests {
         ExportOptions {
             mode: mode.to_string(),
             align_tolerance_ms: 40.0,
+            quality: "high".to_string(),
         }
     }
 
@@ -1426,6 +1450,7 @@ mod tests {
             true,
             Some("yuv420p"),
             Some("h264_qsv"),
+            "high",
         );
         let joined = args.join(" ");
         assert!(joined.contains("-ss 3.000000"), "{joined}");
@@ -1456,6 +1481,7 @@ mod tests {
             true,
             None,
             None,
+            "high",
         );
         let joined = args.join(" ");
         assert!(joined.contains("-ss 4.000001"), "{joined}");

@@ -18,6 +18,12 @@ pub struct TranscriptLine {
     pub keep: bool,
     #[serde(default = "default_flag")]
     pub flag: String,
+    /// The pre-autocorrect Whisper text, set only when autocorrect actually
+    /// changed the line. Empty means "never corrected" — which is different
+    /// from "corrected and came back identical", and the UI relies on that
+    /// to decide whether a line is worth flagging as fixed.
+    #[serde(default)]
+    pub original_text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,13 +45,14 @@ fn default_flag() -> String {
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS transcripts (
-    source_path TEXT NOT NULL,
-    id          TEXT NOT NULL,
-    start_secs  REAL NOT NULL,
-    end_secs    REAL NOT NULL,
-    text        TEXT NOT NULL,
-    keep        INTEGER NOT NULL,
-    flag        TEXT NOT NULL,
+    source_path    TEXT NOT NULL,
+    id             TEXT NOT NULL,
+    start_secs     REAL NOT NULL,
+    end_secs       REAL NOT NULL,
+    text           TEXT NOT NULL,
+    keep           INTEGER NOT NULL,
+    flag           TEXT NOT NULL,
+    original_text  TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (source_path, id)
 );
 ";
@@ -74,8 +81,54 @@ pub fn open_db(path: &std::path::Path) -> Result<Connection, String> {
 pub fn init_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(SCHEMA)
         .map_err(|e| format!("could not init transcript schema: {e}"))?;
+    migrate_transcripts(conn)?;
     conn.execute_batch(PROJECTS_SCHEMA)
         .map_err(|e| format!("could not init projects schema: {e}"))
+}
+
+/// Bring an older transcripts table up to the current columns.
+///
+/// `CREATE TABLE IF NOT EXISTS` is a no-op on a table that already exists, so a
+/// database written before autocorrect would otherwise fail every query with
+/// "no such column: original_text" — and the user has already transcribed
+/// videos into theirs. Adding the column is safe: it defaults to empty, which
+/// is exactly what an uncorrected line should read as.
+fn migrate_transcripts(conn: &Connection) -> Result<(), String> {
+    if column_exists(conn, "transcripts", "original_text")? {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE transcripts ADD COLUMN original_text TEXT NOT NULL DEFAULT ''")
+        .map_err(|e| format!("could not add transcripts.original_text: {e}"))?;
+    Ok(())
+}
+
+/// Reports whether a column exists, via PRAGMA table_info.
+///
+/// PRAGMA does not accept a bound parameter, so the identifier is formatted
+/// into the statement. Both arguments come from string literals in this file —
+/// never from user input — which is what makes that safe here.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let sql = format!("PRAGMA table_info({table})");
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("could not inspect {table}: {e}"))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|e| format!("could not read {table} columns: {e}"))?;
+
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| format!("could not read {table} columns: {e}"))?
+    {
+        let name: String = row
+            .get(1)
+            .map_err(|e| format!("could not read {table} column name: {e}"))?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn save_transcript(
@@ -96,8 +149,8 @@ pub fn save_transcript(
     {
         let mut stmt = tx
             .prepare(
-                "INSERT INTO transcripts (source_path, id, start_secs, end_secs, text, keep, flag)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO transcripts (source_path, id, start_secs, end_secs, text, keep, flag, original_text)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .map_err(|e| format!("could not prepare insert: {e}"))?;
         for line in lines {
@@ -109,6 +162,7 @@ pub fn save_transcript(
                 line.text,
                 if line.keep { 1 } else { 0 },
                 line.flag,
+                line.original_text,
             ])
             .map_err(|e| format!("could not insert transcript line: {e}"))?;
         }
@@ -125,7 +179,7 @@ pub fn load_transcript(
 ) -> Result<Vec<TranscriptLine>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, start_secs, end_secs, text, keep, flag
+            "SELECT id, start_secs, end_secs, text, keep, flag, original_text
              FROM transcripts WHERE source_path = ?1
              ORDER BY start_secs ASC",
         )
@@ -140,6 +194,9 @@ pub fn load_transcript(
                 text: r.get(3)?,
                 keep: r.get::<_, i64>(4)? != 0,
                 flag: r.get(5)?,
+                // COALESCE guards a database that predates the migration in
+                // some other way; a NULL here would fail the String read.
+                original_text: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
             })
         })
         .map_err(|e| format!("could not query transcript: {e}"))?;
@@ -255,6 +312,20 @@ mod tests {
         Connection::open_in_memory().unwrap()
     }
 
+    /// A line with every field at its zero value, for tests that only care
+    /// about one field.
+    fn line(id: &str, text: &str) -> TranscriptLine {
+        TranscriptLine {
+            id: id.into(),
+            start_secs: 0.0,
+            end_secs: 1.0,
+            text: text.into(),
+            keep: true,
+            flag: "none".into(),
+            original_text: String::new(),
+        }
+    }
+
     #[test]
     fn schema_and_round_trip() {
         let conn = mem_conn();
@@ -268,6 +339,7 @@ mod tests {
                 text: "hello".into(),
                 keep: true,
                 flag: "none".into(),
+                original_text: String::new(),
             },
             TranscriptLine {
                 id: "2".into(),
@@ -276,6 +348,7 @@ mod tests {
                 text: "uhh".into(),
                 keep: false,
                 flag: "fumble".into(),
+                original_text: String::new(),
             },
         ];
         save_transcript(&conn, "/v.mp4", &lines).unwrap();
@@ -287,17 +360,59 @@ mod tests {
     }
 
     #[test]
+    fn original_text_round_trips() {
+        let conn = mem_conn();
+        init_schema(&conn).unwrap();
+
+        let mut corrected = line("1", "JavaScript ek language hai.");
+        corrected.original_text = "javas cript ek language hai".into();
+        let untouched = line("2", "ye theek hai");
+
+        save_transcript(&conn, "/v.mp4", &[corrected, untouched]).unwrap();
+        let loaded = load_transcript(&conn, "/v.mp4").unwrap();
+
+        assert_eq!(loaded[0].original_text, "javas cript ek language hai");
+        assert_eq!(loaded[0].text, "JavaScript ek language hai.");
+        // An uncorrected line must read as empty, not as a copy of its own
+        // text — the UI uses that emptiness to decide what to mark as fixed.
+        assert_eq!(loaded[1].original_text, "");
+    }
+
+    #[test]
+    fn migration_adds_original_text_to_an_existing_table() {
+        let conn = mem_conn();
+        // Exactly the table shape from before autocorrect shipped.
+        conn.execute_batch(
+            "CREATE TABLE transcripts (
+                 source_path TEXT NOT NULL,
+                 id          TEXT NOT NULL,
+                 start_secs  REAL NOT NULL,
+                 end_secs    REAL NOT NULL,
+                 text        TEXT NOT NULL,
+                 keep        INTEGER NOT NULL,
+                 flag        TEXT NOT NULL,
+                 PRIMARY KEY (source_path, id)
+             );
+             INSERT INTO transcripts VALUES ('/old.mp4', '1', 0.0, 2.0, 'purana line', 1, 'none');",
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+
+        let loaded = load_transcript(&conn, "/old.mp4").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].text, "purana line");
+        assert_eq!(loaded[0].original_text, "");
+
+        // Running it twice must not fail on a duplicate column.
+        init_schema(&conn).unwrap();
+    }
+
+    #[test]
     fn set_keep_updates_row() {
         let conn = mem_conn();
         init_schema(&conn).unwrap();
-        let lines = vec![TranscriptLine {
-            id: "1".into(),
-            start_secs: 0.0,
-            end_secs: 1.0,
-            text: "hi".into(),
-            keep: true,
-            flag: "none".into(),
-        }];
+        let lines = vec![line("1", "hi")];
         save_transcript(&conn, "/v.mp4", &lines).unwrap();
         set_keep(&conn, "/v.mp4", "1", false).unwrap();
         let loaded = load_transcript(&conn, "/v.mp4").unwrap();
@@ -308,14 +423,7 @@ mod tests {
     fn delete_clears() {
         let conn = mem_conn();
         init_schema(&conn).unwrap();
-        let lines = vec![TranscriptLine {
-            id: "1".into(),
-            start_secs: 0.0,
-            end_secs: 1.0,
-            text: "hi".into(),
-            keep: true,
-            flag: "none".into(),
-        }];
+        let lines = vec![line("1", "hi")];
         save_transcript(&conn, "/v.mp4", &lines).unwrap();
         delete_transcript(&conn, "/v.mp4").unwrap();
         assert!(load_transcript(&conn, "/v.mp4").unwrap().is_empty());

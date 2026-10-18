@@ -76,31 +76,40 @@ func isNetError(err error) bool {
 // httptest server instead of hitting the live APIs.
 const (
 	GroqTranscribeURL = "https://api.groq.com/openai/v1/audio/transcriptions"
-	GeminiBaseURL     = "https://generativelanguage.googleapis.com/v1beta/models"
+	// GroqChatURL is the OpenAI-compatible text endpoint, used for the
+	// autocorrect pass. Same key and same account as Whisper.
+	GroqChatURL   = "https://api.groq.com/openai/v1/chat/completions"
+	GeminiBaseURL = "https://generativelanguage.googleapis.com/v1beta/models"
 )
 
 // GroqClient talks to Groq's OpenAI-compatible transcription endpoint.
 type GroqClient struct {
 	APIKey string
 	Model  string
-	// URL is overridable so tests can target an httptest server.
-	URL  string
-	HTTP *http.Client
+	// ChatModel is the text model behind the autocorrect pass. Empty disables
+	// it, which is the state a daemon built with only a transcribe key is in.
+	ChatModel string
+	// URL and ChatURL are overridable so tests can target an httptest server.
+	URL     string
+	ChatURL string
+	HTTP    *http.Client
 }
 
 // NewGroq builds a client with sensible timeouts.
 //
 // The timeout is generous because Whisper Large v3 on a long chunk can take
 // tens of seconds; the queue's own backoff handles the retry story.
-func NewGroq(apiKey, model, endpoint string) *GroqClient {
+func NewGroq(apiKey, model, chatModel, endpoint string) *GroqClient {
 	if endpoint == "" {
-		endpoint = "https://api.groq.com/openai/v1/audio/transcriptions"
+		endpoint = GroqTranscribeURL
 	}
 	return &GroqClient{
-		APIKey: apiKey,
-		Model:  model,
-		URL:    endpoint,
-		HTTP:   &http.Client{Timeout: 180 * time.Second},
+		APIKey:    apiKey,
+		Model:     model,
+		ChatModel: chatModel,
+		URL:       endpoint,
+		ChatURL:   GroqChatURL,
+		HTTP:      &http.Client{Timeout: 180 * time.Second},
 	}
 }
 
@@ -237,6 +246,104 @@ func (c *GroqClient) TranscribeChunk(
 // round3 trims float noise so timestamps round-trip predictably through JSON.
 func round3(v float64) float64 {
 	return float64(int64(v*1000+0.5)) / 1000
+}
+
+// ── Groq text (autocorrect) ─────────────────────────────────────────────
+
+// chatRequest is the OpenAI-compatible chat completions body.
+//
+// response_format is deliberately omitted: Groq's JSON mode is not available on
+// every hosted model, and ParseCorrections already tolerates a code fence or a
+// sentence of preamble. Asking for it would trade robustness for nothing.
+type chatRequest struct {
+	Model       string        `json:"model"`
+	Messages    []chatMessage `json:"messages"`
+	Temperature float64       `json:"temperature"`
+	MaxTokens   int           `json:"max_tokens,omitempty"`
+}
+
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// Chat runs one prompt through Groq's text model.
+//
+// This is the autocorrect transport, not the transcription one. Whisper hears
+// words phonetically and turns "JavaScript" into "javas cript"; a text model
+// maps that back far more reliably than a second Whisper pass would, and it
+// costs a fraction as much.
+func (c *GroqClient) Chat(ctx context.Context, system, user string) (string, error) {
+	if c.ChatModel == "" {
+		return "", errors.New("groq chat model is not configured (set GROQ_CHAT_MODEL)")
+	}
+
+	payload, err := json.Marshal(chatRequest{
+		Model: c.ChatModel,
+		Messages: []chatMessage{
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
+		},
+		// Deterministic: the same line must correct to the same text every run,
+		// otherwise re-transcribing a video silently churns the transcript.
+		Temperature: 0,
+		MaxTokens:   8192,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode groq chat request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ChatURL, bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("build groq chat request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("groq chat request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return "", fmt.Errorf("read groq chat response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", &APIError{Status: resp.StatusCode, Body: string(body), Service: "groq chat"}
+	}
+
+	var parsed chatResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("decode groq chat response: %w", err)
+	}
+	// Groq reports some failures inside a 200 body, so this is checked before
+	// the choices — otherwise the error surfaces as "returned no choices".
+	if parsed.Error != nil && parsed.Error.Message != "" {
+		return "", fmt.Errorf("groq chat: %s", parsed.Error.Message)
+	}
+	if len(parsed.Choices) == 0 {
+		return "", errors.New("groq chat returned no choices")
+	}
+
+	out := strings.TrimSpace(parsed.Choices[0].Message.Content)
+	if out == "" {
+		return "", errors.New("groq chat returned an empty completion")
+	}
+	return out, nil
 }
 
 // ── Gemini ──────────────────────────────────────────────────────────────

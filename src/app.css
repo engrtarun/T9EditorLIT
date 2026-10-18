@@ -176,6 +176,22 @@
   --color-cc-purple-3: #a966ff;
   --color-cc-lilac: #b76aff;
   --color-cc-blush: #ecb4ff;
+
+  /* Decision ramp: the three states a transcript line can be worked on.
+     Green = keep, red = cut, amber = "the AI flagged this but you kept it,
+     look again". Amber sits deliberately between the other two so the eye
+     reads it as undecided rather than as a third decision.
+
+     These tokens were referenced by PolishMode and VaultCard but never
+     defined, so every `text-cc-cut` / `bg-cc-keep` there compiled to nothing
+     and rendered unstyled. Defining them here is what makes both those
+     components and the transcript colour coding work. */
+  --color-cc-keep: #1f9d55;
+  --color-cc-keep-dim: #d9f0e3;
+  --color-cc-cut: #d93a30;
+  --color-cc-cut-dim: #fadfdd;
+  --color-cc-review: #c98500;
+  --color-cc-review-dim: #fdeecb;
 }
 
 @layer components {

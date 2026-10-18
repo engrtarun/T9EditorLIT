@@ -70,6 +70,7 @@ func New(deps Deps) *Server {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("POST /v1/transcribe", s.handleTranscribe)
+	s.mux.HandleFunc("POST /v1/correct", s.handleCorrect)
 	s.mux.HandleFunc("POST /v1/analyze", s.handleAnalyze)
 
 	// Telegram vault. Authorisation is a QR scan, so login is three calls:
@@ -180,6 +181,53 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		Retryable: true,
 		Run: func(ctx context.Context) error {
 			return s.runTranscribe(ctx, job.ID, req)
+		},
+	})
+	if err != nil {
+		s.store.fail(job.ID, err)
+		writeQueueError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+// handleCorrect runs the transcript autocorrect pass.
+//
+// It sits between transcription and analysis in the pipeline: Whisper's
+// phonetic spelling is exactly what makes a line hard to judge as "fumble" or
+// "retake", so correcting first makes the flags better too.
+func (s *Server) handleCorrect(w http.ResponseWriter, r *http.Request) {
+	// Same rule as every other pipeline: guard the dependency that will be
+	// dereferenced, not the config flag.
+	if s.deps.Groq == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "autocorrect unavailable: GROQ_API_KEY is not set",
+		})
+		return
+	}
+
+	var req model.CorrectRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.Segments) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "at least one segment is required",
+		})
+		return
+	}
+
+	// One job per batch, so the UI progress bar moves as the transcript is
+	// cleaned rather than jumping from 0 to 100 at the end.
+	total := (len(req.Segments) + cloud.CorrectionBatchSize - 1) / cloud.CorrectionBatchSize
+	job := s.store.create(model.JobCorrect, total)
+
+	err := s.deps.Queue.Submit(r.Context(), queue.Task{
+		ID:        job.ID,
+		Retryable: true,
+		Run: func(ctx context.Context) error {
+			return s.runCorrect(ctx, job.ID, req)
 		},
 	})
 	if err != nil {
@@ -448,6 +496,51 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 	return nil
 }
 
+// runCorrect autocorrects the transcript.
+//
+// Total failure is an error; partial failure is not. CorrectSegments already
+// leaves the uncorrected lines exactly as Whisper produced them, so the only
+// question is whether there is anything worth returning at all.
+func (s *Server) runCorrect(ctx context.Context, jobID string, req model.CorrectRequest) error {
+	if s.deps.Groq == nil {
+		return errors.New("groq client is not configured")
+	}
+	s.store.start(jobID)
+
+	corrected, err := s.deps.Groq.CorrectSegments(ctx, req.Segments)
+
+	// Count the fixes, not just the lines: "412 lines, 118 spelling fixes" is
+	// the number that tells the user the pass actually did something.
+	fixed := 0
+	for _, seg := range corrected {
+		if seg.OriginalText != "" {
+			fixed++
+		}
+	}
+	s.deps.Log.Info("autocorrect finished",
+		"job", jobID, "lines", len(corrected), "fixed", fixed, "err", err)
+
+	// Batches that failed come back as an error alongside usable output. The
+	// output wins: a partially corrected transcript is a working transcript.
+	if len(corrected) > 0 {
+		s.store.succeedCorrect(jobID, corrected, errBatchFailures(err))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return errors.New("autocorrect produced no output")
+}
+
+// errBatchFailures extracts the "some batches failed" error so the job can be
+// marked partial rather than failed.
+func errBatchFailures(err error) []string {
+	if err == nil {
+		return nil
+	}
+	return []string{err.Error()}
+}
+
 func (s *Server) runAnalyze(ctx context.Context, jobID string, req model.AnalyzeRequest) error {
 	if s.deps.Gemini == nil {
 		return errors.New("gemini client is not configured")
@@ -456,7 +549,15 @@ func (s *Server) runAnalyze(ctx context.Context, jobID string, req model.Analyze
 
 	analyses, err := s.deps.Gemini.Analyze(ctx, req.Segments, req.ToneProfile, req.CreatorHandle)
 	if err != nil {
-		return err
+		// The transcript must survive even if analysis fails — an invalid or
+		// expired Gemini key (401), a rate limit, or a transient network blip
+		// should degrade to "nothing flagged" rather than failing the whole
+		// job. Every segment already defaults to keep=true / flag "none", so
+		// the raw transcript stays fully usable for cutting.
+		s.deps.Log.Warn("analysis failed; returning unflagged transcript",
+			"job", jobID, "segments", len(req.Segments), "err", err)
+		s.store.succeed(jobID, req.Segments, nil, []string{err.Error()})
+		return nil
 	}
 
 	flagged := cloud.ApplyAnalysis(req.Segments, analyses)

@@ -11,8 +11,8 @@ import { defaultCacheDir, errorMessage, extractThumbnails, extractWaveform } fro
 import { thumbFileName } from "../timeline-utils";
 import type { ThumbnailStrip, WaveformData } from "../types";
 
-/** Bucket count for the waveform. ~2 bars per pixel on a 1000 px timeline. */
-const WAVEFORM_BARS = 2000;
+/** Bucket count for the waveform. ~1.2 bars per pixel on a 1000 px timeline. */
+const WAVEFORM_BARS = 1200;
 /** Thumbnails are sampled once per second, as the spec requires. */
 const THUMB_FPS = 1;
 /** 160 px wide keeps each JPEG at ~5–8 KB while staying crisp when zoomed. */
@@ -70,12 +70,13 @@ class TimelineStore {
     this.loading = true;
 
     try {
-      const cacheDir = await defaultCacheDir();
+      // cacheDir resolves once and feeds both extractions in parallel.
+      const cacheDirPromise = defaultCacheDir();
       // The two jobs are independent: a silent source has no waveform but
       // still deserves a thumbnail strip, so one failure must not hide both.
       const [waveRes, thumbsRes] = await Promise.allSettled([
-        extractWaveform(sourcePath, cacheDir, WAVEFORM_BARS),
-        extractThumbnails(sourcePath, cacheDir, THUMB_FPS, THUMB_WIDTH),
+        cacheDirPromise.then((dir) => extractWaveform(sourcePath, dir, WAVEFORM_BARS)),
+        cacheDirPromise.then((dir) => extractThumbnails(sourcePath, dir, THUMB_FPS, THUMB_WIDTH)),
       ]);
       // A different source may have been picked while FFmpeg was running.
       if (this.sourcePath !== sourcePath) return;

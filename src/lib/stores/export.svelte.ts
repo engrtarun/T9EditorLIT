@@ -25,14 +25,21 @@ import type {
 import { segmentsFromTranscript, summarizeSegments, formatDuration } from "../segments";
 
 type ExportMode = "hybrid" | "copy" | "encode";
+type ExportQuality = "original" | "high" | "balanced" | "small";
 
 const DEFAULT_MODE: ExportMode = "hybrid";
+const DEFAULT_QUALITY: ExportQuality = "high";
 
 class ExportStore {
   // Input state
   mode = $state<ExportMode>(DEFAULT_MODE);
+  quality = $state<ExportQuality>(DEFAULT_QUALITY);
   outputPath = $state<string>("");
-  options = $state<ExportOptions>({ mode: DEFAULT_MODE, alignToleranceMs: 40 });
+  options = $state<ExportOptions>({
+    mode: DEFAULT_MODE,
+    alignToleranceMs: 40,
+    quality: DEFAULT_QUALITY,
+  });
 
   // Computed from transcript
   segments = $state<ExportSegment[]>([]);
@@ -172,9 +179,50 @@ class ExportStore {
       source: this.sourcePath!,
       segments: this.segments,
       output: this.outputPath,
-      options: { ...this.options, mode: this.mode },
+      options: { ...this.options, mode: this.mode, quality: this.quality },
       dbPath: null, // default_db_path is resolved on the Rust side
     };
+  }
+
+  /** Folder portion of the output path, for the "save to" field. */
+  get outputFolder(): string {
+    if (!this.outputPath) return "";
+    const i = Math.max(this.outputPath.lastIndexOf("/"), this.outputPath.lastIndexOf("\\"));
+    return i >= 0 ? this.outputPath.slice(0, i) : "";
+  }
+
+  /** Base file name WITHOUT extension, for the editable name field. */
+  get outputName(): string {
+    if (!this.outputPath) return "";
+    const i = Math.max(this.outputPath.lastIndexOf("/"), this.outputPath.lastIndexOf("\\"));
+    const file = i >= 0 ? this.outputPath.slice(i + 1) : this.outputPath;
+    const dot = file.lastIndexOf(".");
+    return dot > 0 ? file.slice(0, dot) : file;
+  }
+
+  /** Set the base name (no extension); the current format's extension is kept. */
+  setOutputName(base: string): void {
+    const folder = this.outputFolder;
+    const clean = base.replace(/[\\/:*?"<>|]/g, "_").trim() || "output";
+    const ext = this.outputExt === "mkv" ? ".mkv" : ".mp4";
+    this.outputPath = folder ? `${folder}\\${clean}${ext}` : `${clean}${ext}`;
+  }
+
+  setOutputFolder(folder: string): void {
+    const name = this.outputName || "output";
+    const ext = this.outputExt === "mkv" ? ".mkv" : ".mp4";
+    this.outputPath = folder ? `${folder}\\${name}${ext}` : `${name}${ext}`;
+  }
+
+  /** Change container/format, preserving the base name. */
+  setFormat(ext: "mp4" | "mkv"): void {
+    const name = this.outputName || "output";
+    const folder = this.outputFolder;
+    this.outputPath = folder ? `${folder}\\${name}.${ext}` : `${name}.${ext}`;
+  }
+
+  get outputExt(): "mp4" | "mkv" {
+    return this.outputPath.toLowerCase().endsWith(".mkv") ? "mkv" : "mp4";
   }
 
   /** Human-readable labels for the mode radio buttons. */

@@ -35,6 +35,9 @@ type Config struct {
 	GroqAPIKey     string
 	GroqTranscribe string
 	GroqMaxChunkMB int
+	// GroqChat is the text model behind transcript autocorrect. Empty disables
+	// the pass; the transcript still arrives, just with Whisper's spelling.
+	GroqChat string
 	// GeminiAPIKey and friends enable the analysis pipeline.
 	GeminiAPIKey string
 	GeminiModel  string
@@ -94,6 +97,7 @@ func Load(envPath string) (*Config, error) {
 		GroqAPIKey:          get("GROQ_API_KEY"),
 		GroqTranscribe:      pick(get("GROQ_TRANSCRIBE_MODEL"), "whisper-large-v3"),
 		GroqMaxChunkMB:      pickInt(get("GROQ_MAX_CHUNK_MB"), 15),
+		GroqChat:            get("GROQ_CHAT_MODEL"),
 		GeminiAPIKey:        get("GEMINI_API_KEY"),
 		GeminiModel:         pick(get("GEMINI_MODEL"), "gemini-2.5-flash"),
 		TelegramAPIID:       pickInt(get("TELEGRAM_API_ID"), 0),
@@ -129,6 +133,12 @@ func (c *Config) validate() error {
 // HasGroq reports whether transcription is usable.
 func (c *Config) HasGroq() bool { return c.GroqAPIKey != "" }
 
+// HasAutocorrect reports whether the spelling pass can run.
+//
+// Separate from HasGroq on purpose: transcription works with a transcribe key
+// alone, and losing autocorrect must not disable it.
+func (c *Config) HasAutocorrect() bool { return c.GroqAPIKey != "" && c.GroqChat != "" }
+
 // HasGemini reports whether analysis is usable.
 func (c *Config) HasGemini() bool { return c.GeminiAPIKey != "" }
 
@@ -148,6 +158,7 @@ func (c *Config) HasTelegramChat() bool { return c.TelegramChat != "" }
 func (c *Config) Capabilities() map[string]string {
 	out := map[string]string{}
 	out["transcribe"] = status(c.HasGroq(), "ready", "GROQ_API_KEY not set")
+	out["autocorrect"] = status(c.HasAutocorrect(), "ready", "GROQ_CHAT_MODEL not set")
 	out["analyze"] = status(c.HasGemini(), "ready", "GEMINI_API_KEY not set")
 	out["vault"] = status(c.HasTelegram(), "ready", "TELEGRAM_API_ID / API_HASH not set")
 	out["vault_upload"] = status(c.HasTelegramChat(), "ready", "TELEGRAM_TARGET_CHAT not set")
