@@ -137,7 +137,7 @@
         {#each recentProjects as rp (rp.id)}
           <button
             type="button"
-            class="cc-panel flex items-center justify-between p-2 text-left transition hover:border-cc-purple {project
+            class="cc-panel flex items-center justify-between p-2 text-left transition hover:border-cc-purple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cc-purple/40 {project
               .info?.path === rp.sourcePath
               ? 'border-cc-purple bg-cc-tint/30'
               : ''}"
@@ -184,6 +184,8 @@
   <div
     class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border-2
       border-dashed border-cc-line p-4 text-center"
+    role="group"
+    aria-label="Drop media to import"
   >
     <svg width="46" height="40" viewBox="0 0 46 40" aria-hidden="true">
       <rect x="2" y="12" width="24" height="20" rx="4" fill="var(--color-cc-blush)" />
@@ -205,12 +207,14 @@
   </div>
 
   <!-- Environment readout: one line, always visible. -->
-  <div class="mono flex shrink-0 items-center gap-2 text-[10px]">
+  <div class="mono flex shrink-0 items-center gap-2 text-[10px]" aria-live="polite">
     {#if envError}
       <span
         class="rounded px-2 py-0.5"
         style="background: #fde7e9; color: #a80000"
         title={envError}
+        role="alert"
+        aria-live="assertive"
       >
         FFmpeg not usable
       </span>
