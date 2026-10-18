@@ -8,7 +8,7 @@
 import { defaultChunkDir, defaultDbPath, extractAudioChunks, saveTranscript } from "./ipc";
 import type { CloudJob, CloudSegment, TranscriptLine } from "./types";
 
-const DAEMON = (import.meta.env.VITE_T9CLOUD_ADDR as string | undefined) || "127.0.0.1:8787";
+const DAEMON = (import.meta.env.VITE_T9CLOUD_ADDR as string | undefined) || "127.0.0.1:7878";
 const BASE = `http://${DAEMON}`;
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {

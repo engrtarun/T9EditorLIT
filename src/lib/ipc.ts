@@ -197,7 +197,7 @@ export function updateProjectOpened(
 }
 
 /** Base URL of the t9cloud Go daemon (loopback only). */
-const VAULT_BASE = "http://127.0.0.1:8787";
+const VAULT_BASE = "http://127.0.0.1:7878";
 
 async function vaultJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${VAULT_BASE}${path}`, init);

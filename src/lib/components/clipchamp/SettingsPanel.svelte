@@ -17,7 +17,7 @@
 
   async function checkDaemon() {
     try {
-      const res = await fetch("http://127.0.0.1:8787/healthz");
+      const res = await fetch("http://127.0.0.1:7878/healthz");
       if (res.ok) daemonStatus = "online";
       else daemonStatus = "offline";
     } catch {

@@ -7,8 +7,8 @@ echo       Starting T9EditorLIT Desktop Application
 echo ========================================================
 echo.
 
-echo [1/2] Checking t9cloud AI daemon (port 8787)...
-netstat -ano | findstr :8787 >nul 2>&1
+echo [1/2] Checking t9cloud AI daemon (port 7878)...
+netstat -ano | findstr :7878 >nul 2>&1
 if %errorlevel% neq 0 (
     echo Starting t9cloud background worker...
     start /b "" "go\bin\t9cloud.exe" -env .env
