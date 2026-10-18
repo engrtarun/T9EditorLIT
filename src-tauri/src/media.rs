@@ -4,8 +4,10 @@
 //! file, how big is it, what resolution, what frame rate, and is there audio to
 //! transcribe?
 
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +65,65 @@ struct RawStream {
     pix_fmt: Option<String>,
     channels: Option<i64>,
     sample_rate: Option<String>,
+}
+
+/// SQLite cache for ffprobe results, keyed by source path + size + mtime so a
+/// re-import of an unchanged file never spawns ffprobe again.
+const MEDIA_CACHE_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS media_cache (
+    source_path TEXT PRIMARY KEY,
+    size_bytes  INTEGER NOT NULL,
+    mtime_secs  INTEGER NOT NULL,
+    json        TEXT NOT NULL
+);
+";
+
+pub fn init_media_cache_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(MEDIA_CACHE_SCHEMA)
+        .map_err(|e| format!("could not init media cache schema: {e}"))
+}
+
+fn media_fingerprint(path: &Path) -> Result<(u64, i64), String> {
+    let meta = std::fs::metadata(path)
+        .map_err(|e| format!("could not stat {}: {e}", path.display()))?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Ok((meta.len(), mtime))
+}
+
+/// Cached probe result, or `None` when absent or stale (file replaced/resized).
+pub fn load_cached_media(conn: &Connection, source_path: &str, path: &Path) -> Option<MediaInfo> {
+    let (size, mtime) = media_fingerprint(path).ok()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT json FROM media_cache WHERE source_path = ?1 AND size_bytes = ?2 AND mtime_secs = ?3",
+        )
+        .ok()?;
+    let json: String = stmt
+        .query_row(params![source_path, size as i64, mtime], |r| r.get(0))
+        .ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+/// Persist a freshly probed result for next time.
+pub fn store_cached_media(conn: &Connection, source_path: &str, path: &Path, info: &MediaInfo) -> Result<(), String> {
+    let (size, mtime) = media_fingerprint(path)?;
+    let json = serde_json::to_string(info).map_err(|e| format!("could not serialize media info: {e}"))?;
+    conn.execute(
+        "INSERT INTO media_cache (source_path, size_bytes, mtime_secs, json)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(source_path) DO UPDATE SET
+            size_bytes = excluded.size_bytes,
+            mtime_secs = excluded.mtime_secs,
+            json       = excluded.json",
+        params![source_path, size as i64, mtime, json],
+    )
+    .map_err(|e| format!("could not cache media info: {e}"))?;
+    Ok(())
 }
 
 /// Parse an ffprobe `"rate"` string such as `60000/1001` into a float.
@@ -143,6 +204,22 @@ impl MediaInfo {
             has_audio: audio.is_some(),
             streams,
         })
+    }
+
+    /// Probe with an on-disk cache: a cache hit returns the ffprobe facts
+    /// without spawning a child process, so re-importing an unchanged 5 GB file
+    /// is instant. A miss probes and stores the result for next time.
+    pub fn probe_cached(path: &Path, conn: &Connection) -> Result<Self, String> {
+        if !path.exists() {
+            return Err(format!("file not found: {}", path.display()));
+        }
+        let key = path.to_string_lossy().into_owned();
+        if let Some(cached) = load_cached_media(conn, &key, path) {
+            return Ok(cached);
+        }
+        let info = Self::probe(path)?;
+        let _ = store_cached_media(conn, &key, path, &info);
+        Ok(info)
     }
 
     /// Human-readable resolution label, e.g. `3840x2160 (4K)`.

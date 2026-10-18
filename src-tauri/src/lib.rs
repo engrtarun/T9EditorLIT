@@ -56,12 +56,16 @@ fn get_memory_stats(probe: State<'_, Probe>) -> Result<MemoryStats, String> {
 
 /// Inspect a media file: duration, size, resolution, fps, codecs.
 ///
-/// Returns in milliseconds — it shells out to `ffprobe` and reads nothing from
-/// the file itself.
+/// Results are cached in SQLite keyed by path + size + mtime, so re-importing
+/// an unchanged file skips ffprobe entirely (instant on a 5 GB source).
 #[tauri::command]
-fn probe_media(path: String) -> Result<MediaInfo, String> {
+fn probe_media(app: tauri::AppHandle, path: String) -> Result<MediaInfo, String> {
     let path = PathBuf::from(path);
-    MediaInfo::probe(&path)
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db_path = dir.join("t9editorlit.db");
+    let conn = transcript::open_db(&db_path)?;
+    media::init_media_cache_schema(&conn)?;
+    MediaInfo::probe_cached(&path, &conn)
 }
 
 /// Which hardware encoders this machine can actually use (QuickSync on Intel

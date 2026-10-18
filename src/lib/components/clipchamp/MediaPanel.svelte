@@ -13,7 +13,13 @@
    * deep into an export.
    */
   import { open } from "@tauri-apps/plugin-dialog";
-  import { checkFfmpeg, defaultDbPath, detectHardware, errorMessage, loadProjects } from "../../ipc";
+  import {
+    checkFfmpeg,
+    defaultDbPath,
+    detectHardware,
+    errorMessage,
+    loadProjects,
+  } from "../../ipc";
   import { formatBytes, project } from "../../stores/project.svelte";
   import type { HardwareSupport, Project } from "../../types";
 
@@ -87,7 +93,7 @@
   <div class="flex">
     <button
       type="button"
-      class="cc-btn cc-btn-primary flex-1 rounded-r-none"
+      class="cc-btn cc-btn-primary flex-1 rounded-r-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cc-purple/40"
       onclick={importMedia}
       disabled={project.loading}
     >
@@ -131,7 +137,10 @@
         {#each recentProjects as rp (rp.id)}
           <button
             type="button"
-            class="cc-panel flex items-center justify-between p-2 text-left transition hover:border-cc-purple {project.info?.path === rp.sourcePath ? 'border-cc-purple bg-cc-tint/30' : ''}"
+            class="cc-panel flex items-center justify-between p-2 text-left transition hover:border-cc-purple {project
+              .info?.path === rp.sourcePath
+              ? 'border-cc-purple bg-cc-tint/30'
+              : ''}"
             onclick={async () => {
               if (project.info?.path !== rp.sourcePath) {
                 await project.load(rp.sourcePath);
@@ -140,13 +149,20 @@
             }}
           >
             <div class="min-w-0">
-              <div class="truncate text-[12px] font-medium text-cc-text" title={rp.name}>{rp.name}</div>
+              <div class="truncate text-[12px] font-medium text-cc-text" title={rp.name}>
+                {rp.name}
+              </div>
               <div class="mono text-[10.5px] text-cc-text-3">
-                {Math.floor(rp.durationSecs / 60)}:{String(Math.floor(rp.durationSecs % 60)).padStart(2, "0")}
+                {Math.floor(rp.durationSecs / 60)}:{String(
+                  Math.floor(rp.durationSecs % 60),
+                ).padStart(2, "0")}
               </div>
             </div>
             {#if project.info?.path === rp.sourcePath}
-              <span class="rounded bg-cc-purple/10 px-1.5 py-0.5 text-[10px] font-medium text-cc-purple">Active</span>
+              <span
+                class="rounded bg-cc-purple/10 px-1.5 py-0.5 text-[10px] font-medium text-cc-purple"
+                >Active</span
+              >
             {/if}
           </button>
         {/each}

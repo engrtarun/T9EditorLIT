@@ -170,6 +170,21 @@ const SNAP_EPS: f64 = 1e-6;
 /// ffprobe's output precision can never pull the cut back a whole GOP.
 const COPY_SEEK_EPS: f64 = 1e-6;
 
+/// Files at or below these thresholds are "light": small enough that a full
+/// re-encode is fast, so we skip the expensive full-file keyframe scan and
+/// render exact cuts in one encode pass. Anything larger is "heavy" and uses
+/// the keyframe-cached hybrid path (stream-copy aligned cuts, micro-encode
+/// only partial GOPs).
+const LIGHT_SIZE_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
+const LIGHT_DURATION_SECS: f64 = 300.0; // 5 min
+
+fn is_light(info: &MediaInfo) -> bool {
+    info.size_bytes > 0
+        && info.size_bytes <= LIGHT_SIZE_BYTES
+        && info.duration_secs > 0.0
+        && info.duration_secs <= LIGHT_DURATION_SECS
+}
+
 // ───────────────────────────── pure planning ─────────────────────────────
 
 /// Sort, de-noise and complete an I-frame list: the start of the file and the
@@ -495,12 +510,21 @@ pub fn build_plan(req: &ExportRequest, info: &MediaInfo, kfs: &[f64]) -> Result<
     }
 
     let mut warnings = Vec::new();
-    let mut effective_mode = mode.to_string();
+    // Light files (small and short) re-encode outright — no keyframe grid,
+    // no family-mixing restriction, exact cut points. Heavy files use the
+    // keyframe-cached hybrid path that stream-copies aligned cuts.
+    let light = is_light(&info);
+    let mut effective_mode = if light {
+        "encode".to_string()
+    } else {
+        mode.to_string()
+    };
 
     // Re-encoded pieces must share the source's codec family, or the concat
     // would have to stitch H.264 into VP9. Sources we cannot stay in-family
     // with are exported in full instead of silently mixing streams.
-    if effective_mode == "hybrid" {
+    // Light files are already forced to encode, so skip this check for them.
+    if !light && effective_mode == "hybrid" {
         let video = info.video_codec.as_deref().unwrap_or("");
         if family_of(video).is_none() {
             effective_mode = "encode".to_string();
@@ -788,13 +812,26 @@ pub fn prepare(
         return Err(format!("source not found: {}", req.source));
     }
     // Probe first: a broken file must fail in milliseconds, not after a
-    // full-length keyframe scan.
+    // full-length keyframe scan. Probe result is SQLite-cached on import.
     let info = MediaInfo::probe(&source)?;
-
     let (db, db_warning) = open_cache_db(req.db_path.as_deref());
-    let kfs = keyframes::keyframes_for(&source, db.as_ref(), cancel)?;
+
+    // Light files (small and short) are fast enough to re-encode outright —
+    // skip the full-file keyframe scan entirely. Heavy files pay the scan once
+    // (SQLite-cached) and stream-copy aligned cuts.
+    let light = is_light(&info);
+    let kfs = if light {
+        Vec::new()
+    } else {
+        keyframes::keyframes_for(&source, db.as_ref(), cancel)?
+    };
     if let Some(msg) = on_scan {
-        msg(&format!("{} keyframes", kfs.len()));
+        let scan_msg = if light {
+            "light file — skipping keyframe scan".to_string()
+        } else {
+            format!("{} keyframes", kfs.len())
+        };
+        msg(&scan_msg);
     }
 
     let plan = build_plan(req, &info, &kfs)?;

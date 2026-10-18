@@ -50,9 +50,17 @@
   <div class="flex flex-col gap-1">
     <div class="flex items-center justify-between">
       <h3 class="text-[13px] font-semibold text-cc-text">API keys</h3>
-      <span class="inline-flex items-center gap-1.5 text-[11px] {daemonStatus === 'online' ? 'text-emerald-500' : 'text-amber-500'}">
-        <span class="h-2 w-2 rounded-full {daemonStatus === 'online' ? 'bg-emerald-500' : 'bg-amber-500'}"></span>
-        {daemonStatus === 'online' ? 'Daemon Online' : 'Daemon Offline'}
+      <span
+        class="inline-flex items-center gap-1.5 text-[11px] {daemonStatus === 'online'
+          ? 'text-emerald-500'
+          : 'text-amber-500'}"
+      >
+        <span
+          class="h-2 w-2 rounded-full {daemonStatus === 'online'
+            ? 'bg-emerald-500'
+            : 'bg-amber-500'}"
+        ></span>
+        {daemonStatus === "online" ? "Daemon Online" : "Daemon Offline"}
       </span>
     </div>
     <p class="text-[11.5px] text-cc-text-3">
