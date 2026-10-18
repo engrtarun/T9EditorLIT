@@ -71,11 +71,12 @@ telegram.session*
 Thumbs.db
 desktop.ini
 
-# ---------- Logs ----------
+# ---------- Logs & Temp ----------
 *.log
 npm-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+tmp_*.txt
 
 # ---------- Test / coverage ----------
 coverage/

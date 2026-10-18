@@ -14,7 +14,7 @@ touching a lane so two agents never edit the same files.
 **Lane:** Chunk 2 backend foundation — audio extraction/chunking, SQLite transcript store,
 Tauri commands, IPC wrappers, transcript store, CutMode wiring.
 
-**Status:** Chunk 2 complete + Chunk 3 complete + Chunk 4 Smart Export wired (start_export/cancel_export + Stage Export button).
+**Status:** Chunk 2 complete + Chunk 3 complete + Chunk 4 Smart Export complete (start_export/cancel_export + Stage Export button + light-file direct re-encode ≤200 MB/≤5 min skipping keyframe scan + SQLite ffprobe cache keyed by path+size+mtime). Committed as a03aff8 "feat(core): SQLite ffprobe cache + light-file export optimization".
 
 **Files owned (editing):**
 
@@ -22,6 +22,8 @@ Tauri commands, IPC wrappers, transcript store, CutMode wiring.
 - `src-tauri/src/lib.rs` (command surface)
 - `src-tauri/src/audio.rs` (new)
 - `src-tauri/src/transcript.rs` (new)
+- `src-tauri/src/media.rs` (media_cache schema + probe_cached)
+- `src-tauri/src/export.rs` (light file optimization)
 - `src/lib/types.ts` (AudioChunk)
 - `src/lib/ipc.ts` (new wrappers)
 - `src/lib/stores/transcript.svelte.ts` (new)
@@ -31,7 +33,6 @@ Tauri commands, IPC wrappers, transcript store, CutMode wiring.
 **Do NOT touch (other agents may own):**
 
 - `src/lib/components/clipchamp/**` shell layout
-- Export pipeline (Chunk 4) — not started
 
 **Contracts exposed for other agents:**
 
