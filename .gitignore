@@ -81,3 +81,4 @@ tmp_*.txt
 # ---------- Test / coverage ----------
 coverage/
 *.lcov
+.kilocode/

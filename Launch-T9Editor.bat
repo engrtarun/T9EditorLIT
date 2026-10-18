@@ -26,3 +26,5 @@ if exist "src-tauri\target\release\t9-editor-lit.exe" (
 )
 
 echo Done! Window will open shortly.
+timeout /t 2 /nobreak >nul
+exit 0

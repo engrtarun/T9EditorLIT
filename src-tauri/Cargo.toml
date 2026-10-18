@@ -28,6 +28,10 @@ tauri-plugin-dialog = "2.8.3"
 # does not depend on a system SQLite, which matters on the target Windows box.
 rusqlite = { version = "0.40", features = ["bundled"] }
 
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
