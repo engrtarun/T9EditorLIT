@@ -10,8 +10,10 @@
    * applied at every level, not just at the mode switch.
    */
   import CcTopBar from "$lib/components/clipchamp/CcTopBar.svelte";
+  import DropLayer from "$lib/components/clipchamp/DropLayer.svelte";
   import EditorShell from "$lib/components/clipchamp/EditorShell.svelte";
   import HomeScreen from "$lib/components/clipchamp/HomeScreen.svelte";
+  import ShortcutsLayer from "$lib/components/clipchamp/ShortcutsLayer.svelte";
   import { cc } from "$lib/stores/cc.svelte";
   import { memory } from "$lib/stores/memory.svelte.ts";
 
@@ -36,3 +38,11 @@
     {/if}
   {/key}
 </div>
+
+<!--
+  Both layers deliberately live OUTSIDE `{#key cc.view}`: the drop listener and
+  the single keydown dispatcher must survive a Home ⇄ Editor swap, otherwise
+  Space would go dead the moment you come back from the home screen.
+-->
+<ShortcutsLayer />
+<DropLayer />

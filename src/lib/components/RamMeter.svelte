@@ -13,13 +13,29 @@
    * `compact` flattens the whole readout to one line so it fits inside the
    * Clipchamp shell's 48 px top bar without pushing its height up — the meter
    * must stay visible, but it does not get to resize the chrome either.
+   *
+   * Colours are the semantic keep / review / cut tokens, so the bar reads the
+   * same in every theme rather than needing a palette of its own.
    */
   import { formatRam, memory } from "../stores/memory.svelte.ts";
 
   let { compact = false }: { compact?: boolean } = $props();
 
+  /** Green while comfortable, amber approaching the limit, red past it. */
+  const levelColor = (pct: number) =>
+    pct >= 85
+      ? "var(--color-cc-cut)"
+      : pct >= 70
+        ? "var(--color-cc-review)"
+        : "var(--color-cc-keep)";
+
+  /** APP is judged on a lower scale — it is a slice of the whole machine. */
   const appColor = (pct: number) =>
-    pct >= 70 ? "var(--color-cut)" : pct >= 40 ? "var(--color-keep)" : "var(--color-nanami-teal)";
+    pct >= 70
+      ? "var(--color-cc-cut)"
+      : pct >= 40
+        ? "var(--color-cc-review)"
+        : "var(--color-cc-keep)";
 
   let systemPct = $derived(memory.stats?.usedPercent ?? 0);
   let appPct = $derived(
@@ -33,27 +49,23 @@
   <!-- One-line form: label, bar, figures — all inside the top bar's height. -->
   <div class="flex items-center gap-2" title="Memory: this app vs. the whole machine">
     <span class="panel-label">RAM</span>
-    <div class="h-1.5 w-24 overflow-hidden rounded-full bg-base-700">
+    <div class="h-1.5 w-24 overflow-hidden rounded-full bg-cc-line">
       <div
         class="h-full rounded-full transition-[width] duration-300 ease-out"
-        style="width: {systemPct.toFixed(1)}%; background: {systemPct >= 85
-          ? 'var(--color-cut)'
-          : systemPct >= 70
-            ? 'var(--color-keep)'
-            : 'var(--color-nanami-teal)'}"
+        style="width: {systemPct.toFixed(1)}%; background: {levelColor(systemPct)}"
       ></div>
     </div>
-    <span class="mono text-[10px] text-ink-500">
+    <span class="mono text-[10px] text-cc-text-4">
       {#if memory.stats}
         {formatRam(memory.stats.usedMb)} / {formatRam(memory.stats.totalMb)}
       {:else if memory.error}
-        <span style="color: var(--color-cut)">unavailable</span>
+        <span style="color: var(--color-cc-cut)">unavailable</span>
       {:else}
         reading…
       {/if}
     </span>
     <span
-      class="mono rounded border border-base-700 bg-base-850 px-1.5 py-0.5 text-[11px]
+      class="mono rounded border border-cc-line bg-cc-sunken px-1.5 py-0.5 text-[11px]
         font-semibold"
       title="T9EditorLIT resident memory (Rust host + WebView2 renderers)"
     >
@@ -68,22 +80,18 @@
     <!-- System-wide usage bar -->
     <div class="flex flex-col gap-1">
       <span class="panel-label">RAM</span>
-      <div class="h-1.5 w-28 overflow-hidden rounded-full bg-base-700">
+      <div class="h-1.5 w-28 overflow-hidden rounded-full bg-cc-line">
         <div
           class="h-full rounded-full transition-[width] duration-300 ease-out"
-          style="width: {systemPct.toFixed(1)}%; background: {systemPct >= 85
-            ? 'var(--color-cut)'
-            : systemPct >= 70
-              ? 'var(--color-keep)'
-              : 'var(--color-nanami-teal)'}"
+          style="width: {systemPct.toFixed(1)}%; background: {levelColor(systemPct)}"
         ></div>
       </div>
-      <span class="mono text-[10px] text-ink-500">
+      <span class="mono text-[10px] text-cc-text-4">
         {#if memory.stats}
           {formatRam(memory.stats.usedMb)} / {formatRam(memory.stats.totalMb)}
-          <span class="text-ink-300">· free {formatRam(memory.stats.availableMb)}</span>
+          <span class="text-cc-text-2">· free {formatRam(memory.stats.availableMb)}</span>
         {:else if memory.error}
-          <span style="color: var(--color-cut)">unavailable</span>
+          <span style="color: var(--color-cc-cut)">unavailable</span>
         {:else}
           reading…
         {/if}
@@ -92,7 +100,7 @@
 
     <!-- This app's own footprint -->
     <div
-      class="flex items-baseline gap-1.5 rounded-md border border-base-700 bg-base-850 px-2 py-1"
+      class="flex items-baseline gap-1.5 rounded-md border border-cc-line bg-cc-sunken px-2 py-1"
       title="T9EditorLIT resident memory (Rust host + WebView2 renderers)"
     >
       <span class="panel-label">APP</span>

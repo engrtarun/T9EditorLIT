@@ -1,11 +1,21 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en" class="dark" data-theme="clipchamp">
   <head>
     <meta charset="utf-8" />
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <title>T9EditorLIT</title>
+    <!--
+      Restore the saved theme before the first paint.
+
+      This has to be a separate file rather than an inline <script>:
+      tauri.conf.json ships `script-src 'self'`, which blocks inline
+      execution. Running before the page body means the <html>
+      background already matches the chosen theme when the WebView
+      paints, so switching from a light theme never flashes dark.
+    -->
+    <script src="%sveltekit.assets%/theme-init.js"></script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

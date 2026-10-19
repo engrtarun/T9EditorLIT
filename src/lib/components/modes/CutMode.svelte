@@ -151,7 +151,9 @@
         <button
           type="button"
           class="cc-btn text-[11px]"
-          disabled={transcript.transcribing || transcript.removingSilence || !transcript.hasTranscript}
+          disabled={transcript.transcribing ||
+            transcript.removingSilence ||
+            !transcript.hasTranscript}
           onclick={() => project.info && transcript.removeSilence(project.info.path)}
           title="Detect dead air and cut it out (keeps speech)"
         >

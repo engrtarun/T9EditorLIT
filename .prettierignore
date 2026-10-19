@@ -6,6 +6,7 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 .kilo/
+.kilocode/
 
 # Lockfiles are formatting-stable but huge in diff noise
 package-lock.json
@@ -16,7 +17,15 @@ cache/
 workspace-data/
 *.mp4
 *.mkv
+*.mov
+*.webm
 *.wav
+*.mp3
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
 
 # Reverse-engineering evidence: generated artifacts, never hand-formatted
 Clipchamp Clone/evidence/*.json
@@ -27,6 +36,22 @@ Clipchamp Clone/src-tauri/gen/
 # Extracted third-party zip (vendored, not our code) + captured REA payloads
 _unzip_T9UI/
 docs/clipchamp-ref/
+
+# ── Clipchamp reference material ────────────────────────────────────────────
+# These are *captures of a third-party app*, not our source. The singleFiles/
+# HTML dumps are single-page exports of app.clipchamp.com with megabytes of
+# inlined base64 images and hashed Fluent class names — Prettier cannot even
+# parse them, and reformatting them would destroy their value as byte-exact
+# evidence. The .ipynb files are JSON with base64 attachments that must stay
+# intact for the notebook to open.
+resource_Clipchamp/
+
+# ── Sibling agent workspaces ────────────────────────────────────────────────
+# Separate projects with their own Prettier configs; the root config must not
+# reach into them.
+Clipchamp_MIMO/
+Clipchamp_Bunny/
+WebClipchamp_Clone/
 
 # Secrets
 .env

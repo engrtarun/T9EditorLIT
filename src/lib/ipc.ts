@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type {
   AudioChunk,
   CloudJob,
@@ -210,6 +211,19 @@ export function updateProjectOpened(
   return invoke<void>("update_project_opened", { dbPath, sourcePath, lastOpened });
 }
 
+/**
+ * Reveal a file in Explorer, with it already selected — this is what
+ * Clipchamp's "Open file location" menu row does.
+ *
+ * Routed through this module rather than imported by the component so the
+ * shell keeps its one choke point (AGENTS.md §4). The plugin is registered
+ * in src-tauri/src/lib.rs and `opener:default` is granted in
+ * src-tauri/capabilities/default.json, so no Rust command is added here.
+ */
+export function revealInFolder(path: string): Promise<void> {
+  return revealItemInDir(path);
+}
+
 /** Base URL of the t9cloud Go daemon (loopback only). */
 const VAULT_BASE = "http://127.0.0.1:7878";
 
@@ -290,4 +304,73 @@ export function readEnvFile(path: string): Promise<EnvInfo> {
 /** Write entries back to the .env file. */
 export function writeEnvFile(path: string, entries: EnvEntry[]): Promise<void> {
   return invoke<void>("write_env_file", { path, entries });
+}
+
+// ── Drag & drop ────────────────────────────────────────────────────────────
+
+/**
+ * Extension set `MEDIA_EXTENSIONS` accepts as "importable media". Shared by
+ * the file picker and the drop handler so both routes accept the same files.
+ */
+export const MEDIA_EXTENSIONS = [
+  "mp4",
+  "mkv",
+  "mov",
+  "webm",
+  "avi",
+  "m4v",
+  "mp3",
+  "wav",
+  "aac",
+  "m4a",
+  "ogg",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+] as const;
+
+/** True when a dropped path looks like media this app can probe. */
+export function isMediaPath(path: string): boolean {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return (MEDIA_EXTENSIONS as readonly string[]).includes(ext);
+}
+
+/**
+ * Subscribe to files dragged in from Explorer.
+ *
+ * This is Tauri's native drag-drop, not HTML5 DnD: WebView2 never exposes a
+ * dropped file's absolute path through `DataTransfer`, and the zero-RAM rule
+ * means we cannot read the blob and guess. `onDragDropEvent` hands back real
+ * paths, and — because the OS intercepts the drop — it also gives us the
+ * hover/leave signals needed to paint the full-window "Drop to import" state.
+ *
+ * Returns an unsubscribe function, for use as the cleanup of an `$effect`.
+ */
+export async function onAppDrop(
+  onDrop: (paths: string[]) => void,
+  onHover?: (hovering: boolean) => void,
+): Promise<() => void> {
+  // Plain `vite dev` in a browser (no Tauri shell) has no `__TAURI_INTERNALS__`,
+  // and `getCurrentWebview()` throws there. Importing a file still needs a real
+  // OS path, which HTML5 DnD cannot give us — so outside the shell the
+  // subscription is a no-op instead of an uncaught TypeError that would take
+  // the whole DropLayer effect down with it.
+  if (!("__TAURI_INTERNALS__" in window)) {
+    return () => {};
+  }
+  const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+  return getCurrentWebview().onDragDropEvent((event) => {
+    const kind = event.payload.type;
+    if (kind === "drop") {
+      onHover?.(false);
+      const paths = event.payload.paths;
+      if (paths.length > 0) onDrop(paths);
+    } else if (kind === "enter" || kind === "over") {
+      onHover?.(true);
+    } else if (kind === "leave") {
+      onHover?.(false);
+    }
+  });
 }

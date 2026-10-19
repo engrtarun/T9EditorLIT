@@ -17,8 +17,12 @@
   import { timeline } from "../../stores/timeline.svelte";
   import { player } from "../../stores/player.svelte";
   import { transcript } from "../../stores/transcript.svelte";
+  import { shortcuts } from "../../stores/shortcuts.svelte";
   import { cc } from "../../stores/cc.svelte";
   import { formatClock, thumbStep } from "../../timeline-utils";
+
+  /** Shortest the timeline gets — Clipchamp's collapsed transport strip. */
+  const COLLAPSED_HEIGHT = 44;
 
   // Drag the timeline's top edge to change its height (a horizontal splitter).
   function startHeightResize(event: PointerEvent) {
@@ -26,7 +30,7 @@
     const startH = cc.timelineHeight;
     const move = (e: PointerEvent) => {
       // Dragging down (positive delta) grows the timeline.
-      cc.timelineHeight = Math.min(460, Math.max(96, startH + (e.clientY - startY)));
+      cc.timelineHeight = Math.min(460, Math.max(COLLAPSED_HEIGHT, startH + (e.clientY - startY)));
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -60,9 +64,31 @@
   function zoomOut(): void {
     zoom = Math.max(MIN_ZOOM, Math.round((zoom / 1.5) * 100) / 100);
   }
-  function resetZoom(): void {
+  /** Clipchamp's "Fit timeline" — the whole project back on one screen. */
+  function zoomFit(): void {
     zoom = 1;
   }
+
+  // ── Collapse ────────────────────────────────────────────────────────────
+  // Clipchamp keeps the last height so expanding restores exactly what you
+  // had, rather than jumping to some hard-coded default.
+  let expandedHeight = $state(cc.timelineHeight);
+  const collapsed = $derived(cc.timelineHeight <= COLLAPSED_HEIGHT);
+
+  function toggleCollapse(): void {
+    if (collapsed) {
+      cc.timelineHeight = Math.max(COLLAPSED_HEIGHT + 1, expandedHeight);
+    } else {
+      expandedHeight = cc.timelineHeight;
+      cc.timelineHeight = COLLAPSED_HEIGHT;
+    }
+  }
+
+  // The height splitter writes straight into `cc.timelineHeight`; remember a
+  // usable value while dragging so collapsing later has something to restore.
+  $effect(() => {
+    if (cc.timelineHeight > COLLAPSED_HEIGHT) expandedHeight = cc.timelineHeight;
+  });
 
   // ── Waveform + thumbnail DOM refs ───────────────────────────────────────
   let scrollBox = $state<HTMLDivElement | null>(null);
@@ -180,24 +206,38 @@
     dragging = false;
   }
 
-  // ── Keyboard zoom: Ctrl + "-"/"="/"0" ───────────────────────────────────
+  // ── Keyboard: zoom + focus targets ──────────────────────────────────────
+  // Registered through the store rather than a private window listener, so
+  // Ctrl + "-" cannot be handled twice once Stage is also mounted.
   $effect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
-      if (e.key === "=" || e.key === "+") {
-        e.preventDefault();
-        zoomIn();
-      } else if (e.key === "-" || e.key === "_") {
-        e.preventDefault();
-        zoomOut();
-      } else if (e.key === "0") {
-        e.preventDefault();
-        resetZoom();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const un = [
+      shortcuts.bind("zoomIn", zoomIn),
+      shortcuts.bind("zoomOut", zoomOut),
+      shortcuts.bind("zoomFit", zoomFit),
+      shortcuts.bind("navTimeline", () => scrollBox?.scrollIntoView({ block: "nearest" })),
+      shortcuts.bind("split", splitAtPlayhead),
+    ];
+    return () => un.forEach((fn) => fn());
   });
+
+  /**
+   * `S` — split the playhead position off as its own segment.
+   *
+   * Today a project is one continuous source, so "split" marks a boundary in
+   * the transcript: the line under the playhead ends a kept run and the next
+   * line starts a fresh one. That is the seam an export cuts on, and it is
+   * why no clip objects have to exist yet — the zero-RAM rule means the
+   * timeline stays a view over the source, never a second copy of it.
+   */
+  function splitAtPlayhead(): void {
+    if (!project.hasMedia || !transcript.hasTranscript) return;
+    const t = player.currentTime;
+    const index = transcript.lines.findIndex((l) => t >= l.startSecs && t < l.endSecs);
+    if (index < 0) return;
+    // Toggling the line under the playhead is how you separate two sentences
+    // Whisper merged into one — the boundary an export cuts on.
+    void transcript.toggleKeep(index);
+  }
 
   // ── Ctrl + mouse-wheel zoom (non-passive so preventDefault works) ───────
   $effect(() => {
@@ -228,7 +268,9 @@
     onpointerdown={startHeightResize}
   ></div>
   <!-- Transport -->
-  <div class="relative flex h-11 shrink-0 items-center justify-center gap-1 border-b border-cc-line-soft">
+  <div
+    class="relative flex h-11 shrink-0 items-center justify-center gap-1 border-b border-cc-line-soft"
+  >
     <button
       type="button"
       class="flex h-7 w-7 items-center justify-center rounded text-cc-text-3
@@ -308,140 +350,220 @@
     <span class="mono ml-2 text-[12px] text-cc-text-3">
       {project.hasMedia ? `${formatClock(currentSecs)} / ${project.durationLabel}` : "0:00 / 0:00"}
     </span>
-
-    <!-- Zoom controls -->
-    <div class="absolute right-3 flex items-center gap-1">
-      <button
-        type="button"
-        class="flex h-6 w-6 items-center justify-center rounded text-cc-text-3 hover:bg-cc-tint"
-        title="Zoom out (Ctrl + -)"
-        disabled={!project.hasMedia || zoom <= MIN_ZOOM}
-        onclick={zoomOut}
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14" /></svg>
-      </button>
-      <button
-        type="button"
-        class="mono h-6 min-w-[38px] rounded px-1 text-[10px] text-cc-text-3 hover:bg-cc-tint"
-        title="Reset zoom (Ctrl + 0)"
-        disabled={!project.hasMedia}
-        onclick={resetZoom}
-      >
-        {Math.round(zoom * 100)}%
-      </button>
-      <button
-        type="button"
-        class="flex h-6 w-6 items-center justify-center rounded text-cc-text-3 hover:bg-cc-tint"
-        title="Zoom in (Ctrl + +)"
-        disabled={!project.hasMedia || zoom >= MAX_ZOOM}
-        onclick={zoomIn}
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-      </button>
-    </div>
   </div>
 
-  <!-- Track area -->
-  <div class="relative min-h-0 flex-1 overflow-hidden p-3">
-    {#if !project.hasMedia}
-      <div
-        class="flex h-full items-center justify-center rounded-md border-2 border-dashed
-        border-cc-line"
-      >
-        <span class="text-[12.5px] text-cc-text-3">Drag &amp; drop media here</span>
-      </div>
-    {:else}
-      <div bind:this={scrollBox} class="h-full w-full overflow-x-auto overflow-y-hidden">
+  <!-- Track area. Hidden when collapsed — the section then shows only the
+       44px transport strip, which is exactly the collapsed height. -->
+  {#if !collapsed}
+    <div class="relative min-h-0 flex-1 overflow-hidden p-3">
+      {#if !project.hasMedia}
         <div
-          bind:this={trackEl}
-          class="relative flex h-full cursor-pointer flex-col gap-2 select-none"
-          style={`width: ${zoom * 100}%; min-width: 100%;`}
-          onpointerdown={onPointerDown}
-          onpointermove={onPointerMove}
-          onpointerup={onPointerUp}
-          role="presentation"
+          class="flex h-full items-center justify-center rounded-md border-2 border-dashed
+          border-cc-line"
         >
-          <!-- Thumbnail strip: 1 fps cache, decimated for the DOM. -->
+          <span class="text-[12.5px] text-cc-text-3">Drag &amp; drop media here</span>
+        </div>
+      {:else}
+        <div bind:this={scrollBox} class="h-full w-full overflow-x-auto overflow-y-hidden">
           <div
-            class="h-16 shrink-0 overflow-hidden rounded-md border border-cc-line-soft
-            bg-cc-surface"
+            bind:this={trackEl}
+            class="relative flex h-full cursor-pointer flex-col gap-2 select-none"
+            style={`width: ${zoom * 100}%; min-width: 100%;`}
+            onpointerdown={onPointerDown}
+            onpointermove={onPointerMove}
+            onpointerup={onPointerUp}
+            role="presentation"
           >
-            {#if timeline.hasThumbs}
-              <div class="flex h-full w-full">
-                {#each frames as i (i)}
-                  <img
-                    src={timeline.thumbUrl(i) ?? undefined}
-                    alt=""
-                    loading="lazy"
-                    draggable="false"
-                    class="h-full shrink-0 object-cover"
-                    style={`width: ${framePct}%`}
-                  />
+            <!-- Thumbnail strip: 1 fps cache, decimated for the DOM. -->
+            <div
+              class="h-16 shrink-0 overflow-hidden rounded-md border border-cc-line-soft
+              bg-cc-surface"
+            >
+              {#if timeline.hasThumbs}
+                <div class="flex h-full w-full">
+                  {#each frames as i (i)}
+                    <img
+                      src={timeline.thumbUrl(i) ?? undefined}
+                      alt=""
+                      loading="lazy"
+                      draggable="false"
+                      class="h-full shrink-0 object-cover"
+                      style={`width: ${framePct}%`}
+                    />
+                  {/each}
+                </div>
+              {:else if timeline.loading}
+                <div class="flex h-full items-center justify-center">
+                  <span class="mono text-[10.5px] text-cc-text-4">building thumbnail strip…</span>
+                </div>
+              {:else}
+                <div class="flex h-full items-center justify-center">
+                  <span class="mono text-[10.5px] text-cc-text-4">no thumbnails</span>
+                </div>
+              {/if}
+            </div>
+
+            <!-- Waveform: one peak per bucket, drawn on a small canvas. -->
+            <div
+              bind:this={waveBox}
+              class="h-10 shrink-0 overflow-hidden rounded-md border border-cc-line-soft
+              bg-cc-sunken"
+            >
+              {#if timeline.hasWaveform}
+                <canvas bind:this={canvas} class="block h-full w-full"></canvas>
+              {:else if timeline.loading}
+                <div class="flex h-full items-center justify-center">
+                  <span class="mono text-[10.5px] text-cc-text-4">extracting waveform…</span>
+                </div>
+              {:else if timeline.error}
+                <div class="flex h-full items-center justify-center px-3">
+                  <span class="mono truncate text-[10.5px] text-cc-cut">{timeline.error}</span>
+                </div>
+              {:else}
+                <div class="flex h-full items-center justify-center">
+                  <span class="mono text-[10.5px] text-cc-text-4">no waveform</span>
+                </div>
+              {/if}
+            </div>
+
+            <!-- Cut / keep overlay over the thumbnail strip, from the transcript. -->
+            {#if transcript.hasTranscript && duration > 0}
+              <div class="pointer-events-none absolute inset-x-0 top-0 h-16">
+                {#each transcript.lines as line (line.id)}
+                  {@const left = (line.startSecs / duration) * 100}
+                  {@const width = Math.max(
+                    0.15,
+                    ((line.endSecs - line.startSecs) / duration) * 100,
+                  )}
+                  <div
+                    class="absolute top-0 bottom-0 border-x"
+                    style={`left:{left}%; width:{width}%; background:${
+                      line.keep ? "rgba(52,199,89,0.16)" : "rgba(255,69,58,0.30)"
+                    }; border-color:${line.keep ? "rgba(52,199,89,0.35)" : "rgba(255,69,58,0.5)"}`}
+                  ></div>
                 {/each}
               </div>
-            {:else if timeline.loading}
-              <div class="flex h-full items-center justify-center">
-                <span class="mono text-[10.5px] text-cc-text-4">building thumbnail strip…</span>
-              </div>
-            {:else}
-              <div class="flex h-full items-center justify-center">
-                <span class="mono text-[10.5px] text-cc-text-4">no thumbnails</span>
-              </div>
             {/if}
-          </div>
 
-          <!-- Waveform: one peak per bucket, drawn on a small canvas. -->
-          <div
-            bind:this={waveBox}
-            class="h-10 shrink-0 overflow-hidden rounded-md border border-cc-line-soft
-            bg-cc-sunken"
-          >
-            {#if timeline.hasWaveform}
-              <canvas bind:this={canvas} class="block h-full w-full"></canvas>
-            {:else if timeline.loading}
-              <div class="flex h-full items-center justify-center">
-                <span class="mono text-[10.5px] text-cc-text-4">extracting waveform…</span>
-              </div>
-            {:else if timeline.error}
-              <div class="flex h-full items-center justify-center px-3">
-                <span class="mono truncate text-[10.5px] text-cc-cut">{timeline.error}</span>
-              </div>
-            {:else}
-              <div class="flex h-full items-center justify-center">
-                <span class="mono text-[10.5px] text-cc-text-4">no waveform</span>
-              </div>
-            {/if}
-          </div>
-
-          <!-- Cut / keep overlay over the thumbnail strip, from the transcript. -->
-          {#if transcript.hasTranscript && duration > 0}
-            <div class="pointer-events-none absolute inset-x-0 top-0 h-16">
-              {#each transcript.lines as line (line.id)}
-                {@const left = (line.startSecs / duration) * 100}
-                {@const width = Math.max(0.15, ((line.endSecs - line.startSecs) / duration) * 100)}
-                <div
-                  class="absolute top-0 bottom-0 border-x"
-                  style={`left:{left}%; width:{width}%; background:${
-                    line.keep ? "rgba(52,199,89,0.16)" : "rgba(255,69,58,0.30)"
-                  }; border-color:${line.keep ? "rgba(52,199,89,0.35)" : "rgba(255,69,58,0.5)"}`}
-                ></div>
-              {/each}
-            </div>
-          {/if}
-
-          <!-- Playhead -->
-          {#if duration > 0}
-            <div
-              class="pointer-events-none absolute top-0 bottom-0 z-10 w-px bg-cc-purple"
-              style={`left:${playheadPct}%`}
-            >
+            <!-- Playhead -->
+            {#if duration > 0}
               <div
-                class="absolute -top-0.5 -left-[5px] h-2.5 w-2.5 rotate-45 rounded-[2px] bg-cc-purple"
-              ></div>
-            </div>
-          {/if}
+                class="pointer-events-none absolute top-0 bottom-0 z-10 w-px bg-cc-purple"
+                style={`left:${playheadPct}%`}
+              >
+                <div
+                  class="absolute -top-0.5 -left-[5px] h-2.5 w-2.5 rotate-45 rounded-[2px] bg-cc-purple"
+                ></div>
+              </div>
+            {/if}
+          </div>
         </div>
-      </div>
-    {/if}
+      {/if}
+    </div>
+  {/if}
+
+  <!--
+    Bottom toolbar — Clipchamp's `fuiToolbar`, docked bottom-right below the
+    tracks: Zoom out · Zoom in · Fit timeline · Collapse timeline. Shapes and
+    order taken from the capture in cell 13 of resource_Clipchamp/
+    desing4use.ipynb; the keyboard equivalents are listed in `Ctrl + /`.
+  -->
+  <div
+    class="flex h-9 shrink-0 items-center justify-end gap-1 border-t border-cc-line-soft
+      bg-cc-surface px-2"
+    role="toolbar"
+    aria-label="Timeline toolbar"
+  >
+    <button
+      type="button"
+      class="flex h-7 w-7 items-center justify-center rounded text-cc-text-3 hover:bg-cc-tint
+        disabled:cursor-not-allowed disabled:text-cc-text-4"
+      data-testid="toolbar-button-zoom-out"
+      title="Zoom out timeline Ctrl + -"
+      aria-label="Zoom out timeline"
+      disabled={!project.hasMedia || zoom <= MIN_ZOOM}
+      onclick={zoomOut}
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.9"
+        stroke-linecap="round"
+        aria-hidden="true"
+      >
+        <circle cx="11" cy="11" r="6.5" />
+        <path d="M8 11h6M16 16l4 4" />
+      </svg>
+    </button>
+
+    <button
+      type="button"
+      class="mono h-7 min-w-[42px] rounded px-1 text-[10.5px] text-cc-text-3 hover:bg-cc-tint
+        disabled:cursor-not-allowed disabled:text-cc-text-4"
+      title="Fit timeline Ctrl + 0"
+      aria-label="Fit timeline"
+      disabled={!project.hasMedia}
+      onclick={zoomFit}
+    >
+      {Math.round(zoom * 100)}%
+    </button>
+
+    <button
+      type="button"
+      class="flex h-7 w-7 items-center justify-center rounded text-cc-text-3 hover:bg-cc-tint
+        disabled:cursor-not-allowed disabled:text-cc-text-4"
+      data-testid="toolbar-button-zoom-in"
+      title="Zoom in timeline Ctrl + +"
+      aria-label="Zoom in timeline"
+      disabled={!project.hasMedia || zoom >= MAX_ZOOM}
+      onclick={zoomIn}
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.9"
+        stroke-linecap="round"
+        aria-hidden="true"
+      >
+        <circle cx="11" cy="11" r="6.5" />
+        <path d="M8 11h6M11 8v6M16 16l4 4" />
+      </svg>
+    </button>
+
+    <span class="mx-1 h-4 w-px bg-cc-line"></span>
+
+    <button
+      type="button"
+      class="flex h-7 w-7 items-center justify-center rounded text-cc-text-3 hover:bg-cc-tint"
+      data-testid="button-collapse-timeline"
+      title={collapsed ? "Expand timeline" : "Collapse timeline"}
+      aria-label={collapsed ? "Expand timeline" : "Collapse timeline"}
+      aria-expanded={!collapsed}
+      onclick={toggleCollapse}
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.9"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        {#if collapsed}
+          <path d="M4 14h16M8 9l4-4 4 4" />
+        {:else}
+          <path d="M4 10h16M8 15l4 4 4-4" />
+        {/if}
+      </svg>
+    </button>
   </div>
 </section>

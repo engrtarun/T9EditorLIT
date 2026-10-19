@@ -27,7 +27,19 @@ export default defineConfig(() => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      //    …and the sibling workspaces that live inside this repo. They are
+      //    separate projects with their own builds; without this, Vite
+      //    watches their `dist/` output and hard-reloads the editor every time
+      //    one of them rebuilds.
+      ignored: [
+        "**/src-tauri/**",
+        "**/Clipchamp_Bunny/**",
+        "**/Clipchamp_MIMO/**",
+        "**/Clipchamp Clone/**",
+        "**/WebClipchamp_Clone/**",
+        "**/_unzip_T9UI/**",
+        "**/resource_Clipchamp/**",
+      ],
     },
   },
 }));

@@ -20,17 +20,37 @@
     exportStore.prepare();
   });
 
-  const QUALITIES: Array<{ value: "original" | "high" | "balanced" | "small"; label: string; hint: string }> = [
-    { value: "original", label: "Original (near-lossless)", hint: "Largest file, visually identical to source" },
+  const QUALITIES: Array<{
+    value: "original" | "high" | "balanced" | "small";
+    label: string;
+    hint: string;
+  }> = [
+    {
+      value: "original",
+      label: "Original (near-lossless)",
+      hint: "Largest file, visually identical to source",
+    },
     { value: "high", label: "High (recommended)", hint: "Great quality, sensible file size" },
     { value: "balanced", label: "Balanced", hint: "Smaller file, slight quality trade-off" },
     { value: "small", label: "Small", hint: "Smallest file, for quick sharing" },
   ];
 
   const MODES: Array<{ value: "hybrid" | "copy" | "encode"; label: string; hint: string }> = [
-    { value: "hybrid", label: "Smart Hybrid (default)", hint: "Stream-copy aligned cuts, micro-encode only the partial GOPs" },
-    { value: "copy", label: "Stream Copy Only", hint: "Snap cuts to keyframes — zero quality loss, may drop short segments" },
-    { value: "encode", label: "Full Re-Encode", hint: "Exact cut points, everything re-encoded — slowest, highest compatibility" },
+    {
+      value: "hybrid",
+      label: "Smart Hybrid (default)",
+      hint: "Stream-copy aligned cuts, micro-encode only the partial GOPs",
+    },
+    {
+      value: "copy",
+      label: "Stream Copy Only",
+      hint: "Snap cuts to keyframes — zero quality loss, may drop short segments",
+    },
+    {
+      value: "encode",
+      label: "Full Re-Encode",
+      hint: "Exact cut points, everything re-encoded — slowest, highest compatibility",
+    },
   ];
 
   function formatTime(secs: number): string {
@@ -92,7 +112,10 @@
     <div class="flex items-center justify-between mb-2">
       <span class="cc-label">Source</span>
       {#if project.info}
-        <span class="mono text-[11px] text-cc-text-3 truncate max-w-[55%]" title={project.info.path}>
+        <span
+          class="mono text-[11px] text-cc-text-3 truncate max-w-[55%]"
+          title={project.info.path}
+        >
           {project.info.path.split(/[\\/]/).pop()}
         </span>
       {/if}
@@ -181,7 +204,11 @@
   <!-- Actions -->
   <div class="flex flex-col gap-2">
     {#if exportStore.status === "running"}
-      <button type="button" class="cc-btn cc-btn-primary w-full" onclick={() => exportStore.cancel()}>
+      <button
+        type="button"
+        class="cc-btn cc-btn-primary w-full"
+        onclick={() => exportStore.cancel()}
+      >
         Cancel Export
       </button>
     {:else}
@@ -189,7 +216,9 @@
         type="button"
         class="cc-btn cc-btn-primary w-full text-[13px]"
         onclick={exportNow}
-        disabled={exportStore.segments.length === 0 || !exportStore.outputPath || exportStore.status === "planning"}
+        disabled={exportStore.segments.length === 0 ||
+          !exportStore.outputPath ||
+          exportStore.status === "planning"}
       >
         {exportStore.status === "planning" ? "Preparing…" : "Export Video"}
       </button>
@@ -212,7 +241,9 @@
     <div class="cc-panel p-3">
       <div class="flex items-center justify-between mb-1.5">
         <span class="cc-label">Progress</span>
-        <span class="mono text-[11px] text-cc-text-3">{exportStore.progress.percent.toFixed(1)}%</span>
+        <span class="mono text-[11px] text-cc-text-3"
+          >{exportStore.progress.percent.toFixed(1)}%</span
+        >
       </div>
       <div class="h-2 rounded-full bg-cc-line overflow-hidden">
         <div
@@ -285,17 +316,34 @@
       <div class="mt-3 border-l-4 border-cc-purple pl-2">
         <div class="text-[11px] font-semibold text-cc-text-2">Export plan</div>
         <div class="grid grid-cols-2 gap-1 text-[10.5px] mt-1">
-          <div><span class="text-cc-text-3">Pieces:</span> <span class="font-mono">{exportStore.currentPlan.pieces.length}</span></div>
-          <div><span class="text-cc-text-3">Duration:</span> <span class="font-mono">{formatTime(exportStore.currentPlan.outputDurationSecs)}</span></div>
-          <div><span class="text-cc-text-3">Stream-copy:</span> <span class="font-mono text-green-700">{exportStore.currentPlan.copyPieces}</span></div>
-          <div><span class="text-cc-text-3">Re-encode:</span> <span class="font-mono text-amber-700">{exportStore.currentPlan.encodePieces}</span></div>
+          <div>
+            <span class="text-cc-text-3">Pieces:</span>
+            <span class="font-mono">{exportStore.currentPlan.pieces.length}</span>
+          </div>
+          <div>
+            <span class="text-cc-text-3">Duration:</span>
+            <span class="font-mono">{formatTime(exportStore.currentPlan.outputDurationSecs)}</span>
+          </div>
+          <div>
+            <span class="text-cc-text-3">Stream-copy:</span>
+            <span class="font-mono text-green-700">{exportStore.currentPlan.copyPieces}</span>
+          </div>
+          <div>
+            <span class="text-cc-text-3">Re-encode:</span>
+            <span class="font-mono text-amber-700">{exportStore.currentPlan.encodePieces}</span>
+          </div>
           {#if exportStore.currentPlan.encoder}
-            <div class="col-span-2"><span class="text-cc-text-3">Encoder:</span> <span class="font-mono">{exportStore.currentPlan.encoder}</span></div>
+            <div class="col-span-2">
+              <span class="text-cc-text-3">Encoder:</span>
+              <span class="font-mono">{exportStore.currentPlan.encoder}</span>
+            </div>
           {/if}
         </div>
         {#if exportStore.currentPlan.warnings.length > 0}
           <details class="mt-2 text-[10px] text-amber-700 bg-amber-50 rounded p-2">
-            <summary class="cursor-pointer font-medium">Warnings ({exportStore.currentPlan.warnings.length})</summary>
+            <summary class="cursor-pointer font-medium"
+              >Warnings ({exportStore.currentPlan.warnings.length})</summary
+            >
             <ul class="mt-1 space-y-0.5 pl-4 list-disc">
               {#each exportStore.currentPlan.warnings as w}
                 <li>{w}</li>
@@ -307,11 +355,21 @@
           <summary class="cursor-pointer">piece breakdown</summary>
           <div class="mt-1 space-y-1 max-h-40 overflow-y-auto">
             {#each exportStore.currentPlan.pieces as piece (piece.index)}
-              <div class="flex items-center gap-1.5 rounded px-2 py-1 {piece.kind === 'copy' ? 'bg-green-50' : 'bg-amber-50'}">
-                <span class="rounded px-1.5 py-0.5 text-[9px] font-medium {piece.kind === 'copy' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}">
+              <div
+                class="flex items-center gap-1.5 rounded px-2 py-1 {piece.kind === 'copy'
+                  ? 'bg-green-50'
+                  : 'bg-amber-50'}"
+              >
+                <span
+                  class="rounded px-1.5 py-0.5 text-[9px] font-medium {piece.kind === 'copy'
+                    ? 'bg-green-100 text-green-800'
+                    : 'bg-amber-100 text-amber-800'}"
+                >
                   {piece.kind === "copy" ? "✓ copy" : "⚙ encode"}
                 </span>
-                <span class="mono text-[10px]">{formatTime(piece.start)} → {formatTime(piece.end)}</span>
+                <span class="mono text-[10px]"
+                  >{formatTime(piece.start)} → {formatTime(piece.end)}</span
+                >
               </div>
             {/each}
           </div>

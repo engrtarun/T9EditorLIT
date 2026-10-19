@@ -146,52 +146,159 @@
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   Clipchamp port (light).
+   Clipchamp port — DARK by default.
 
-   Tokens below were extracted from the shipped app with REA — see
-   docs/CLIPCHAMP_REA_REFERENCE.md for the Evidence and how to replay
-   the captures. The ramp and neutrals are the real ones, not eyeballed.
+   ONE token namespace (`--color-cc-*`), THREE themes. Components are
+   written once against the names; only the values swap:
+
+     data-theme="clipchamp"        Clipchamp dark  (default)
+     data-theme="nanami"           charcoal + rose/gold — T9's own look
+     data-theme="clipchamp-light"  the shipped app's real light tokens
+
+   Dark values are the ones the user settled on in
+   resource_Clipchamp/clipchamp_test.html (his own working prototype, so
+   they are chosen, not eyeballed by us). Light values were extracted from
+   the shipped app with REA — see docs/CLIPCHAMP_REA_REFERENCE.md.
+
+   `@theme static` forces Tailwind to emit every token even when the only
+   reference is a `var(--color-cc-…)` inside a component's SVG attribute;
+   without it a token can silently resolve to nothing and the fill vanishes.
    ══════════════════════════════════════════════════════════════════ */
 
-@theme {
-  /* Surfaces, top to bottom. */
-  --color-cc-bg: #f4f4f4;
-  --color-cc-surface: #ffffff;
-  --color-cc-sunken: #faf9f8;
-  --color-cc-tint: #f3f2f1;
+@theme static {
+  /* Surfaces, top to bottom: chrome → stage → panel → hover. */
+  --color-cc-bg: #121219;
+  --color-cc-sunken: #0c0c11;
+  --color-cc-surface: #1b1b25;
+  --color-cc-tint: #242430;
+  /* Floating layers (menus, popovers) sit one step above the panel so a
+     menu opened over the sidebar still reads as lifted. */
+  --color-cc-menu: #1e1e29;
 
-  /* Hairlines. Clipchamp separates panels with warm greys, never black. */
-  --color-cc-line: #e1dfdd;
-  --color-cc-line-soft: #edebe9;
+  /* Hairlines. */
+  --color-cc-line: #2e2e3a;
+  --color-cc-line-soft: #222230;
 
-  /* Text. */
-  --color-cc-text: #252423;
-  --color-cc-text-2: #484644;
-  --color-cc-text-3: #605e5c;
-  --color-cc-text-4: #959595;
+  /* Text. Every step below clears 4.5:1 on --color-cc-surface. */
+  --color-cc-text: #ececf2;
+  --color-cc-text-2: #c9c9d4;
+  --color-cc-text-3: #9a9aa8;
+  --color-cc-text-4: #82828f;
 
-  /* The purple ramp — every accent in the app comes from here. */
-  --color-cc-purple: #7611f0;
-  --color-cc-purple-2: #9136f2;
-  --color-cc-purple-3: #a966ff;
-  --color-cc-lilac: #b76aff;
-  --color-cc-blush: #ecb4ff;
+  /* The purple ramp. Roles, not a light→dark gradient, because dark UIs
+     need the *opposite* ordering from light ones for the same jobs:
+
+       purple     brand accent — focus rings, the rail indicator, borders.
+                  Never carries text on a panel; see link for that.
+       purple-2   gradient stop that carries WHITE text (CTA cards).
+       purple-3   second gradient stop, same constraint.
+       btn        filled primary button background — AA with white.
+       btn-hover  its hover state.
+       link       accent TEXT on a panel — the bright end, so 13px links
+                  on --color-cc-surface still clear 4.5:1.
+       lilac      decorative fills only (empty-state art, thumbnails).
+       blush      decorative fills only. */
+  --color-cc-purple: #7c5cff;
+  --color-cc-purple-2: #5b3fe8;
+  --color-cc-purple-3: #6a56ef;
+  --color-cc-btn: #4f31d9;
+  --color-cc-btn-hover: #6a48e6;
+  --color-cc-link: #9d84ff;
+  --color-cc-lilac: #b06bff;
+  --color-cc-blush: #d0b4ff;
 
   /* Decision ramp: the three states a transcript line can be worked on.
      Green = keep, red = cut, amber = "the AI flagged this but you kept it,
      look again". Amber sits deliberately between the other two so the eye
      reads it as undecided rather than as a third decision.
 
-     These tokens were referenced by PolishMode and VaultCard but never
-     defined, so every `text-cc-cut` / `bg-cc-keep` there compiled to nothing
-     and rendered unstyled. Defining them here is what makes both those
-     components and the transcript colour coding work. */
+     `-dim` is the chip background the matching text sits on; each pair is
+     contrast-checked as a pair, which is why the dims are near-black
+     rather than pastel here — pastel dims are a light-theme device. */
+  --color-cc-keep: #3ddc84;
+  --color-cc-keep-dim: #16261c;
+  --color-cc-cut: #ff5a5a;
+  --color-cc-cut-dim: #2a1418;
+  --color-cc-review: #ffce4d;
+  --color-cc-review-dim: #3a3016;
+}
+
+/* ── Nanami: charcoal + rose/gold. ─────────────────────────────────────────
+   Same jobs, T9's palette. Kept unlayered on purpose — Tailwind emits
+   `@theme` into `@layer theme`, and unlayered rules outrank any layer, so
+   this beats the block above on the same element regardless of order. */
+[data-theme="nanami"] {
+  --color-cc-bg: #0f1114;
+  --color-cc-sunken: #0b0d10;
+  --color-cc-surface: #14161a;
+  --color-cc-tint: #1c1f25;
+  --color-cc-menu: #1a1d22;
+
+  --color-cc-line: #2e333c;
+  --color-cc-line-soft: #23272e;
+
+  --color-cc-text: #e9e7e4;
+  --color-cc-text-2: #cbc9c5;
+  --color-cc-text-3: #a3a19d;
+  --color-cc-text-4: #7f7e7a;
+
+  --color-cc-purple: #d4a5a5;
+  --color-cc-purple-2: #8c5f5f;
+  --color-cc-purple-3: #a87878;
+  --color-cc-btn: #8c5f5f;
+  --color-cc-btn-hover: #a87878;
+  --color-cc-link: #e0b8b8;
+  --color-cc-lilac: #a8c5c0;
+  --color-cc-blush: #f0dcd8;
+
+  --color-cc-keep: #e0b64c;
+  --color-cc-keep-dim: #3a3018;
+  --color-cc-cut: #e0645f;
+  --color-cc-cut-dim: #3d1c1a;
+  --color-cc-review: #a8c5c0;
+  --color-cc-review-dim: #1f2e2c;
+}
+
+/* ── Clipchamp light: the shipped app's real Fluent tokens. ─────────────── */
+[data-theme="clipchamp-light"] {
+  --color-cc-bg: #f4f4f4;
+  --color-cc-surface: #ffffff;
+  --color-cc-sunken: #faf9f8;
+  --color-cc-tint: #f3f2f1;
+  --color-cc-menu: #ffffff;
+
+  --color-cc-line: #e1dfdd;
+  --color-cc-line-soft: #edebe9;
+
+  --color-cc-text: #252423;
+  --color-cc-text-2: #484644;
+  --color-cc-text-3: #605e5c;
+  --color-cc-text-4: #797979;
+
+  --color-cc-purple: #7611f0;
+  --color-cc-purple-2: #6200d5;
+  --color-cc-purple-3: #9136f2;
+  --color-cc-btn: #6200d5;
+  --color-cc-btn-hover: #5600b8;
+  --color-cc-link: #6200d5;
+  --color-cc-lilac: #b76aff;
+  --color-cc-blush: #ecb4ff;
+
   --color-cc-keep: #1f9d55;
   --color-cc-keep-dim: #d9f0e3;
   --color-cc-cut: #d93a30;
   --color-cc-cut-dim: #fadfdd;
   --color-cc-review: #c98500;
   --color-cc-review-dim: #fdeecb;
+}
+
+/* Native widget painting follows the active theme: form controls,
+   selection and the scrollbars Chrome draws itself. */
+html {
+  color-scheme: dark;
+}
+html[data-theme="clipchamp-light"] {
+  color-scheme: light;
 }
 
 @layer components {
@@ -201,7 +308,10 @@
     background-color: var(--color-cc-bg);
     color: var(--color-cc-text);
     font-family: "Segoe UI", "Inter", system-ui, sans-serif;
-    color-scheme: light;
+    /* Inherited from <html>: dark for clipchamp/nanami, light only when
+       data-theme="clipchamp-light". Re-declaring it as `light` here is what
+       made the old dark build paint light scrollbars + form controls. */
+    color-scheme: inherit;
   }
 
   .cc-shell ::-webkit-scrollbar {
@@ -209,6 +319,7 @@
   }
   .cc-shell ::-webkit-scrollbar-thumb {
     background-color: var(--color-cc-line);
+    border-radius: 4px;
   }
   .cc-shell ::-webkit-scrollbar-thumb:hover {
     background-color: var(--color-cc-text-4);
@@ -257,19 +368,23 @@
     cursor: not-allowed;
   }
 
-  /* The one filled control: Import media, Try it, New video. */
+  /* The one filled control: Import media, Try it, New video.
+     Uses the `btn` token rather than `purple`: on a dark surface the brand
+     purple is the *light* end of the ramp, so white label text on it lands
+     near 3.5:1. `--color-cc-btn` is the version contrast-checked to carry
+     white, and `purple` stays free for focus rings and the rail indicator. */
   .cc-btn-primary {
-    background-color: var(--color-cc-purple);
-    border-color: var(--color-cc-purple);
+    background-color: var(--color-cc-btn);
+    border-color: var(--color-cc-btn);
     color: #ffffff;
   }
   .cc-btn-primary:hover:not(:disabled) {
-    background-color: var(--color-cc-purple-2);
-    border-color: var(--color-cc-purple-2);
+    background-color: var(--color-cc-btn-hover);
+    border-color: var(--color-cc-btn-hover);
   }
 
-  /* Icon-rail entry: flat until selected, then a white pill with the
-     purple indicator bar down its left edge. */
+  /* Icon-rail entry: flat until selected, then a raised pill with the
+     accent indicator bar down its left edge. */
   .cc-rail-btn {
     position: relative;
     display: flex;
@@ -284,7 +399,9 @@
     line-height: 1.15;
     text-align: center;
     cursor: pointer;
-    transition: background-color 120ms ease;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease;
   }
   .cc-rail-btn:hover {
     background-color: var(--color-cc-tint);
@@ -293,7 +410,9 @@
   .cc-rail-btn[aria-selected="true"] {
     background-color: var(--color-cc-surface);
     color: var(--color-cc-text);
-    box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+    box-shadow:
+      inset 0 0 0 1px var(--color-cc-line-soft),
+      0 1px 2px rgb(0 0 0 / 30%);
   }
   .cc-rail-btn[aria-selected="true"]::before {
     content: "";
@@ -320,4 +439,137 @@
       6px -6px,
       -6px 0;
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Fluent menu (project title dropdown, cloud dropdown, "…" overflow).
+
+   Shapes and motion are lifted from the real popup in
+   resource_Clipchamp/singleFiles/fileRenameer.html — `fui-MenuPopover`
+   → `fui-MenuList` (max-width 280px) → `fui-MenuItem` rows with a
+   20px icon slot and an optional second line of secondary text, split
+   by `fui-MenuDivider`. Colours come from the theme tokens, so the
+   same markup works in all three themes.
+
+   Kept outside `@layer` on purpose: these are consumption rules, not a
+   base, and unlayered CSS outranks every layer Tailwind emits.
+   ══════════════════════════════════════════════════════════════════ */
+
+.cc-menu {
+  position: absolute;
+  z-index: 70;
+  min-width: 200px;
+  max-width: 280px;
+  padding: 4px;
+  border: 1px solid var(--color-cc-line);
+  border-radius: 8px;
+  background-color: var(--color-cc-menu);
+  /* Fluent pops its menus with a short vertical squash so the panel
+     appears to grow out of the trigger rather than fade in over it. */
+  transform-origin: top center;
+  animation: cc-menu-in 140ms cubic-bezier(0.1, 0.9, 0.2, 1);
+  box-shadow:
+    0 8px 24px rgb(0 0 0 / 45%),
+    0 2px 6px rgb(0 0 0 / 35%);
+}
+
+@keyframes cc-menu-in {
+  from {
+    opacity: 0;
+    transform: scaleY(0.93) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1) translateY(0);
+  }
+}
+
+.cc-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: none;
+  border: none;
+  color: var(--color-cc-text);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 80ms ease;
+}
+/* The "Open file location" row carries a path beneath its label, so it
+   top-aligns instead of centring — same as the source's inline
+   `style={{alignItems: 'start'}}`. */
+.cc-menu-item[data-lines="2"] {
+  align-items: flex-start;
+}
+.cc-menu-item:hover:not(:disabled) {
+  background-color: var(--color-cc-tint);
+}
+.cc-menu-item:disabled {
+  color: var(--color-cc-text-4);
+  cursor: default;
+}
+.cc-menu-item:focus-visible {
+  outline: 2px solid var(--color-cc-purple);
+  outline-offset: -2px;
+}
+
+.cc-menu-icon {
+  display: flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-cc-text-2);
+}
+.cc-menu-item:hover:not(:disabled) .cc-menu-icon {
+  color: var(--color-cc-text);
+}
+
+.cc-menu-text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+}
+/* Secondary line: the folder path under "Open file location". */
+.cc-menu-sub {
+  overflow: hidden;
+  color: var(--color-cc-text-4);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Keyboard shortcut / state hint flush right, as Fluent's
+   `MenuItem__secondaryContent` renders it. */
+.cc-menu-hint {
+  color: var(--color-cc-text-4);
+  font-size: 11px;
+}
+
+.cc-menu-divider {
+  height: 1px;
+  margin: 4px 0;
+  border: none;
+  background-color: var(--color-cc-line);
+}
+
+/* Inline rename field Clipchamp swaps the menu body for. */
+.cc-menu-input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--color-cc-purple);
+  border-radius: 4px;
+  background-color: var(--color-cc-bg);
+  color: var(--color-cc-text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
 }

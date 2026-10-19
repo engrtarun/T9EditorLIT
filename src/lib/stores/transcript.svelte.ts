@@ -133,11 +133,7 @@ class TranscriptStore {
    * its speech. Short inter-sentence breaths stay because `minSecs` sets the
    * floor on what counts as silence.
    */
-  async removeSilence(
-    sourcePath: string,
-    noiseDb = -30,
-    minSecs = 0.8,
-  ): Promise<void> {
+  async removeSilence(sourcePath: string, noiseDb = -30, minSecs = 0.8): Promise<void> {
     this.removingSilence = true;
     this.silenceInfo = "detecting silence…";
     this.error = null;

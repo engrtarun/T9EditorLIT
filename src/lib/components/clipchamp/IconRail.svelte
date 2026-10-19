@@ -8,6 +8,14 @@
    */
   import type { RailTab } from "../../stores/cc.svelte";
   import { cc } from "../../stores/cc.svelte";
+  import { shortcuts } from "../../stores/shortcuts.svelte";
+
+  /** `Alt + 1` moves focus to the rail, so the next Tab walks its tabs. */
+  let railEl: HTMLElement | null = $state(null);
+
+  $effect(() => {
+    return shortcuts.bind("navRail", () => railEl?.focus());
+  });
 
   type RailItem = { id: RailTab; label: string; path: string };
 
@@ -57,10 +65,13 @@
 </script>
 
 <div
-  class="flex w-[60px] shrink-0 flex-col gap-1 border-r border-cc-line bg-cc-bg px-2 py-2"
+  bind:this={railEl}
+  class="flex w-[60px] shrink-0 flex-col gap-1 border-r border-cc-line bg-cc-bg px-2 py-2
+    focus-visible:outline-none"
   aria-label="Sidebar navigation"
   role="tablist"
   aria-orientation="vertical"
+  tabindex="-1"
 >
   {#each ITEMS as item (item.id)}
     <button
