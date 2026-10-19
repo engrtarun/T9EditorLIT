@@ -4,6 +4,21 @@
   import TranscriptPanel from '../cut/TranscriptPanel.svelte';
   import WaveTimeline from '../cut/WaveTimeline.svelte';
   import { project } from '../../stores/project.svelte';
+  import { layout } from '../../stores/layout.svelte';
+
+  /** Clipchamp's `role="separator" aria-label="Resize panel"` — drag the edge. */
+  function startResize(e: PointerEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = layout.transcriptWidth;
+    const move = (ev: PointerEvent) => layout.setTranscriptWidth(startW - (ev.clientX - startX));
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
 </script>
 
 <!-- 7:3 CUT PANEL — Clipchamp's centre column, but with the transcript panel
@@ -16,6 +31,16 @@
     <div class="flex min-h-0 min-w-0 flex-1 flex-col border-r border-nc-line">
       <VideoPreview />
     </div>
+
+    <!-- resize separator -->
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize panel"
+      title="Drag to resize"
+      onpointerdown={startResize}
+      class="w-[3px] shrink-0 cursor-col-resize bg-nc-line transition-colors hover:bg-nc-gold/60"
+    ></div>
 
     <!-- Right box -->
     {#if project.showTranscript}

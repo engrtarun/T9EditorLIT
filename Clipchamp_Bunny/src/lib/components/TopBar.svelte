@@ -1,7 +1,7 @@
 <script lang="ts">
   import { project } from '../stores/project.svelte';
-  import { player } from '../stores/player.svelte';
   import { fmtHuman } from '../utils';
+  import CloudMenu from './CloudMenu.svelte';
 
   const pct = $derived(project.durationSec ? (project.cutSec / project.durationSec) * 100 : 0);
 </script>
@@ -55,23 +55,8 @@
     </svg>
   </button>
 
-  <!-- cloud / local toggle -->
-  <button
-    class="grid h-8 w-8 place-items-center rounded-md border border-nc-line text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-    title="Cloud / local save"
-  >
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.7"
-    >
-      <path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.1 9.6 4 4 0 0 0 7 17.9" />
-      <path d="M12 12v9M9 15l3-3 3 3" />
-    </svg>
-  </button>
+  <!-- cloud / local toggle → backup & AI providers -->
+  <CloudMenu />
 
   <div class="flex-1"></div>
 

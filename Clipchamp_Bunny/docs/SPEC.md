@@ -135,7 +135,35 @@ Nanami ka rule: **no overtime, no wasted work, 7:3 ratio one strike.**
 
 ---
 
-## 9. Clipchamp parity (measured from the OBS capture + DOM extract)
+## 9. Clipchamp DOM anatomy (from `singleFiles/afterClickDP.html`)
+
+Clipchamp ke `data-testid` se poora component map nikla. Ye hamare component names ka
+reference hai — naya UI banane se pehle yahan dekho:
+
+| Area | Clipchamp test-ids |
+| ---- | ------------------ |
+| Top bar | `editor-nav` · `project-name-container` · `project-title-button` · `odsp-backup-button` (+`backup-icon-enabled`) · `premium-icon` · `help-and-support-button` · `me-control` |
+| Left rail | `property-panel-button-media` · `-recordCreate` · `-discover` · `-templates` · `-text` · `-transitions` |
+| Left panel | `drawer` · `sidebar-section` · `add-media` · `asset` · `asset-draggable` · `video-preview` · `progress-bar` · `displayed-percentage` · `add-asset-button` · `click-to-add` · `asset-title` · `in-use-checkmark` |
+| Stage | `stage-button-undo` · `stage-button-redo` · `stage-canvas` · `aspect-ratio-preview` · `aspect-ratio-selector` · `global-toolbar-gradient-color-picker` · `enter-fullscreen` · `share-menu-button` · `button-export` |
+| Timeline | `ai-suggestions-popover` · `toolbar-button-split` · `toStart` · `fastBackward` · `fastForward` · `timelinePlayPause` · `current-time` · `total-duration` · `timeline-ruler` · `seeker-container` · `seeker-stem` · `seeker-handle` · `timeline-scroll-container` · `tracks-container` |
+| Lanes | `track` · `track-item` · `track-item-droppable-zone` · `track-row-droppable-zone` · `video-track` · `filmstrip` · `filmstrip-back` · `empty-state` · `empty-state-audio` · `hide-button` |
+| Zoom | `toolbar-button-zoom-out` · `-zoom-in` · `-zoom-fit` · `button-collapse-timeline` |
+| Right rail | `property-panel-button-captions` (Clipchamp: "Property panel") |
+
+Menu visual (`fui-MenuPopover`): bg **`#1E1E29`** · radius 4px · 1px stroke · shadow16 ·
+4px padding · item min-height 32px · icon 20px · text 14px · divider `neutralStroke2`.
+
+Asset tile anatomy: thumb (`video-preview`, opacity .6 jab loading) → progress bar + % →
+hover pe `+` (bottom-right, add to timeline) → hover pe `⋮` (top-right, More options) →
+title + in-use ✓ checkmark. Right-click bhi menu kholta hai.
+
+Stage Clipchamp me ek real `<canvas>` hai (594×492 backing, 475.2×393.6 CSS) — hum `<video>`
+use karte hain, halka hai.
+
+---
+
+## 10. Clipchamp parity (measured from the OBS capture + DOM extract)
 
 Reference: `resource_Clipchamp/clipchamp_OBSrecord.mp4` (Clipchamp **dark mode**, 1280×720 frame)
 and `resource_Clipchamp/singleFiles/openclipchamp.html` (SingleFile DOM, menu bg `#1E1E29`).
@@ -150,51 +178,79 @@ and `resource_Clipchamp/singleFiles/openclipchamp.html` (SingleFile DOM, menu bg
 | Tool row | left: AI · ✂ · 🧲  · right: zoom | same |
 | Ruler | 26px, `mm:ss` | 26px, same |
 | Lanes | T 30px → **Video 58px** → **Audio 44px** | same order, same heights |
-| Playhead | 2px line + round handle on the ruler | same |
+| Playhead | 2px stem + round handle on the ruler | same |
 | Right rail | slim, `CC Captions` | 52px, Transcript + AI |
+| Panel resize | `separator` "Resize panel" | same (drag se width) |
+| Timeline collapse | `button-collapse-timeline` | same |
 
 **Deliberate deviations from Clipchamp (all ours, none accidental):**
-1. Transcript panel on the right of the canvas (340px) — the core feature.
+1. Transcript panel on the right of the canvas (resizable, default 340px) — core feature.
 2. Nanami gold instead of Clipchamp purple. Gold marks cuts/keeps/accent only.
 3. `Ingest / 7:3 Cut / Polish / Export` rail instead of Clipchamp's panel switcher —
    each entry is a separate RAM island.
 4. Overtime Saved chip in the top bar.
+5. Cloud button opens **our** provider menu (Telegram/Gemini/Groq/Local) instead of Microsoft's.
 
 ---
 
-## 10. Folder contract (this prototype)
+## 11. Folder contract (this prototype)
 
 ```
 Clipchamp_Bunny/
   docs/SPEC.md              <- this file
-  src/lib/types.ts          <- TranscriptLine, Mode, ProjectState
+  src/lib/types.ts          <- TranscriptLine, MenuItem, ProviderState …
   src/lib/mock.ts           <- realistic Hinglish fumble transcript
-  src/lib/stores/*.svelte.ts<- project / player / transcript / mode
+  src/lib/stores/
+    project.svelte.ts       <- lines · cutRanges · undo/redo · skipCuts · splitAt
+    player.svelte.ts        <- time / playing / zoom / snap
+    mode.svelte.ts          <- epoch counter → drives {#key} teardown
+    layout.svelte.ts        <- transcript width · timeline collapsed
+    media.svelte.ts         <- media library (metadata only, never bytes)
+    cloud.svelte.ts         <- provider states  ⚠ BACKEND SEAM
   src/lib/components/
     TopBar.svelte           <- Clipchamp top bar
     PreviewBar.svelte       <- Clipchamp preview bar
     ModeRail.svelte         <- 58px rail, icon + label
     RightRail.svelte        <- 52px rail, Transcript + AI
+    CloudMenu.svelte        <- TG QR / Gemini / Groq / Local  ⚠ BACKEND SEAM
+    ContextMenu.svelte      <- Fluent-style popover (#1E1E29)
+    MenuIcon.svelte
+    media/MediaPanel.svelte <- "My media"
+    media/MediaTile.svelte  <- Clipchamp asset tile
     cut/VideoPreview.svelte <- Phantom Cut skip + ⛶ fullscreen
     cut/TranscriptPanel.svelte <- virtual scroll (30 rows in DOM, any length)
     cut/WaveTimeline.svelte    <- tool row · ruler · T/Video/Audio lanes
     modes/{Ingest,Cut,Polish,Export}Mode.svelte
 ```
 
-Backend (Rust/FFmpeg/SQLite) is prototype ke baad wire hoga — `lib/ipc.ts` ke through.
+---
+
+## 12. Backend seams (backend agent yahan plug karega)
+
+| UI jagah | Kya plug hoga |
+| -------- | ------------- |
+| `cloud.svelte.ts` → `connect(id)` | `telegram` → Go `POST /v1/vault/authorise` (QR) + `/v1/vault/upload`; `gemini` → `/v1/analyze`; `groq` → `/v1/transcribe` |
+| `CloudMenu.svelte` → QR modal | real QR image from `GET /v1/vault/authorise/{id}` |
+| `media.svelte.ts` → `add()` | Rust `probe` + `extract_thumbnails` (file:// / asset:// URL) |
+| `project.svelte.ts` → `loadFile` | Rust `extract_audio_chunks` + SQLite `save_transcript` |
+| `WaveTimeline` video lane | Rust `extract_thumbnails` → real filmstrip (abhi gradient mock) |
+| `ExportMode` | Rust `start_export` (smart copy / QSV / CPU) |
 
 ---
 
-## 11. Status
+## 13. Status
 
 - [x] SPEC freeze
 - [x] Prototype scaffold (Vite + Svelte 5 + Tailwind 4)
-- [x] Mode 1 INGEST (drop zone + mock progress)
+- [x] Mode 1 INGEST (My media panel + pipeline)
 - [x] Mode 2 7:3 CUT (preview + transcript + T/Video/Audio timeline)
 - [x] Mode 3 POLISH
 - [x] Mode 4 EXPORT + vault mock
 - [x] Keyboard flow + auto-advance
 - [x] **Step 1 — Clipchamp parity**: transport neeche, lane order, ✂ split, 🧲 snap,
       rail labels, right rail, top bar restructure
+- [x] **Step 2 — Clipchamp components**: cloud/provider menu (TG QR · Gemini · Groq),
+      "My media" panel + asset tile, Fluent context menu, resize separator,
+      collapse timeline, gradient picker
 - [ ] Real FPS thumbnails in the video lane (Rust `extract_thumbnails` already exists)
 - [ ] Tauri shell + Rust FFmpeg wiring

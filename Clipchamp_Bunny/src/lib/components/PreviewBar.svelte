@@ -69,8 +69,7 @@
     <span class="h-4 w-px bg-nc-line"></span>
     <button
       class="grid h-6 w-6 place-items-center rounded text-nc-mut hover:bg-nc-line hover:text-nc-txt"
-      title="Show / hide transcript panel"
-      onclick={() => (project.snap = !project.snap)}
+      title="Background image"
     >
       <svg
         width="15"
@@ -80,23 +79,19 @@
         stroke="currentColor"
         stroke-width="1.8"
       >
-        <rect x="3" y="5" width="18" height="14" rx="2" /><path d="M8 11h2M8 14h6M14 11h2" />
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <path d="M3 15l4.5-4.5 3.5 3.5 3-3L21 17" />
+        <circle cx="9" cy="9.5" r="1.2" />
       </svg>
     </button>
     <button
       class="grid h-6 w-6 place-items-center rounded text-nc-mut hover:bg-nc-line hover:text-nc-txt"
-      title="Fit canvas"
+      title="Gradient / colour"
     >
-      <svg
-        width="15"
-        height="15"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.8"
-      >
-        <path d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4" />
-      </svg>
+      <span
+        class="h-3.5 w-3.5 rounded-full"
+        style="background:conic-gradient(from 0deg, #d4af37, #e5484d, #7c5cff, #3dd68c, #d4af37)"
+      ></span>
     </button>
   </div>
 

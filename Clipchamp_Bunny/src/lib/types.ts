@@ -71,3 +71,44 @@ export interface ProjectState {
   texts: TextClip[];
   waveform: WaveformData | null;
 }
+
+/** Icon set used by the Fluent-style popover menus. */
+export type MenuIcon =
+  | 'rename'
+  | 'folder'
+  | 'plus'
+  | 'trash'
+  | 'copy'
+  | 'cloud'
+  | 'telegram'
+  | 'spark'
+  | 'bolt'
+  | 'disk'
+  | 'qr'
+  | 'key';
+
+/** One row in a popover menu. `divider: true` renders a separator instead of an item. */
+export interface MenuItem {
+  id: string;
+  label: string;
+  icon?: MenuIcon;
+  /** Muted second line, e.g. the local path breadcrumb. */
+  secondary?: string;
+  danger?: boolean;
+  divider?: boolean;
+  disabled?: boolean;
+}
+
+/** Where a project can be backed up, or which AI brain does the work. */
+export type ProviderId = 'telegram' | 'gemini' | 'groq' | 'local';
+
+export type ProviderStatus = 'connected' | 'disconnected' | 'pending';
+
+export interface ProviderState {
+  id: ProviderId;
+  label: string;
+  detail: string;
+  status: ProviderStatus;
+  /** Badge on the right, e.g. the Telegram chat id or the API key mask. */
+  badge?: string;
+}
