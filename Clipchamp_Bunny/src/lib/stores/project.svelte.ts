@@ -10,11 +10,24 @@ import type {
 import { MOCK_LINES } from '../mock';
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 
-type Snapshot = Record<string, KeepState>;
+/**
+ * Undo snapshot. Holds the whole line array, not just the keep flags —
+ * splits, trims, moves and groups all change the *structure*, so a
+ * flags-only snapshot cannot undo them.
+ *
+ * The Rust backend persists the transcript (and therefore the undo log) in
+ * SQLite; this in-memory copy is the prototype's stand-in. The history cap
+ * keeps the heap bounded on long transcripts.
+ */
+type Snapshot = TranscriptLine[];
 
-/** Splitting produces `ln-012-a` / `ln-012-b`; undo must still find the parent. */
+/**
+ * Splitting produces `ln-012-1a` / `ln-012-1b`; undo must still find the parent.
+ * The numeric tag is required — reusing the same `-a`/`-b` suffix twice would
+ * produce duplicate keys and break Svelte's keyed `{#each}`.
+ */
 function baseId(id: string): string {
-  return id.replace(/-[ab]$/, '');
+  return id.replace(/-[0-9a-z]+[ab]$/, '');
 }
 
 class ProjectStore {
@@ -44,6 +57,9 @@ class ProjectStore {
 
   /** Right-rail CC toggle — hides/shows the transcript panel. */
   showTranscript = $state(true);
+
+  /** Monotonic counter so every split produces unique line ids. */
+  private splitSeq = 0;
 
   past = $state<Snapshot[]>([]);
   future = $state<Snapshot[]>([]);
@@ -133,19 +149,20 @@ class ProjectStore {
   };
 
   private snapshot(): Snapshot {
-    return Object.fromEntries(this.lines.map((l) => [l.id, l.keep]));
+    // Plain object copies — `structuredClone` cannot clone Svelte's reactive
+    // proxies, and every TranscriptLine field is a primitive anyway.
+    return this.lines.map((l) => ({ ...l }));
   }
 
   private apply(snap: Snapshot) {
-    this.lines = this.lines.map((l) => {
-      const next = snap[l.id] ?? snap[baseId(l.id)];
-      return next && next !== l.keep ? { ...l, keep: next } : l;
-    });
+    this.lines = snap.map((l) => ({ ...l }));
+    this.cursor = Math.max(0, Math.min(this.lines.length - 1, this.cursor));
+    this.selectedIds = [];
   }
 
   private commit() {
     this.past.push(this.snapshot());
-    if (this.past.length > 120) this.past.shift();
+    if (this.past.length > 30) this.past.shift();
     this.future.length = 0;
   }
 
@@ -304,19 +321,34 @@ class ProjectStore {
   }
 
   /**
-   * Split the transcript line under the playhead into two (Clipchamp's ✂).
-   * The right half inherits the parent's verdict, the left half keeps the text.
+   * Split a transcript line in two (Clipchamp's ✂ / `S`).
+   *
+   * Targeting rules, in order:
+   *   1. The playhead is strictly inside a line → split that line at the playhead.
+   *   2. Otherwise the cursor line is used, and the cut point is clamped so it
+   *      always lands strictly inside the line. (Clicking a transcript row seeks
+   *      the playhead to that line's *start*, so without the clamp `S` would
+   *      silently do nothing.)
    */
   splitAt(sec: number): boolean {
-    const idx = this.lineAt(sec);
-    if (idx < 0) return false;
+    let idx = this.lineAt(sec);
+    const under = idx >= 0 ? this.lines[idx] : null;
+    const strictlyInside = (l: TranscriptLine) => sec > l.startSec + 0.2 && sec < l.endSec - 0.2;
+
+    if (!under || !strictlyInside(under)) {
+      if (!this.lines[this.cursor]) return false;
+      idx = this.cursor;
+    }
+
     const line = this.lines[idx];
-    if (sec <= line.startSec + 0.2 || sec >= line.endSec - 0.2) return false;
+    if (line.endSec - line.startSec < 0.6) return false;
+    const at = Math.max(line.startSec + 0.2, Math.min(line.endSec - 0.2, sec));
 
     this.commit();
     const base = baseId(line.id);
-    const left: TranscriptLine = { ...line, id: `${base}-a`, endSec: sec };
-    const right: TranscriptLine = { ...line, id: `${base}-b`, startSec: sec };
+    const tag = (++this.splitSeq).toString(36);
+    const left: TranscriptLine = { ...line, id: `${base}-${tag}a`, endSec: at };
+    const right: TranscriptLine = { ...line, id: `${base}-${tag}b`, startSec: at };
     this.lines = [...this.lines.slice(0, idx), left, right, ...this.lines.slice(idx + 1)];
     this.cursor = idx + 1;
     return true;

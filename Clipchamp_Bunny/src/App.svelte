@@ -4,6 +4,7 @@
   import RightRail from './lib/components/RightRail.svelte';
   import DropOverlay from './lib/components/DropOverlay.svelte';
   import ShortcutsHelp from './lib/components/ShortcutsHelp.svelte';
+  import Toasts from './lib/components/Toasts.svelte';
   import IngestMode from './lib/components/modes/IngestMode.svelte';
   import CutMode from './lib/components/modes/CutMode.svelte';
   import PolishMode from './lib/components/modes/PolishMode.svelte';
@@ -12,7 +13,8 @@
   import { player } from './lib/stores/player.svelte';
   import { project } from './lib/stores/project.svelte';
   import { layout } from './lib/stores/layout.svelte';
-  import { clamp } from './lib/utils';
+  import { toast } from './lib/stores/toast.svelte';
+  import { clamp, fmtTime } from './lib/utils';
 
   /**
    * Clipchamp's full shortcut set, mapped onto the transcript editor.
@@ -197,8 +199,12 @@
       case 'Delete':
       case 'Backspace':
         e.preventDefault();
-        project.cutTargets();
-        project.step(1);
+        {
+          const n = project.targets().length;
+          project.cutTargets();
+          project.step(1);
+          toast.push('cut', n > 1 ? `✕ ${n} lines cut` : '✕ Cut');
+        }
         return;
       case 'Enter':
         e.preventDefault();
@@ -239,7 +245,10 @@
         } else if (inCut) {
           // our instant cut — the one-hand flow
           const line = project.lines[project.cursor];
-          if (line) project.toggleLine(line.id);
+          if (line) {
+            project.toggleLine(line.id);
+            toast.push('cut', line.keep === 'cut' ? '✓ Kept' : '✕ Cut');
+          }
           project.step(1);
         }
         return;
@@ -247,7 +256,10 @@
         e.preventDefault();
         if (inCut) {
           const line = project.lines[project.cursor];
-          if (line) project.setLine(line.id, 'keep');
+          if (line) {
+            project.setLine(line.id, 'keep');
+            toast.push('keep', '✓ Kept');
+          }
           project.step(1);
         }
         return;
@@ -262,7 +274,11 @@
       case 's':
       case 'b':
         e.preventDefault();
-        project.splitAt(player.currentTime);
+        if (project.splitAt(player.currentTime)) {
+          toast.push('split', `✂ Split at ${fmtTime(player.currentTime)}`);
+        } else {
+          toast.push('warn', '✂ Split nahi hua — line bahut chhoti hai');
+        }
         return;
       case 'j':
         e.preventDefault();
@@ -306,3 +322,4 @@
 
 <DropOverlay />
 <ShortcutsHelp />
+<Toasts />

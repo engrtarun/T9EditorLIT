@@ -2,6 +2,7 @@
   import { project } from '../../stores/project.svelte';
   import { player } from '../../stores/player.svelte';
   import { layout } from '../../stores/layout.svelte';
+  import { toast } from '../../stores/toast.svelte';
   import { thumbUrl } from '../../media';
   import { clamp, fmtShort, fmtTime, niceStep } from '../../utils';
 
@@ -226,7 +227,12 @@
   }
 
   function doSplit() {
-    if (project.splitAt(player.currentTime)) player.seek(project.snapTime(player.currentTime));
+    if (project.splitAt(player.currentTime)) {
+      player.seek(project.snapTime(player.currentTime));
+      toast.push('split', `✂ Split at ${fmtTime(player.currentTime)}`);
+    } else {
+      toast.push('warn', '✂ Split nahi hua — line bahut chhoti hai');
+    }
   }
 
   // follow the playhead while playing
