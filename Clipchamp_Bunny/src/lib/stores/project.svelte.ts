@@ -2,13 +2,13 @@ import type {
   KeepState,
   MediaAsset,
   TextClip,
+  ThumbnailStrip,
   TimelineClip,
   TranscriptLine,
   WaveformData
 } from '../types';
-import { MOCK_DURATION_SEC, MOCK_LINES, mockWaveform } from '../mock';
-
-const CLIP_HISTORY_LIMIT = 120;
+import { MOCK_LINES } from '../mock';
+import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 
 type Snapshot = Record<string, KeepState>;
 
@@ -20,14 +20,15 @@ function baseId(id: string): string {
 class ProjectStore {
   name = $state('apna-college-vite-intro');
   media = $state<MediaAsset | null>(null);
-  lines = $state<TranscriptLine[]>(structuredClone(MOCK_LINES));
+  lines = $state<TranscriptLine[]>([]);
   clips = $state<TimelineClip[]>([]);
   texts = $state<TextClip[]>([
     { id: 't1', startSec: 10, endSec: 20, text: 'Vite kya hai?', kind: 'title' },
     { id: 't2', startSec: 96, endSec: 112, text: 'Config & Plugins', kind: 'heading' },
     { id: 't3', startSec: 126, endSec: 142, text: 'npm install vite', kind: 'code-zoom' }
   ]);
-  waveform = $state<WaveformData>(mockWaveform(MOCK_DURATION_SEC));
+  waveform = $state<WaveformData | null>(null);
+  thumbnails = $state<ThumbnailStrip | null>(null);
 
   /** Index of the transcript line the keyboard cursor sits on. */
   cursor = $state(0);
@@ -41,13 +42,52 @@ class ProjectStore {
   past = $state<Snapshot[]>([]);
   future = $state<Snapshot[]>([]);
 
-  durationSec = $derived(this.media?.durationSec ?? MOCK_DURATION_SEC);
+  /** True until the real media has been probed. */
+  ready = $state(false);
+  loadError = $state<string | null>(null);
+
+  durationSec = $derived(this.media?.durationSecs ?? 0);
+
+  /**
+   * Load the real demo media. In the Tauri build this is replaced by the Rust
+   * `probe_cached` / `extract_waveform` / `extract_thumbnails` commands.
+   */
+  async init() {
+    try {
+      const [media, waveform, thumbnails] = await Promise.all([
+        loadMediaInfo(),
+        loadWaveform(),
+        loadThumbnails()
+      ]);
+      this.media = media;
+      this.name = media.name.replace(/\.[^.]+$/, '');
+      this.waveform = waveform;
+      this.thumbnails = thumbnails;
+      this.lines = scaleLines(MOCK_LINES, media.durationSecs);
+      this.ready = true;
+    } catch (e) {
+      this.loadError = e instanceof Error ? e.message : String(e);
+      this.ready = true;
+    }
+  }
 
   /** Merged [start, end] ranges to skip — this is the Phantom Cut. */
   cutRanges = $derived.by(() => {
     const ranges: Array<[number, number]> = [];
     for (const line of this.lines) {
       if (line.keep === 'keep') continue;
+      const last = ranges[ranges.length - 1];
+      if (last && line.startSec - last[1] < 0.35) last[1] = Math.max(last[1], line.endSec);
+      else ranges.push([line.startSec, line.endSec]);
+    }
+    return ranges;
+  });
+
+  /** Merged ranges that survive the cut — these become the clips on the video lane. */
+  keptRanges = $derived.by(() => {
+    const ranges: Array<[number, number]> = [];
+    for (const line of this.lines) {
+      if (line.keep === 'cut') continue;
       const last = ranges[ranges.length - 1];
       if (last && line.startSec - last[1] < 0.35) last[1] = Math.max(last[1], line.endSec);
       else ranges.push([line.startSec, line.endSec]);
@@ -99,7 +139,7 @@ class ProjectStore {
 
   private commit() {
     this.past.push(this.snapshot());
-    if (this.past.length > CLIP_HISTORY_LIMIT) this.past.shift();
+    if (this.past.length > 120) this.past.shift();
     this.future.length = 0;
   }
 
@@ -123,6 +163,22 @@ class ProjectStore {
     return this.lines[this.cursor];
   }
 
+  undo() {
+    const prev = this.past.pop();
+    if (!prev) return false;
+    this.future.push(this.snapshot());
+    this.apply(prev);
+    return true;
+  }
+
+  redo() {
+    const next = this.future.pop();
+    if (!next) return false;
+    this.past.push(this.snapshot());
+    this.apply(next);
+    return true;
+  }
+
   /**
    * Split the transcript line under the playhead into two (Clipchamp's ✂).
    * The right half inherits the parent's verdict, the left half keeps the text.
@@ -131,7 +187,6 @@ class ProjectStore {
     const idx = this.lineAt(sec);
     if (idx < 0) return false;
     const line = this.lines[idx];
-    // too close to an edge to split meaningfully
     if (sec <= line.startSec + 0.2 || sec >= line.endSec - 0.2) return false;
 
     this.commit();
@@ -160,38 +215,35 @@ class ProjectStore {
     return best;
   }
 
-  undo() {
-    const prev = this.past.pop();
-    if (!prev) return false;
-    this.future.push(this.snapshot());
-    this.apply(prev);
-    return true;
-  }
-
-  redo() {
-    const next = this.future.pop();
-    if (!next) return false;
-    this.past.push(this.snapshot());
-    this.apply(next);
-    return true;
-  }
-
+  /** User-dropped file replaces the demo media. */
   loadFile(file: File, url: string) {
     this.name = file.name.replace(/\.[^.]+$/, '');
     this.media = {
       id: crypto.randomUUID(),
       name: file.name,
       url,
-      durationSec: 0,
+      durationSecs: 0,
       width: 0,
       height: 0,
       fps: 0,
-      sizeBytes: file.size
+      sizeBytes: file.size,
+      videoCodec: 'unknown',
+      audioCodec: null,
+      sampleRate: null,
+      channels: null
     };
-    this.lines = [];
-    this.clips = [];
-    this.cursor = 0;
   }
+}
+
+/** Stretch the mock transcript onto the real media duration. */
+function scaleLines(lines: TranscriptLine[], durationSec: number): TranscriptLine[] {
+  const mockDur = lines[lines.length - 1]?.endSec ?? 1;
+  const k = durationSec / mockDur;
+  return lines.map((l) => ({
+    ...l,
+    startSec: Number((l.startSec * k).toFixed(2)),
+    endSec: Number((l.endSec * k).toFixed(2))
+  }));
 }
 
 export const project = new ProjectStore();

@@ -11,7 +11,7 @@
     if (!v) return;
     player.attach(v);
     if (project.media) {
-      project.media.durationSec = isFinite(v.duration) ? v.duration : project.durationSec;
+      project.media.durationSecs = isFinite(v.duration) ? v.duration : project.media.durationSecs;
       project.media.width = v.videoWidth;
       project.media.height = v.videoHeight;
     }
@@ -76,12 +76,16 @@
 <!-- PREVIEW STAGE — no toolbar; Clipchamp keeps the transport in the timeline row below -->
 <div bind:this={stage} class="relative grid min-h-0 flex-1 place-items-center bg-nc-bg p-4">
   {#if project.media}
-    <div class="relative max-h-full max-w-full overflow-hidden rounded bg-black shadow-2xl">
+    <!-- 16:9 frame that fits the stage, like Clipchamp's `aspect-ratio-preview` -->
+    <div
+      class="relative aspect-video max-h-full w-full max-w-[min(100%,calc((100vh-330px)*16/9))] overflow-hidden rounded bg-black shadow-2xl"
+    >
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
         bind:this={videoEl}
         src={project.media.url}
-        class="block max-h-[calc(100vh-430px)] w-auto max-w-full"
+        preload="metadata"
+        class="h-full w-full object-contain"
         onloadedmetadata={onLoaded}
         ontimeupdate={onTimeUpdate}
         onplay={onPlay}

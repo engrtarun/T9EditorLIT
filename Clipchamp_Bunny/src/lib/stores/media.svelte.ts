@@ -25,11 +25,15 @@ class MediaStore {
         id: crypto.randomUUID(),
         name: file.name,
         url,
-        durationSec: 0,
+        durationSecs: 0,
         width: 0,
         height: 0,
         fps: 0,
-        sizeBytes: file.size
+        sizeBytes: file.size,
+        videoCodec: 'unknown',
+        audioCodec: null,
+        sampleRate: null,
+        channels: null
       },
       phase: 'loading',
       progress: 0,
@@ -47,11 +51,15 @@ class MediaStore {
         id: crypto.randomUUID(),
         name,
         url: '',
-        durationSec,
+        durationSecs: durationSec,
         width: 1920,
         height: 1080,
         fps: 60,
-        sizeBytes
+        sizeBytes,
+        videoCodec: 'h264',
+        audioCodec: 'aac',
+        sampleRate: 48000,
+        channels: 2
       },
       phase: 'ready',
       progress: 1,
@@ -74,7 +82,7 @@ class MediaStore {
       else {
         this.entries = this.entries.map((e) =>
           e.asset.id === id
-            ? { ...e, asset: { ...e.asset, durationSec: 274, width: 1920, height: 1080, fps: 60 } }
+            ? { ...e, asset: { ...e.asset, durationSecs: 274, width: 1920, height: 1080, fps: 60 } }
             : e
         );
       }

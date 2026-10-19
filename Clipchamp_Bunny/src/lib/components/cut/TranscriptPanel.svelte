@@ -7,7 +7,7 @@
 
   /* Virtual scroll constants — a 2-hour transcript can be 20k lines.
      Only ~30 rows ever exist in the DOM, so RAM stays flat. */
-  const ROW_H = 58;
+  const ROW_H = 46;
   const OVERSCAN = 6;
 
   type Filter = 'all' | 'flagged' | 'cut';
@@ -139,8 +139,7 @@
       <div
         style="height:{ROW_H}px"
         class="group relative flex items-center gap-2 border-b border-nc-line/60 px-2 transition-colors
-               {isCursor ? 'bg-nc-gold/8' : 'hover:bg-nc-panel-2'}
-               {cut ? 'nc-slash opacity-60' : ''}"
+               {isCursor ? 'bg-nc-gold/8' : 'hover:bg-nc-panel-2'}"
       >
         {#if isCursor}
           <span class="absolute inset-y-0 left-0 w-[3px] bg-nc-gold"></span>
@@ -151,13 +150,14 @@
           class="flex min-w-0 flex-1 items-start gap-2 text-left"
           title="Jump preview here"
         >
-          <span class="mt-[3px] w-[58px] shrink-0 font-mono text-[10px] leading-4 text-nc-mut-2">
-            {fmtShort(line.startSec)}
+          <span class="mt-[2px] w-[66px] shrink-0 font-mono text-[9px] leading-4 text-nc-mut-2">
+            <span class="block">{fmtShort(line.startSec)}</span>
+            <span class="block text-nc-mut-2/70">– {fmtShort(line.endSec)}</span>
           </span>
           <span class="min-w-0 flex-1">
             <span
               class="line-clamp-2 text-xs leading-4 {cut
-                ? 'text-nc-mut line-through decoration-nc-red/70'
+                ? 'nc-slash text-nc-mut line-through decoration-nc-red/70'
                 : 'text-nc-txt'}"
             >
               {line.text}

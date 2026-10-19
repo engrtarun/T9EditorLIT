@@ -1,5 +1,6 @@
 <script lang="ts">
   import PreviewBar from '../PreviewBar.svelte';
+  import SourcePanel from '../cut/SourcePanel.svelte';
   import VideoPreview from '../cut/VideoPreview.svelte';
   import TranscriptPanel from '../cut/TranscriptPanel.svelte';
   import WaveTimeline from '../cut/WaveTimeline.svelte';
@@ -27,6 +28,9 @@
   <PreviewBar />
 
   <div class="flex min-h-0 flex-1">
+    <!-- Left: "My media" (Clipchamp's left panel) -->
+    <SourcePanel />
+
     <!-- Left box -->
     <div class="flex min-h-0 min-w-0 flex-1 flex-col border-r border-nc-line">
       <VideoPreview />

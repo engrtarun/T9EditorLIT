@@ -4,7 +4,7 @@
   import { media } from '../../stores/media.svelte';
   import { cloud } from '../../stores/cloud.svelte';
   import MediaPanel from '../media/MediaPanel.svelte';
-  import { MOCK_DURATION_SEC, MOCK_LINES, mockWaveform } from '../../mock';
+  import { MOCK_DURATION_SEC, MOCK_LINES } from '../../mock';
 
   type Step = { label: string; detail: string; ms: number };
   const STEPS: Step[] = [
@@ -64,7 +64,6 @@
         stepIndex = STEPS.length;
         // Real backend returns whisper output here.
         project.lines = structuredClone(MOCK_LINES);
-        project.waveform = mockWaveform(MOCK_DURATION_SEC);
         running = false;
       }, total + 200)
     );

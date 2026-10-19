@@ -225,7 +225,34 @@ Clipchamp_Bunny/
 
 ---
 
-## 12. Backend seams (backend agent yahan plug karega)
+## 12. Real demo media (no placeholders)
+
+The prototype runs on the **real** video: `resource_Clipchamp/clipchamp_OBSrecord.mp4`
+(1920×1080 · H.264 · 60 fps · 197.78 s · AAC 48 kHz · 24.78 MB).
+
+`tools/generate-media.mjs` bakes it with the **exact FFmpeg commands the Rust backend
+runs at runtime**, so the prototype data IS the backend data:
+
+| Artifact | Command | Output |
+| -------- | ------- | ------ |
+| Probe | `ffprobe -show_format -show_streams` | `public/media/media.json` |
+| Waveform | `ffmpeg -v error -i SRC -ac 1 -ar 48000 -f s16le -` (streamed, folded into 4096 buckets, normalised to global peak) | `public/media/waveform.json` — shape `{ durationSecs, bars, peaks, cachePath }` = Rust `WaveformData` |
+| Filmstrip | `ffmpeg -i SRC -vf "fps=1,scale=160:-2" -q:v 5 -f image2 thumb_%05d.jpg` | `public/media/thumbs/` (198 × 160×90) + `manifest.json` = Rust `ThumbnailStrip` |
+
+In the Tauri build these fetches are replaced by `invoke('probe_cached')`,
+`invoke('extract_waveform')` and `invoke('extract_thumbnails')`.
+
+**Zero-RAM at the UI level:** the filmstrip thumbs are fetched **only for the visible
+scroll window** (LRU of ~260 images) — a 2-hour timeline never pulls thousands of
+JPEGs into the heap.
+
+**Video lane = the export preview.** Kept ranges render as solid filmstrip clips with a
+purple border; cut ranges render as **red hatched gaps** behind them. What you see on
+the timeline IS what the export will contain.
+
+---
+
+## 13. Backend seams (backend agent yahan plug karega)
 
 | UI jagah | Kya plug hoga |
 | -------- | ------------- |

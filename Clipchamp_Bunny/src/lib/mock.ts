@@ -1,4 +1,4 @@
-import type { TranscriptLine, WaveformData } from './types';
+import type { TranscriptLine } from './types';
 
 /** Raw transcript rows, ids added below so the literal stays readable. */
 type Row = Omit<TranscriptLine, 'id'>;
@@ -319,26 +319,5 @@ export const MOCK_LINES: TranscriptLine[] = ROWS.map((row, i) => ({
   ...row,
   id: `ln-${String(i).padStart(3, '0')}`
 }));
-
-/** Deterministic pseudo-random waveform so the prototype looks identical on every reload. */
-export function buildMockWaveform(durationSec: number, buckets = 1600): number[] {
-  const peaks: number[] = [];
-  let seed = 1337;
-  const rnd = () => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed / 0x7fffffff;
-  };
-  for (let i = 0; i < buckets; i++) {
-    const t = i / buckets;
-    const speech = 0.35 + 0.65 * Math.abs(Math.sin(t * 37.1)) * (0.55 + 0.45 * rnd());
-    peaks.push(Math.min(1, Math.max(0.02, speech)));
-  }
-  return peaks.map((_, i) => peaks[Math.floor((i / peaks.length) * durationSec)] ?? peaks[i]);
-}
-
-/** Same peaks, wrapped in the shape the Rust `WaveformData` command returns. */
-export function mockWaveform(durationSec: number, buckets = 1600): WaveformData {
-  return { peaks: buildMockWaveform(durationSec, buckets), bucketSec: durationSec / buckets };
-}
 
 export const MOCK_DURATION_SEC = 274;

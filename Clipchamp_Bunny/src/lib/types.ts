@@ -25,23 +25,42 @@ export interface TranscriptLine {
 }
 
 /** A media file. Never buffered — only a URL the <video> element streams from. */
-export interface MediaAsset {
+export type MediaAsset = MediaInfo;
+
+/** Normalised waveform peaks. Mirrors Rust `WaveformData` (serde camelCase). */
+export interface WaveformData {
+  durationSecs: number;
+  bars: number;
+  /** Absolute peak per bucket, 0..1. */
+  peaks: number[];
+  cachePath: string | null;
+}
+
+/** Filmstrip manifest. Mirrors Rust `ThumbnailStrip`. */
+export interface ThumbnailStrip {
+  durationSecs: number;
+  fps: number;
+  count: number;
+  width: number;
+  height: number;
+  dir: string;
+}
+
+/** Real media metadata, mirrors the Rust `probe_cached` result. */
+export interface MediaInfo {
   id: string;
   name: string;
   /** Object URL or tauri asset URL. The video element streams; we never read it into RAM. */
   url: string;
-  durationSec: number;
+  durationSecs: number;
   width: number;
   height: number;
   fps: number;
   sizeBytes: number;
-}
-
-/** Normalised waveform peaks, 0..1, one entry per bucket. Mirrors Rust `WaveformData`. */
-export interface WaveformData {
-  peaks: number[];
-  /** Seconds covered by each peak. */
-  bucketSec: number;
+  videoCodec: string;
+  audioCodec: string | null;
+  sampleRate: number | null;
+  channels: number | null;
 }
 
 /** A clip on the bottom timeline (video lane). */
