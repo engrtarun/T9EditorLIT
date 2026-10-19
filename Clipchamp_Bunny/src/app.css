@@ -1,0 +1,103 @@
+/* =========================================================
+   Nanami Kento — "No Overtime" theme tokens
+   Tailwind 4 @theme  ->  utilities like bg-nc-panel become
+   available automatically.
+   ========================================================= */
+
+@import 'tailwindcss';
+
+@theme {
+  --color-nc-bg: #12131a;
+  --color-nc-panel: #171821;
+  --color-nc-panel-2: #1e202b;
+  --color-nc-line: #2a2c38;
+  --color-nc-line-2: #3a3d4c;
+
+  --color-nc-gold: #d4af37;
+  --color-nc-gold-dim: #8a7328;
+  --color-nc-red: #e5484d;
+  --color-nc-green: #3dd68c;
+
+  --color-nc-txt: #ececf2;
+  --color-nc-mut: #9a9aa8;
+  --color-nc-mut-2: #6f6f7d;
+
+  --font-sans: 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif;
+  --font-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    background: var(--color-nc-bg);
+    color: var(--color-nc-txt);
+    font-family: var(--font-sans);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2c2f3c;
+    border-radius: 8px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3a3d4c;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* Gold focus ring — accessibility, keep it visible */
+  :focus-visible {
+    outline: 2px solid var(--color-nc-gold);
+    outline-offset: 1px;
+  }
+}
+
+@layer components {
+  /* Gold & black polka-dot accent — Nanami's tie, used on the active rail */
+  .nc-tie-edge {
+    position: relative;
+  }
+  .nc-tie-edge::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background-image: radial-gradient(var(--color-nc-gold) 1px, transparent 1px);
+    background-size: 8px 8px;
+    opacity: 0.14;
+    mask-image: linear-gradient(to bottom, #000, transparent 70%);
+  }
+
+  /* 7:3 slash line stamped on a cut transcript row */
+  .nc-slash {
+    background-image: linear-gradient(
+      to bottom right,
+      transparent calc(50% - 1px),
+      var(--color-nc-red) calc(50% - 1px),
+      var(--color-nc-red) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    );
+  }
+
+  .nc-scroll {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
