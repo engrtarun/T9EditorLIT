@@ -90,7 +90,7 @@
 </script>
 
 <!-- TRANSCRIPT PANEL (right box of the diagram) -->
-<aside class="flex w-[400px] shrink-0 flex-col border-l border-nc-line bg-nc-panel">
+<aside class="flex min-h-0 w-[340px] shrink-0 flex-col border-l border-nc-line bg-nc-panel">
   <div class="flex h-11 shrink-0 items-center gap-2 border-b border-nc-line px-3">
     <h2 class="text-xs font-bold tracking-wider">TRANSCRIPT</h2>
     <span class="rounded bg-nc-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-nc-mut"

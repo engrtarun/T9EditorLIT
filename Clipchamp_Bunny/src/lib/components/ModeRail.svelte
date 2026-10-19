@@ -1,80 +1,50 @@
 <script lang="ts">
   import { mode } from '../stores/mode.svelte';
 
+  /* Clipchamp's rail is icon-over-label with a rounded pill on the active item.
+     Ours switches the whole app MODE (each mode is a separate RAM island). */
   const ITEMS = [
-    {
-      id: 'cut',
-      label: '7:3 Cut',
-      icon: 'M6 4v16M18 4v16M6 12h12'
-    },
-    {
-      id: 'polish',
-      label: 'Polish',
-      icon: 'M4 7V5h16v2M9 19h6M12 5v14'
-    },
-    {
-      id: 'export',
-      label: 'Export',
-      icon: 'M12 16V4M7 9l5-5 5 5M4 20h16'
-    }
+    { id: 'ingest', label: 'Ingest', icon: 'M12 16V4M7 9l5-5 5 5M4 20h16' },
+    { id: 'cut', label: '7:3 Cut', icon: 'M6 4v16M18 4v16M6 12h12' },
+    { id: 'polish', label: 'Polish', icon: 'M4 7V5h16v2M9 19h6M12 5v14' },
+    { id: 'export', label: 'Export', icon: 'M12 16V4M7 9l5-5 5 5M4 20h16' }
   ] as const;
 </script>
 
-<!-- Mode isolation: only the mounted mode's tree exists in RAM.
-     Switching mode unmounts this whole rail + the mode body. -->
+<!-- LEFT RAIL — 58px, icon + label, rounded pill on active (Clipchamp metrics) -->
 <nav
-  class="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-nc-line bg-nc-panel py-2"
+  class="flex w-[58px] shrink-0 flex-col items-center gap-0.5 border-r border-nc-line bg-nc-panel py-1.5"
 >
-  <button
-    onclick={() => mode.set('ingest')}
-    class="grid h-12 w-12 place-items-center rounded-lg text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt
-           {mode.current === 'ingest' ? 'bg-nc-panel-2 text-nc-gold' : ''}"
-    title="Ingest & Cloud Brain"
-  >
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.7"
-    >
-      <path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 20h16" />
-    </svg>
-  </button>
-
-  <div class="my-1 h-px w-8 bg-nc-line"></div>
-
   {#each ITEMS as it (it.id)}
     <button
       onclick={() => mode.set(it.id)}
-      class="relative grid h-12 w-12 place-items-center rounded-lg text-nc-mut transition-colors
-             hover:bg-nc-panel-2 hover:text-nc-txt
-             {mode.current === it.id ? 'bg-nc-panel-2 text-nc-gold' : ''}"
-      title={it.label}
+      class="flex w-[52px] flex-col items-center gap-1 rounded-lg px-1 py-1.5 text-center transition-colors
+             {mode.current === it.id
+        ? 'bg-nc-panel-2 text-nc-txt'
+        : 'text-nc-mut hover:bg-nc-panel-2/60 hover:text-nc-txt'}"
+      title="{it.label} mode"
     >
-      {#if mode.current === it.id}
-        <span class="absolute -left-2 top-2 bottom-2 w-[3px] rounded-r bg-nc-gold"></span>
-      {/if}
       <svg
         width="20"
         height="20"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
-        stroke-width="1.7"
+        stroke-width="1.6"
+        class={mode.current === it.id ? 'text-nc-gold' : ''}
       >
         <path d={it.icon} />
       </svg>
+      <span class="text-[9px] leading-[11px] font-medium">{it.label}</span>
     </button>
   {/each}
 
   <div class="flex-1"></div>
 
   <div
-    class="text-center text-[8px] leading-tight tracking-widest text-nc-mut-2"
+    class="px-1 pb-1 text-center text-[8px] leading-[10px] tracking-wider text-nc-mut-2"
     title="Only the mounted mode exists in RAM"
   >
-    RAM<br />1 MODE
+    1 MODE<br />IN RAM
   </div>
 </nav>

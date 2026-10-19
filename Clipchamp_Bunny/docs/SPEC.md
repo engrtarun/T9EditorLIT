@@ -135,7 +135,34 @@ Nanami ka rule: **no overtime, no wasted work, 7:3 ratio one strike.**
 
 ---
 
-## 9. Folder contract (this prototype)
+## 9. Clipchamp parity (measured from the OBS capture + DOM extract)
+
+Reference: `resource_Clipchamp/clipchamp_OBSrecord.mp4` (Clipchamp **dark mode**, 1280×720 frame)
+and `resource_Clipchamp/singleFiles/openclipchamp.html` (SingleFile DOM, menu bg `#1E1E29`).
+
+| Element | Clipchamp | Ours |
+| ------- | --------- | ----- |
+| Top bar | 40px · launcher · logo · project · cloud | 40px, same order |
+| Left rail | 58px, icon + label, rounded pill active | 58px, same (mode switcher) |
+| Preview bar | 40px · undo/redo · Size group · Share · Export | 40px, same |
+| Canvas | 16:9 centred, ⛶ bottom-right | same |
+| **Transport** | **in the timeline row, above the ruler** | same |
+| Tool row | left: AI · ✂ · 🧲  · right: zoom | same |
+| Ruler | 26px, `mm:ss` | 26px, same |
+| Lanes | T 30px → **Video 58px** → **Audio 44px** | same order, same heights |
+| Playhead | 2px line + round handle on the ruler | same |
+| Right rail | slim, `CC Captions` | 52px, Transcript + AI |
+
+**Deliberate deviations from Clipchamp (all ours, none accidental):**
+1. Transcript panel on the right of the canvas (340px) — the core feature.
+2. Nanami gold instead of Clipchamp purple. Gold marks cuts/keeps/accent only.
+3. `Ingest / 7:3 Cut / Polish / Export` rail instead of Clipchamp's panel switcher —
+   each entry is a separate RAM island.
+4. Overtime Saved chip in the top bar.
+
+---
+
+## 10. Folder contract (this prototype)
 
 ```
 Clipchamp_Bunny/
@@ -144,29 +171,30 @@ Clipchamp_Bunny/
   src/lib/mock.ts           <- realistic Hinglish fumble transcript
   src/lib/stores/*.svelte.ts<- project / player / transcript / mode
   src/lib/components/
-    TopBar.svelte
-    ModeRail.svelte
-    modes/IngestMode.svelte
-    modes/CutMode.svelte    <- MAIN
-    modes/PolishMode.svelte
-    modes/ExportMode.svelte
-    cut/VideoPreview.svelte
-    cut/TranscriptPanel.svelte   <- virtual scroll + ✓/✕
-    cut/WaveTimeline.svelte      <- ruler + wave + fps strip + text lane
-    cut/OvertimeCounter.svelte
+    TopBar.svelte           <- Clipchamp top bar
+    PreviewBar.svelte       <- Clipchamp preview bar
+    ModeRail.svelte         <- 58px rail, icon + label
+    RightRail.svelte        <- 52px rail, Transcript + AI
+    cut/VideoPreview.svelte <- Phantom Cut skip + ⛶ fullscreen
+    cut/TranscriptPanel.svelte <- virtual scroll (30 rows in DOM, any length)
+    cut/WaveTimeline.svelte    <- tool row · ruler · T/Video/Audio lanes
+    modes/{Ingest,Cut,Polish,Export}Mode.svelte
 ```
 
 Backend (Rust/FFmpeg/SQLite) is prototype ke baad wire hoga — `lib/ipc.ts` ke through.
 
 ---
 
-## 10. Status
+## 11. Status
 
 - [x] SPEC freeze
 - [x] Prototype scaffold (Vite + Svelte 5 + Tailwind 4)
-- [ ] Mode 1 INGEST (drop zone + mock progress)
-- [ ] Mode 2 7:3 CUT (preview + transcript + wave timeline)
-- [ ] Mode 3 POLISH
-- [ ] Mode 4 EXPORT + vault mock
-- [ ] Keyboard flow + auto-advance
+- [x] Mode 1 INGEST (drop zone + mock progress)
+- [x] Mode 2 7:3 CUT (preview + transcript + T/Video/Audio timeline)
+- [x] Mode 3 POLISH
+- [x] Mode 4 EXPORT + vault mock
+- [x] Keyboard flow + auto-advance
+- [x] **Step 1 — Clipchamp parity**: transport neeche, lane order, ✂ split, 🧲 snap,
+      rail labels, right rail, top bar restructure
+- [ ] Real FPS thumbnails in the video lane (Rust `extract_thumbnails` already exists)
 - [ ] Tauri shell + Rust FFmpeg wiring

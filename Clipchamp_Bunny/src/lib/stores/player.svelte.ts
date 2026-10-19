@@ -3,6 +3,8 @@ class PlayerStore {
   playing = $state(false);
   /** px per second on the bottom timeline. */
   zoom = $state(35);
+  /** Magnet on the timeline — snaps the playhead to line boundaries. */
+  snap = $state(true);
 
   /** Registered <video> element. Held weakly-ish: cleared on mode teardown. */
   el: HTMLVideoElement | null = null;

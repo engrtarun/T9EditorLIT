@@ -1,6 +1,7 @@
 <script lang="ts">
   import TopBar from './lib/components/TopBar.svelte';
   import ModeRail from './lib/components/ModeRail.svelte';
+  import RightRail from './lib/components/RightRail.svelte';
   import IngestMode from './lib/components/modes/IngestMode.svelte';
   import CutMode from './lib/components/modes/CutMode.svelte';
   import PolishMode from './lib/components/modes/PolishMode.svelte';
@@ -59,6 +60,7 @@
       }
       if (k === 'b' || k === 's' || k === 'c') {
         e.preventDefault();
+        project.splitAt(player.currentTime);
         return;
       }
       if (e.key === 'ArrowLeft') {
@@ -96,26 +98,25 @@
 <div class="flex h-full flex-col bg-nc-bg text-nc-txt">
   <TopBar />
 
+  <!-- Mode isolation: {#key} on the epoch destroys the previous mode's DOM tree,
+       so its memory is released instead of being parked by the GC. -->
   {#key mode.epoch}
-    <div class="min-h-0 flex-1">
-      {#if mode.current === 'ingest'}
-        <IngestMode />
-      {:else if mode.current === 'cut'}
-        <div class="flex h-full min-h-0">
-          <ModeRail />
+    <div class="flex min-h-0 flex-1">
+      <ModeRail />
+
+      <main class="flex min-h-0 min-w-0 flex-1 flex-col">
+        {#if mode.current === 'ingest'}
+          <IngestMode />
+        {:else if mode.current === 'cut'}
           <CutMode />
-        </div>
-      {:else if mode.current === 'polish'}
-        <div class="flex h-full min-h-0">
-          <ModeRail />
+        {:else if mode.current === 'polish'}
           <PolishMode />
-        </div>
-      {:else}
-        <div class="flex h-full min-h-0">
-          <ModeRail />
+        {:else}
           <ExportMode />
-        </div>
-      {/if}
+        {/if}
+      </main>
+
+      <RightRail />
     </div>
   {/key}
 </div>

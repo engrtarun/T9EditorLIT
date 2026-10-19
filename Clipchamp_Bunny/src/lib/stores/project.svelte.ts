@@ -12,6 +12,11 @@ const CLIP_HISTORY_LIMIT = 120;
 
 type Snapshot = Record<string, KeepState>;
 
+/** Splitting produces `ln-012-a` / `ln-012-b`; undo must still find the parent. */
+function baseId(id: string): string {
+  return id.replace(/-[ab]$/, '');
+}
+
 class ProjectStore {
   name = $state('apna-college-vite-intro');
   media = $state<MediaAsset | null>(null);
@@ -26,6 +31,12 @@ class ProjectStore {
 
   /** Index of the transcript line the keyboard cursor sits on. */
   cursor = $state(0);
+
+  /** Magnet: playhead snaps to line boundaries when true. */
+  snap = $state(true);
+
+  /** Right-rail CC toggle — hides/shows the transcript panel. */
+  showTranscript = $state(true);
 
   past = $state<Snapshot[]>([]);
   future = $state<Snapshot[]>([]);
@@ -81,7 +92,7 @@ class ProjectStore {
 
   private apply(snap: Snapshot) {
     this.lines = this.lines.map((l) => {
-      const next = snap[l.id];
+      const next = snap[l.id] ?? snap[baseId(l.id)];
       return next && next !== l.keep ? { ...l, keep: next } : l;
     });
   }
@@ -110,6 +121,43 @@ class ProjectStore {
   step(delta: number) {
     this.cursor = Math.max(0, Math.min(this.lines.length - 1, this.cursor + delta));
     return this.lines[this.cursor];
+  }
+
+  /**
+   * Split the transcript line under the playhead into two (Clipchamp's ✂).
+   * The right half inherits the parent's verdict, the left half keeps the text.
+   */
+  splitAt(sec: number): boolean {
+    const idx = this.lineAt(sec);
+    if (idx < 0) return false;
+    const line = this.lines[idx];
+    // too close to an edge to split meaningfully
+    if (sec <= line.startSec + 0.2 || sec >= line.endSec - 0.2) return false;
+
+    this.commit();
+    const base = baseId(line.id);
+    const left: TranscriptLine = { ...line, id: `${base}-a`, endSec: sec };
+    const right: TranscriptLine = { ...line, id: `${base}-b`, startSec: sec };
+    this.lines = [...this.lines.slice(0, idx), left, right, ...this.lines.slice(idx + 1)];
+    this.cursor = idx + 1;
+    return true;
+  }
+
+  /** Magnet behaviour: snap a time to the nearest line boundary within a tolerance. */
+  snapTime(sec: number, toleranceSec = 0.25): number {
+    if (!this.snap) return sec;
+    let best = sec;
+    let bestDist = toleranceSec;
+    for (const l of this.lines) {
+      for (const edge of [l.startSec, l.endSec]) {
+        const d = Math.abs(edge - sec);
+        if (d < bestDist) {
+          bestDist = d;
+          best = edge;
+        }
+      }
+    }
+    return best;
   }
 
   undo() {
