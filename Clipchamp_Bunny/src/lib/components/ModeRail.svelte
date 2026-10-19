@@ -13,7 +13,9 @@
 
 <!-- LEFT RAIL — 58px, icon + label, rounded pill on active (Clipchamp metrics) -->
 <nav
-  class="flex w-[58px] shrink-0 flex-col items-center gap-0.5 border-r border-nc-line bg-nc-panel py-1.5"
+  data-focus="rail"
+  tabindex="-1"
+  class="flex w-[58px] shrink-0 flex-col items-center gap-0.5 border-r border-nc-line bg-nc-panel py-1.5 outline-none"
 >
   {#each ITEMS as it (it.id)}
     <button

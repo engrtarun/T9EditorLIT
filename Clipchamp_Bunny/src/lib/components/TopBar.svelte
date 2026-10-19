@@ -1,5 +1,6 @@
 <script lang="ts">
   import { project } from '../stores/project.svelte';
+  import { layout } from '../stores/layout.svelte';
   import { fmtHuman } from '../utils';
   import CloudMenu from './CloudMenu.svelte';
 
@@ -9,7 +10,9 @@
 <!-- TOP BAR — structure copied 1:1 from Clipchamp (measured on the OBS capture):
      launcher · logo · project dropdown · cloud toggle  |  right: chip · gear · help · avatar -->
 <header
-  class="flex h-10 shrink-0 items-center gap-2 border-b border-nc-line bg-nc-panel pr-2 pl-1.5 select-none"
+  data-focus="header"
+  tabindex="-1"
+  class="flex h-10 shrink-0 items-center gap-2 border-b border-nc-line bg-nc-panel pr-2 pl-1.5 select-none outline-none"
 >
   <!-- app launcher (9 dots) -->
   <button
@@ -99,8 +102,9 @@
 
   <!-- help -->
   <button
+    onclick={() => (layout.helpOpen = true)}
     class="grid h-8 w-8 place-items-center rounded-md text-[15px] font-medium text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-    title="Help · shortcuts"
+    title="Help · keyboard shortcuts (Ctrl + /)"
   >
     ?
   </button>

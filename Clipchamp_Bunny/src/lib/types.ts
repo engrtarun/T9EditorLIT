@@ -22,6 +22,8 @@ export interface TranscriptLine {
   keep: KeepState;
   /** 0..1 confidence from the cloud brain. */
   confidence: number;
+  /** Clipchamp-style group id. Lines sharing a group move and delete together. */
+  group?: string;
 }
 
 /** A media file. Never buffered — only a URL the <video> element streams from. */

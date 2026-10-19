@@ -1,16 +1,24 @@
 <script lang="ts">
   import { project } from '../../stores/project.svelte';
   import { media } from '../../stores/media.svelte';
+  import { layout } from '../../stores/layout.svelte';
   import { thumbUrl } from '../../media';
   import { fmtSize } from '../../utils';
 
   /**
    * "My media" for the Cut mode — Clipchamp's left panel, but showing the
    * source clip of the current project instead of a separate library.
-   * Collapsible, because the transcript panel is the real work surface.
+   * Collapsible (Ctrl+Alt+2), because the transcript panel is the real work surface.
    */
-  let collapsed = $state(false);
+  const collapsed = $derived(layout.sourcePanelCollapsed);
   let fileInput: HTMLInputElement | null = $state(null);
+
+  // Alt+I — open the file picker from anywhere
+  $effect(() => {
+    const open = () => fileInput?.click();
+    window.addEventListener('t9:import', open);
+    return () => window.removeEventListener('t9:import', open);
+  });
 
   const asset = $derived(project.media);
   const strip = $derived(project.thumbnails);
@@ -33,9 +41,9 @@
       <h2 class="text-[13px] font-semibold">My media</h2>
     {/if}
     <button
-      onclick={() => (collapsed = !collapsed)}
+      onclick={() => (layout.sourcePanelCollapsed = !layout.sourcePanelCollapsed)}
       class="grid h-7 w-7 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-      title={collapsed ? 'Expand panel' : 'Collapse panel'}
+      title={collapsed ? 'Expand panel (Ctrl+Alt+2)' : 'Collapse panel (Ctrl+Alt+2)'}
     >
       <svg
         width="15"

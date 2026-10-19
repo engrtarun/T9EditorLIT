@@ -92,7 +92,9 @@
 
 <!-- TRANSCRIPT PANEL (right box of the diagram) -->
 <aside
-  class="flex min-h-0 shrink-0 flex-col border-l border-nc-line bg-nc-panel"
+  data-focus="panel"
+  tabindex="-1"
+  class="flex min-h-0 shrink-0 flex-col border-l border-nc-line bg-nc-panel outline-none"
   style="width:{layout.transcriptWidth}px"
 >
   <div class="flex h-11 shrink-0 items-center gap-2 border-b border-nc-line px-3">
@@ -106,6 +108,11 @@
     <span class="rounded bg-nc-red/10 px-1.5 py-0.5 font-mono text-[10px] text-nc-red"
       >✕ {project.cutCount}</span
     >
+    {#if project.selectedIds.length}
+      <span class="rounded bg-nc-gold/15 px-1.5 py-0.5 font-mono text-[10px] text-nc-gold"
+        >{project.selectedIds.length} selected</span
+      >
+    {/if}
   </div>
 
   <div class="flex h-8 shrink-0 items-center gap-1 border-b border-nc-line px-2">
@@ -139,16 +146,24 @@
       <div
         style="height:{ROW_H}px"
         class="group relative flex items-center gap-2 border-b border-nc-line/60 px-2 transition-colors
-               {isCursor ? 'bg-nc-gold/8' : 'hover:bg-nc-panel-2'}"
+               {isCursor ? 'bg-nc-gold/8' : 'hover:bg-nc-panel-2'}
+               {project.isSelected(line.id) ? 'bg-nc-gold/12' : ''}"
       >
         {#if isCursor}
           <span class="absolute inset-y-0 left-0 w-[3px] bg-nc-gold"></span>
         {/if}
 
         <button
-          onclick={() => jump(line)}
+          onclick={(e) => {
+            if (e.ctrlKey || e.metaKey) {
+              e.preventDefault();
+              project.toggleSelect(line.id);
+              return;
+            }
+            jump(line);
+          }}
           class="flex min-w-0 flex-1 items-start gap-2 text-left"
-          title="Jump preview here"
+          title="Jump preview here · Ctrl+click to multi-select"
         >
           <span class="mt-[2px] w-[66px] shrink-0 font-mono text-[9px] leading-4 text-nc-mut-2">
             <span class="block">{fmtShort(line.startSec)}</span>

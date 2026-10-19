@@ -245,7 +245,9 @@
 <!-- BOTTOM BLOCK — Clipchamp's timeline: tool row, ruler, lanes.
      Height hugs the content so no dead space is left under the audio lane. -->
 <section
-  class="relative flex shrink-0 flex-col border-t border-nc-line bg-nc-panel
+  data-focus="timeline"
+  tabindex="-1"
+  class="relative flex shrink-0 flex-col border-t border-nc-line bg-nc-panel outline-none
          {layout.timelineCollapsed ? 'h-[31px]' : 'h-auto'}"
 >
   <!-- TOOL ROW: tools left, transport centred, legend right.

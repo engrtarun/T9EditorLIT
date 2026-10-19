@@ -252,7 +252,50 @@ the timeline IS what the export will contain.
 
 ---
 
-## 13. Backend seams (backend agent yahan plug karega)
+## 13. Drag & drop
+
+App-wide: drag a file anywhere onto the window → a full-screen "Video drop karo" overlay
+appears (gold dashed edge, Nanami tie texture) → on drop the file is imported, probed
+and becomes the project source, and the app switches to `INGEST`.
+
+Dropped files are filtered to `video/*` and `audio/*`; the first one becomes the
+project source, the rest land in the media library.
+
+`Alt + I` opens the same file picker from anywhere in the app.
+
+---
+
+## 14. Keyboard shortcuts
+
+The **complete official Clipchamp list** (Microsoft Support, 2026) is implemented — see
+`src/lib/shortcuts.ts` for the registry and `Ctrl + /` in-app for the sheet.
+
+| Clipchamp | Ours | Note |
+| --------- | ---- | ---- |
+| `Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z` | same | |
+| `S` split | same | splits the line under the playhead |
+| `Del` / `Backspace` | same | cuts the selected lines |
+| `Ctrl+C` / `Ctrl+V` / `Ctrl+D` | same | copy / paste / duplicate a line |
+| `Ctrl+A` / `Esc` | same | select all / deselect all lines |
+| `Ctrl+G` / `Ctrl+Shift+G` | same | group / ungroup lines |
+| `Space` play-pause | same (+ `K`) | |
+| `Ctrl+/` | same | opens the in-app shortcut sheet |
+| `Ctrl+←` / `Ctrl+→` | same | seek to start / end |
+| `←` / `→` | same | one frame |
+| `Shift+←` / `Shift+→` | same | one second |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | same | timeline zoom in / out / fit |
+| `Ctrl+Alt+2` / `+3` / `+F` | same | collapse media panel / timeline / both |
+| `Alt+1..5`, `Alt+N/I/E/R/H` | same | focus rail / panel / timeline / stage / header, project name, import, export, aspect ratio, help |
+| `Z` then `←/→` | same | trim the **start** of the current line |
+| `C` then `←/→` | same | trim the **end** of the current line |
+| `X` then `←/→` | **`Shift+X` then `←/→`** | ⚠ plain `X` is our **instant cut**; using it as a prefix would add latency to the most-used key |
+| `↑` / `↓` | **line navigation** | ⚠ Clipchamp scrolls the timeline here; ours moves the transcript cursor (and the preview with it) — that is the whole workflow |
+| — | `X` / `V` | our one-hand flow: cut / keep + auto-advance |
+| — | `J` / `L` | seek ∓5 s |
+
+---
+
+## 15. Backend seams (backend agent yahan plug karega)
 
 | UI jagah | Kya plug hoga |
 | -------- | ------------- |

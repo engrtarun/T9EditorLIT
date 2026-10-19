@@ -74,7 +74,12 @@
 </script>
 
 <!-- PREVIEW STAGE — no toolbar; Clipchamp keeps the transport in the timeline row below -->
-<div bind:this={stage} class="relative grid min-h-0 flex-1 place-items-center bg-nc-bg p-4">
+<div
+  bind:this={stage}
+  data-focus="stage"
+  tabindex="-1"
+  class="relative grid min-h-0 flex-1 place-items-center bg-nc-bg p-4 outline-none"
+>
   {#if project.media}
     <!-- 16:9 frame that fits the stage, like Clipchamp's `aspect-ratio-preview` -->
     <div

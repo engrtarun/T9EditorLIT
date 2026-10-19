@@ -33,6 +33,12 @@ class ProjectStore {
   /** Index of the transcript line the keyboard cursor sits on. */
   cursor = $state(0);
 
+  /** Multi-selection (Clipchamp: Ctrl+A / Esc / TAB+ENTER). */
+  selectedIds = $state<string[]>([]);
+
+  /** Clipboard for Ctrl+C / Ctrl+V. */
+  clipboard = $state<TranscriptLine | null>(null);
+
   /** Magnet: playhead snaps to line boundaries when true. */
   snap = $state(true);
 
@@ -177,6 +183,124 @@ class ProjectStore {
     this.past.push(this.snapshot());
     this.apply(next);
     return true;
+  }
+
+  /* ------------------------------------------------------------ selection */
+  isSelected = (id: string) => this.selectedIds.includes(id);
+
+  toggleSelect(id: string) {
+    this.selectedIds = this.isSelected(id)
+      ? this.selectedIds.filter((x) => x !== id)
+      : [...this.selectedIds, id];
+  }
+
+  selectAll() {
+    this.selectedIds = this.lines.map((l) => l.id);
+  }
+
+  deselectAll() {
+    this.selectedIds = [];
+  }
+
+  /** The lines a destructive command should act on: the selection, else the cursor line. */
+  targets(): TranscriptLine[] {
+    if (this.selectedIds.length) return this.lines.filter((l) => this.isSelected(l.id));
+    const cur = this.lines[this.cursor];
+    return cur ? [cur] : [];
+  }
+
+  /** Cut every targeted line (Del / Backspace). */
+  cutTargets() {
+    const targets = this.targets();
+    if (!targets.length) return;
+    this.commit();
+    const ids = new Set(targets.map((t) => t.id));
+    this.lines = this.lines.map((l) => (ids.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l));
+    this.selectedIds = [];
+  }
+
+  /* ------------------------------------------------------------ clipboard */
+  copyCurrent() {
+    const cur = this.lines[this.cursor];
+    if (cur) this.clipboard = { ...cur };
+  }
+
+  pasteAfterCurrent() {
+    if (!this.clipboard) return;
+    this.commit();
+    const at = this.cursor + 1;
+    const src = this.clipboard;
+    const inserted: TranscriptLine = {
+      ...src,
+      id: `${baseId(src.id)}-p${Date.now().toString(36).slice(-4)}`,
+      startSec: src.endSec,
+      endSec: src.endSec + (src.endSec - src.startSec)
+    };
+    this.lines = [...this.lines.slice(0, at), inserted, ...this.lines.slice(at)];
+    this.cursor = at;
+  }
+
+  duplicateCurrent() {
+    this.clipboard = this.lines[this.cursor] ? { ...this.lines[this.cursor] } : null;
+    this.pasteAfterCurrent();
+  }
+
+  /* ------------------------------------------------------------ trim / move */
+  /** Clipchamp: Z + ← / →  (trim the start of the item). */
+  trimStart(delta: number) {
+    const cur = this.lines[this.cursor];
+    if (!cur) return;
+    const next = Math.max(0, Math.min(cur.endSec - 0.3, cur.startSec + delta));
+    if (Math.abs(next - cur.startSec) < 0.01) return;
+    this.commit();
+    this.lines = this.lines.map((l) => (l.id === cur.id ? { ...l, startSec: next } : l));
+  }
+
+  /** Clipchamp: C + ← / →  (trim the end of the item). */
+  trimEnd(delta: number) {
+    const cur = this.lines[this.cursor];
+    if (!cur) return;
+    const next = Math.max(cur.startSec + 0.3, cur.endSec + delta);
+    if (Math.abs(next - cur.endSec) < 0.01) return;
+    this.commit();
+    this.lines = this.lines.map((l) => (l.id === cur.id ? { ...l, endSec: next } : l));
+  }
+
+  /** Clipchamp: X + ← / →  (move the item earlier / later). */
+  moveCurrent(delta: number) {
+    const from = this.cursor;
+    const to = from + delta;
+    if (from < 0 || from >= this.lines.length || to < 0 || to >= this.lines.length) return;
+    this.commit();
+    const next = [...this.lines];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    this.lines = next;
+    this.cursor = to;
+  }
+
+  /* ------------------------------------------------------------ grouping */
+  groupSelected() {
+    const targets = this.targets();
+    if (targets.length < 2) return;
+    this.commit();
+    const g = `g${Date.now().toString(36).slice(-5)}`;
+    const ids = new Set(targets.map((t) => t.id));
+    this.lines = this.lines.map((l) => (ids.has(l.id) ? { ...l, group: g } : l));
+    this.selectedIds = [];
+  }
+
+  ungroupSelected() {
+    const targets = this.targets();
+    if (!targets.length) return;
+    this.commit();
+    const ids = new Set(targets.map((t) => t.id));
+    this.lines = this.lines.map((l) => {
+      if (!ids.has(l.id)) return l;
+      const { group: _g, ...rest } = l;
+      return rest;
+    });
+    this.selectedIds = [];
   }
 
   /**
