@@ -1,0 +1,14 @@
+{
+  "id": "obs-clipchamp",
+  "name": "clipchamp_OBSrecord.mp4",
+  "url": "/media/clipchamp_OBSrecord.mp4",
+  "durationSecs": 197.781333,
+  "width": 1920,
+  "height": 1080,
+  "fps": 60,
+  "sizeBytes": 25985461,
+  "videoCodec": "h264",
+  "audioCodec": "aac",
+  "sampleRate": 48000,
+  "channels": 2
+}

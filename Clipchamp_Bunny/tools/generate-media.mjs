@@ -1,12 +1,12 @@
-/**
+﻿/**
  * Pre-bakes the demo media the same way the Rust backend does it at runtime.
  *
  * This exists so the UI prototype can be developed against REAL data (real
  * waveform peaks, a real filmstrip, a real video) instead of placeholders.
  * The Tauri build replaces this with the live Rust commands:
  *
- *   waveform  → ffmpeg -v error -i SRC -ac 1 -ar 48000 -f s16le -
- *   thumbs    → ffmpeg -i SRC -vf "fps=1,scale=160:-2" -q:v 5 -f image2 thumb_%05d.jpg
+ *   waveform  â†’ ffmpeg -v error -i SRC -ac 1 -ar 48000 -f s16le -
+ *   thumbs    â†’ ffmpeg -i SRC -vf "fps=1,scale=160:-2" -q:v 5 -f image2 thumb_%05d.jpg
  *
  * Usage: node tools/generate-media.mjs [sourceVideo]
  */
@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const OUT = path.join(ROOT, 'public', 'media');
+const OUT = path.join(ROOT, 'public', 'assets');
 const THUMBS = path.join(OUT, 'thumbs');
 
 const FFMPEG =
@@ -39,7 +39,7 @@ const JPEG_QUALITY = '5';
 fs.mkdirSync(THUMBS, { recursive: true });
 
 // ---------------------------------------------------------------- probe
-console.log('· probing', SRC);
+console.log('Â· probing', SRC);
 const probe = JSON.parse(
   execFileSync(
     FFPROBE,
@@ -53,11 +53,11 @@ const durationSecs = Number(probe.format.duration);
 const [num, den] = v.avg_frame_rate.split('/');
 const fps = Number(num) / Number(den);
 console.log(
-  `  ${v.width}x${v.height} ${fps}fps · ${durationSecs.toFixed(2)}s · ${(probe.format.size / 1048576).toFixed(2)} MB`
+  `  ${v.width}x${v.height} ${fps}fps Â· ${durationSecs.toFixed(2)}s Â· ${(probe.format.size / 1048576).toFixed(2)} MB`
 );
 
 // ---------------------------------------------------------------- waveform
-console.log('· extracting waveform (streaming, zero-RAM)');
+console.log('Â· extracting waveform (streaming, zero-RAM)');
 const pcm = spawnSync(
   FFMPEG,
   ['-v', 'error', '-i', SRC, '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 's16le', '-'],
@@ -94,10 +94,10 @@ const waveform = {
   cachePath: null
 };
 fs.writeFileSync(path.join(OUT, 'waveform.json'), JSON.stringify(waveform));
-console.log(`  ${BARS} bars · peak ${Math.max(...peaks).toFixed(3)}`);
+console.log(`  ${BARS} bars Â· peak ${Math.max(...peaks).toFixed(3)}`);
 
 // ---------------------------------------------------------------- filmstrip
-console.log('· extracting filmstrip (1 fps)');
+console.log('Â· extracting filmstrip (1 fps)');
 for (const f of fs.readdirSync(THUMBS)) fs.unlinkSync(path.join(THUMBS, f));
 execFileSync(FFMPEG, [
   '-v',
@@ -125,7 +125,7 @@ fs.writeFileSync(
     count: thumbs.length,
     width: THUMB_WIDTH,
     height,
-    dir: '/media/thumbs'
+    dir: '/assets/thumbs'
   })
 );
 console.log(`  ${thumbs.length} thumbs @ ${THUMB_WIDTH}x${height}`);
@@ -134,7 +134,7 @@ console.log(`  ${thumbs.length} thumbs @ ${THUMB_WIDTH}x${height}`);
 const dest = path.join(OUT, 'clipchamp_OBSrecord.mp4');
 if (!fs.existsSync(dest)) {
   fs.copyFileSync(SRC, dest);
-  console.log('· copied video');
+  console.log('Â· copied video');
 }
 
 const media = {
@@ -152,5 +152,5 @@ const media = {
   channels: a ? Number(a.channels) : null
 };
 fs.writeFileSync(path.join(OUT, 'media.json'), JSON.stringify(media, null, 2));
-console.log('· wrote media.json');
-console.log('DONE →', OUT);
+console.log('Â· wrote media.json');
+console.log('DONE â†’', OUT);

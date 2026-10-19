@@ -1,4 +1,4 @@
-import type { MediaInfo, ThumbnailStrip, WaveformData } from './types';
+﻿import type { MediaInfo, ThumbnailStrip, WaveformData } from './types';
 
 /**
  * Real demo media, baked by `tools/generate-media.mjs` using the same FFmpeg
@@ -7,7 +7,7 @@ import type { MediaInfo, ThumbnailStrip, WaveformData } from './types';
  * `invoke('extract_thumbnails')`.
  */
 
-const BASE = '/media';
+const BASE = '/assets';
 
 export async function loadMediaInfo(): Promise<MediaInfo> {
   const r = await fetch(`${BASE}/media.json`);
