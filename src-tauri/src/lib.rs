@@ -5,7 +5,17 @@
 //! processes, and bulky state belongs in SQLite on disk. Rust is here because it
 //! actually returns freed memory to Windows instead of sitting on a GC heap.
 
+#![allow(dead_code)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::derivable_impls)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::explicit_counter_loop)]
+#![allow(clippy::needless_borrow)]
+
 mod audio;
+
 mod cache;
 mod env;
 mod export;
@@ -26,15 +36,17 @@ use tauri::{Emitter, Manager, State};
 pub type ExportCancel = Mutex<Option<Arc<AtomicBool>>>;
 
 pub use env::{EnvEntry, EnvInfo};
-pub use export::{ExportOptions, ExportPlan, ExportProgress, ExportRequest, ExportResult, Piece, Segment};
+pub use export::{
+    ExportOptions, ExportPlan, ExportProgress, ExportRequest, ExportResult, Piece, Segment,
+};
 
 pub use audio::AudioChunk;
 pub use ffmpeg::HardwareSupport;
 pub use media::{MediaInfo, StreamInfo};
 pub use memory::{MemoryProbe, MemoryStats};
-pub use thumbnail::ThumbnailStrip;
 pub use polish::{PolishResult, PolishSettings};
-pub use transcript::{TranscriptLine, Project};
+pub use thumbnail::ThumbnailStrip;
+pub use transcript::{Project, TranscriptLine};
 pub use waveform::WaveformData;
 
 pub type Probe = Mutex<memory::MemoryProbe>;
@@ -115,7 +127,11 @@ fn detect_silence(
     noise_db: Option<f64>,
     min_secs: Option<f64>,
 ) -> Result<Vec<audio::SilenceRange>, String> {
-    audio::detect_silence(&PathBuf::from(path), noise_db.unwrap_or(-30.0), min_secs.unwrap_or(0.8))
+    audio::detect_silence(
+        &PathBuf::from(path),
+        noise_db.unwrap_or(-30.0),
+        min_secs.unwrap_or(0.8),
+    )
 }
 
 /// Default on-disk SQLite path for transcript/cut state.
@@ -230,7 +246,11 @@ fn load_projects(db_path: String) -> Result<Vec<Project>, String> {
 
 /// Mark a project as opened now (updates `last_opened`).
 #[tauri::command]
-fn update_project_opened(db_path: String, source_path: String, last_opened: i64) -> Result<(), String> {
+fn update_project_opened(
+    db_path: String,
+    source_path: String,
+    last_opened: i64,
+) -> Result<(), String> {
     let conn = transcript::open_db(Path::new(&db_path))?;
     transcript::update_project_opened(&conn, &source_path, last_opened)
 }
@@ -258,9 +278,13 @@ fn start_export(
     request: ExportRequest,
 ) -> Result<ExportResult, String> {
     let flag = Arc::new(AtomicBool::new(false));
-    *cancel.lock().map_err(|_| "export lock poisoned".to_string())? = Some(Arc::clone(&flag));
+    *cancel
+        .lock()
+        .map_err(|_| "export lock poisoned".to_string())? = Some(Arc::clone(&flag));
     let result = export::run_export(app, flag, request);
-    *cancel.lock().map_err(|_| "export lock poisoned".to_string())? = None;
+    *cancel
+        .lock()
+        .map_err(|_| "export lock poisoned".to_string())? = None;
     result
 }
 
@@ -277,20 +301,20 @@ fn cancel_export(cancel: State<'_, ExportCancel>) {
 /// Plan an export without running it — returns the piece breakdown, estimated
 /// size, and any warnings so the UI can show a preview before the render.
 #[tauri::command]
-fn plan_export(
-    app: tauri::AppHandle,
-    request: ExportRequest,
-) -> Result<ExportPlan, String> {
+fn plan_export(app: tauri::AppHandle, request: ExportRequest) -> Result<ExportPlan, String> {
     let cancel = Arc::new(AtomicBool::new(false));
     let scan_app = app.clone();
     let on_scan = move |msg: &str| {
-        let _ = scan_app.emit("export-progress", serde_json::json!({
-            "stage": "scan",
-            "pieceIndex": 0,
-            "pieceCount": 0,
-            "percent": 0.0,
-            "message": msg,
-        }));
+        let _ = scan_app.emit(
+            "export-progress",
+            serde_json::json!({
+                "stage": "scan",
+                "pieceIndex": 0,
+                "pieceCount": 0,
+                "percent": 0.0,
+                "message": msg,
+            }),
+        );
     };
     let (_, plan, _) = export::prepare(&request, Some(cancel), Some(&on_scan))?;
     Ok(plan)
@@ -303,7 +327,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(memory::MemoryProbe::new()))
         .manage(Mutex::new(None::<Arc<AtomicBool>>))
-.invoke_handler(tauri::generate_handler![
+        .invoke_handler(tauri::generate_handler![
             get_memory_stats,
             probe_media,
             detect_hardware,

@@ -337,7 +337,10 @@ mod tests {
             nvenc: true,
             amf: true,
         };
-        assert_eq!(all.preferred_chain(), vec!["h264_qsv", "h264_nvenc", "h264_amf"]);
+        assert_eq!(
+            all.preferred_chain(),
+            vec!["h264_qsv", "h264_nvenc", "h264_amf"]
+        );
         let cpu_only = HardwareSupport {
             qsv: false,
             nvenc: false,

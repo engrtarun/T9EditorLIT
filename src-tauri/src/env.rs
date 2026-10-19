@@ -25,10 +25,7 @@ pub struct EnvInfo {
 
 #[tauri::command]
 pub async fn env_path(app: AppHandle) -> Result<String, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(dir.join(".env").to_string_lossy().into_owned())
 }
 

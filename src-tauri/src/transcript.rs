@@ -286,7 +286,11 @@ pub fn load_projects(conn: &Connection) -> Result<Vec<Project>, String> {
 }
 
 /// Mark a project as opened now (updates `last_opened` to current unix seconds).
-pub fn update_project_opened(conn: &Connection, source_path: &str, last_opened: i64) -> Result<(), String> {
+pub fn update_project_opened(
+    conn: &Connection,
+    source_path: &str,
+    last_opened: i64,
+) -> Result<(), String> {
     conn.execute(
         "UPDATE projects SET last_opened = ?1 WHERE source_path = ?2",
         params![last_opened, source_path],

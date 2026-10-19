@@ -30,8 +30,8 @@ pub fn init_cache_schema(conn: &Connection) -> Result<(), String> {
 /// `(size, mtime)` of the source — the two facts that invalidate a cache row
 /// when the file is re-cut or replaced.
 fn fingerprint(path: &Path) -> Result<(u64, i64), String> {
-    let meta = std::fs::metadata(path)
-        .map_err(|e| format!("could not stat {}: {e}", path.display()))?;
+    let meta =
+        std::fs::metadata(path).map_err(|e| format!("could not stat {}: {e}", path.display()))?;
     let mtime = meta
         .modified()
         .ok()
@@ -60,7 +60,11 @@ pub fn load_cached(conn: &Connection, source_path: &str, path: &Path) -> Option<
         .filter(|s| !s.is_empty())
         .filter_map(|s| s.parse::<f64>().ok())
         .collect();
-    if parsed.is_empty() { None } else { Some(parsed) }
+    if parsed.is_empty() {
+        None
+    } else {
+        Some(parsed)
+    }
 }
 
 /// Persist a freshly scanned list for next time.
@@ -94,7 +98,10 @@ pub fn store_cached(
 /// `-skip_frame nokey` makes ffprobe decode *only* keyframes: the file is read
 /// from disk once, but the CPU cost stays near zero — which is the whole reason
 /// this is a child process and not an in-process demuxer.
-pub fn scan(path: &Path, cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> Result<Vec<f64>, String> {
+pub fn scan(
+    path: &Path,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<Vec<f64>, String> {
     let src = path.to_string_lossy().into_owned();
     let args = [
         "-v".to_string(),

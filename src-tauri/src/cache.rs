@@ -96,6 +96,9 @@ mod tests {
         let p = dir.join("key-probe.bin");
         fs::write(&p, b"hello").unwrap();
         let meta = fs::metadata(&p).unwrap();
-        assert_eq!(source_key(&p, &meta).unwrap(), source_key(&p, &meta).unwrap());
+        assert_eq!(
+            source_key(&p, &meta).unwrap(),
+            source_key(&p, &meta).unwrap()
+        );
     }
 }

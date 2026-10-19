@@ -24,8 +24,8 @@ use crate::media::MediaInfo;
 use crate::transcript;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 /// Tauri event name the UI listens on for live render progress.
@@ -219,10 +219,12 @@ fn nearest_keyframe(t: f64, kfs: &[f64]) -> Option<f64> {
     let idx = kfs.partition_point(|k| *k < t);
     let after = (idx < kfs.len()).then_some(kfs[idx]);
     let before = idx.checked_sub(1).map(|i| kfs[i]);
-    [before, after]
-        .into_iter()
-        .flatten()
-        .min_by(|a, b| (a - t).abs().partial_cmp(&(b - t).abs()).unwrap_or(std::cmp::Ordering::Equal))
+    [before, after].into_iter().flatten().min_by(|a, b| {
+        (a - t)
+            .abs()
+            .partial_cmp(&(b - t).abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
 }
 
 /// `Some(keyframe)` when `t` sits within `tol` of a keyframe — the cut can be
@@ -396,7 +398,11 @@ pub fn parse_progress_line(line: &str) -> Option<ProgressLine> {
     let value = value.trim();
     match key {
         "out_time" => parse_hhmmss(value).map(ProgressLine::OutTime),
-        "speed" => value.trim_end_matches('x').parse::<f64>().ok().map(ProgressLine::Speed),
+        "speed" => value
+            .trim_end_matches('x')
+            .parse::<f64>()
+            .ok()
+            .map(ProgressLine::Speed),
         "progress" => Some(ProgressLine::Status(value.to_string())),
         _ => None,
     }
@@ -440,14 +446,8 @@ fn family_of(video_codec: &str) -> Option<&'static str> {
 /// with no iGPU must not be allowed to fail ten minutes into a render.
 fn pick_encoder(family: &str) -> Result<(Option<String>, Option<String>), String> {
     let (hw, cpu) = match family {
-        "hevc" => (
-            vec!["hevc_qsv", "hevc_nvenc", "hevc_amf"],
-            Some("libx265"),
-        ),
-        _ => (
-            vec!["h264_qsv", "h264_nvenc", "h264_amf"],
-            Some("libx264"),
-        ),
+        "hevc" => (vec!["hevc_qsv", "hevc_nvenc", "hevc_amf"], Some("libx265")),
+        _ => (vec!["h264_qsv", "h264_nvenc", "h264_amf"], Some("libx264")),
     };
 
     let cpu_ok = cpu.filter(|c| ffmpeg_has_encoder(c) && ffmpeg_encoder_usable(c));
@@ -460,7 +460,11 @@ fn pick_encoder(family: &str) -> Result<(Option<String>, Option<String>), String
         (None, Some(cpu)) => Ok((Some(cpu.to_string()), None)),
         (None, None) => Err(format!(
             "no usable {family} encoder — FFmpeg reports none of {} working",
-            if family == "hevc" { "hevc_qsv/hevc_nvenc/hevc_amf/libx265" } else { "h264_qsv/h264_nvenc/h264_amf/libx264" }
+            if family == "hevc" {
+                "hevc_qsv/hevc_nvenc/hevc_amf/libx265"
+            } else {
+                "h264_qsv/h264_nvenc/h264_amf/libx264"
+            }
         )),
     }
 }
@@ -493,7 +497,11 @@ fn audio_copied(info: &MediaInfo, output: &Path) -> (bool, Vec<String>) {
 
 /// Build the full recipe. Pure with respect to the filesystem apart from the
 /// encoder probes, which each run at most once per process.
-pub fn build_plan(req: &ExportRequest, info: &MediaInfo, kfs: &[f64]) -> Result<ExportPlan, String> {
+pub fn build_plan(
+    req: &ExportRequest,
+    info: &MediaInfo,
+    kfs: &[f64],
+) -> Result<ExportPlan, String> {
     let mode = req.options.mode.as_str();
     if !matches!(mode, "hybrid" | "copy" | "encode") {
         return Err(format!("unknown export mode: {mode}"));
@@ -542,11 +550,16 @@ pub fn build_plan(req: &ExportRequest, info: &MediaInfo, kfs: &[f64]) -> Result<
     }
 
     let keyframes = normalise_keyframes(kfs.to_vec(), duration);
-    let outcome = plan_pieces(&segments, &keyframes, &req.options.options_copy(&effective_mode));
+    let outcome = plan_pieces(
+        &segments,
+        &keyframes,
+        &req.options.options_copy(&effective_mode),
+    );
 
     if outcome.pieces.is_empty() {
-        return Err("nothing to export — every segment is shorter than one GOP in copy mode"
-            .to_string());
+        return Err(
+            "nothing to export — every segment is shorter than one GOP in copy mode".to_string(),
+        );
     }
 
     let needs_encode = outcome.pieces.iter().any(|p| p.kind == PieceKind::Encode);
@@ -556,9 +569,9 @@ pub fn build_plan(req: &ExportRequest, info: &MediaInfo, kfs: &[f64]) -> Result<
         // whole timeline is rendered as h264 for compatibility.
         let family = family_of(info.video_codec.as_deref().unwrap_or("")).unwrap_or("h264");
         let (primary, fallback) = pick_encoder(family)?;
-        let primary_is_hardware = primary.as_deref().is_some_and(|e| {
-            ["qsv", "nvenc", "amf"].iter().any(|tag| e.contains(tag))
-        });
+        let primary_is_hardware = primary
+            .as_deref()
+            .is_some_and(|e| ["qsv", "nvenc", "amf"].iter().any(|tag| e.contains(tag)));
         if !primary_is_hardware {
             warnings.push(
                 "no hardware encoder usable on this machine — micro-encodes run on the CPU"
@@ -600,7 +613,11 @@ pub fn build_plan(req: &ExportRequest, info: &MediaInfo, kfs: &[f64]) -> Result<
         duration_secs: duration,
         output_duration_secs,
         segments,
-        copy_pieces: outcome.pieces.iter().filter(|p| p.kind == PieceKind::Copy).count(),
+        copy_pieces: outcome
+            .pieces
+            .iter()
+            .filter(|p| p.kind == PieceKind::Copy)
+            .count(),
         encode_pieces: outcome
             .pieces
             .iter()
@@ -928,7 +945,10 @@ pub fn run_export(
         .unwrap_or_else(|| Path::new("."))
         .join(".t9export");
     if let Err(e) = reset_work_dir(&work) {
-        return Err(format!("could not prepare work folder {}: {e}", work.display()));
+        return Err(format!(
+            "could not prepare work folder {}: {e}",
+            work.display()
+        ));
     }
 
     let result = cut_and_concat(
@@ -1061,7 +1081,11 @@ fn cut_and_concat(
                     "{} failed on piece {} ({}); falling back to {fb} for the rest of the export",
                     used_encoder.clone().unwrap_or_default(),
                     piece.index + 1,
-                    out.stderr_tail.lines().next().unwrap_or("unknown error").trim()
+                    out.stderr_tail
+                        .lines()
+                        .next()
+                        .unwrap_or("unknown error")
+                        .trim()
                 ));
                 used_encoder = Some(fb.clone());
                 emit(
@@ -1486,7 +1510,10 @@ mod tests {
         let joined = args.join(" ");
         assert!(joined.contains("-ss 4.000001"), "{joined}");
         assert!(joined.contains("-c:v copy"), "{joined}");
-        assert!(!joined.contains("-c:v h264"), "a copy piece must not encode: {joined}");
+        assert!(
+            !joined.contains("-c:v h264"),
+            "a copy piece must not encode: {joined}"
+        );
         assert!(!joined.contains("-map 0:a:0"), "no audio mapped: {joined}");
     }
 

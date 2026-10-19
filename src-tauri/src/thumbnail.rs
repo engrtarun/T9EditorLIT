@@ -119,8 +119,8 @@ pub fn extract(
         count,
         duration_secs: round3(duration),
     };
-    let json =
-        serde_json::to_string(&manifest).map_err(|e| format!("could not serialize manifest: {e}"))?;
+    let json = serde_json::to_string(&manifest)
+        .map_err(|e| format!("could not serialize manifest: {e}"))?;
     fs::write(&manifest_path, json)
         .map_err(|e| format!("could not write thumbnail manifest: {e}"))?;
 

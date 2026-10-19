@@ -84,8 +84,8 @@ pub fn init_media_cache_schema(conn: &Connection) -> Result<(), String> {
 }
 
 fn media_fingerprint(path: &Path) -> Result<(u64, i64), String> {
-    let meta = std::fs::metadata(path)
-        .map_err(|e| format!("could not stat {}: {e}", path.display()))?;
+    let meta =
+        std::fs::metadata(path).map_err(|e| format!("could not stat {}: {e}", path.display()))?;
     let mtime = meta
         .modified()
         .ok()
@@ -110,9 +110,15 @@ pub fn load_cached_media(conn: &Connection, source_path: &str, path: &Path) -> O
 }
 
 /// Persist a freshly probed result for next time.
-pub fn store_cached_media(conn: &Connection, source_path: &str, path: &Path, info: &MediaInfo) -> Result<(), String> {
+pub fn store_cached_media(
+    conn: &Connection,
+    source_path: &str,
+    path: &Path,
+    info: &MediaInfo,
+) -> Result<(), String> {
     let (size, mtime) = media_fingerprint(path)?;
-    let json = serde_json::to_string(info).map_err(|e| format!("could not serialize media info: {e}"))?;
+    let json =
+        serde_json::to_string(info).map_err(|e| format!("could not serialize media info: {e}"))?;
     conn.execute(
         "INSERT INTO media_cache (source_path, size_bytes, mtime_secs, json)
          VALUES (?1, ?2, ?3, ?4)

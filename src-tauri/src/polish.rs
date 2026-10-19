@@ -37,10 +37,10 @@ impl TextPosition {
 #[serde(rename_all = "camelCase")]
 pub struct PolishSettings {
     pub music_path: Option<String>,
-    pub music_volume: f64,            // 0.0 – 1.0
+    pub music_volume: f64, // 0.0 – 1.0
     pub music_loop: bool,
     pub duck_enabled: bool,
-    pub duck_db: f64,                 // dB to duck by, e.g. -14.0
+    pub duck_db: f64, // dB to duck by, e.g. -14.0
     pub duck_attack_ms: f64,
     pub duck_release_ms: f64,
     pub text: String,
@@ -92,10 +92,7 @@ fn audio_filter_chain(
 
     // Music input is stream 1 (index 1), speech is stream 0 of the source.
     if has_music {
-        parts.push(format!(
-            "[1:a]volume={:.2}[music]",
-            settings.music_volume
-        ));
+        parts.push(format!("[1:a]volume={:.2}[music]", settings.music_volume));
     }
 
     if has_music && has_speech && settings.duck_enabled {
@@ -167,7 +164,10 @@ pub fn run_polish(
     let info = crate::media::MediaInfo::probe(source)?;
 
     let has_audio = info.has_audio;
-    let has_music = settings.music_path.as_ref().map_or(false, |p| !p.is_empty());
+    let has_music = settings
+        .music_path
+        .as_ref()
+        .map_or(false, |p| !p.is_empty());
 
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
@@ -182,7 +182,11 @@ pub fn run_polish(
     if has_music {
         let music_path = PathBuf::from(settings.music_path.as_ref().unwrap());
         args.push("-stream_loop".into());
-        args.push(if settings.music_loop { "-1".into() } else { "0".into() });
+        args.push(if settings.music_loop {
+            "-1".into()
+        } else {
+            "0".into()
+        });
         args.push("-i".into());
         args.push(music_path.to_string_lossy().into_owned());
     }
@@ -223,7 +227,10 @@ pub fn run_polish(
     args.push("make_zero".into());
     args.push(output.to_string_lossy().into_owned());
 
-    let out = crate::ffmpeg::run("ffmpeg", &args.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+    let out = crate::ffmpeg::run(
+        "ffmpeg",
+        &args.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    )?;
 
     if !out.success() {
         return Err(format!(
@@ -233,9 +240,8 @@ pub fn run_polish(
         ));
     }
 
-    let out_info = crate::media::MediaInfo::probe(output).map_err(|e| {
-        format!("polish finished but output could not be probed: {e}")
-    })?;
+    let out_info = crate::media::MediaInfo::probe(output)
+        .map_err(|e| format!("polish finished but output could not be probed: {e}"))?;
 
     Ok(PolishResult {
         output: output.to_string_lossy().into_owned(),
