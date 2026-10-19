@@ -65,6 +65,53 @@ export interface MediaInfo {
   channels: number | null;
 }
 
+/* ------------------------------------------------------------------ Rust IPC */
+
+/** Live RAM reading from the Rust `get_memory_stats` command. */
+export interface MemoryStats {
+  totalMb: number;
+  usedMb: number;
+  availableMb: number;
+  /** What this app costs — host process plus its WebView2 children. */
+  appMb: number;
+  usedPercent: number;
+}
+
+/** One drive, for the "PC details" popover. */
+export interface DiskInfo {
+  name: string;
+  mountPoint: string;
+  totalGb: number;
+  availableGb: number;
+  usedPercent: number;
+}
+
+/** Full machine snapshot from the Rust `system_details` command. */
+export interface SystemDetails {
+  osName: string;
+  osVersion: string;
+  hostName: string;
+  kernel: string;
+  cpuBrand: string;
+  cpuCores: number;
+  cpuThreads: number;
+  cpuUsagePercent: number;
+  cpuFrequencyMhz: number;
+  ramTotalGb: number;
+  ramUsedGb: number;
+  ramAvailableGb: number;
+  appMemoryMb: number;
+  appCpuPercent: number;
+  uptimeHours: number;
+  disks: DiskInfo[];
+}
+
+/** A silent span, from the Rust `detect_silence` command. */
+export interface SilenceRange {
+  start: number;
+  end: number;
+}
+
 /** A clip on the bottom timeline (video lane). */
 export interface TimelineClip {
   id: string;

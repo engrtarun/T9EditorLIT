@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
-type ExportCancel = Mutex<Option<Arc<AtomicBool>>>;
+pub type ExportCancel = Mutex<Option<Arc<AtomicBool>>>;
 
 pub use env::{EnvEntry, EnvInfo};
 pub use export::{ExportOptions, ExportPlan, ExportProgress, ExportRequest, ExportResult, Piece, Segment};
@@ -31,13 +31,13 @@ pub use export::{ExportOptions, ExportPlan, ExportProgress, ExportRequest, Expor
 pub use audio::AudioChunk;
 pub use ffmpeg::HardwareSupport;
 pub use media::{MediaInfo, StreamInfo};
-pub use memory::MemoryStats;
+pub use memory::{MemoryProbe, MemoryStats};
 pub use thumbnail::ThumbnailStrip;
 pub use polish::{PolishResult, PolishSettings};
 pub use transcript::{TranscriptLine, Project};
 pub use waveform::WaveformData;
 
-type Probe = Mutex<memory::MemoryProbe>;
+pub type Probe = Mutex<memory::MemoryProbe>;
 
 /// `<app_data>/cache` — home for waveform JSON and thumbnail frames.
 fn cache_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {

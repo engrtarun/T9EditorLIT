@@ -3,6 +3,8 @@
   import { media } from '../../stores/media.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { thumbUrl } from '../../media';
+  import { isTauri, pickVideo } from '../../ipc';
+  import { toast } from '../../stores/toast.svelte';
   import { fmtSize } from '../../utils';
 
   /**
@@ -29,6 +31,25 @@
     const f = files[0];
     media.add(f, URL.createObjectURL(f));
     project.loadFile(f, URL.createObjectURL(f));
+  }
+
+  /** In Tauri this opens the native picker and hands the real path to the
+   *  Rust engine (ffprobe → waveform → filmstrip). In the browser it falls
+   *  back to a plain file input. */
+  async function importMedia() {
+    if (isTauri()) {
+      const path = await pickVideo();
+      if (!path) return;
+      toast.push('info', 'Probing media…');
+      try {
+        await project.loadFromBackend(path);
+        toast.push('info', `Loaded ${project.media?.name ?? path}`);
+      } catch (e) {
+        toast.push('warn', `Load failed: ${e instanceof Error ? e.message : e}`);
+      }
+      return;
+    }
+    fileInput?.click();
   }
 </script>
 
@@ -63,7 +84,7 @@
     <div class="px-2.5 pb-2.5">
       <div class="flex">
         <button
-          onclick={() => fileInput?.click()}
+          onclick={importMedia}
           class="flex flex-1 items-center justify-center gap-1.5 rounded-l-md bg-nc-gold py-1.5 text-[12px] font-semibold text-nc-bg hover:brightness-110"
         >
           <svg
@@ -79,7 +100,7 @@
           Import media
         </button>
         <button
-          onclick={() => fileInput?.click()}
+          onclick={importMedia}
           class="grid w-6 place-items-center rounded-r-md bg-nc-gold-dim text-nc-bg hover:brightness-110"
           title="Import options"
         >

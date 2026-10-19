@@ -1,5 +1,6 @@
 import type {
   KeepState,
+  LineFlag,
   MediaAsset,
   TextClip,
   ThumbnailStrip,
@@ -8,7 +9,31 @@ import type {
   WaveformData
 } from '../types';
 import { MOCK_LINES } from '../mock';
+import {
+  buildSegments,
+  computeOffsets,
+  dropIndex,
+  editDuration as editDurationOf,
+  editTimeAt,
+  moveInOrder,
+  orderLines,
+  orderSegments,
+  sourceAt
+} from '../segments';
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
+import {
+  assetUrl,
+  defaultDbPath,
+  demoSourcePath,
+  detectSilence,
+  extractThumbnails,
+  extractWaveform,
+  isTauri,
+  loadTranscript,
+  probeMedia,
+  saveTranscript,
+  setSourcePath
+} from '../ipc';
 
 /**
  * Undo snapshot. Holds the whole line array, not just the keep flags —
@@ -68,28 +93,147 @@ class ProjectStore {
   ready = $state(false);
   loadError = $state<string | null>(null);
 
+  /** Filesystem path of the source, when running under Tauri. */
+  sourcePath = $state<string | null>(null);
+
   durationSec = $derived(this.media?.durationSecs ?? 0);
 
   /**
-   * Load the real demo media. In the Tauri build this is replaced by the Rust
-   * `probe_cached` / `extract_waveform` / `extract_thumbnails` commands.
+   * Load the project source.
+   *
+   * In Tauri this goes through the real Rust engine: ffprobe → SQLite cache,
+   * FFmpeg waveform, FFmpeg filmstrip, SQLite transcript. In the browser it
+   * falls back to the media baked by `tools/generate-media.mjs`.
    */
   async init() {
     try {
-      const [media, waveform, thumbnails] = await Promise.all([
-        loadMediaInfo(),
-        loadWaveform(),
-        loadThumbnails()
-      ]);
-      this.media = media;
-      this.name = media.name.replace(/\.[^.]+$/, '');
-      this.waveform = waveform;
-      this.thumbnails = thumbnails;
-      this.lines = scaleLines(MOCK_LINES, media.durationSecs);
-      this.ready = true;
+      if (isTauri()) {
+        const path = await demoSourcePath();
+        if (path) {
+          await this.loadFromBackend(path);
+          return;
+        }
+      }
+      await this.loadBaked();
     } catch (e) {
       this.loadError = e instanceof Error ? e.message : String(e);
       this.ready = true;
+    }
+  }
+
+  private async loadBaked() {
+    const [media, waveform, thumbnails] = await Promise.all([
+      loadMediaInfo(),
+      loadWaveform(),
+      loadThumbnails()
+    ]);
+    this.media = media;
+    this.name = media.name.replace(/\.[^.]+$/, '');
+    this.waveform = waveform;
+    this.thumbnails = thumbnails;
+    this.lines = scaleLines(MOCK_LINES, media.durationSecs);
+    this.ready = true;
+  }
+
+  /** Real engine path: probe → waveform → filmstrip → transcript (SQLite). */
+  async loadFromBackend(path: string) {
+    const info = await probeMedia(path);
+    this.media = {
+      id: crypto.randomUUID(),
+      name: path.split(/[\\/]/).pop() ?? 'video',
+      url: assetUrl(path),
+      durationSecs: info.durationSecs,
+      width: info.width ?? 0,
+      height: info.height ?? 0,
+      fps: info.fps ?? 0,
+      sizeBytes: info.sizeBytes,
+      videoCodec: info.videoCodec ?? 'unknown',
+      audioCodec: info.audioCodec,
+      sampleRate: null,
+      channels: null
+    };
+    this.name = this.media.name.replace(/\.[^.]+$/, '');
+    this.sourcePath = path;
+    setSourcePath(path);
+
+    const [wave, thumbs] = await Promise.all([
+      extractWaveform(path).catch(() => null),
+      extractThumbnails(path).catch(() => null)
+    ]);
+    if (wave) this.waveform = wave;
+    if (thumbs) this.thumbnails = thumbs;
+
+    try {
+      const db = await defaultDbPath();
+      const stored = await loadTranscript(db, path);
+      if (stored?.length) {
+        this.lines = stored.map((l) => ({
+          id: l.id,
+          startSec: l.startSec,
+          endSec: l.endSec,
+          text: l.text,
+          flag: (l.flag as LineFlag) ?? 'none',
+          keep: l.keep ? 'keep' : 'cut',
+          confidence: 1
+        }));
+      } else {
+        this.lines = scaleLines(MOCK_LINES, info.durationSecs);
+      }
+    } catch {
+      this.lines = scaleLines(MOCK_LINES, info.durationSecs);
+    }
+    this.ready = true;
+  }
+
+  /**
+   * Auto-cut silence — Clipchamp's "AI suggestions / remove silences".
+   * Uses the Rust `detect_silence` command (FFmpeg `silencedetect`), then
+   * marks every transcript line that overlaps a silent span as cut.
+   */
+  async autoCutSilence(minSecs = 3.0): Promise<number> {
+    const path = this.sourcePath;
+    if (!path || !isTauri()) return 0;
+    const ranges = await detectSilence(path, -30, minSecs);
+    if (!ranges.length) return 0;
+
+    this.commit();
+    const cut = new Set<string>();
+    for (const l of this.lines) {
+      for (const r of ranges) {
+        if (l.endSec > r.start && l.startSec < r.end) {
+          cut.add(l.id);
+          break;
+        }
+      }
+    }
+    if (cut.size) {
+      this.lines = this.lines.map((l) => (cut.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l));
+    }
+    return cut.size;
+  }
+
+  /** Persist the current transcript + cut decisions to SQLite. */
+  async persist() {
+    const path = this.sourcePath;
+    if (!path || !isTauri()) return false;
+    try {
+      const db = await defaultDbPath();
+      await saveTranscript(
+        db,
+        path,
+        this.lines.map((l) => ({
+          id: l.id,
+          startSec: l.startSec,
+          endSec: l.endSec,
+          text: l.text,
+          flag: l.flag,
+          keep: l.keep === 'keep',
+          confidence: l.confidence
+        }))
+      );
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -116,6 +260,49 @@ class ProjectStore {
     }
     return ranges;
   });
+
+  /**
+   * The **edit timeline**: the kept segments in final-video order.
+   *
+   * This is what the video lane shows and what you can drag around. A segment
+   * owns the transcript lines that produced it, so reordering a segment
+   * reorders those lines in the transcript panel — live.
+   *
+   * The maths lives in `lib/segments.ts` (pure, unit-tested).
+   */
+  segments = $derived(buildSegments(this.lines));
+
+  /** Order of the segment ids, as the user arranged them on the timeline. */
+  segmentOrder = $state<string[]>([]);
+
+  /** Segments in final-video order, honouring the user's drag order. */
+  orderedSegments = $derived(orderSegments(this.segments, this.segmentOrder));
+
+  /** Edit-axis position of every segment: where it starts in the final video. */
+  segmentOffsets = $derived(computeOffsets(this.orderedSegments));
+
+  /** Total length of the final video (all kept segments, in order). */
+  editDuration = $derived(editDurationOf(this.orderedSegments));
+
+  /** Source time → position on the edit timeline (null when inside a cut). */
+  editTimeAt = (sourceSec: number): number | null =>
+    editTimeAt(this.orderedSegments, this.segmentOffsets, sourceSec);
+
+  /** Position on the edit timeline → source time (null when past the end). */
+  sourceAt = (editSec: number): number | null =>
+    sourceAt(this.orderedSegments, this.segmentOffsets, editSec);
+
+  /** Move a segment to a new position in the final video. */
+  moveSegment(fromId: string, toIndex: number) {
+    const order = this.orderedSegments.map((s) => s.id);
+    const next = moveInOrder(order, fromId, toIndex);
+    if (next.join() === order.join()) return;
+    this.commit();
+    this.segmentOrder = next;
+  }
+
+  /** Transcript lines in final-video order (used by the transcript panel). */
+  orderedLines = $derived(orderLines(this.orderedSegments, this.lines));
 
   keptSec = $derived.by(() =>
     this.lines.reduce((sum, l) => sum + (l.keep === 'keep' ? l.endSec - l.startSec : 0), 0)
@@ -333,7 +520,7 @@ class ProjectStore {
   splitAt(sec: number): boolean {
     let idx = this.lineAt(sec);
     const under = idx >= 0 ? this.lines[idx] : null;
-    const strictlyInside = (l: TranscriptLine) => sec > l.startSec + 0.2 && sec < l.endSec - 0.2;
+    const strictlyInside = (l: TranscriptLine) => sec > l.startSec + 0.25 && sec < l.endSec - 0.25;
 
     if (!under || !strictlyInside(under)) {
       if (!this.lines[this.cursor]) return false;
@@ -341,8 +528,10 @@ class ProjectStore {
     }
 
     const line = this.lines[idx];
-    if (line.endSec - line.startSec < 0.6) return false;
-    const at = Math.max(line.startSec + 0.2, Math.min(line.endSec - 0.2, sec));
+    // Clipchamp's AI auto-cut treats 3 s+ as a cuttable silence; for a manual
+    // split we only need a usable sliver, so 0.25 s is the floor.
+    if (line.endSec - line.startSec < 0.5) return false;
+    const at = Math.max(line.startSec + 0.25, Math.min(line.endSec - 0.25, sec));
 
     this.commit();
     const base = baseId(line.id);

@@ -1,13 +1,16 @@
 {
-  "name": "clipchamp-bunny",
+  "name": "nanami-cut",
   "version": "0.1.0",
-  "description": "Nanami 'No Overtime' transcript-first video cutter - UI prototype",
+  "description": "Nanami Cut — zero-RAM, transcript-first video cutter for long Hinglish tech tutorials",
   "type": "module",
   "private": true,
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "app": "tauri dev",
+    "app:build": "tauri build",
+    "app:release": "tauri build --bundles nsis,msi",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "format": "prettier --write .",
     "lint": "prettier --check .",
@@ -16,6 +19,7 @@
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@tailwindcss/vite": "^4.1.0",
+    "@tauri-apps/cli": "^2",
     "@tsconfig/svelte": "^5.0.5",
     "prettier": "^3.4.2",
     "prettier-plugin-svelte": "^3.3.2",
@@ -24,5 +28,10 @@
     "tailwindcss": "^4.1.0",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-opener": "^2"
   }
 }

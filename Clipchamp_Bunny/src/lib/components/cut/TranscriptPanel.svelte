@@ -17,9 +17,12 @@
   let scroller: HTMLDivElement | null = $state(null);
 
   const view = $derived.by(() => {
-    if (filter === 'flagged') return project.lines.filter((l) => l.flag !== 'none');
-    if (filter === 'cut') return project.lines.filter((l) => l.keep === 'cut');
-    return project.lines;
+    // `orderedLines` is the final-video order — dragging a clip on the
+    // timeline reorders these rows live.
+    const src = project.orderedLines.length ? project.orderedLines : project.lines;
+    if (filter === 'flagged') return src.filter((l) => l.flag !== 'none');
+    if (filter === 'cut') return src.filter((l) => l.keep === 'cut');
+    return src;
   });
 
   const cursorPos = $derived.by(() => {
@@ -63,7 +66,6 @@
     project.cursor = project.lines.findIndex((l) => l.id === line.id);
     player.seek(line.startSec);
   }
-
   function toggle(line: TranscriptLine) {
     project.toggleLine(line.id);
   }

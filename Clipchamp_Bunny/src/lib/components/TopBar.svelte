@@ -3,6 +3,49 @@
   import { layout } from '../stores/layout.svelte';
   import { fmtHuman } from '../utils';
   import CloudMenu from './CloudMenu.svelte';
+  import SystemMeter from './SystemMeter.svelte';
+  import ContextMenu from './ContextMenu.svelte';
+  import type { MenuItem } from '../types';
+  import { mode } from '../stores/mode.svelte';
+  import { revealSource } from '../ipc';
+  import { toast } from '../stores/toast.svelte';
+
+  /** Clipchamp's project-name menu (captured in the .ipynb DOM extract). */
+  let projMenu = $state(false);
+  let projPos = $state({ x: 0, y: 0 });
+  let renaming = $state(false);
+  let draft = $state('');
+
+  const PROJ_ITEMS: MenuItem[] = [
+    { id: 'rename', label: 'Rename', icon: 'rename' },
+    { id: 'locate', label: 'Open file location', icon: 'folder' },
+    { id: 'div', label: '', divider: true },
+    { id: 'new', label: 'Create a new video', icon: 'plus' }
+  ];
+
+  function toggleProj(e: MouseEvent) {
+    if (projMenu) {
+      projMenu = false;
+      return;
+    }
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    projPos = { x: Math.round(r.left), y: Math.round(r.bottom + 4) };
+    projMenu = true;
+  }
+
+  function projPick(id: string) {
+    projMenu = false;
+    if (id === 'rename') {
+      draft = project.name;
+      renaming = true;
+    } else if (id === 'locate') {
+      void revealSource().then((ok) =>
+        toast.push(ok ? 'info' : 'warn', ok ? 'File location opened' : 'Source path unknown')
+      );
+    } else if (id === 'new') {
+      mode.set('ingest');
+    }
+  }
 
   const pct = $derived(project.durationSec ? (project.cutSec / project.durationSec) * 100 : 0);
 </script>
@@ -47,16 +90,36 @@
     <span class="text-[13px] font-semibold tracking-tight">Nanami Cut</span>
   </div>
 
-  <!-- project dropdown -->
-  <button
-    class="ml-1 flex items-center gap-1.5 rounded-md bg-nc-panel-2 px-2.5 py-1 text-[13px] font-medium hover:bg-nc-line"
-    title="Project"
-  >
-    <span class="max-w-[190px] truncate">{project.name}</span>
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" class="text-nc-mut">
-      <path d="M7 10l5 5 5-5z" />
-    </svg>
-  </button>
+  <!-- project dropdown — Clipchamp's project menu (Rename / Open file location / New video) -->
+  {#if renaming}
+    <input
+      bind:value={draft}
+      onblur={() => {
+        if (draft.trim()) project.name = draft.trim();
+        renaming = false;
+      }}
+      onkeydown={(e) => {
+        if (e.key === 'Enter') {
+          if (draft.trim()) project.name = draft.trim();
+          renaming = false;
+        }
+        if (e.key === 'Escape') renaming = false;
+      }}
+      class="ml-1 w-[190px] rounded-md border border-nc-gold bg-nc-panel-2 px-2 py-1 text-[13px] outline-none"
+    />
+  {:else}
+    <button
+      onclick={toggleProj}
+      class="ml-1 flex items-center gap-1.5 rounded-md bg-nc-panel-2 px-2.5 py-1 text-[13px] font-medium hover:bg-nc-line"
+      title="Project menu"
+      aria-haspopup="menu"
+    >
+      <span class="max-w-[190px] truncate">{project.name}</span>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" class="text-nc-mut">
+        <path d="M7 10l5 5 5-5z" />
+      </svg>
+    </button>
+  {/if}
 
   <!-- cloud / local toggle → backup & AI providers -->
   <CloudMenu />
@@ -79,6 +142,9 @@
       ></span>
     </span>
   </div>
+
+  <!-- RAM · this app · network, click for full PC details -->
+  <SystemMeter />
 
   <!-- settings -->
   <button
@@ -116,3 +182,13 @@
     TD
   </div>
 </header>
+
+{#if projMenu}
+  <ContextMenu
+    items={PROJ_ITEMS}
+    x={projPos.x}
+    y={projPos.y}
+    onchoose={projPick}
+    onclose={() => (projMenu = false)}
+  />
+{/if}

@@ -295,7 +295,80 @@ The **complete official Clipchamp list** (Microsoft Support, 2026) is implemente
 
 ---
 
-## 15. Backend seams (backend agent yahan plug karega)
+## 16. The app runs in two modes
+
+| Mode | How | What is real |
+| ---- | --- | ----------- |
+| **Desktop (Tauri)** | `npm run app` / `Launch-NanamiCut.bat` | the real Rust engine: ffprobe → SQLite cache, FFmpeg waveform, FFmpeg filmstrip, SQLite transcript, `detect_silence`, export |
+| **Browser** | `npm run dev` → http://localhost:5174 | the UI, against the media baked by `tools/generate-media.mjs` |
+
+The Rust **engine is shared with the T9EditorLIT crate** — every module is included
+by path (`#[path = "../../../src-tauri/src/….rs"]`), so there is exactly one
+implementation of the FFmpeg / SQLite / export / memory code in the repository.
+A fix in the engine lands in both apps.
+
+## 17. The edit timeline (drag & drop)
+
+The bottom block is the **final video**, not the source:
+
+| Lane | Height | What it is |
+| ---- | ------ | ---------- |
+| **Source minimap** | 7px | the whole original, red where it was cut |
+| **Ruler** | 24px | edit time (0:00 = start of the final video) |
+| **T** | 30px | text overlays |
+| **Video** | 52px | **draggable clips**, real filmstrip inside, gold border |
+| **Audio** | 44px | the waveform of each kept segment, traffic-light coloured |
+
+Drag a clip → it moves in the final video → **the transcript rows reorder live**
+(the panel renders `project.orderedLines`, the final-video order).
+
+The maths lives in `src/lib/segments.ts` — pure, no runes, unit-tested
+(`segments.test.ts`, 13 tests). The playhead maps source ⇄ edit
+(`editTimeAt` / `sourceAt`), so a time inside a cut has **no** edit position —
+which is exactly the Phantom Cut behaviour.
+
+## 18. The honesty meter
+
+Top bar, right of the Overtime chip:
+
+```
+RAM ▓▓▓▓░░░ 4/8G │ ▮ 4 MB │ ↓ — MB/s
+```
+
+- **RAM** — total / used, from the Rust `get_memory_stats` command. The "app" figure
+  sums this process **and all of its descendants** (the WebView2 renderers), so it does
+  not under-report.
+- **This app** — what Nanami Cut is costing right now, in MB.
+- **Network** — a real download burst against a public speed endpoint, in MB/s.
+- **Click** → the full PC panel: OS, host, uptime, CPU (brand / cores / load / MHz),
+  RAM breakdown, this app's CPU, and every drive with free/total and a usage bar.
+
+`src-tauri/src/sysinfo_ext.rs` provides the snapshot (`system_details` command).
+
+## 19. Auto-cut silence
+
+Clipchamp's AI auto-cut scans for **pauses longer than three seconds**. Ours does the
+same through the Rust `detect_silence` command (FFmpeg `silencedetect`, `-30 dB`,
+`minSecs = 3.0`), then marks every transcript line that overlaps a silent span as cut.
+
+The ✨ button in the timeline tool row runs it. `project.autoCutSilence()` returns the
+number of lines it cut.
+
+## 20. Split rules
+
+| Rule | Value | Why |
+| ---- | ----- | ---- |
+| Minimum line that can be split | 0.5 s | below that a split has no meaning |
+| Minimum sliver left on either side | 0.25 s | |
+| Auto-cut silence threshold | 3.0 s | Clipchamp's documented rule |
+| Silence threshold | −30 dB RMS | FFmpeg default in our Rust wrapper |
+
+`S` splits the line under the playhead; if the playhead is on a line boundary
+(which happens when you *click* a transcript row, because the playhead jumps to
+the row's start) the **cursor line** is used instead and the cut point is clamped
+inside it. So `S` always does something sensible.
+
+## 21. Backend seams (backend agent yahan plug karega)
 
 | UI jagah | Kya plug hoga |
 | -------- | ------------- |

@@ -9,3 +9,10 @@ dist
 # and lives in the repo already at resource_Clipchamp/clipchamp_OBSrecord.mp4
 public/assets/*.mp4
 dev.log
+
+# Rust build artifacts
+src-tauri/target/
+dev.log
+vite5175.log
+preview.log
+.preview-port

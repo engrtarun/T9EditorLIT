@@ -1,4 +1,5 @@
 ﻿import type { MediaInfo, ThumbnailStrip, WaveformData } from './types';
+import { assetUrl } from './ipc';
 
 /**
  * Real demo media, baked by `tools/generate-media.mjs` using the same FFmpeg
@@ -28,5 +29,5 @@ export async function loadThumbnails(): Promise<ThumbnailStrip> {
 }
 
 export function thumbUrl(strip: ThumbnailStrip, index: number): string {
-  return `${strip.dir}/thumb_${String(index + 1).padStart(5, '0')}.jpg`;
+  return assetUrl(`${strip.dir}/thumb_${String(index + 1).padStart(5, '0')}.jpg`);
 }
