@@ -511,6 +511,30 @@ export function daemonHealth(): Promise<{
 }
 
 /**
+ * Dashboard greeting lines (Hinglish + English).
+ *
+ * The daemon owns the Groq call and its cache, so repeated app launches inside
+ * its TTL cost nothing. `null` means the daemon is not running (or this is the
+ * browser preview) — the dashboard keeps its local bank line.
+ */
+export function greetingLines(): Promise<{
+  en: string;
+  hi: string;
+  generatedAt: string;
+  source: 'groq' | 'bank';
+  cached: boolean;
+} | null> {
+  if (!isTauri()) return Promise.resolve(null);
+  return invoke<{
+    en: string;
+    hi: string;
+    generatedAt: string;
+    source: 'groq' | 'bank';
+    cached: boolean;
+  } | null>('greeting_lines').catch(() => null);
+}
+
+/**
  * Measure real download throughput.
  *
  * The trick that makes this honest: the clock starts when the **first body
