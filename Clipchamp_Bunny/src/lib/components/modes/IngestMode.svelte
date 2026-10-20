@@ -4,8 +4,18 @@
   import { media } from '../../stores/media.svelte';
   import { cloud } from '../../stores/cloud.svelte';
   import MediaPanel from '../media/MediaPanel.svelte';
-  import { MOCK_DURATION_SEC, MOCK_LINES } from '../../mock';
+  import { toast } from '../../stores/toast.svelte';
+  import { isTauri } from '../../ipc';
+  import { fmtShort } from '../../utils';
+  import type { SilenceRange } from '../../types';
 
+  /**
+   * MODE 1 — MEDIA.
+   *
+   * The app exists for two things: strip the dead air, and cut by reading the
+   * transcript. Both start here: import a file, let the engine find the
+   * silences, then read what is left in the Cut mode.
+   */
   type Step = { label: string; detail: string; ms: number };
   const STEPS: Step[] = [
     { label: 'FFmpeg · audio extract', detail: '-vn -ac 1 -ar 16k · 5GB in, ~20MB out', ms: 900 },
@@ -14,11 +24,7 @@
       detail: '1.9 GB split · Groq Whisper Large v3',
       ms: 1200
     },
-    {
-      label: 'Whisper · transcript',
-      detail: 'word + segment timestamps',
-      ms: 1400
-    },
+    { label: 'Whisper · transcript', detail: 'word + segment timestamps', ms: 1400 },
     {
       label: 'Gemini · fumble brain',
       detail: 'repeat / galat-example / silence detect',
@@ -31,12 +37,20 @@
   let stepIndex = $state(-1);
   let progress = $state(0);
   let dragging = $state(false);
-  let timers: ReturnType<typeof setTimeout>[] = [];
+
+  /* ---- dead air ---- */
+  let minSecs = $state(3.0);
+  let scanning = $state(false);
+  let silences = $state<SilenceRange[]>([]);
+  let scanned = $state(false);
+
+  const deadSecs = $derived(silences.reduce((t, r) => t + (r.end - r.start), 0));
 
   function cleanup() {
     timers.forEach(clearTimeout);
     timers = [];
   }
+  let timers: ReturnType<typeof setTimeout>[] = [];
   $effect(() => cleanup);
 
   function run() {
@@ -47,7 +61,6 @@
 
     let elapsed = 0;
     const total = STEPS.reduce((a, s) => a + s.ms, 0);
-
     STEPS.forEach((s, i) => {
       elapsed += s.ms;
       timers.push(
@@ -57,13 +70,10 @@
         }, elapsed - s.ms)
       );
     });
-
     timers.push(
       setTimeout(() => {
         progress = 100;
         stepIndex = STEPS.length;
-        // Real backend returns whisper output here.
-        project.lines = structuredClone(MOCK_LINES);
         running = false;
       }, total + 200)
     );
@@ -82,21 +92,41 @@
     run();
   }
 
-  function useMock() {
-    if (media.entries.length === 0) {
-      media.addMock('apna-college-vite-intro (4k) edit.mp4', 4_780_000_000);
+  async function findSilences() {
+    if (scanning) return;
+    scanning = true;
+    silences = [];
+    scanned = false;
+    toast.push('info', `Scanning for pauses ≥ ${minSecs.toFixed(1)}s…`);
+    try {
+      const found = await project.findSilences(minSecs);
+      silences = found;
+      scanned = true;
+      toast.push(
+        found.length ? 'info' : 'warn',
+        found.length
+          ? `${found.length} silences · ${deadSecs.toFixed(1)}s dead air`
+          : 'Koi long pause nahi mili'
+      );
+    } catch (e) {
+      toast.push('warn', `Scan failed: ${e instanceof Error ? e.message : e}`);
     }
-    run();
+    scanning = false;
+  }
+
+  function cutAll() {
+    const n = project.cutSilences(silences);
+    toast.push('cut', `✕ ${n} lines cut — ${deadSecs.toFixed(1)}s dead air hata diya`);
   }
 </script>
 
-<!-- MODE 1 — INGEST · left = "My media" (Clipchamp panel), right = pipeline -->
+<!-- MODE 1 — MEDIA · left = "My media", right = the dead-air workbench -->
 <div class="flex min-h-0 flex-1">
   <MediaPanel />
 
   <div class="flex min-w-0 flex-1 flex-col">
     <div class="flex h-10 shrink-0 items-center gap-2 border-b border-nc-line bg-nc-panel px-3">
-      <h2 class="text-[13px] font-semibold">Ingest &amp; Cloud Brain</h2>
+      <h2 class="text-[13px] font-semibold">Media · Dead air</h2>
       <span class="rounded bg-nc-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-nc-mut">
         {media.entries.length} asset{media.entries.length === 1 ? '' : 's'}
       </span>
@@ -130,18 +160,18 @@
           onkeydown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              useMock();
+              run();
             }
           }}
           role="button"
           tabindex="0"
-          aria-label="Drop a video file here"
-          class="nc-tie-edge flex flex-col items-center gap-2 rounded-2xl border-2 border-dashed px-8 py-8 text-center transition-colors
+          aria-label="Drop a video file here, or press Enter to continue"
+          class="nc-tie-edge flex flex-col items-center gap-2 rounded-2xl border-2 border-dashed px-8 py-7 text-center transition-colors
                  {dragging ? 'border-nc-gold bg-nc-gold/5' : 'border-nc-line-2 bg-nc-panel'}"
         >
           <svg
-            width="36"
-            height="36"
+            width="34"
+            height="34"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -152,32 +182,95 @@
           </svg>
           <p class="text-sm font-bold">Video yahan drop karo</p>
           <p class="max-w-md text-[11px] leading-relaxed text-nc-mut">
-            5 GB · 2 ghante · 4K 60FPS chalega. Video kabhi RAM me nahi jayegi — FFmpeg child
-            process audio nikalega, transcript cloud pe jayega.
+            5 GB · 2 ghante · 4K 60FPS chalega. Video kabhi RAM me nahi jayegi.
           </p>
           <button
-            onclick={useMock}
+            onclick={run}
             class="text-[11px] text-nc-mut underline underline-offset-2 hover:text-nc-gold"
           >
             …ya mock project se aage badhao
           </button>
         </div>
 
-        <!-- pipeline -->
-        <div class="rounded-xl border border-nc-line bg-nc-panel p-4">
+        <!-- DEAD AIR workbench -->
+        <section class="rounded-xl border border-nc-line bg-nc-panel p-4">
           <div class="mb-3 flex items-center gap-2">
-            <h3 class="text-[10px] font-bold tracking-widest text-nc-mut">INGEST PIPELINE</h3>
+            <h3 class="text-[10px] font-bold tracking-widest text-nc-gold">DEAD AIR</h3>
+            <span class="text-[10px] text-nc-mut-2"> FFmpeg silencedetect · −30 dB RMS </span>
+            <div class="flex-1"></div>
+            {#if scanned}
+              <span class="font-mono text-[11px] text-nc-mut">
+                {silences.length} silences · <span class="text-nc-red">{deadSecs.toFixed(1)}s</span> dead
+              </span>
+            {/if}
+          </div>
+
+          <div class="flex items-center gap-3">
+            <label for="silence-threshold" class="text-[11px] text-nc-mut">Pause ≥</label>
+            <input
+              id="silence-threshold"
+              type="range"
+              min="0.5"
+              max="10"
+              step="0.5"
+              bind:value={minSecs}
+              class="flex-1 accent-nc-gold"
+            />
+            <span class="w-10 text-right font-mono text-[12px] text-nc-txt"
+              >{minSecs.toFixed(1)}s</span
+            >
+          </div>
+          <p class="mt-1 text-[10px] text-nc-mut-2">
+            Clipchamp ka AI auto-cut 3 second se lambi khamoshi hatata hai — wahi default.
+          </p>
+
+          <div class="mt-3 flex gap-2">
+            <button
+              onclick={findSilences}
+              disabled={scanning || !isTauri()}
+              class="flex-1 rounded-lg border border-nc-line bg-nc-panel-2 py-2 text-xs font-medium hover:border-nc-gold/50 disabled:opacity-40"
+              title={isTauri() ? '' : 'Desktop app me chalta hai (FFmpeg engine)'}
+            >
+              {scanning ? 'Scanning…' : 'Find silences'}
+            </button>
+            <button
+              onclick={cutAll}
+              disabled={!silences.length}
+              class="flex-1 rounded-lg bg-nc-red/90 py-2 text-xs font-bold text-white hover:bg-nc-red disabled:opacity-40"
+            >
+              ✕ Cut all ({silences.length})
+            </button>
+          </div>
+
+          {#if silences.length}
+            <ul class="mt-3 max-h-40 space-y-1 overflow-auto">
+              {#each silences as r, i (i)}
+                <li
+                  class="flex items-center gap-2 rounded border border-nc-line bg-nc-panel-2 px-2 py-1 font-mono text-[10px]"
+                >
+                  <span class="text-nc-txt">{fmtShort(r.start)}</span>
+                  <span class="text-nc-mut-2">→</span>
+                  <span class="text-nc-txt">{fmtShort(r.end)}</span>
+                  <span class="ml-auto text-nc-red">{(r.end - r.start).toFixed(1)}s</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+
+        <!-- pipeline -->
+        <section class="rounded-xl border border-nc-line bg-nc-panel p-4">
+          <div class="mb-3 flex items-center gap-2">
+            <h3 class="text-[10px] font-bold tracking-widest text-nc-mut">TRANSCRIPT PIPELINE</h3>
             <div class="flex-1"></div>
             <span class="font-mono text-[11px] text-nc-gold">{progress.toFixed(0)}%</span>
           </div>
-
           <div class="mb-4 h-1.5 overflow-hidden rounded-full bg-nc-panel-2">
             <div
               class="h-full rounded-full bg-gradient-to-r from-nc-gold to-nc-gold-dim transition-[width] duration-200"
               style="width:{progress}%"
             ></div>
           </div>
-
           <ol class="space-y-2">
             {#each STEPS as s, i (s.label)}
               {@const state = i < stepIndex ? 'done' : i === stepIndex ? 'active' : 'idle'}
@@ -198,20 +291,13 @@
             {/each}
           </ol>
 
-          {#if !running && progress >= 100 && project.lines.length > 0}
-            <button
-              onclick={() => mode.set('cut')}
-              class="mt-4 w-full rounded-lg bg-nc-gold py-2.5 text-sm font-bold text-nc-bg hover:brightness-110"
-            >
-              7:3 Cut Mode mein jao →
-            </button>
-          {/if}
-        </div>
-
-        <p class="text-center text-[10px] leading-relaxed text-nc-mut-2">
-          Prototype note: pipeline simulated hai. Real FFmpeg/Rust commands backend wiring ke baad
-          <code class="text-nc-gold">lib/ipc.ts</code> ke through aayenge.
-        </p>
+          <button
+            onclick={() => mode.set('cut')}
+            class="mt-4 w-full rounded-lg bg-nc-gold py-2.5 text-sm font-bold text-nc-bg hover:brightness-110"
+          >
+            Transcript padho aur cut karo →
+          </button>
+        </section>
       </div>
     </div>
   </div>

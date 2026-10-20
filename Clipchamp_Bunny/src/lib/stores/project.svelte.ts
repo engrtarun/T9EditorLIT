@@ -2,6 +2,7 @@ import type {
   KeepState,
   LineFlag,
   MediaAsset,
+  SilenceRange,
   TextClip,
   ThumbnailStrip,
   TimelineClip,
@@ -186,16 +187,18 @@ class ProjectStore {
   }
 
   /**
-   * Auto-cut silence — Clipchamp's "AI suggestions / remove silences".
-   * Uses the Rust `detect_silence` command (FFmpeg `silencedetect`), then
-   * marks every transcript line that overlaps a silent span as cut.
+   * Find the silent spans in the source. Clipchamp's AI auto-cut scans for
+   * pauses longer than three seconds — that is the default here too.
    */
-  async autoCutSilence(minSecs = 3.0): Promise<number> {
+  async findSilences(minSecs = 3.0): Promise<SilenceRange[]> {
     const path = this.sourcePath;
-    if (!path || !isTauri()) return 0;
-    const ranges = await detectSilence(path, -30, minSecs);
-    if (!ranges.length) return 0;
+    if (!path || !isTauri()) return [];
+    return detectSilence(path, -30, minSecs);
+  }
 
+  /** Mark every transcript line that overlaps one of the given spans as cut. */
+  cutSilences(ranges: SilenceRange[]): number {
+    if (!ranges.length) return 0;
     this.commit();
     const cut = new Set<string>();
     for (const l of this.lines) {
@@ -210,6 +213,16 @@ class ProjectStore {
       this.lines = this.lines.map((l) => (cut.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l));
     }
     return cut.size;
+  }
+
+  /**
+   * Auto-cut silence — Clipchamp's "AI suggestions / remove silences".
+   * Uses the Rust `detect_silence` command (FFmpeg `silencedetect`), then
+   * marks every transcript line that overlaps a silent span as cut.
+   */
+  async autoCutSilence(minSecs = 3.0): Promise<number> {
+    const ranges = await this.findSilences(minSecs);
+    return this.cutSilences(ranges);
   }
 
   /** Persist the current transcript + cut decisions to SQLite. */

@@ -7,7 +7,6 @@
   import Toasts from './lib/components/Toasts.svelte';
   import IngestMode from './lib/components/modes/IngestMode.svelte';
   import CutMode from './lib/components/modes/CutMode.svelte';
-  import PolishMode from './lib/components/modes/PolishMode.svelte';
   import ExportMode from './lib/components/modes/ExportMode.svelte';
   import { mode } from './lib/stores/mode.svelte';
   import { player } from './lib/stores/player.svelte';
@@ -308,8 +307,6 @@
           <IngestMode />
         {:else if mode.current === 'cut'}
           <CutMode />
-        {:else if mode.current === 'polish'}
-          <PolishMode />
         {:else}
           <ExportMode />
         {/if}

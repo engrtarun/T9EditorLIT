@@ -15,7 +15,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import type {
   MemoryStats,
   MediaInfo,
@@ -176,20 +176,42 @@ export function systemDetails(): Promise<SystemDetails> {
 
 /* ------------------------------------------------------------------ export */
 
+export interface ExportSegment {
+  start: number;
+  end: number;
+}
+
+export interface ExportOptions {
+  /** `hybrid` (default) · `copy` (snap to keyframes, never encode) · `encode`. */
+  mode: string;
+  alignToleranceMs: number;
+  /** `original` · `high` · `balanced` · `small`. */
+  quality: string;
+}
+
 export interface ExportRequest {
   source: string;
+  segments: ExportSegment[];
   output: string;
-  segments: Array<{ start: number; end: number }>;
-  mode: string;
-  width?: number;
-  height?: number;
+  options: ExportOptions;
+  dbPath: string | null;
 }
 
 export interface ExportResult {
   output: string;
-  bytes: number;
   durationSecs: number;
-  pieces: number;
+  sizeBytes: number;
+  pieceCount: number;
+  encoder: string | null;
+  warnings: string[];
+}
+
+export interface ExportProgress {
+  stage: 'scan' | 'cut' | 'concat' | 'done' | string;
+  pieceIndex: number;
+  pieceCount: number;
+  percent: number;
+  message: string;
 }
 
 export function startExport(request: ExportRequest): Promise<ExportResult> {
@@ -200,12 +222,27 @@ export function cancelExport(): Promise<void> {
   return invoke('cancel_export');
 }
 
-export function onExportProgress(
-  cb: (p: { stage: string; percent: number; message: string }) => void
-): Promise<() => void> {
-  return listen<{ stage: string; percent: number; message: string }>('export-progress', (e) =>
-    cb(e.payload)
-  );
+export function planExport(request: ExportRequest): Promise<{
+  durationSecs: number;
+  estimatedBytes: number;
+  pieceCount: number;
+  warnings: string[];
+}> {
+  return invoke('plan_export', { request });
+}
+
+export function onExportProgress(cb: (p: ExportProgress) => void): Promise<() => void> {
+  return listen<ExportProgress>('export-progress', (e) => cb(e.payload));
+}
+
+/** Native "save as" dialog for the rendered file. */
+export async function pickOutput(defaultName: string): Promise<string | null> {
+  if (!isTauri()) return null;
+  const picked = await save({
+    defaultPath: defaultName,
+    filters: [{ name: 'MP4 video', extensions: ['mp4'] }]
+  });
+  return picked ?? null;
 }
 
 /* ------------------------------------------------------------------ network */

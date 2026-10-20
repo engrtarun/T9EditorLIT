@@ -1,90 +1,150 @@
 <script lang="ts">
-  import { mode } from '../../stores/mode.svelte';
   import { project } from '../../stores/project.svelte';
+  import { toast } from '../../stores/toast.svelte';
+  import {
+    cancelExport,
+    defaultDbPath,
+    isTauri,
+    onExportProgress,
+    pickOutput,
+    startExport
+  } from '../../ipc';
   import { fmtHuman, fmtSize } from '../../utils';
 
-  type Engine = 'smart' | 'hardware' | 'cpu';
+  /**
+   * MODE 3 — EXPORT.
+   *
+   * Runs the real Rust export engine: FFmpeg pieces that stream-copy where the
+   * cut lands on a keyframe and re-encode only where it does not, then a
+   * disk-bound remux to join them. Progress streams over the `export-progress`
+   * event.
+   */
+  type Engine = 'hybrid' | 'copy' | 'encode';
   const ENGINES: Array<{ id: Engine; label: string; note: string }> = [
     {
-      id: 'smart',
-      label: 'Smart / Lossless',
-      note: '-c copy · cut points keyframe se align · 0% quality loss'
+      id: 'hybrid',
+      label: 'Hybrid (recommended)',
+      note: 'stream-copy where the cut is on a keyframe, re-encode only where it is not'
     },
     {
-      id: 'hardware',
-      label: 'Hardware (QSV)',
-      note: 'Intel Quick Sync iGPU · 1080p/4K 60fps re-encode'
+      id: 'copy',
+      label: 'Lossless copy',
+      note: '-c copy · snaps cuts to the nearest keyframe · never re-encodes'
     },
-    { id: 'cpu', label: 'CPU fallback', note: 'libx264 · sabse reliable, sabse slow' }
+    {
+      id: 'encode',
+      label: 'Exact cuts',
+      note: 're-encodes everything · frame-accurate but slow'
+    }
   ];
+  const QUALITIES = ['original', 'high', 'balanced', 'small'] as const;
 
-  let engine = $state<Engine>('smart');
-  let exporting = $state(false);
-  let exportPct = $state(0);
-  let vaultOn = $state(true);
-  let vaultPct = $state(0);
-  let done = $state(false);
-  let timers: ReturnType<typeof setTimeout>[] = [];
+  let engine = $state<Engine>('hybrid');
+  let quality = $state<(typeof QUALITIES)[number]>('high');
+  let output = $state('');
+  let running = $state(false);
+  let percent = $state(0);
+  let stage = $state('');
+  let message = $state('');
+  let result = $state<{
+    output: string;
+    sizeBytes: number;
+    durationSecs: number;
+    pieceCount: number;
+  } | null>(null);
+  let warnings = $state<string[]>([]);
 
-  function cleanup() {
-    timers.forEach(clearTimeout);
-    timers = [];
-  }
-  $effect(() => cleanup);
-
-  function start() {
-    if (exporting) return;
-    exporting = true;
-    done = false;
-    exportPct = 0;
-    vaultPct = 0;
-
-    // ~2 s of fake export, then ~3 s of fake vault upload
-    for (let p = 5; p <= 100; p += 5) {
-      timers.push(
-        setTimeout(() => {
-          exportPct = p;
-          if (p === 100) {
-            done = true;
-            exporting = false;
-          }
-        }, p * 20)
-      );
-    }
-    if (vaultOn) {
-      for (let p = 4; p <= 100; p += 4) {
-        timers.push(
-          setTimeout(
-            () => {
-              vaultPct = p;
-            },
-            2400 + p * 45
-          )
-        );
-      }
-    }
-  }
-
-  const estimate = $derived(
-    engine === 'smart' ? '1–2 min' : engine === 'hardware' ? '~6 min' : '~25 min'
+  /** The cut list, in final-video order — this is exactly what gets rendered. */
+  const segments = $derived(
+    project.orderedSegments.map((s) => ({ start: s.startSec, end: s.endSec }))
   );
+
+  const estimated = $derived(
+    project.media && project.media.sizeBytes > 0
+      ? (project.media.sizeBytes * project.keptSec) / Math.max(project.durationSec, 1)
+      : 0
+  );
+
+  function defaultOutputName() {
+    const base = (project.name || 'nanami-cut').replace(/[^\w\- ]+/g, '');
+    return `${base} (cut).mp4`;
+  }
+
+  async function chooseOutput() {
+    const picked = await pickOutput(defaultOutputName());
+    if (picked) output = picked;
+  }
+
+  async function run() {
+    if (running) return;
+    const source = project.sourcePath;
+    if (!source) {
+      toast.push('warn', 'Pehle video load karo (Media mode)');
+      return;
+    }
+    if (!segments.length) {
+      toast.push('warn', 'Kuch bacha hi nahi — sab cut hai');
+      return;
+    }
+
+    running = true;
+    percent = 0;
+    result = null;
+    warnings = [];
+    toast.push('info', 'Export shuru…');
+
+    const unlisten = await onExportProgress((p) => {
+      percent = p.percent;
+      stage = p.stage;
+      message = p.message;
+    });
+
+    try {
+      const dbPath = await defaultDbPath().catch(() => null);
+      const out = output || (await pickOutput(defaultOutputName())) || defaultOutputName();
+      output = out;
+
+      const res = await startExport({
+        source,
+        segments,
+        output: out,
+        options: { mode: engine, alignToleranceMs: 40, quality },
+        dbPath
+      });
+      result = res;
+      warnings = res.warnings ?? [];
+      percent = 100;
+      toast.push('info', `Export done · ${fmtSize(res.sizeBytes)}`);
+    } catch (e) {
+      toast.push('warn', `Export failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      unlisten();
+      running = false;
+    }
+  }
+
+  function cancel() {
+    void cancelExport();
+    running = false;
+    toast.push('info', 'Export cancelled');
+  }
 </script>
 
 <div class="flex min-w-0 flex-1 flex-col">
-  <div class="flex h-11 shrink-0 items-center gap-2 border-b border-nc-line px-3">
-    <h2 class="text-xs font-bold tracking-wider">LIGHTNING EXPORT & TG VAULT</h2>
+  <div class="flex h-10 shrink-0 items-center gap-2 border-b border-nc-line bg-nc-panel px-3">
+    <h2 class="text-[13px] font-semibold">Export</h2>
+    <span class="rounded bg-nc-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-nc-mut">
+      {segments.length} segment{segments.length === 1 ? '' : 's'}
+    </span>
     <div class="flex-1"></div>
-    <button
-      onclick={() => mode.set('polish')}
-      class="rounded-lg border border-nc-line px-3 py-1 text-xs text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-    >
-      ← Polish
-    </button>
+    {#if !isTauri()}
+      <span class="text-[10px] text-nc-mut-2">Desktop app me chalta hai</span>
+    {/if}
   </div>
 
   <div class="nc-scroll min-h-0 flex-1 p-6">
-    <!-- summary -->
     <div class="mx-auto max-w-3xl space-y-5">
+      <!-- summary -->
       <div class="grid grid-cols-3 gap-3">
         <div class="rounded-xl border border-nc-line bg-nc-panel p-4">
           <p class="text-[10px] tracking-widest text-nc-mut">RAW</p>
@@ -101,8 +161,8 @@
       </div>
 
       <!-- engine -->
-      <div>
-        <p class="mb-2 text-[10px] tracking-widest text-nc-mut">EXPORT ENGINE</p>
+      <section>
+        <h3 class="mb-2 text-[10px] font-bold tracking-widest text-nc-mut">EXPORT ENGINE</h3>
         <div class="grid gap-2">
           {#each ENGINES as e (e.id)}
             <button
@@ -118,75 +178,99 @@
               >
                 {#if engine === e.id}<span class="h-2 w-2 rounded-full bg-nc-gold"></span>{/if}
               </span>
-              <span>
+              <span class="min-w-0">
                 <span class="block text-xs font-semibold">{e.label}</span>
                 <span class="block text-[10px] text-nc-mut">{e.note}</span>
               </span>
-              <span class="ml-auto font-mono text-[10px] text-nc-mut">est {estimate}</span>
             </button>
           {/each}
         </div>
-      </div>
 
-      <!-- vault -->
-      <label
-        class="flex cursor-pointer items-center gap-3 rounded-lg border border-nc-line bg-nc-panel px-3 py-2.5"
-      >
-        <input type="checkbox" bind:checked={vaultOn} class="h-4 w-4 accent-nc-gold" />
-        <span>
-          <span class="block text-xs font-semibold">Telegram Vault backup</span>
-          <span class="block text-[10px] text-nc-mut"
-            >MTProto user API · 512 KB chunks · 3–4 sockets · 1.9 GB split</span
+        <div class="mt-3 flex items-center gap-3">
+          <span class="text-[11px] text-nc-mut">Quality</span>
+          <div class="flex gap-1">
+            {#each QUALITIES as q (q)}
+              <button
+                onclick={() => (quality = q)}
+                class="rounded-md px-2.5 py-1 text-[11px] capitalize transition-colors
+                       {quality === q
+                  ? 'bg-nc-gold text-nc-bg'
+                  : 'bg-nc-panel-2 text-nc-mut hover:text-nc-txt'}"
+              >
+                {q}
+              </button>
+            {/each}
+          </div>
+          {#if estimated > 0}
+            <span class="ml-auto font-mono text-[10px] text-nc-mut-2">≈ {fmtSize(estimated)}</span>
+          {/if}
+        </div>
+      </section>
+
+      <!-- output -->
+      <section>
+        <h3 class="mb-2 text-[10px] font-bold tracking-widest text-nc-mut">OUTPUT</h3>
+        <div class="flex gap-2">
+          <input
+            bind:value={output}
+            placeholder={defaultOutputName()}
+            class="min-w-0 flex-1 rounded-lg border border-nc-line bg-nc-panel px-3 py-2 font-mono text-[11px] outline-none focus:border-nc-gold/50"
+          />
+          <button
+            onclick={chooseOutput}
+            class="rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-2 text-[11px] hover:border-nc-gold/50"
           >
-        </span>
-      </label>
+            Choose…
+          </button>
+        </div>
+      </section>
 
       <!-- action -->
-      <button
-        onclick={start}
-        disabled={exporting}
-        class="w-full rounded-xl bg-nc-gold py-3.5 text-sm font-bold text-nc-bg transition hover:brightness-110 disabled:opacity-50"
-      >
-        {exporting ? `Exporting… ${exportPct}%` : '▶ EXPORT FINAL VIDEO'}
-      </button>
-
-      <div class="space-y-3">
-        <div>
-          <div class="mb-1 flex text-[10px] text-nc-mut">
-            <span>ffmpeg {engine}</span>
-            <span class="ml-auto font-mono">{exportPct.toFixed(0)}%</span>
+      {#if running}
+        <div class="space-y-2 rounded-xl border border-nc-gold/40 bg-nc-gold/5 p-4">
+          <div class="flex items-center gap-2 text-[11px]">
+            <span class="text-nc-gold">{stage.toUpperCase() || 'WORKING'}</span>
+            <span class="min-w-0 flex-1 truncate text-nc-mut">{message}</span>
+            <span class="font-mono text-nc-txt">{percent.toFixed(0)}%</span>
           </div>
           <div class="h-2 overflow-hidden rounded-full bg-nc-panel-2">
             <div
-              class="h-full bg-gradient-to-r from-nc-gold to-nc-green transition-[width] duration-150"
-              style="width:{exportPct}%"
+              class="h-full rounded-full bg-gradient-to-r from-nc-gold to-nc-green transition-[width] duration-200"
+              style="width:{percent}%"
             ></div>
           </div>
+          <button
+            onclick={cancel}
+            class="w-full rounded-lg border border-nc-line py-1.5 text-[11px] text-nc-mut hover:text-nc-txt"
+          >
+            Cancel
+          </button>
         </div>
+      {:else}
+        <button
+          onclick={run}
+          disabled={!segments.length || !project.sourcePath}
+          class="w-full rounded-xl bg-nc-gold py-3.5 text-sm font-bold text-nc-bg transition hover:brightness-110 disabled:opacity-40"
+        >
+          ▶ EXPORT FINAL VIDEO
+        </button>
+      {/if}
 
-        {#if vaultOn}
-          <div>
-            <div class="mb-1 flex text-[10px] text-nc-mut">
-              <span>t9cloud → Telegram</span>
-              <span class="ml-auto font-mono">{vaultPct.toFixed(0)}%</span>
-            </div>
-            <div class="h-2 overflow-hidden rounded-full bg-nc-panel-2">
-              <div
-                class="h-full bg-gradient-to-r from-nc-green to-nc-gold transition-[width] duration-150"
-                style="width:{vaultPct}%"
-              ></div>
-            </div>
-          </div>
-        {/if}
-      </div>
-
-      {#if done}
+      {#if result}
         <div class="nc-tie-edge rounded-xl border border-nc-gold/40 bg-nc-gold/5 p-5 text-center">
           <p class="text-base font-bold text-nc-gold">Kaam khatam. Ab aaram karo.</p>
           <p class="mt-1 text-xs text-nc-mut">
-            {project.cutCount} lines kat gayi · {fmtHuman(project.cutSec)} bacha · source
-            {project.media ? ` (${fmtSize(project.media.sizeBytes)})` : ''} untouched
+            {result.pieceCount} piece{result.pieceCount === 1 ? '' : 's'} · {fmtSize(
+              result.sizeBytes
+            )} ·
+            {fmtHuman(result.durationSecs)}
           </p>
+          <p class="mt-2 break-all font-mono text-[10px] text-nc-mut-2">{result.output}</p>
+          {#if warnings.length}
+            <ul class="mt-3 space-y-1 text-left text-[10px] text-nc-red">
+              {#each warnings as w (w)}<li>· {w}</li>{/each}
+            </ul>
+          {/if}
           <p class="mt-3 text-[10px] text-nc-mut-2">
             7:3 ratio. Ek strike me kaam khatam. — Nanami
           </p>

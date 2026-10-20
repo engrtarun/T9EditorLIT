@@ -2,11 +2,20 @@
   import { mode } from '../stores/mode.svelte';
 
   /* Clipchamp's rail is icon-over-label with a rounded pill on the active item.
-     Ours switches the whole app MODE (each mode is a separate RAM island). */
+     Ours is the same shape, but each entry is a separate RAM island — switching
+     destroys the previous mode's component tree.
+
+     Only three, and each maps to a real job:
+       Media  → import, probe, and strip the dead air
+       Cut    → read the transcript, cut the fumbles
+       Export → render the final video  */
   const ITEMS = [
-    { id: 'ingest', label: 'Ingest', icon: 'M12 16V4M7 9l5-5 5 5M4 20h16' },
-    { id: 'cut', label: '7:3 Cut', icon: 'M6 4v16M18 4v16M6 12h12' },
-    { id: 'polish', label: 'Polish', icon: 'M4 7V5h16v2M9 19h6M12 5v14' },
+    {
+      id: 'ingest',
+      label: 'Media',
+      icon: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'
+    },
+    { id: 'cut', label: 'Cut', icon: 'M6 4v16M18 4v16M6 12h12' },
     { id: 'export', label: 'Export', icon: 'M12 16V4M7 9l5-5 5 5M4 20h16' }
   ] as const;
 </script>
