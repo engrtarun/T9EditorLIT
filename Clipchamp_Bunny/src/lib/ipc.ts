@@ -553,17 +553,56 @@ export function greetingLines(): Promise<{
 export async function measureNetworkSpeed(
   windowMs = 3000
 ): Promise<{ mbps: number; megabytesPerSec: number } | null> {
-  if (isTauri()) {
+  // Every path here is on a timer, so it must never hang: a request that
+  // never settles would leave the meter stuck on "measuring" and every later
+  // attempt would be skipped.
+  const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T | null> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const guard = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), ms);
+    });
     try {
-      const speed = await invoke<{ mbps: number; megabytesPerSec: number } | null>(
-        'measure_network_speed',
-        { windowMs }
+      return await Promise.race([promise, guard]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  if (isTauri()) {
+    // The daemon first, over the webview. The app already talks to the
+    // daemon this way, so it is known to work - and it is the reading the
+    // daemon actually measured, with its parallel sockets.
+    try {
+      const res = await withTimeout(
+        fetch(`http://127.0.0.1:7878/v1/net/speed?windowMs=${windowMs}`, {
+          cache: 'no-store'
+        }),
+        windowMs + 8000
+      );
+      if (res?.ok) {
+        const data = (await res.json()) as { mbps?: number; megabytesPerSec?: number };
+        if (typeof data?.megabytesPerSec === 'number') {
+          return { mbps: data.mbps ?? 0, megabytesPerSec: data.megabytesPerSec };
+        }
+      }
+    } catch {
+      /* the daemon is not up yet - fall through */
+    }
+
+    // Then through Rust, which asks the daemon over a plain socket. No CORS,
+    // no content-security policy, no webview rules in the way.
+    try {
+      const speed = await withTimeout(
+        invoke<{ mbps: number; megabytesPerSec: number } | null>('measure_network_speed', {
+          windowMs
+        }),
+        windowMs + 8000
       );
       if (speed && typeof speed.megabytesPerSec === 'number') {
         return speed;
       }
     } catch {
-      /* the daemon is not up yet - fall through to the browser probe */
+      /* no Rust command on this build - fall through */
     }
   }
 
@@ -575,8 +614,8 @@ export async function measureNetworkSpeed(
   try {
     const deadline = performance.now() + windowMs;
     do {
-      const res = await fetch(endpoint, { cache: 'no-store' });
-      if (!res.ok || !res.body) return null;
+      const res = await withTimeout(fetch(endpoint, { cache: 'no-store' }), 10000);
+      if (!res?.ok || !res.body) return null;
       const reader = res.body.getReader();
       const t0 = performance.now();
       for (;;) {

@@ -44,6 +44,11 @@ $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\T9EditorLIT'
 $ExeName  = 't9-editor-lit.exe'
 $Shortcut = Join-Path $InstallDir 'T9 Editor LIT.lnk'
 
+# The same target folder the build used. An agent that builds in its own
+# folder (T9_TARGET_DIR) must install from that same folder.
+$Target = Join-Path $AppDir 'src-tauri\target'
+if ($env:T9_TARGET_DIR) { $Target = $env:T9_TARGET_DIR }
+
 function Write-Step([string]$Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
@@ -68,7 +73,7 @@ if (-not $SkipBuild) {
     Write-Step 'Skipping the build (--SkipBuild)'
 }
 
-$BuiltExe = Join-Path $AppDir "src-tauri\target\release\$ExeName"
+$BuiltExe = Join-Path $Target "release\$ExeName"
 if (-not (Test-Path $BuiltExe)) {
     throw "No executable at $BuiltExe - run without -SkipBuild first."
 }

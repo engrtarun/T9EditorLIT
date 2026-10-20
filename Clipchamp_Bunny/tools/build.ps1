@@ -39,6 +39,15 @@ $AppDir = $PSScriptRoot | Split-Path -Parent
 $Target = Join-Path $AppDir 'src-tauri\target'
 $LockFile = Join-Path $Target '.build-lock'
 
+# An agent that builds in its own target folder never collides with another
+# one's build. Set T9_TARGET_DIR to use one; the default is the shared
+# folder, where the build lock keeps the two apart.
+if ($env:T9_TARGET_DIR) {
+    $Target = $env:T9_TARGET_DIR
+    $LockFile = Join-Path $Target '.build-lock'
+    Write-Host "    [ok] using an isolated target folder: $Target" -ForegroundColor DarkGray
+}
+
 New-Item -ItemType Directory -Force -Path $Target | Out-Null
 
 $lock = $null
@@ -97,7 +106,7 @@ try {
     # fingerprint plus a deleted `out/` means no rerun - the link then dies with
     # `LNK1181: cannot open input file '...\out\resource.lib'`. Removing the
     # folder (including `output`/`root-output`) makes cargo rerun the script.
-    $buildDir = Join-Path $AppDir 'src-tauri\target\release\build'
+    $buildDir = Join-Path $Target 'release\build'
     Get-ChildItem $buildDir -Directory -Filter 't9-editor-lit-*' -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host '    [ok] cleared the cached asset list' -ForegroundColor DarkGray
@@ -134,11 +143,10 @@ try {
             }
             Write-Host "    [!] build attempt $attempt failed - retrying in 45 s" -ForegroundColor Yellow
             Start-Sleep -Seconds 45
-            # Another build may have taken the memory; clear the asset cache
-            # again so the retry embeds the current frontend. Same rule as
-            # above: the whole folder, so cargo actually reruns the script.
-            Get-ChildItem $buildDir -Directory -Filter 't9-editor-lit-*' -ErrorAction SilentlyContinue |
-                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            # The build folder is cleared **before** the first attempt only.
+            # Clearing it while a link is running is what produces
+            # `LNK1181: cannot open input file '...\out\resource.lib'` - and
+            # it can kill *another* agent's link, not just this one.
         }
     } finally {
         Pop-Location

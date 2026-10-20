@@ -64,7 +64,12 @@
       const reading = await measureNetworkSpeed(2000);
       // Keep the last good reading: the chip must never fall back to "—".
       if (reading) speed = reading;
+    } catch {
+      /* a failed reading is not worth a toast */
     } finally {
+      // **Always** release the flag, whatever happened above. If it stayed
+      // true, every later attempt would be skipped and the chip would sit on
+      // "—" for the rest of the session.
       measuring = false;
     }
   }
