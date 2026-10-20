@@ -535,6 +535,32 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
      me copy + `explorer.exe` restart. (`tools\pin-taskbar.ps1` dono karta hai.)
 14. **Taskbar pin repo path pe mat rakho** - `target/release` `cargo clean` pe
      mita jayega aur pin toot jayega. Installed copy use karo.
+14b. **⚠ EK SAATH BUILD MAT KARO** - do agents ke `tauri build` ek saath chale
+     to `dist/` aur crate ka source interleave ho jata hai, aur **binary
+     MIXED** banta hai. Ab `tools\build.ps1` pehle **lock** leta hai
+     (`src-tauri\target\.build-lock`) - doosra build intezaar karta hai, race
+     nahi karta. **Bina lock ke kabhi `npx tauri build` mat chalao.**
+14c. **⚠ STALE ASSET CACHE** - Tauri ka build script **embedded frontend ke
+     asset list ko apne output folder me cache karta hai** aur use refresh
+     nahi karta. Naya `dist/` ban jaye to bhi binary me **purana frontend**
+     jata hai. Symptom: command source me hai par binary me nahi, aur app
+     chup-chup "command not found" karta hai. `tools\build.ps1` har build se
+     pehle `src-tauri\target\release\build\t9-editor-lit-*\out` **delete** karta
+     hai - isse build script dobara chalta hai aur current asset list banti
+     hai. (`tauri-codegen-assets` me 36 stale hashed files accumulate hue
+     the - wahi symptom tha.)
+14d. **Link step ko RAM chahiye** - `link.exe` ko ~1.5 GB chahiye. 8 GB box
+     pe (jahan 7 GB already busy ho) link **1181** se fail hota hai -
+     "file in use" lagta hai par asal me RAM ki kami hai. `codegen-units = 1`
+     ko `4` kiya gaya hai (link memory kam, binary ~1% bada). Link se pehle
+     stale `vite dev`/`vite preview` servers band karo - woh 100 MB each kha
+     rahe hote hain.
+14e. **⚠ 7 MINUT KA RULE** - koi problem **7 minute se zyada** atke to
+     **web search** karke solution nikaal. Isi rule se pata chala ki Tauri ka
+     build script embedded-asset list ko cache karta hai (`tauri-codegen-assets`
+     me 36 stale hashed files the) aur `codegen-units` se link ka RAM
+     control hota hai. Source + binary compare karna bhi ek valid "search" hai
+     — `strings` jaisa byte-scan (`node` se `indexOf`) dono taraf chalana.
 15. **Dashboard pe startup me project mat kholo** - `project.init()` ek baar
     chala raha tha aur app ko 2-3 second late karta tha (probe + waveform +
     transcript). Ab list ek SQLite query se aati hai aur project tab load hota

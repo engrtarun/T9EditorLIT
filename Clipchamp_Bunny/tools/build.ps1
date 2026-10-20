@@ -76,11 +76,54 @@ if (-not $SkipLock) {
 }
 
 try {
+    # The machine runs the app and several agents; a full Rust link can push
+    # 8 GB into swap. When RAM is tight, cap cargo's parallelism so the build
+    # finishes instead of dying (slower, but predictable).
+    $freeGB = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1)
+    if ($freeGB -lt 2.5) {
+        Write-Host "    [!] only $freeGB GB RAM free - cargo limited to 2 jobs" -ForegroundColor Yellow
+        $env:CARGO_BUILD_JOBS = '2'
+    }
+
     Write-Host '==> Building the release executable' -ForegroundColor Cyan
+    # The Tauri build script caches the **list of embedded frontend assets**
+    # in its own output folder, and it does not refresh that list when the
+    # frontend changes. The executable then carries an older `dist/` - the app
+    # calls commands the Rust side does not have, and the "command not found"
+    # error is invisible in the UI.
+    #
+    # Delete the **whole** package build folder, not just `out/`. Cargo decides
+    # whether to rerun a build script from its fingerprint, and a fresh
+    # fingerprint plus a deleted `out/` means no rerun - the link then dies with
+    # `LNK1181: cannot open input file '...\out\resource.lib'`. Removing the
+    # folder (including `output`/`root-output`) makes cargo rerun the script.
+    $buildDir = Join-Path $AppDir 'src-tauri\target\release\build'
+    Get-ChildItem $buildDir -Directory -Filter 't9-editor-lit-*' -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host '    [ok] cleared the cached asset list' -ForegroundColor DarkGray
+
     Push-Location $AppDir
     try {
-        & npx tauri build --no-bundle
-        if ($LASTEXITCODE -ne 0) { throw "tauri build failed with exit code $LASTEXITCODE" }
+        # The link step is the fragile one on a small machine: it needs a
+        # gigabyte of RAM, and it fails with `LNK1181` when another build is
+        # using the same output file or the machine is out of memory. Retrying
+        # after a short wait turns a hard failure into a slow one.
+        $attempt = 0
+        while ($true) {
+            $attempt++
+            & npx tauri build --no-bundle
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -ge 3) {
+                throw "tauri build failed with exit code $LASTEXITCODE (after $attempt attempts)"
+            }
+            Write-Host "    [!] build attempt $attempt failed - retrying in 45 s" -ForegroundColor Yellow
+            Start-Sleep -Seconds 45
+            # Another build may have taken the memory; clear the asset cache
+            # again so the retry embeds the current frontend. Same rule as
+            # above: the whole folder, so cargo actually reruns the script.
+            Get-ChildItem $buildDir -Directory -Filter 't9-editor-lit-*' -ErrorAction SilentlyContinue |
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        }
     } finally {
         Pop-Location
     }

@@ -26,11 +26,15 @@ default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [profile.release]
-codegen-units = 1
 # "thin" instead of "fat": the binary is a couple of percent bigger and the
 # runtime speed is the same, but the link step drops from ~20 minutes to a
-# few — which is what makes the taskbar build actually usable for iteration.
+# few - which is what makes the taskbar build actually usable for iteration.
 lto = "thin"
+# 16, not 1: with a single codegen unit the linker needs well over a gigabyte
+# of RAM, and this app has to build on a machine with 8 GB that is already
+# mostly busy. More units mean a much lighter link, and the binary is within
+# a percent of the same size.
+codegen-units = 16
 opt-level = 3
 panic = "abort"
 strip = true
