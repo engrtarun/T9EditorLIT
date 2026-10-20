@@ -560,7 +560,19 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
      build script embedded-asset list ko cache karta hai (`tauri-codegen-assets`
      me 36 stale hashed files the) aur `codegen-units` se link ka RAM
      control hota hai. Source + binary compare karna bhi ek valid "search" hai
-     — `strings` jaisa byte-scan (`node` se `indexOf`) dono taraf chalana.
+     - `strings` jaisa byte-scan (`node` se `indexOf`) dono taraf chalana.
+14f. **⚠ `measuring` FLAG STUCK HO SAKTA HAI** - meter ka `measuring` flag
+     set rahe to agla attempt `if (measuring) return` pe ruk jata hai aur
+     chip **puri session me "—"** dikhata hai. `finally` me flag hamesha
+     release karo, aur har request pe **timeout** rakho (fetch atka to koi
+     doosra attempt chalega hi nahi).
+14g. **Meter ka reading DAEMON se webview ke through lo** - dashboard ka
+     greeting `/v1/greeting` hit karta hai, matlab webview daemon tak
+     pahunch sakta hai ✓. Rust command second try rakho (us build me nahi
+     hota). `T9_TARGET_DIR` set karne se build **apne target folder** me
+     jata hai (`CARGO_TARGET_DIR` bhi set karna padta hai!) - do agents ke
+     build ek doosre ka `out\resource.lib` delete kar ke `LNK1181` de rahe
+     the.
 15. **Dashboard pe startup me project mat kholo** - `project.init()` ek baar
     chala raha tha aur app ko 2-3 second late karta tha (probe + waveform +
     transcript). Ab list ek SQLite query se aati hai aur project tab load hota
