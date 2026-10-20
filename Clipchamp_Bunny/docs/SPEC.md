@@ -36,19 +36,24 @@ Isliye **zero-RAM footprint** hi ek architectural constraint hai, ek optimisatio
 
 ---
 
-## 3. Four-mode pipeline (the core idea)
+## 3. Two-mode pipeline (the core idea)
 
-Ek waqt me **sirf ek mode RAM me zinda** hota hai. Baaki 3 ka component tree `{#key}` se
-destroy/unmount hota hai. Mode switch = **hard memory drop** (JS GC + Rust `drop()`).
+Ek waqt me **sirf ek mode RAM me zinda** hota hai. Doosre ka component tree
+`{#key}` se destroy/unmount hota hai. Mode switch = **hard memory drop**
+(JS GC + Rust `drop()`).
 
-| # | Mode          | Kaam | RAM me kya hai |
-| - | ------------- | ---- | -------------- |
-| 1 | **INGEST**    | Video drop → FFmpeg audio → cloud transcript + AI fumble marks | sirf drop zone + progress |
-| 2 | **7:3 CUT**   | Main dashboard: preview + transcript ✓/✕ + wave/clip timeline | yehi poora panel |
-| 3 | **POLISH**    | Text / zoom / music (Apna College style) | transcript **destroyed** |
-| 4 | **EXPORT**    | Lossless export + Telegram vault upload | preview + waves **destroyed** |
+| # | Mode      | Kaam | RAM me kya hai |
+| - | --------- | ---- | -------------- |
+| 1 | **MEDIA** | Import (file manager · link · Telegram · drop) → probe → **DEAD AIR** kaato | sirf library + dead-air workbench |
+| 2 | **CUT**   | Transcript padho → ✕/✓ se fumble kaato → clips drag karke order badlo | yehi poora panel |
 
-Mode 2 me 90% kaam hota hai → isliye default landing mode.
+**Export** ek mode nahi — preview bar ke purple button se (Clipchamp jaisa).
+Left rail me sirf **2** entries hain.
+
+`POLISH` (text / zoom / music) **hata diya gaya** — app ka maksad silence
+hatana aur transcript se edit karna hai, decoration nahi.
+
+CUT mode me 90% kaam hota hai.
 
 ---
 
@@ -368,32 +373,80 @@ number of lines it cut.
 the row's start) the **cursor line** is used instead and the cut point is clamped
 inside it. So `S` always does something sensible.
 
-## 21. Backend seams (backend agent yahan plug karega)
+## 21. The app's purpose (locked)
+
+**T9 Editor LIT** does two things, and only two:
+
+1. **Hatana** — the dead air (silences) out of a long recording.
+2. **Edit by reading** — cut the fumbles / retakes / wrong examples by reading
+   the transcript, not by scrubbing a timeline.
+
+| Mode | Job |
+| ---- | --- |
+| **MEDIA** | import · probe · **DEAD AIR** workbench (threshold slider, silence list, cut-all) |
+| **CUT** | read the transcript · ✕ / ✓ per line · drag clips to reorder · live transcript update |
+
+**Export** is not a mode — it is the purple button on the preview bar, exactly
+where Clipchamp puts it. The left rail therefore has **two** entries.
+
+## 22. Import sources
+
+| Source | How |
+| ------ | --- |
+| **File manager** | "Import media" (multi-select) or the caret menu. Several files at once. |
+| **Link** | caret → "From a link" → `yt-dlp` downloads it (1080p cap, mp4 merge) straight to disk — the bytes never touch the app's heap |
+| **Telegram vault** | caret → "From Telegram vault" → the QR / MTProto handshake |
+| **Drag & drop** | anywhere in the window |
+
+**A file that arrives while a project is open starts a new project.** The old
+one stays in the library and can be reopened.
+
+## 23. The network speed meter — why it lied before
+
+The first implementation timed the whole `fetch`, so DNS + TCP + TLS + TTFB got
+divided into the transfer time. A 40 Mbps line read as 2 MB/s.
+
+Now the clock starts when the **first body byte** arrives, the transfer runs for
+a fixed 3-second window, and the result is reported in **Mbps** (the unit a
+browser shows) *and* MB/s.
+
+## 24. Launching
+
+```bat
+.\Launch-T9EditorLIT.bat          :: release exe, ya pehli baar banata hai
+.\Launch-T9EditorLIT.ps1 -Dev     :: cargo dev + hot reload
+```
+
+The first launch compiles ~380 Rust crates and takes **10–15 minutes**; the
+launcher says so and then never does it again. `npm run app` always recompiles —
+which is why the launcher prefers the release build.
+
+## 25. Backend seams (backend agent yahan plug karega)
 
 | UI jagah | Kya plug hoga |
 | -------- | ------------- |
 | `cloud.svelte.ts` → `connect(id)` | `telegram` → Go `POST /v1/vault/authorise` (QR) + `/v1/vault/upload`; `gemini` → `/v1/analyze`; `groq` → `/v1/transcribe` |
 | `CloudMenu.svelte` → QR modal | real QR image from `GET /v1/vault/authorise/{id}` |
-| `media.svelte.ts` → `add()` | Rust `probe` + `extract_thumbnails` (file:// / asset:// URL) |
-| `project.svelte.ts` → `loadFile` | Rust `extract_audio_chunks` + SQLite `save_transcript` |
-| `WaveTimeline` video lane | Rust `extract_thumbnails` → real filmstrip (abhi gradient mock) |
-| `ExportMode` | Rust `start_export` (smart copy / QSV / CPU) |
+| `media.svelte.ts` → `addPath` | Rust `probe` + `extract_thumbnails` (file:// / asset:// URL) |
+| `project.svelte.ts` → `loadFromBackend` | Rust `extract_waveform` + `extract_thumbnails` + SQLite `load_transcript` |
+| `MediaPanel` → "From a link" | Rust `download_from_url` (yt-dlp) — already wired |
+| `WaveTimeline` video lane | Rust `extract_thumbnails` → real filmstrip |
+| `ExportMode` | Rust `start_export` (hybrid / copy / encode) — already wired |
 
 ---
 
-## 13. Status
+## 26. Status
 
 - [x] SPEC freeze
 - [x] Prototype scaffold (Vite + Svelte 5 + Tailwind 4)
-- [x] Mode 1 INGEST (My media panel + pipeline)
-- [x] Mode 2 7:3 CUT (preview + transcript + T/Video/Audio timeline)
-- [x] Mode 3 POLISH
-- [x] Mode 4 EXPORT + vault mock
-- [x] Keyboard flow + auto-advance
-- [x] **Step 1 — Clipchamp parity**: transport neeche, lane order, ✂ split, 🧲 snap,
-      rail labels, right rail, top bar restructure
-- [x] **Step 2 — Clipchamp components**: cloud/provider menu (TG QR · Gemini · Groq),
-      "My media" panel + asset tile, Fluent context menu, resize separator,
-      collapse timeline, gradient picker
-- [ ] Real FPS thumbnails in the video lane (Rust `extract_thumbnails` already exists)
-- [ ] Tauri shell + Rust FFmpeg wiring
+- [x] Tauri shell sharing the Rust engine by `#[path]` include
+- [x] Real backend wiring: probe · waveform · filmstrip · SQLite transcript · silence · export
+- [x] MEDIA mode: import (multi / link / Telegram / drop) + DEAD AIR workbench
+- [x] CUT mode: preview + transcript ✓/✕ + editable timeline + drag to reorder
+- [x] Edit timeline: source minimap · ruler · T · draggable clips · audio
+- [x] Honesty meter: RAM · app MB · real network speed · full PC + storage popover
+- [x] Full Clipchamp shortcut set + in-app sheet (`Ctrl+/`)
+- [x] App renamed to **T9 Editor LIT**; `Launch-T9EditorLIT.bat` / `.ps1`
+- [ ] Real Whisper/Gemini transcript (t9cloud `/v1/transcribe`) — scaled mock abhi
+- [ ] Telegram vault file download into the media library
+- [ ] Text / zoom overlays — deferred, not part of the two jobs

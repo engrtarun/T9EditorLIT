@@ -9,7 +9,7 @@
    */
   let stats = $state<MemoryStats | null>(null);
   let details = $state<SystemDetails | null>(null);
-  let mbps = $state<number | null>(null);
+  let speed = $state<{ mbps: number; megabytesPerSec: number } | null>(null);
   let measuring = $state(false);
   let open = $state(false);
 
@@ -56,7 +56,7 @@
   async function measure() {
     if (measuring) return;
     measuring = true;
-    mbps = await measureNetworkSpeed();
+    speed = await measureNetworkSpeed(3000);
     measuring = false;
   }
 
@@ -125,10 +125,10 @@
     >
       <path d="M12 4v14M6 12l6 6 6-6" />
     </svg>
-    <span class={mbps ? 'text-nc-txt' : 'text-nc-mut-2'}>
-      {measuring ? '…' : mbps ? mbps.toFixed(1) : '—'}
+    <span class={speed ? 'text-nc-txt' : 'text-nc-mut-2'}>
+      {measuring ? '…' : speed ? speed.mbps.toFixed(0) : '—'}
     </span>
-    <span class="text-nc-mut-2">MB/s</span>
+    <span class="text-nc-mut-2">Mbps</span>
   </span>
 </button>
 
@@ -228,7 +228,9 @@
         <div class="flex gap-2">
           <dt class="w-16 shrink-0 text-nc-mut">Network</dt>
           <dd class="min-w-0 flex-1 font-mono">
-            {mbps ? `↓ ${mbps.toFixed(2)} MB/s` : '—'}
+            {speed
+              ? `↓ ${speed.mbps.toFixed(0)} Mbps · ${speed.megabytesPerSec.toFixed(2)} MB/s`
+              : '—'}
             <button onclick={measure} class="ml-1 text-[10px] text-nc-gold hover:underline"
               >retest</button
             >

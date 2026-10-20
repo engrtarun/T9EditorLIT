@@ -1,26 +1,61 @@
 import type { MediaAsset } from '../types';
 
-type Phase = 'loading' | 'ready' | 'failed';
-
-interface Entry {
+/**
+ * The media library.
+ *
+ * Holds **paths and metadata only** — never the file bytes. The video itself
+ * is streamed by a `<video>` element from a `file://` / `asset://` URL, and
+ * the engine reads it through short-lived FFmpeg children.
+ *
+ * A file that arrives while a project is open becomes a **new project**: the
+ * library keeps the old one so it can be reopened, but the new file is what
+ * gets edited.
+ */
+export interface MediaEntry {
   asset: MediaAsset;
-  phase: Phase;
+  /** Real filesystem path when the file came from disk (Tauri). */
+  path: string | null;
+  phase: 'loading' | 'ready' | 'failed';
   /** 0..1 import/probe progress. */
   progress: number;
-  /** Set once the asset is on the timeline. */
+  /** Set once the asset is the current project source. */
   inUse: boolean;
   durationLabel: string;
 }
 
-/**
- * Media library. Only metadata + a streaming URL live here — never the file bytes.
- * The Rust side hands us a file:// / asset:// URL and the <video> streams it.
- */
 class MediaStore {
-  entries = $state<Entry[]>([]);
+  entries = $state<MediaEntry[]>([]);
 
-  add(file: File, url: string): Entry {
-    const entry: Entry = {
+  /** Register a file that is already on disk. */
+  addPath(path: string, name: string, sizeBytes = 0): MediaEntry {
+    const entry: MediaEntry = {
+      asset: {
+        id: crypto.randomUUID(),
+        name,
+        url: '',
+        durationSecs: 0,
+        width: 0,
+        height: 0,
+        fps: 0,
+        sizeBytes,
+        videoCodec: 'unknown',
+        audioCodec: null,
+        sampleRate: null,
+        channels: null
+      },
+      path,
+      phase: 'loading',
+      progress: 0,
+      inUse: false,
+      durationLabel: '…'
+    };
+    this.entries = [...this.entries, entry];
+    return entry;
+  }
+
+  /** Register a file the browser handed us (drag & drop). */
+  add(file: File, url: string): MediaEntry {
+    const entry: MediaEntry = {
       asset: {
         id: crypto.randomUUID(),
         name: file.name,
@@ -35,18 +70,19 @@ class MediaStore {
         sampleRate: null,
         channels: null
       },
+      path: null,
       phase: 'loading',
       progress: 0,
       inUse: false,
-      durationLabel: '0:00'
+      durationLabel: '…'
     };
     this.entries = [...this.entries, entry];
     this.simulate(entry.asset.id);
     return entry;
   }
 
-  addMock(name: string, sizeBytes: number, durationSec = 274): Entry {
-    const entry: Entry = {
+  addMock(name: string, sizeBytes: number, durationSec = 274): MediaEntry {
+    const entry: MediaEntry = {
       asset: {
         id: crypto.randomUUID(),
         name,
@@ -61,6 +97,7 @@ class MediaStore {
         sampleRate: 48000,
         channels: 2
       },
+      path: null,
       phase: 'ready',
       progress: 1,
       inUse: false,
@@ -70,7 +107,7 @@ class MediaStore {
     return entry;
   }
 
-  /** Mock import pipeline: probe → thumbnail → ready. */
+  /** Mock import pipeline: probe → thumbnail → ready (browser mode only). */
   private simulate(id: string) {
     let p = 0;
     const tick = () => {
@@ -90,8 +127,27 @@ class MediaStore {
     setTimeout(tick, 200);
   }
 
+  /** Update an entry after the real engine has probed it. */
+  probed(id: string, patch: Partial<MediaEntry['asset']> & { durationLabel?: string }) {
+    this.entries = this.entries.map((e) => {
+      if (e.asset.id !== id) return e;
+      const { durationLabel, ...asset } = patch;
+      return {
+        ...e,
+        phase: 'ready',
+        progress: 1,
+        durationLabel: durationLabel ?? e.durationLabel,
+        asset: { ...e.asset, ...asset }
+      };
+    });
+  }
+
   markInUse(id: string) {
     this.entries = this.entries.map((e) => (e.asset.id === id ? { ...e, inUse: true } : e));
+  }
+
+  markUnused(id: string) {
+    this.entries = this.entries.map((e) => (e.asset.id === id ? { ...e, inUse: false } : e));
   }
 
   remove(id: string) {
@@ -101,7 +157,10 @@ class MediaStore {
   get(id: string) {
     return this.entries.find((e) => e.asset.id === id);
   }
+
+  get byPath() {
+    return (path: string) => this.entries.find((e) => e.path === path);
+  }
 }
 
 export const media = new MediaStore();
-export type { Entry as MediaEntry };

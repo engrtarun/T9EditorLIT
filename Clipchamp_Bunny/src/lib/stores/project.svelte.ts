@@ -22,6 +22,7 @@ import {
   sourceAt
 } from '../segments';
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
+import { media } from './media.svelte';
 import {
   assetUrl,
   defaultDbPath,
@@ -348,6 +349,61 @@ class ProjectStore {
     return sec;
   };
 
+  /** Open a library entry as the current project (a new project, in effect). */
+  async openLibraryEntry(id: string) {
+    const e = media.get(id);
+    if (!e) return;
+    if (e.path) {
+      await this.loadFromBackend(e.path);
+    } else if (e.asset.url) {
+      // a browser blob — no engine, just the streamed file
+      this.media = e.asset;
+      this.name = e.asset.name.replace(/\.[^.]+$/, '');
+    } else {
+      return;
+    }
+    for (const other of media.entries) media.markUnused(other.asset.id);
+    media.markInUse(id);
+  }
+
+  /**
+   * Import one or more files from disk. The **last** one becomes the current
+   * project — bringing a new file in while editing starts a new project, which
+   * is what a file manager user expects.
+   */
+  async importPaths(paths: string[]) {
+    if (!paths.length) return;
+    for (const p of paths) {
+      const name = p.split(/[\\/]/).pop() ?? p;
+      media.addPath(p, name);
+    }
+    const last = paths[paths.length - 1];
+    const entry = media.byPath(last);
+    if (entry) await this.openLibraryEntry(entry.asset.id);
+  }
+
+  /** User-dropped files in the browser (no filesystem path). */
+  async importBlobs(files: File[]) {
+    if (!files.length) return;
+    for (const f of files) {
+      if (!f.type.startsWith('video/') && !f.type.startsWith('audio/')) continue;
+      const url = URL.createObjectURL(f);
+      const entry = media.add(f, url);
+      this.media = entry.asset;
+      this.name = f.name.replace(/\.[^.]+$/, '');
+    }
+    for (const other of media.entries) media.markUnused(other.asset.id);
+  }
+
+  /** User-dropped files in the desktop app — they have a real path. */
+  async importDropped(files: File[]) {
+    if (!isTauri()) return this.importBlobs(files);
+    // The webview cannot read a real path for a dropped file, so the file is
+    // streamed as a blob and probed by the engine from the temp copy.
+    await this.importBlobs(files);
+  }
+
+  /** User-dropped files must not navigate the window away. */
   private snapshot(): Snapshot {
     // Plain object copies — `structuredClone` cannot clone Svelte's reactive
     // proxies, and every TranscriptLine field is a primitive anyway.

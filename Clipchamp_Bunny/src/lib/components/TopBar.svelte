@@ -1,7 +1,6 @@
 <script lang="ts">
   import { project } from '../stores/project.svelte';
   import { layout } from '../stores/layout.svelte';
-  import { fmtHuman } from '../utils';
   import CloudMenu from './CloudMenu.svelte';
   import SystemMeter from './SystemMeter.svelte';
   import ContextMenu from './ContextMenu.svelte';
@@ -46,12 +45,10 @@
       mode.set('ingest');
     }
   }
-
-  const pct = $derived(project.durationSec ? (project.cutSec / project.durationSec) * 100 : 0);
 </script>
 
 <!-- TOP BAR — structure copied 1:1 from Clipchamp (measured on the OBS capture):
-     launcher · logo · project dropdown · cloud toggle  |  right: chip · gear · help · avatar -->
+     launcher · logo · project dropdown · cloud  |  right: meter · gear · help · avatar -->
 <header
   data-focus="header"
   tabindex="-1"
@@ -87,7 +84,7 @@
       class="grid h-6 w-6 place-items-center rounded-md bg-gradient-to-br from-nc-gold to-nc-gold-dim text-[13px] font-black text-nc-bg"
       >7</span
     >
-    <span class="text-[13px] font-semibold tracking-tight">Nanami Cut</span>
+    <span class="text-[13px] font-semibold tracking-tight">T9 Editor LIT</span>
   </div>
 
   <!-- project dropdown — Clipchamp's project menu (Rename / Open file location / New video) -->
@@ -125,23 +122,6 @@
   <CloudMenu />
 
   <div class="flex-1"></div>
-
-  <!-- Overtime Saved — our one deliberate addition to Clipchamp's top bar.
-       Kept small so it does not fight the Clipchamp visual rhythm. -->
-  <div
-    class="mr-1 flex items-center gap-1.5 rounded-md bg-nc-gold/10 px-2 py-1 text-[11px] font-semibold text-nc-gold"
-    title="Raw {fmtHuman(project.durationSec)} → Final {fmtHuman(project.keptSec)} · {fmtHuman(
-      project.cutSec
-    )} bach gaya"
-  >
-    🔥 {fmtHuman(project.cutSec)}
-    <span class="h-1.5 w-14 overflow-hidden rounded-full bg-nc-line">
-      <span
-        class="block h-full rounded-full bg-gradient-to-r from-nc-gold to-nc-red transition-[width] duration-300"
-        style="width:{Math.min(100, Math.max(0, pct))}%"
-      ></span>
-    </span>
-  </div>
 
   <!-- RAM · this app · network, click for full PC details -->
   <SystemMeter />

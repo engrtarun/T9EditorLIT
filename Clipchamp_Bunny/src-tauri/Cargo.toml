@@ -1,12 +1,12 @@
 [package]
-name = "nanami-cut"
+name = "t9-editor-lit"
 version = "0.1.0"
-description = "Nanami Cut — zero-RAM, transcript-first video cutter for long Hinglish tech tutorials"
+description = "T9 Editor LIT — zero-RAM, transcript-first video cutter for long Hinglish tech tutorials"
 authors = ["Tarun Dilwal"]
 edition = "2024"
 
 [lib]
-name = "nanami_cut_lib"
+name = "t9_editor_lit_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

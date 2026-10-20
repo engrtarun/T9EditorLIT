@@ -18,6 +18,16 @@
   let qrOpen = $state(false);
   let pos = $state({ x: 0, y: 0 });
 
+  // "Import from Telegram vault" in the media panel asks for the QR flow.
+  $effect(() => {
+    const openQr = () => {
+      open = false;
+      qrOpen = true;
+    };
+    window.addEventListener('t9:connect-telegram', openQr);
+    return () => window.removeEventListener('t9:connect-telegram', openQr);
+  });
+
   function toggle(e: MouseEvent) {
     if (open) {
       open = false;

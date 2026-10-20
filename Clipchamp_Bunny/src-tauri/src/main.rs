@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    nanami_cut_lib::run()
+    t9_editor_lit_lib::run()
 }

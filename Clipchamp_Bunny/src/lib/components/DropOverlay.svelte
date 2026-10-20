@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { media } from '../stores/media.svelte';
   import { project } from '../stores/project.svelte';
   import { mode } from '../stores/mode.svelte';
 
@@ -38,7 +37,7 @@
     }
   }
 
-  function onDrop(e: DragEvent) {
+  async function onDrop(e: DragEvent) {
     if (!isFileDrag(e)) return;
     e.preventDefault();
     depth = 0;
@@ -53,15 +52,8 @@
     );
     if (!usable.length) return;
 
-    for (const f of usable) {
-      const url = URL.createObjectURL(f);
-      media.add(f, url);
-      // the first dropped file becomes the project source
-      if (!project.media || f === usable[0]) {
-        project.loadFile(f, url);
-        project.name = f.name.replace(/\.[^.]+$/, '');
-      }
-    }
+    // A dropped file that arrives mid-edit starts a new project.
+    await project.importDropped(usable);
 
     if (mode.current === 'ingest') {
       // stay here — the pipeline is already visible

@@ -108,6 +108,83 @@ fn demo_source_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+/// Is `yt-dlp` on PATH? Used to enable the "import from a link" option.
+#[tauri::command]
+fn check_yt_dlp() -> Result<bool, String> {
+    Ok(ffmpeg::run("yt-dlp", &["--version"]).map(|o| o.success()).unwrap_or(false))
+}
+
+/// Download a video from a URL with `yt-dlp` (YouTube and friends).
+///
+/// `yt-dlp` streams straight to disk — the bytes never pass through this
+/// process's heap, exactly like the FFmpeg paths. Returns the written path.
+#[tauri::command]
+fn download_from_url(app: tauri::AppHandle, url: String) -> Result<String, String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("URL khaali hai".to_string());
+    }
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("sirf http(s) URL chalega".to_string());
+    }
+
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("downloads");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    // yt-dlp names the file after the video id.
+    let template = dir.join("%(id)s.%(ext)s");
+
+    let out = ffmpeg::run(
+        "yt-dlp",
+        &[
+            "--no-playlist",
+            "--no-warnings",
+            "--newline",
+            "-f",
+            "bv*[height<=1080][vcodec!*=av01]+ba/b[height<=1080]/bv*[height<=1080]/b",
+            "--merge-output-format",
+            "mp4",
+            "-o",
+            &template.to_string_lossy(),
+            &url,
+        ],
+    )
+    .map_err(|e| format!("yt-dlp chal nahi paya: {e}"))?;
+
+    if !out.success() {
+        let tail: Vec<&str> = out.stderr.lines().rev().take(4).collect();
+        return Err(format!(
+            "yt-dlp fail hua: {}",
+            tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
+        ));
+    }
+
+    // Find the newest file the download produced.
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("mp4") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map_err(|e| e.to_string())?;
+        if newest.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
+            newest = Some((modified, path));
+        }
+    }
+
+    newest
+        .map(|(_, p)| p.to_string_lossy().into_owned())
+        .ok_or_else(|| "yt-dlp ne koi mp4 nahi banayi".to_string())
+}
+
 /// Inspect a media file: duration, size, resolution, fps, codecs.
 /// Cached in SQLite keyed by path + size + mtime.
 #[tauri::command]
@@ -359,6 +436,8 @@ pub fn run() {
             get_memory_stats,
             system_details,
             demo_source_path,
+            check_yt_dlp,
+            download_from_url,
             probe_media,
             detect_hardware,
             check_ffmpeg,
@@ -383,10 +462,10 @@ pub fn run() {
         .setup(|app| {
             #[cfg(debug_assertions)]
             if let Some(window) = app.get_webview_window("main") {
-                window.set_title("Nanami Cut — dev")?;
+                window.set_title("T9 Editor LIT — dev")?;
             }
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running Nanami Cut");
+        .expect("error while running T9 Editor LIT");
 }

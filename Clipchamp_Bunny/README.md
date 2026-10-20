@@ -1,4 +1,4 @@
-# Nanami Cut
+# T9 Editor LIT
 
 > Zero-RAM, transcript-first video cutter for long Hinglish coding tutorials.
 > **"No Overtime"** — Nanami Kento theme.
@@ -9,15 +9,25 @@ Full requirement freeze: [`docs/SPEC.md`](docs/SPEC.md)
 
 ## Chalane ka do tareeka
 
-### 1. Desktop app ( asli Rust engine)
+### 1. Desktop app (asli Rust engine)
 
-```bash
-# repo root se
-.\Launch-NanamiCut.bat
-# ya
-.\Launch-NanamiCut.ps1          # dev build, hot reload
-.\Launch-NanamiCut.ps1 -Release # optimised build
+```bat
+:: repo root se
+.\Launch-T9EditorLIT.bat
 ```
+
+PowerShell:
+
+```powershell
+.\Launch-T9EditorLIT.ps1            # release exe, ya pehli baar banata hai
+.\Launch-T9EditorLIT.ps1 -Dev       # cargo dev + hot reload
+.\Launch-T9EditorLIT.ps1 -NoDaemon  # t9cloud (cloud AI) chala ke
+```
+
+> **Pehli baar 10–15 minute lagte hain** — ~380 Rust crates compile hote hain.
+> Uske baad release exe bana jata hai aur launch **instant** hota hai.
+> `npm run app` (dev) hamesha recompile karta hai — isliye launcher pehle se
+> release exe dhundhta hai.
 
 Ya direct:
 
@@ -25,7 +35,7 @@ Ya direct:
 cd Clipchamp_Bunny
 npm install
 npm run app          # tauri dev
-npm run app:build    # release build → src-tauri/target/release/nanami-cut.exe
+npm run app:build    # release → src-tauri/target/release/
 ```
 
 ### 2. Browser (UI only, baked media)
@@ -36,7 +46,7 @@ npm run dev          # http://localhost:5174
 ```
 
 Desktop app me **real** hota hai: ffprobe → SQLite cache, FFmpeg waveform,
-FFmpeg filmstrip, SQLite transcript, `detect_silence`, export.
+FFmpeg filmstrip, SQLite transcript, `detect_silence`, `yt-dlp` import, export.
 Browser me baked media se (same FFmpeg commands, offline).
 
 Checks:
@@ -49,20 +59,46 @@ npm test             # node --test
 
 ---
 
+## Import kaise hota hai
+
+| Source | Kaise |
+| ------ | ----- |
+| **File manager** | "Import media" ya caret menu → **ek saath kai files** chun sakta hai |
+| **Link** | caret → "From a link" → YouTube / koi bhi URL → `yt-dlp` se download |
+| **Telegram vault** | caret → "From Telegram vault" → QR scan (MTProto) |
+| **Drag & drop** | kahin bhi file chhod do |
+
+Naya file jo editing ke beech me aata hai → **naya project** ban jaata hai.
+Purana library me pada rehta hai, usse dobara khol sakte ho.
+
+---
+
+## Do modes, do kaam
+
+| Mode | Kaam |
+| ---- | ---- |
+| **Media** | import · probe · **DEAD AIR** (khamoshi dhoondo aur kaato) |
+| **Cut** | transcript padho · ✕ / ✓ se fumble kaato · clips drag karke order badlo |
+
+Export preview-bar ke purple button se (Clipchamp jaisa).
+
+---
+
 ## Kya banaya hai
 
 | | |
 |---|---|
-| **4 zero-RAM modes** | `INGEST` · `7:3 CUT` · `POLISH` · `EXPORT` — `{#key}` se switch hote hi pichla mode destroy |
-| **7:3 Cut dashboard** | video preview · transcript ✓/✕ (virtual scroll) · editable timeline |
+| **Zero-RAM modes** | `MEDIA` · `CUT` — `{#key}` se switch hote hi pichla mode destroy |
+| **Cut dashboard** | video preview · transcript ✓/✕ (virtual scroll) · editable timeline |
 | **Phantom Cut** | cut ranges preview me skip ho jaate hain — video kabhi re-encode nahi hota |
 | **Traffic-light waveform** | gold = keep · red = fumble/galat · grey = khamoshi |
 | **Edit timeline** | source minimap · ruler · T · draggable video clips · audio — drag karo, transcript live reorder hota hai |
-| **Honesty meter** | RAM used/total · this app's MB · real network speed · click → full PC + storage panel |
+| **Dead air workbench** | threshold slider (default 3 s, Clipchamp ka rule) · silence list · cut-all |
+| **Honesty meter** | RAM used/total · this app's MB · real network speed (Mbps) · click → full PC + storage panel |
 | **Full Clipchamp shortcut set** | `Ctrl+/` opens the in-app sheet |
 | **Drag & drop** | video drop karo kahin bhi → import + probe + project source |
-| **Auto-cut silence** | ✨ button → FFmpeg `silencedetect`, 3 s+ pauses auto-cut |
-| **Provider menu** | Telegram Cloud (QR + MTProto) · Gemini · Groq · Local disk |
+| **Import sources** | file manager (multi) · link (`yt-dlp`) · Telegram vault (QR/MTProto) |
+| **Provider menu** | Telegram Cloud · Gemini · Groq · Local disk |
 | **Shared Rust engine** | `#[path]` include — T9EditorLIT ka engine, ek copy nahi |
 
 ## Keyboard

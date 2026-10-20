@@ -50,6 +50,34 @@ export async function pickVideo(): Promise<string | null> {
   return typeof picked === 'string' ? picked : null;
 }
 
+/** Open the native file picker for **several** files at once. */
+export async function pickVideos(): Promise<string[]> {
+  if (!isTauri()) return [];
+  const picked = await open({
+    multiple: true,
+    directory: false,
+    filters: [
+      { name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'] },
+      { name: 'Audio', extensions: ['mp3', 'wav', 'm4a', 'aac', 'flac'] }
+    ]
+  });
+  if (Array.isArray(picked)) return picked;
+  return typeof picked === 'string' ? [picked] : [];
+}
+
+/** Is `yt-dlp` available for link imports? */
+export function checkYtDlp(): Promise<boolean> {
+  return invoke<boolean>('check_yt_dlp');
+}
+
+/**
+ * Download a video from a URL (YouTube and friends) with `yt-dlp`.
+ * The bytes stream straight to disk — they never touch this process's heap.
+ */
+export function downloadFromUrl(url: string): Promise<string> {
+  return invoke<string>('download_from_url', { url });
+}
+
 /** Set by the project store once a real file is loaded. */
 let currentSourcePath: string | null = null;
 export function setSourcePath(path: string | null) {
@@ -248,20 +276,41 @@ export async function pickOutput(defaultName: string): Promise<string | null> {
 /* ------------------------------------------------------------------ network */
 
 /**
- * Measure real download throughput with a short burst against a public speed
- * endpoint. Returns MB/s, or null when the box is offline.
+ * Measure real download throughput.
+ *
+ * The trick that makes this honest: the clock starts when the **first body
+ * byte** arrives, not when `fetch` was called. Otherwise DNS + TCP + TLS +
+ * TTFB get divided into the transfer time, and a fast link reads as slow —
+ * a 40 Mbps line was showing as 2 MB/s for exactly this reason.
+ *
+ * It also keeps fetching for a fixed window so one slow burst cannot decide
+ * the number, and reports MB/s **and** Mbps — the unit a browser shows.
  */
-export async function measureNetworkSpeed(bytes = 8_000_000): Promise<number | null> {
+export async function measureNetworkSpeed(
+  windowMs = 3000
+): Promise<{ mbps: number; megabytesPerSec: number } | null> {
+  const endpoint = 'https://speed.cloudflare.com/__down?bytes=8000000';
+  let bytes = 0;
+  let elapsed = 0;
+
   try {
-    const t0 = performance.now();
-    const res = await fetch(`https://speed.cloudflare.com/__down?bytes=${bytes}`, {
-      cache: 'no-store'
-    });
-    if (!res.ok) return null;
-    const buf = await res.arrayBuffer();
-    const secs = (performance.now() - t0) / 1000;
-    if (secs <= 0) return null;
-    return buf.byteLength / 1_048_576 / secs;
+    const deadline = performance.now() + windowMs;
+    do {
+      const res = await fetch(endpoint, { cache: 'no-store' });
+      if (!res.ok || !res.body) return null;
+      const reader = res.body.getReader();
+      const t0 = performance.now();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value?.byteLength ?? 0;
+      }
+      elapsed += (performance.now() - t0) / 1000;
+    } while (performance.now() < deadline);
+
+    if (elapsed <= 0 || bytes <= 0) return null;
+    const megabytesPerSec = bytes / 1_048_576 / elapsed;
+    return { megabytesPerSec, mbps: megabytesPerSec * 8 };
   } catch {
     return null;
   }

@@ -1,7 +1,7 @@
 {
-  "name": "nanami-cut",
+  "name": "t9-editor-lit",
   "version": "0.1.0",
-  "description": "Nanami Cut — zero-RAM, transcript-first video cutter for long Hinglish tech tutorials",
+  "description": "T9 Editor LIT — zero-RAM, transcript-first video cutter for long Hinglish tech tutorials",
   "type": "module",
   "private": true,
   "scripts": {
