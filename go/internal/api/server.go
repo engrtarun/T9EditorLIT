@@ -23,6 +23,7 @@ import (
 	"github.com/engrtarun/T9EditorLIT/go/internal/cloud"
 	"github.com/engrtarun/T9EditorLIT/go/internal/config"
 	"github.com/engrtarun/T9EditorLIT/go/internal/model"
+	"github.com/engrtarun/T9EditorLIT/go/internal/netspeed"
 	"github.com/engrtarun/T9EditorLIT/go/internal/queue"
 	"github.com/engrtarun/T9EditorLIT/go/internal/vault"
 )
@@ -82,6 +83,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/vault/upload", s.handleVaultUpload)
 
 	s.mux.HandleFunc("GET /v1/jobs/{id}", s.handleJob)
+
+	// Honest network throughput probe. Replaces the single-socket fetch() that
+	// used to live in the webview; runs parallel connections through Go.
+	s.mux.HandleFunc("GET /v1/net/speed", s.handleNetSpeed)
 }
 
 // ServeHTTP applies a defensive outer layer: generous body limits, panic
@@ -138,6 +143,39 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		},
 		Cloud: s.deps.Config.Capabilities(),
 	})
+}
+
+// handleNetSpeed measures real download throughput via parallel connections.
+//
+// Query params:
+//   - windowMs: measurement window in ms (default 3000, clamped 500..15000)
+//   - conns:    parallel connections (default 4, clamped 1..16)
+//
+// The probe streams to io.Discard and never buffers the payload, so it stays
+// light on RAM even on the 8 GB target box.
+func (s *Server) handleNetSpeed(w http.ResponseWriter, r *http.Request) {
+	window := 3 * time.Second
+	if v := r.URL.Query().Get("windowMs"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			window = time.Duration(n) * time.Millisecond
+		}
+	}
+	conns := 4
+	if v := r.URL.Query().Get("conns"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			conns = n
+		}
+	}
+
+	res, err := netspeed.Measure(r.Context(), netspeed.Options{
+		Window: window,
+		Conns:  conns,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {

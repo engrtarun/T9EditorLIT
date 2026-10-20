@@ -304,6 +304,24 @@ export async function pickOutput(defaultName: string): Promise<string | null> {
 export async function measureNetworkSpeed(
   windowMs = 3000
 ): Promise<{ mbps: number; megabytesPerSec: number } | null> {
+  // Prefer the Go daemon: parallel sockets + tuned receive buffers give an
+  // honest reading on fast links (single-socket fetch() under-reads). Fall
+  // back to the in-webview probe when the daemon is unreachable (browser dev
+  // mode, or daemon down) so the meter never goes blank.
+  try {
+    const res = await fetch(`http://127.0.0.1:7878/v1/net/speed?windowMs=${windowMs}`, {
+      cache: 'no-store'
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { mbps?: number; megabytesPerSec?: number };
+      if (typeof data?.megabytesPerSec === 'number') {
+        return { mbps: data.mbps ?? 0, megabytesPerSec: data.megabytesPerSec };
+      }
+    }
+  } catch {
+    /* daemon not reachable - fall through */
+  }
+
   const endpoint = 'https://speed.cloudflare.com/__down?bytes=8000000';
   let bytes = 0;
   let elapsed = 0;
