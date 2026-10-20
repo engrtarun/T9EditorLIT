@@ -106,6 +106,17 @@
     if (pct > 75) return 'bg-nc-gold';
     return 'bg-nc-green';
   }
+
+  /**
+   * The battery reads the other way round: **low** charge is the bad state.
+   *
+   * The same rule Windows uses — under 15 % is red, under 40 % is amber.
+   */
+  function batteryTone(pct: number): string {
+    if (pct <= 15) return 'bg-nc-red';
+    if (pct <= 40) return 'bg-nc-gold';
+    return 'bg-nc-green';
+  }
 </script>
 
 <!-- One hairline separator between the groups. -->
@@ -285,7 +296,7 @@
           width={Math.max(0.6, (18 * battery.percent) / 100)}
           height="10"
           rx="1.8"
-          class={tone(battery.percent)}
+          class={batteryTone(battery.percent)}
         />
       </svg>
       <span class="font-mono text-[11px] text-nc-txt tabular-nums">{battery.percent}%</span>
