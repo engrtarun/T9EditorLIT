@@ -117,6 +117,9 @@ type groqResponse struct {
 	Text     string        `json:"text"`
 	Language string        `json:"language"`
 	Segments []groqSegment `json:"segments"`
+	// Some Groq builds put the word list at the top level instead of inside
+	// each segment. Both are read; per-segment wins.
+	Words []groqWord `json:"words"`
 }
 
 type groqSegment struct {
@@ -124,6 +127,14 @@ type groqSegment struct {
 	Start float64 `json:"start"`
 	End   float64 `json:"end"`
 	Text  string  `json:"text"`
+	// Word-level timings, present when the request asked for word granularity.
+	Words []groqWord `json:"words"`
+}
+
+type groqWord struct {
+	Word  string  `json:"word"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
 }
 
 // TranscribeChunk uploads one audio chunk and returns its segments with times
@@ -174,6 +185,11 @@ func (c *GroqClient) TranscribeChunk(
 		// verbose_json is what produces per-segment timestamps. The default
 		// response format returns one flat string with no timing at all.
 		if writeErr = mw.WriteField("response_format", "verbose_json"); writeErr != nil {
+			return
+		}
+		// Word granularity is what makes a split cut the *text* as well as the
+		// timeline. Without it the editor can only cut time.
+		if writeErr = mw.WriteField("timestamp_granularities[]", "word"); writeErr != nil {
 			return
 		}
 		if language != "" {
@@ -237,10 +253,116 @@ func (c *GroqClient) TranscribeChunk(
 			Text:      text,
 			Flag:      model.FlagNone,
 			Keep:      true,
+			Words:     shiftWords(s.Words, offsetSecs),
 		})
 	}
 
+	// With word granularity Groq returns `segments: null` and one flat `words`
+	// array instead. Regroup the words into lines so the rest of the pipeline
+	// (autocorrect, analysis, the editor) always sees segments.
+	if len(segments) == 0 && len(parsed.Words) > 0 {
+		segments = segmentsFromWords(parsed.Words, offsetSecs)
+	}
+
 	return segments, nil
+}
+
+// segmentsFromWords rebuilds transcript lines from a flat word list.
+//
+// Word granularity is what makes a split cut the *text* as well as the
+// timeline, but it costs the sentence segmentation. A new line starts when
+// the speaker pauses, when the previous word ends a sentence, or when the line
+// gets long enough that a transcript row would be unreadable.
+func segmentsFromWords(words []groqWord, offsetSecs float64) []model.Segment {
+	const (
+		pauseBreak  = 0.7  // seconds of silence that end a line
+		maxLineSecs = 14.0 // longest line we will produce
+	)
+
+	var out []model.Segment
+	var cur []groqWord
+
+	flush := func() {
+		if len(cur) == 0 {
+			return
+		}
+		parts := make([]string, 0, len(cur))
+		for _, w := range cur {
+			parts = append(parts, w.Word)
+		}
+		out = append(out, model.Segment{
+			ID:        fmt.Sprintf("%d-%d", int(offsetSecs*1000), len(out)),
+			StartSecs: round3(cur[0].Start + offsetSecs),
+			EndSecs:   round3(cur[len(cur)-1].End + offsetSecs),
+			Text:      strings.Join(parts, " "),
+			Flag:      model.FlagNone,
+			Keep:      true,
+			Words:     shiftWords(cur, offsetSecs),
+		})
+		cur = nil
+	}
+
+	for _, w := range words {
+		text := strings.TrimSpace(w.Word)
+		if text == "" {
+			continue
+		}
+		if len(cur) > 0 {
+			prev := cur[len(cur)-1]
+			gap := w.Start - prev.End
+			span := w.End - cur[0].Start
+			endsSentence := endsSentence(prev.Word)
+			if gap >= pauseBreak || endsSentence || span >= maxLineSecs {
+				flush()
+			}
+		}
+		cur = append(cur, groqWord{Word: text, Start: w.Start, End: w.End})
+	}
+	flush()
+
+	return out
+}
+
+// endsSentence reports whether a word closes a sentence, in Devanagari or
+// Latin script.
+func endsSentence(word string) bool {
+	if word == "" {
+		return false
+	}
+	// Compare runes, not bytes: the Devanagari danda is multi-byte.
+	r := []rune(word)
+	switch r[len(r)-1] {
+	case '.', '!', '?', '।', '॥':
+		return true
+	}
+	return false
+}
+
+// shiftWords moves a chunk's word timings into the original video's timeline.
+//
+// Groq reports word times relative to the chunk, so without the shift a
+// two-hour video's transcript would restart at zero after every chunk — the
+// same reason the segment times are shifted.
+func shiftWords(words []groqWord, offsetSecs float64) []model.Word {
+	if len(words) == 0 {
+		return nil
+	}
+	out := make([]model.Word, 0, len(words))
+	for _, w := range words {
+		text := strings.TrimSpace(w.Word)
+		if text == "" {
+			continue
+		}
+		out = append(out, model.Word{
+			Word:  text,
+			Start: round3(w.Start + offsetSecs),
+			End:   round3(w.End + offsetSecs),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // round3 trims float noise so timestamps round-trip predictably through JSON.

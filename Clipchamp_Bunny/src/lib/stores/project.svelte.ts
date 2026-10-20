@@ -276,7 +276,9 @@ class ProjectStore {
         text: s.text,
         keep: s.keep,
         flag: s.flag,
-        originalText: s.original_text ?? ''
+        originalText: s.original_text ?? '',
+        // Word timings ride along, so a split can cut the *text* too.
+        words: s.words
       }))
     );
 
@@ -288,7 +290,8 @@ class ProjectStore {
       text: s.text,
       flag: toLineFlag(s.flag),
       keep: s.keep ? 'keep' : 'cut',
-      confidence: 1
+      confidence: 1,
+      words: s.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
     }));
   }
 

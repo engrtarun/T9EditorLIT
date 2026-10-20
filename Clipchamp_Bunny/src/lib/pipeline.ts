@@ -16,6 +16,12 @@ import type { LineFlag } from './types';
 
 const BASE = 'http://127.0.0.1:7878';
 
+export interface CloudWord {
+  word: string;
+  start: number;
+  end: number;
+}
+
 export interface CloudSegment {
   id: string;
   start_secs: number;
@@ -25,6 +31,8 @@ export interface CloudSegment {
   keep: boolean;
   reason?: string;
   original_text?: string;
+  /** Word-level timings — this is what makes a split cut the text too. */
+  words?: CloudWord[];
 }
 
 export interface CloudJob {

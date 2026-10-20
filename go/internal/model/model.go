@@ -59,6 +59,17 @@ func (f Flag) Valid() bool {
 // Times are absolute seconds in the ORIGINAL video, never chunk-local. The
 // daemon offsets each chunk's response by that chunk's start time before
 // returning, so the app never has to think about chunk boundaries.
+// Word is one word with its own timing, straight out of Whisper.
+//
+// This is what lets the editor split a line's *text* as well as its timeline:
+// cutting "I LOVE U" after 4 s can then yield "I" and "LOVE U" instead of two
+// rows that both read "I LOVE U".
+type Word struct {
+	Word  string  `json:"word"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+}
+
 type Segment struct {
 	ID        string  `json:"id"`
 	StartSecs float64 `json:"start_secs"`
@@ -76,6 +87,11 @@ type Segment struct {
 	// through untouched leaves it empty. That distinction is what lets the UI
 	// show "this was fixed" without claiming every line was.
 	OriginalText string `json:"original_text,omitempty"`
+	// Words is the word-level timing for this line, when Whisper produced it.
+	//
+	// Absent means "no word alignment" - the editor then splits the line's
+	// time but not its text. Present, the split cuts the text too.
+	Words []Word `json:"words,omitempty"`
 }
 
 // Duration returns the segment length in seconds, never negative.

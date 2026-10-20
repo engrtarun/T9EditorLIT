@@ -119,8 +119,16 @@ Playhead source ⇄ edit map hota hai (`editTimeAt` / `sourceAt`); cut ke andar 
 
 ### 4.7 Split = text bhi kata
 `S` (split) / `Ctrl+Shift+X` (cut here) — line ke andar split hoti hai.
-`transcripts.words` column (JSON blob) me Whisper ke word timings aate hi **text bhi split
-hota hai**: "I LOVE U" (10 s) cut at 4 s → rows "I" (cut) + "LOVE U" (keep).
+**Word timings** (Whisper `words[]`) se **text bhi split hota hai**:
+"I LOVE U" (10 s) cut at 4 s → rows "I" (cut) + "LOVE U" (keep).
+
+**Groq ka ek twist:** `timestamp_granularities[]=word` bhejne pe Groq
+`segments: null` deta hai aur sirf flat `words[]` array. Isliye Go daemon me
+`segmentsFromWords()` fallback hai — words se pause (0.7 s) / sentence-punctuation /
+14 s line-limit ke basis pe lines wapas bana deta hai.
+
+Chain: `Groq → go/internal/cloud/cloud.go (segmentsFromWords) → model.Segment.Words
+→ Rust transcripts.words (JSON blob) → frontend applySplitText()`.
 
 ### 4.8 SQLite cache — API sirf import pe
 `project.ensureTranscript(path)`:
@@ -143,8 +151,8 @@ hota hai**: "I LOVE U" (10 s) cut at 4 s → rows "I" (cut) + "LOVE U" (keep).
 | `WaveTimeline` video lane | Rust `extract_thumbnails` → real filmstrip | ✅ wired (visible in screenshots) |
 | `ExportMode` | Rust `start_export` (hybrid/copy/encode) | ✅ wired, progress event |
 | `lib/ipc.ts` → `downloadFromUrl` | Rust `download_from_url` (yt-dlp) | ✅ wired |
+| **Go `Segment.Words`** | word timings daemon se | ✅ **DONE** — `model.Word`, `groqWord`, `segmentsFromWords()` |
 | **Telegram vault → media library** | daemon se file download karke library me daalna | ❌ **TODO** |
-| **Word timings from Go** | `Segment` struct me `words` add karna | ❌ **TODO** (DB column ready) |
 
 ### Telegram vault ke liye `.env` me ye **khali** hain
 ```
@@ -216,7 +224,6 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
 ## 8. Bacha hai
 
 - [ ] **Telegram vault → media library** (download karke import)
-- [ ] **Go `Segment.words`** — word timings daemon se aayein (tab split ka text sahi hoga)
 - [ ] **Bachay hue huaam** ko split karte waqt text edit karne ka UI (inline rename on a split half)
 - [ ] **Polish mode** (text/zoom/music) — deferred, app ke do kaam se bahar hai
 - [ ] Root ka **bakwas UI** delete karna (`src/lib/components/clipchamp/**`)
