@@ -112,6 +112,22 @@ edited at the time.
 
 ---
 
+## ⚠ Build ek saath mat karo (dono agents ko)
+
+`deploy.ps1` → `npx tauri build` → dono agents **same** `target/release/` me
+likhte hain. Do builds overlap kiye to:
+
+- ek dusre ka `t9-editor-lit.exe` overwrite kar deta hai (jo install/stage
+  hoga wo unpredictable hai),
+- aur `tauri build` **"exit code -1"** dekar fail ho jaata hai.
+
+**Rule:** ek waqt me sirf ek `deploy.ps1`. Doosra agent build shuru karne se
+pehle `Get-Process cargo,rustc` check kar le — process dikhe to wait kare.
+
+Isi wajah se 20-10-20 ko do build overlap hue aur ek failed hua.
+
+---
+
 ## Agent 1 (this session) — "Rust media + disk transcript core"
 
 **Lane:** Chunk 2 backend foundation — audio extraction/chunking, SQLite transcript store,
