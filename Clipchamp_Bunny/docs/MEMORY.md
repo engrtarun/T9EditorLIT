@@ -211,7 +211,17 @@ npm test             :: node --test
 cd C:\Users\pocot\Music\T9EditorLIT
 .\go\bin\t9cloud.exe -env .\.env
 # check: Invoke-WebRequest http://127.0.0.1:7878/healthz
+# → {"cloud":{"analyze":"ready","transcribe":"ready", …}}
 ```
+
+**SQLite** (app ka state, disk pe):
+```
+%APPDATA%\com.engrtarun.t9editorlit\nanamicut.db
+  tables: transcripts · projects · media_cache
+  transcripts: source_path, id, start_secs, end_secs, text, keep, flag,
+               original_text, words(JSON)
+```
+Inspect karne ke liye Node ka built-in `node:sqlite` (Node 24) — repo me sqlite3 CLI nahi hai.
 
 **Media bake** (browser mode ka dummy):
 ```bash
@@ -233,7 +243,9 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
 - [x] **Cut at playhead** (`Ctrl+Shift+X`) — split + drop head
 - [x] Dead-air workbench (threshold slider default 3 s = Clipchamp rule, silence list, cut-all)
 - [x] **Real pipeline**: Rust chunks → Groq Whisper → correct → Gemini flags → SQLite
+      — *verified live*: 31 real Hindi lines for the OBS recording, all with word timings
 - [x] **SQLite cache** — API sirf import pe
+      — *verified live*: app restart → daemon `completed` count **unchanged** (0 new calls)
 - [x] **Word-level timings end to end** — Groq `timestamp_granularities[]=word` →
       daemon `segmentsFromWords()` → `model.Segment.Words` → `transcripts.words` →
       split cuts the text too
@@ -273,6 +285,13 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
 9. **Rust modules `crate::` use karte hain** — `#[path]` se nest karne pe `crate::media`
    resolve nahi hota. Modules crate-root pe declare karo.
 10. **`.env` me empty values** silently rehte hain (vault disable ho jaata hai) — check karo.
+11. **Release build 15+ min leta hai** — profile me `lto = true` + `opt-level = 3` +
+    `codegen-units = 1`. Link phase me `rustc` ~600 MB RAM leta hai aur CPU pe
+    ata rehta hai — **hang nahi hua, bas slow hai**. Beech me `npm run build`
+    mat chalao (dist ka hash badal jaata hai). Iteration ke liye `npm run app`
+    (tauri dev) use karo — wo LTO nahi karta. Agar link time bura lage to
+    `Cargo.toml` me `lto = "thin"` kar sakta hai (quality almost same, link 3-4×
+    faster).
 
 ---
 
@@ -292,7 +311,8 @@ git push   # ← NEVER. Sirf user karta hai.
 - Export rail me nahi, preview bar me
 - Right panel 340px transcript (Clipchamp ka 48px CC rail)
 - Left panel "My media" 248px
-- Nanami **gold** accent (Clipchamp purple) — cut/keep ke liye
+- **T9 LIT blue** accent `#4D8DFF` (Clipchamp purple / purani Nanami gold ki jagah) — cut/keep ke liye. Tokens ke naam `nc-*` hain, values branding board se (`T9 Editor LIT Branding Board.png`)
+- App icons branding board se generate hue (`npx tauri icon tools/branding/app-icon.png`), src-tauri/icons/ me
 - `X` = cut (Clipchamp me `X` = move item) → hamare `Shift+X`+arrow = move
 - `↑/↓` = line nav (Clipchamp me timeline scroll)
 - 3-second silence rule Clipchamp ka hi hai
