@@ -77,7 +77,7 @@
     iface: snap?.net.interface ?? ''
   });
 
-  /** `Tue, 20 Oct · 14:32` in Delhi. */
+  /** `3:25 PM` in Delhi — the 12-hour clock, the way Windows shows it. */
   const clock = $derived.by(() => {
     const fmt = new Intl.DateTimeFormat('en-GB', {
       timeZone: IST,
@@ -86,15 +86,19 @@
       month: 'short',
       hour: '2-digit',
       minute: '2-digit',
-      hour12: false
+      hour12: true
     });
     const parts = fmt.formatToParts(now);
     const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+    const hour = get('hour').replace(/^0/, '');
     return {
       day: `${get('weekday')}, ${get('day')} ${get('month')}`,
-      time: `${get('hour')}:${get('minute')}`
+      time: `${hour}:${get('minute')} ${get('dayPeriod').toUpperCase()}`
     };
   });
+
+  /** The battery, when the machine has one. */
+  const battery = $derived(snap?.battery ?? null);
 
   /** The bar colour follows the usual traffic-light rule. */
   function tone(pct: number): string {
@@ -250,6 +254,57 @@
   </span>
 
   <div class="flex-1"></div>
+
+  <!-- battery: only on a machine that has one -->
+  {#if battery}
+    <span class="flex items-center gap-1.5" title="Battery{battery.charging ? ' · charging' : ''}">
+      <svg width="20" height="11" viewBox="0 0 26 14" aria-hidden="true" class="text-nc-mut-2">
+        <rect
+          x="0.6"
+          y="0.6"
+          width="22"
+          height="12.8"
+          rx="3"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.2"
+          opacity="0.5"
+        />
+        <rect
+          x="23.4"
+          y="4.4"
+          width="2.2"
+          height="5.2"
+          rx="1.1"
+          fill="currentColor"
+          opacity="0.5"
+        />
+        <rect
+          x="2"
+          y="2"
+          width={Math.max(0.6, (18 * battery.percent) / 100)}
+          height="10"
+          rx="1.8"
+          class={tone(battery.percent)}
+        />
+      </svg>
+      <span class="font-mono text-[11px] text-nc-txt tabular-nums">{battery.percent}%</span>
+      {#if battery.charging}
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          class="text-nc-gold"
+          aria-label="Charging"
+        >
+          <path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12z" />
+        </svg>
+      {/if}
+    </span>
+
+    <span class="h-3.5 w-px bg-nc-line"></span>
+  {/if}
 
   <!-- clock -->
   <button

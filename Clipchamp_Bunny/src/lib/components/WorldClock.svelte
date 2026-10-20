@@ -77,13 +77,17 @@
   }
 
   function clockIn(zone: string, at: Date): string {
-    return new Intl.DateTimeFormat('en-GB', {
+    const fmt = new Intl.DateTimeFormat('en-GB', {
       timeZone: zone,
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
-      hour12: false
-    }).format(at);
+      hour12: true
+    });
+    const parts = fmt.formatToParts(at);
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+    const hour = get('hour').replace(/^0/, '');
+    return `${hour}:${get('minute')}:${get('second')} ${get('dayPeriod').toUpperCase()}`;
   }
 
   function dayIn(zone: string, at: Date): string {

@@ -65,6 +65,16 @@ pub struct NetReading {
     pub interface: String,
 }
 
+/// The machine's battery.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatteryReading {
+    /// Charge left, 0..100.
+    pub percent: u8,
+    /// True while the machine is plugged in.
+    pub charging: bool,
+}
+
 /// Everything the status bar needs, in one shot.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +84,68 @@ pub struct SystemSnapshot {
     /// Bytes the app itself keeps on disk.
     pub app_storage_bytes: u64,
     pub net: NetReading,
+    /// `None` on a desktop that has no battery.
+    pub battery: Option<BatteryReading>,
+}
+
+/* ----------------------------------------------------------------- battery */
+
+/// Windows' `SYSTEM_POWER_STATUS` — the layout is fixed by the Win32 header.
+///
+/// The call is a single `kernel32` call, so reading the battery once a second
+/// costs nothing: no process is spawned, no handle is opened.
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct SystemPowerStatus {
+    /// 0 = offline, 1 = on mains, 2 = on backup.
+    ac_line_status: u8,
+    /// 1 high, 2 low, 4 critical, 8 charging, 128 no battery, 255 unknown.
+    battery_flag: u8,
+    /// 0..100, or 255 when it cannot be told.
+    battery_life_percent: u8,
+    _reserved: u8,
+    battery_life_time: u32,
+    battery_full_life_time: u32,
+    battery_low_warn_time: u32,
+    battery_low_warn_capacity: u32,
+    battery_high_capacity: u32,
+    system_status_flag: u32,
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetSystemPowerStatus(status: *mut SystemPowerStatus) -> i32;
+}
+
+/// The battery's charge and whether it is charging.
+///
+/// `None` on a machine without a battery (a desktop) — there is nothing to
+/// show there, and pretending there is would be a lie.
+pub fn battery() -> Option<BatteryReading> {
+    #[cfg(windows)]
+    {
+        let mut status = SystemPowerStatus::default();
+        // A zero return means the call itself failed.
+        if unsafe { GetSystemPowerStatus(&mut status) } == 0 {
+            return None;
+        }
+        // 255 = unknown, 128 = no system battery at all.
+        if status.battery_life_percent == 255 || status.battery_flag == 128 {
+            return None;
+        }
+        let charging = status.battery_flag & 8 != 0;
+        let on_mains = status.ac_line_status == 1;
+        Some(BatteryReading {
+            percent: status.battery_life_percent.min(100),
+            charging: charging || (on_mains && status.battery_life_percent < 100),
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 /* ------------------------------------------------------------------ network */
@@ -278,6 +350,7 @@ pub fn system_snapshot(
         drive,
         app_storage_bytes: storage.sample(&dir),
         net,
+        battery: battery(),
     })
 }
 
@@ -365,5 +438,17 @@ mod tests {
         assert!(is_loopback("lo"));
         assert!(!is_loopback("Wi-Fi"));
         assert!(!is_loopback("Ethernet"));
+    }
+
+    /// A desktop has no battery, and a machine with one always reports a sane
+    /// percentage. Either way the reading must not be nonsense.
+    #[test]
+    fn the_battery_reading_is_sane() {
+        match battery() {
+            None => { /* a desktop - nothing to show */ }
+            Some(b) => {
+                assert!(b.percent <= 100, "percent out of range: {}", b.percent);
+            }
+        }
     }
 }

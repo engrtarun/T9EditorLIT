@@ -130,6 +130,14 @@ export interface NetReading {
   interface: string;
 }
 
+/** The machine's battery — mirrors Rust `BatteryReading`. */
+export interface BatteryReading {
+  /** Charge left, 0..100. */
+  percent: number;
+  /** True while the machine is plugged in. */
+  charging: boolean;
+}
+
 /** One reading of every meter — mirrors Rust `SystemSnapshot`. */
 export interface SystemSnapshot {
   ram: RamReading;
@@ -137,6 +145,8 @@ export interface SystemSnapshot {
   /** Bytes the app itself keeps on disk. */
   appStorageBytes: number;
   net: NetReading;
+  /** `null` on a desktop that has no battery. */
+  battery: BatteryReading | null;
 }
 
 /** Full machine snapshot from the Rust `system_details` command. */
