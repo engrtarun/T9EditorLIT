@@ -126,9 +126,9 @@
       <path d="M12 4v14M6 12l6 6 6-6" />
     </svg>
     <span class={speed ? 'text-nc-txt' : 'text-nc-mut-2'}>
-      {measuring ? '…' : speed ? speed.mbps.toFixed(0) : '—'}
+      {measuring ? '…' : speed ? speed.megabytesPerSec.toFixed(1) : '—'}
     </span>
-    <span class="text-nc-mut-2">Mbps</span>
+    <span class="text-nc-mut-2">MB/s</span>
   </span>
 </button>
 
@@ -229,7 +229,7 @@
           <dt class="w-16 shrink-0 text-nc-mut">Network</dt>
           <dd class="min-w-0 flex-1 font-mono">
             {speed
-              ? `↓ ${speed.mbps.toFixed(0)} Mbps · ${speed.megabytesPerSec.toFixed(2)} MB/s`
+              ? `↓ ${speed.megabytesPerSec.toFixed(2)} MB/s · ${speed.mbps.toFixed(0)} Mbps`
               : '—'}
             <button onclick={measure} class="ml-1 text-[10px] text-nc-gold hover:underline"
               >retest</button

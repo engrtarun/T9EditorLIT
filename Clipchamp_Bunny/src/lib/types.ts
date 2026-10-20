@@ -54,6 +54,14 @@ export interface ThumbnailStrip {
   dir: string;
 }
 
+/** One audio chunk the Rust side split out, handed to the cloud transcriber. */
+export interface AudioChunk {
+  index: number;
+  path: string;
+  offsetSecs: number;
+  durationSecs: number;
+}
+
 /** Real media metadata, mirrors the Rust `probe_cached` result. */
 export interface MediaInfo {
   id: string;

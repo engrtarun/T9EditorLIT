@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   KeepState,
   LineFlag,
   MediaAsset,
@@ -23,11 +23,13 @@ import {
 } from '../segments';
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 import { media } from './media.svelte';
+import { runAnalysis, runCorrection, runTranscription, toLineFlag } from '../pipeline';
 import {
   assetUrl,
   defaultDbPath,
   demoSourcePath,
   detectSilence,
+  extractAudioChunks,
   extractThumbnails,
   extractWaveform,
   isTauri,
@@ -38,7 +40,7 @@ import {
 } from '../ipc';
 
 /**
- * Undo snapshot. Holds the whole line array, not just the keep flags —
+ * Undo snapshot. Holds the whole line array, not just the keep flags â€”
  * splits, trims, moves and groups all change the *structure*, so a
  * flags-only snapshot cannot undo them.
  *
@@ -50,7 +52,7 @@ type Snapshot = TranscriptLine[];
 
 /**
  * Splitting produces `ln-012-1a` / `ln-012-1b`; undo must still find the parent.
- * The numeric tag is required — reusing the same `-a`/`-b` suffix twice would
+ * The numeric tag is required â€” reusing the same `-a`/`-b` suffix twice would
  * produce duplicate keys and break Svelte's keyed `{#each}`.
  */
 function baseId(id: string): string {
@@ -60,7 +62,7 @@ function baseId(id: string): string {
 /**
  * Split a line's **text** at the cut point, when word-level timings are known.
  *
- * Cutting "I LOVE U" (10 s) at 4 s then yields two rows — "I" and "LOVE U" —
+ * Cutting "I LOVE U" (10 s) at 4 s then yields two rows â€” "I" and "LOVE U" â€”
  * instead of two identical ones. Whisper returns a word array, so the backend
  * fills `words` in and this does the rest. Without word timings both halves
  * keep the original text, which is why the split still shows its time range.
@@ -108,7 +110,7 @@ class ProjectStore {
   /** Magnet: playhead snaps to line boundaries when true. */
   snap = $state(true);
 
-  /** Right-rail CC toggle — hides/shows the transcript panel. */
+  /** Right-rail CC toggle â€” hides/shows the transcript panel. */
   showTranscript = $state(true);
 
   /** Monotonic counter so every split produces unique line ids. */
@@ -129,7 +131,7 @@ class ProjectStore {
   /**
    * Load the project source.
    *
-   * In Tauri this goes through the real Rust engine: ffprobe → SQLite cache,
+   * In Tauri this goes through the real Rust engine: ffprobe â†’ SQLite cache,
    * FFmpeg waveform, FFmpeg filmstrip, SQLite transcript. In the browser it
    * falls back to the media baked by `tools/generate-media.mjs`.
    */
@@ -163,7 +165,7 @@ class ProjectStore {
     this.ready = true;
   }
 
-  /** Real engine path: probe → waveform → filmstrip → transcript (SQLite). */
+  /** Real engine path: probe â†’ waveform â†’ filmstrip â†’ transcript (SQLite). */
   async loadFromBackend(path: string) {
     const info = await probeMedia(path);
     this.media = {
@@ -184,6 +186,24 @@ class ProjectStore {
     this.sourcePath = path;
     setSourcePath(path);
 
+    // Make sure the source is in the library too, so its media tile (and the
+    // â‹® menu on it) exists.
+    if (!media.byPath(path)) {
+      const entry = media.addPath(path, this.media.name, info.sizeBytes);
+      media.probed(entry.asset.id, {
+        durationSecs: info.durationSecs,
+        width: info.width ?? 0,
+        height: info.height ?? 0,
+        fps: info.fps ?? 0,
+        sizeBytes: info.sizeBytes,
+        videoCodec: info.videoCodec ?? 'unknown',
+        audioCodec: info.audioCodec,
+        durationLabel: `${Math.floor(info.durationSecs / 60)}:${String(
+          Math.floor(info.durationSecs % 60)
+        ).padStart(2, '0')}`
+      });
+    }
+
     const [wave, thumbs] = await Promise.all([
       extractWaveform(path).catch(() => null),
       extractThumbnails(path).catch(() => null)
@@ -192,32 +212,89 @@ class ProjectStore {
     if (thumbs) this.thumbnails = thumbs;
 
     try {
-      const db = await defaultDbPath();
-      const stored = await loadTranscript(db, path);
-      if (stored?.length) {
-        this.lines = stored.map((l) => ({
-          id: l.id,
-          startSec: l.startSecs,
-          endSec: l.endSecs,
-          text: l.text,
-          flag: (l.flag as LineFlag) ?? 'none',
-          keep: l.keep ? 'keep' : 'cut',
-          confidence: 1,
-          // Word timings ride along, so a split can cut the *text* too.
-          words: l.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
-        }));
-      } else {
-        this.lines = scaleLines(MOCK_LINES, info.durationSecs);
-      }
-    } catch {
+      this.lines = await this.ensureTranscript(path, info.durationSecs);
+    } catch (e) {
+      this.loadError = e instanceof Error ? e.message : String(e);
       this.lines = scaleLines(MOCK_LINES, info.durationSecs);
     }
     this.ready = true;
   }
 
+  /** Live pipeline state, shown in the Media mode while the cloud works. */
+  pipeline = $state<{ stage: string; fraction: number } | null>(null);
+
+  /**
+   * The transcript for a source â€” **SQLite first, cloud only on a miss**.
+   *
+   * The rule that matters: the API is called **once**, when the user imports a
+   * clip. The result is written to the `transcripts` table, and every later
+   * session reads it straight off the disk. Re-opening a project never touches
+   * the network.
+   */
+  async ensureTranscript(sourcePath: string, durationSecs: number): Promise<TranscriptLine[]> {
+    const db = await defaultDbPath();
+
+    // 1. SQLite cache â€” the common path, no network at all.
+    const cached = await loadTranscript(db, sourcePath).catch(() => []);
+    if (cached?.length) {
+      this.pipeline = null;
+      return cached.map((l) => ({
+        id: l.id,
+        startSec: l.startSecs,
+        endSec: l.endSecs,
+        text: l.text,
+        flag: toLineFlag(l.flag),
+        keep: l.keep ? 'keep' : 'cut',
+        confidence: 1,
+        words: l.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
+      }));
+    }
+
+    // 2. First time for this source: run the pipeline once, then persist.
+    this.pipeline = { stage: 'Splitting audioâ€¦', fraction: 0.05 };
+    const chunks = await extractAudioChunks(sourcePath);
+
+    this.pipeline = { stage: 'Whisper transcribingâ€¦', fraction: 0.2 };
+    let segs = await runTranscription(sourcePath, chunks, (stage, fraction) => {
+      this.pipeline = { stage, fraction: 0.2 + fraction * 0.55 };
+    });
+
+    this.pipeline = { stage: 'Autocorrectingâ€¦', fraction: 0.8 };
+    segs = await runCorrection(sourcePath, segs);
+
+    this.pipeline = { stage: 'Gemini flagging fumblesâ€¦', fraction: 0.9 };
+    segs = await runAnalysis(sourcePath, segs);
+
+    this.pipeline = { stage: 'Saving to SQLiteâ€¦', fraction: 0.97 };
+    await saveTranscript(
+      db,
+      sourcePath,
+      segs.map((s) => ({
+        id: s.id,
+        startSecs: s.start_secs,
+        endSecs: s.end_secs,
+        text: s.text,
+        keep: s.keep,
+        flag: s.flag,
+        originalText: s.original_text ?? ''
+      }))
+    );
+
+    this.pipeline = null;
+    return segs.map((s) => ({
+      id: s.id,
+      startSec: s.start_secs,
+      endSec: s.end_secs,
+      text: s.text,
+      flag: toLineFlag(s.flag),
+      keep: s.keep ? 'keep' : 'cut',
+      confidence: 1
+    }));
+  }
+
   /**
    * Find the silent spans in the source. Clipchamp's AI auto-cut scans for
-   * pauses longer than three seconds — that is the default here too.
+   * pauses longer than three seconds â€” that is the default here too.
    */
   async findSilences(minSecs = 3.0): Promise<SilenceRange[]> {
     const path = this.sourcePath;
@@ -245,7 +322,7 @@ class ProjectStore {
   }
 
   /**
-   * Auto-cut silence — Clipchamp's "AI suggestions / remove silences".
+   * Auto-cut silence â€” Clipchamp's "AI suggestions / remove silences".
    * Uses the Rust `detect_silence` command (FFmpeg `silencedetect`), then
    * marks every transcript line that overlaps a silent span as cut.
    */
@@ -280,7 +357,7 @@ class ProjectStore {
     }
   }
 
-  /** Merged [start, end] ranges to skip — this is the Phantom Cut. */
+  /** Merged [start, end] ranges to skip â€” this is the Phantom Cut. */
   cutRanges = $derived.by(() => {
     const ranges: Array<[number, number]> = [];
     for (const line of this.lines) {
@@ -292,7 +369,7 @@ class ProjectStore {
     return ranges;
   });
 
-  /** Merged ranges that survive the cut — these become the clips on the video lane. */
+  /** Merged ranges that survive the cut â€” these become the clips on the video lane. */
   keptRanges = $derived.by(() => {
     const ranges: Array<[number, number]> = [];
     for (const line of this.lines) {
@@ -309,7 +386,7 @@ class ProjectStore {
    *
    * This is what the video lane shows and what you can drag around. A segment
    * owns the transcript lines that produced it, so reordering a segment
-   * reorders those lines in the transcript panel — live.
+   * reorders those lines in the transcript panel â€” live.
    *
    * The maths lives in `lib/segments.ts` (pure, unit-tested).
    */
@@ -346,11 +423,11 @@ class ProjectStore {
   /** Total length of the final video (all kept segments, in order). */
   editDuration = $derived(editDurationOf(this.orderedSegments));
 
-  /** Source time → position on the edit timeline (null when inside a cut). */
+  /** Source time â†’ position on the edit timeline (null when inside a cut). */
   editTimeAt = (sourceSec: number): number | null =>
     editTimeAt(this.orderedSegments, this.segmentOffsets, sourceSec);
 
-  /** Position on the edit timeline → source time (null when past the end). */
+  /** Position on the edit timeline â†’ source time (null when past the end). */
   sourceAt = (editSec: number): number | null =>
     sourceAt(this.orderedSegments, this.segmentOffsets, editSec);
 
@@ -387,7 +464,7 @@ class ProjectStore {
   isCutAt = (sec: number) => this.cutRanges.some(([a, b]) => sec >= a && sec < b);
 
   /**
-   * Phantom Cut — returns the corrected playback time if `sec` falls inside a cut range.
+   * Phantom Cut â€” returns the corrected playback time if `sec` falls inside a cut range.
    * The <video> loop calls this on every timeupdate; nothing is re-encoded here.
    */
   skipCuts = (sec: number): number => {
@@ -404,7 +481,7 @@ class ProjectStore {
     if (e.path) {
       await this.loadFromBackend(e.path);
     } else if (e.asset.url) {
-      // a browser blob — no engine, just the streamed file
+      // a browser blob â€” no engine, just the streamed file
       this.media = e.asset;
       this.name = e.asset.name.replace(/\.[^.]+$/, '');
     } else {
@@ -416,7 +493,7 @@ class ProjectStore {
 
   /**
    * Import one or more files from disk. The **last** one becomes the current
-   * project — bringing a new file in while editing starts a new project, which
+   * project â€” bringing a new file in while editing starts a new project, which
    * is what a file manager user expects.
    */
   async importPaths(paths: string[]) {
@@ -443,7 +520,7 @@ class ProjectStore {
     for (const other of media.entries) media.markUnused(other.asset.id);
   }
 
-  /** User-dropped files in the desktop app — they have a real path. */
+  /** User-dropped files in the desktop app â€” they have a real path. */
   async importDropped(files: File[]) {
     if (!isTauri()) return this.importBlobs(files);
     // The webview cannot read a real path for a dropped file, so the file is
@@ -453,7 +530,7 @@ class ProjectStore {
 
   /** User-dropped files must not navigate the window away. */
   private snapshot(): Snapshot {
-    // Plain object copies — `structuredClone` cannot clone Svelte's reactive
+    // Plain object copies â€” `structuredClone` cannot clone Svelte's reactive
     // proxies, and every TranscriptLine field is a primitive anyway.
     return this.lines.map((l) => ({ ...l }));
   }
@@ -567,7 +644,7 @@ class ProjectStore {
   }
 
   /* ------------------------------------------------------------ trim / move */
-  /** Clipchamp: Z + ← / →  (trim the start of the item). */
+  /** Clipchamp: Z + â† / â†’  (trim the start of the item). */
   trimStart(delta: number) {
     const cur = this.lines[this.cursor];
     if (!cur) return;
@@ -577,7 +654,7 @@ class ProjectStore {
     this.lines = this.lines.map((l) => (l.id === cur.id ? { ...l, startSec: next } : l));
   }
 
-  /** Clipchamp: C + ← / →  (trim the end of the item). */
+  /** Clipchamp: C + â† / â†’  (trim the end of the item). */
   trimEnd(delta: number) {
     const cur = this.lines[this.cursor];
     if (!cur) return;
@@ -587,7 +664,7 @@ class ProjectStore {
     this.lines = this.lines.map((l) => (l.id === cur.id ? { ...l, endSec: next } : l));
   }
 
-  /** Clipchamp: X + ← / →  (move the item earlier / later). */
+  /** Clipchamp: X + â† / â†’  (move the item earlier / later). */
   moveCurrent(delta: number) {
     const from = this.cursor;
     const to = from + delta;
@@ -624,14 +701,14 @@ class ProjectStore {
     this.selectedIds = [];
   }
 
-  /** Source seconds where the user split a line — drawn as dividers on the timeline. */
+  /** Source seconds where the user split a line â€” drawn as dividers on the timeline. */
   splitMarks = $state<number[]>([]);
 
   /**
-   * Split a transcript line in two (Clipchamp's ✂ / `S`).
+   * Split a transcript line in two (Clipchamp's âœ‚ / `S`).
    *
    * Targeting rules, in order:
-   *   1. The playhead is strictly inside a line → split that line at the playhead.
+   *   1. The playhead is strictly inside a line â†’ split that line at the playhead.
    *   2. Otherwise the cursor line is used, and the cut point is clamped so it
    *      always lands strictly inside the line. (Clicking a transcript row seeks
    *      the playhead to that line's *start*, so without the clamp `S` would
@@ -666,7 +743,7 @@ class ProjectStore {
   }
 
   /**
-   * **Cut at the playhead** — the gesture the user actually performs: drop the
+   * **Cut at the playhead** â€” the gesture the user actually performs: drop the
    * playhead inside a line ("I LOVE U", 10 s) and cut at 4 s. The line is split
    * there and the *head* is marked cut, so the transcript shows the two halves
    * as separate rows and the timeline shows the gap.

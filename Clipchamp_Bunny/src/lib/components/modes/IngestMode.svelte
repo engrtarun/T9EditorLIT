@@ -265,6 +265,29 @@
             <div class="flex-1"></div>
             <span class="font-mono text-[11px] text-nc-gold">{progress.toFixed(0)}%</span>
           </div>
+
+          <!-- the real cloud pipeline, running once per imported source -->
+          {#if project.pipeline}
+            <div class="mb-4 rounded-lg border border-nc-gold/40 bg-nc-gold/5 p-3">
+              <div class="mb-1.5 flex items-center gap-2 text-[11px]">
+                <span class="text-nc-gold">{project.pipeline.stage}</span>
+                <span class="ml-auto font-mono text-nc-mut">
+                  {(project.pipeline.fraction * 100).toFixed(0)}%
+                </span>
+              </div>
+              <div class="h-1.5 overflow-hidden rounded-full bg-nc-panel-2">
+                <div
+                  class="h-full rounded-full bg-gradient-to-r from-nc-gold to-nc-green transition-[width] duration-300"
+                  style="width:{project.pipeline.fraction * 100}%"
+                ></div>
+              </div>
+              <p class="mt-1.5 text-[9px] text-nc-mut-2">
+                Ye sirf ek baar chalta hai — result SQLite me save hota hai, phir sirf disk se padha
+                jayega.
+              </p>
+            </div>
+          {/if}
+
           <div class="mb-4 h-1.5 overflow-hidden rounded-full bg-nc-panel-2">
             <div
               class="h-full rounded-full bg-gradient-to-r from-nc-gold to-nc-gold-dim transition-[width] duration-200"

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { player } from '../../stores/player.svelte';
   import { project } from '../../stores/project.svelte';
+  import { thumbUrl } from '../../media';
+  import { fmtTime } from '../../utils';
 
   let videoEl: HTMLVideoElement | null = $state(null);
   let stage: HTMLDivElement | null = $state(null);
@@ -14,6 +16,15 @@
       project.media.durationSecs = isFinite(v.duration) ? v.duration : project.media.durationSecs;
       project.media.width = v.videoWidth;
       project.media.height = v.videoHeight;
+    }
+    // Nudge the playhead so the first frame actually paints — with only
+    // `preload="metadata"` the canvas can stay black.
+    if (v.readyState >= 1) {
+      try {
+        v.currentTime = Math.min(0.08, (v.duration || 1) / 100);
+      } catch {
+        /* not seekable yet */
+      }
     }
   };
 
@@ -71,6 +82,8 @@
 
   const curLine = $derived(project.lines[project.cursor]);
   const inCut = $derived(project.isCutAt(player.currentTime));
+  /** The first filmstrip frame doubles as the poster, so the canvas is never black. */
+  const poster = $derived(project.thumbnails ? thumbUrl(project.thumbnails, 0) : undefined);
 </script>
 
 <!-- PREVIEW STAGE — no toolbar; Clipchamp keeps the transport in the timeline row below -->
@@ -89,7 +102,8 @@
       <video
         bind:this={videoEl}
         src={project.media.url}
-        preload="metadata"
+        {poster}
+        preload="auto"
         class="h-full w-full object-contain"
         onloadedmetadata={onLoaded}
         ontimeupdate={onTimeUpdate}

@@ -17,6 +17,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type {
+  AudioChunk,
   MemoryStats,
   MediaInfo,
   SilenceRange,
@@ -136,6 +137,15 @@ export function detectHardware(): Promise<{
 /** Liveness check so the UI can say "FFmpeg not found" instead of failing. */
 export function checkFfmpeg(): Promise<string> {
   return invoke<string>('check_ffmpeg');
+}
+
+/** Extract mono 16 kHz audio into ~segmentSecs WAV chunks. */
+export function extractAudioChunks(
+  path: string,
+  outDir?: string,
+  segmentSecs?: number
+): Promise<AudioChunk[]> {
+  return invoke<AudioChunk[]>('extract_audio_chunks', { path, outDir, segmentSecs });
 }
 
 /**
