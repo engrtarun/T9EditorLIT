@@ -28,13 +28,34 @@
     return () => window.removeEventListener('t9:connect-telegram', openQr);
   });
 
+  /** The panel's size, so it can be kept inside the window. */
+  const MENU_W = 288;
+  const MENU_H = 330;
+  /** A hand's width between the panel and the window edge. */
+  const EDGE = 8;
+
   function toggle(e: MouseEvent) {
     if (open) {
       open = false;
       return;
     }
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    pos = { x: Math.round(r.left), y: Math.round(r.bottom + 6) };
+
+    // The panel is anchored to the button, but it must never hang out of the
+    // window: on the dashboard this button sits at the far right, and a
+    // 288 px panel hanging off the edge looks broken.
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    let x = Math.round(r.left);
+    if (x + MENU_W > vw - EDGE) x = vw - EDGE - MENU_W;
+    if (x < EDGE) x = EDGE;
+
+    // Not enough room below the button → open upwards instead.
+    let y = Math.round(r.bottom + 6);
+    if (y + MENU_H > vh - EDGE) y = Math.max(EDGE, Math.round(r.top - MENU_H - 6));
+
+    pos = { x, y };
     open = true;
   }
 
@@ -98,7 +119,7 @@
   ></button>
 
   <div
-    class="fixed z-[200] w-[288px] rounded-md border border-nc-line-2 bg-[#1E1E29] p-1 shadow-2xl"
+    class="fixed z-[200] max-h-[min(330px,70vh)] w-[288px] overflow-y-auto rounded-md border border-nc-line-2 bg-[#1E1E29] p-1 shadow-2xl"
     style="left:{pos.x}px;top:{pos.y}px"
     role="menu"
   >

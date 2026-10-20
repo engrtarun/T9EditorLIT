@@ -32,13 +32,26 @@
     }
   }
 
-  /** Keep the menu on screen when it would overflow the viewport. */
-  const pos = $derived({
-    left: Math.max(
-      8,
-      Math.min(x, (typeof window !== 'undefined' ? window.innerWidth : 1920) - 240)
-    ),
-    top: Math.max(8, y)
+  /**
+   * Keep the menu on screen when it would overflow the viewport.
+   *
+   * Horizontally it slides back inside the right edge; vertically it is
+   * nudged up when there is not enough room below the anchor — a card's
+   * "more" button near the bottom of the list used to push the menu off the
+   * window.
+   */
+  const pos = $derived.by(() => {
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1920;
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 1080;
+    const MENU_W = 300;
+    const MENU_H = 320;
+    const EDGE = 8;
+
+    const left = Math.max(EDGE, Math.min(x, vw - EDGE - MENU_W));
+    const below = y;
+    const top =
+      below + MENU_H > vh - EDGE ? Math.max(EDGE, Math.min(below, vh - EDGE - MENU_H)) : below;
+    return { left, top };
   });
 </script>
 
@@ -49,7 +62,7 @@
 ></button>
 
 <div
-  class="fixed z-[300] min-w-[224px] max-w-[300px] rounded-md border border-nc-line-2 bg-[#1E1E29] p-1 shadow-2xl"
+  class="fixed z-[300] max-h-[min(320px,70vh)] min-w-[224px] max-w-[300px] overflow-y-auto rounded-md border border-nc-line-2 bg-[#1E1E29] p-1 shadow-2xl"
   style="left:{pos.left}px;top:{pos.top}px"
   role="menu"
 >
