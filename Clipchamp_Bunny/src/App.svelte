@@ -5,6 +5,7 @@
   import DropOverlay from './lib/components/DropOverlay.svelte';
   import ShortcutsHelp from './lib/components/ShortcutsHelp.svelte';
   import Toasts from './lib/components/Toasts.svelte';
+  import ContextMenu from './lib/components/ContextMenu.svelte';
   import IngestMode from './lib/components/modes/IngestMode.svelte';
   import CutMode from './lib/components/modes/CutMode.svelte';
   import ExportMode from './lib/components/modes/ExportMode.svelte';
@@ -13,13 +14,13 @@
   import { project } from './lib/stores/project.svelte';
   import { layout } from './lib/stores/layout.svelte';
   import { toast } from './lib/stores/toast.svelte';
+  import { menu } from './lib/stores/menu.svelte';
+  import { keys, type KeyAction } from './lib/stores/keys.svelte';
   import { clamp, fmtTime } from './lib/utils';
 
   /**
-   * Clipchamp's full shortcut set, mapped onto the transcript editor.
-   * Chords: `Z`/`C` then an arrow (Clipchamp-exact trim). `Shift+X` then an
-   * arrow moves the line — plain `X` is our instant cut, so it cannot be a
-   * prefix without adding latency to the most-used key.
+   * Every key binding comes from the `keys` store, so the user can rebind any
+   * of them (shortcut sheet → Customize) and the map survives a restart.
    */
   let chord: 'z' | 'c' | 'x' | null = null;
   let chordTimer: ReturnType<typeof setTimeout> | undefined;
@@ -37,13 +38,18 @@
   function zoomFit() {
     const el = document.querySelector('[data-focus="timeline"]');
     const w = el?.clientWidth ?? 1200;
-    player.zoom = clamp(w / Math.max(project.durationSec, 1), 4, 220);
+    player.zoom = clamp(w / Math.max(project.editDuration || 1, 1), 4, 220);
   }
 
   function focusArea(area: 'rail' | 'panel' | 'timeline' | 'stage' | 'header') {
     layout.focus = area;
-    const el = document.querySelector<HTMLElement>(`[data-focus="${area}"]`);
-    el?.focus();
+    document.querySelector<HTMLElement>(`[data-focus="${area}"]`)?.focus();
+  }
+
+  function hit(action: KeyAction, e: KeyboardEvent): boolean {
+    if (!keys.matches(action, e)) return false;
+    e.preventDefault();
+    return true;
   }
 
   function onKey(e: KeyboardEvent) {
@@ -51,17 +57,14 @@
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     if (layout.helpOpen && e.key !== 'Escape') return;
 
-    const k = e.key.toLowerCase();
-    const mod = e.ctrlKey || e.metaKey;
-    const alt = e.altKey;
-    const shift = e.shiftKey;
     const inCut = mode.current === 'cut';
+    const shift = e.shiftKey;
 
     // ---- chord continuation: Z / C / Shift+X then an arrow
     if (chord && e.key.startsWith('Arrow')) {
       e.preventDefault();
       const dir = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1;
-      const amount = shift ? 5 : 1;
+      const amount = e.shiftKey ? 5 : 1;
       if (chord === 'z') project.trimStart(dir * amount * 0.25);
       else if (chord === 'c') project.trimEnd(dir * amount * 0.25);
       else project.moveCurrent(dir);
@@ -71,222 +74,195 @@
     }
     chord = null;
 
-    // ---- Ctrl combos
-    if (mod) {
-      if (alt) {
-        if (k === '2') {
-          e.preventDefault();
-          layout.sourcePanelCollapsed = !layout.sourcePanelCollapsed;
-          return;
-        }
-        if (k === '3') {
-          e.preventDefault();
-          layout.timelineCollapsed = !layout.timelineCollapsed;
-          return;
-        }
-        if (k === 'f') {
-          e.preventDefault();
-          layout.toggleBoth();
-          return;
-        }
-      }
-      switch (k) {
-        case 'z':
-          e.preventDefault();
-          shift ? project.redo() : project.undo();
-          return;
-        case 'y':
-          e.preventDefault();
-          project.redo();
-          return;
-        case 'a':
-          e.preventDefault();
-          project.selectAll();
-          return;
-        case 'c':
-          e.preventDefault();
-          project.copyCurrent();
-          return;
-        case 'v':
-          e.preventDefault();
-          project.pasteAfterCurrent();
-          return;
-        case 'd':
-          e.preventDefault();
-          project.duplicateCurrent();
-          return;
-        case 'g':
-          e.preventDefault();
-          shift ? project.ungroupSelected() : project.groupSelected();
-          return;
-        case '/':
-          e.preventDefault();
-          layout.helpOpen = !layout.helpOpen;
-          return;
-        case '=':
-        case '+':
-          e.preventDefault();
-          zoom(1);
-          return;
-        case '-':
-          e.preventDefault();
-          zoom(-1);
-          return;
-        case '0':
-          e.preventDefault();
-          zoomFit();
-          return;
-        case 'arrowleft':
-          e.preventDefault();
-          player.seek(0);
-          return;
-        case 'arrowright':
-          e.preventDefault();
-          player.seek(project.durationSec);
-          return;
+    // ---- rebindable actions
+    if (hit('undo', e)) {
+      e.shiftKey ? project.redo() : project.undo();
+      return;
+    }
+    if (hit('redo', e)) {
+      project.redo();
+      return;
+    }
+    if (hit('copy', e)) {
+      project.copyCurrent();
+      return;
+    }
+    if (hit('paste', e)) {
+      project.pasteAfterCurrent();
+      return;
+    }
+    if (hit('duplicate', e)) {
+      project.duplicateCurrent();
+      return;
+    }
+    if (hit('selectAll', e)) {
+      project.selectAll();
+      return;
+    }
+    if (hit('deselect', e)) {
+      project.deselectAll();
+      return;
+    }
+    if (hit('group', e)) {
+      e.shiftKey ? project.ungroupSelected() : project.groupSelected();
+      return;
+    }
+    if (hit('zoomIn', e)) {
+      zoom(1);
+      return;
+    }
+    if (hit('zoomOut', e)) {
+      zoom(-1);
+      return;
+    }
+    if (hit('zoomFit', e)) {
+      zoomFit();
+      return;
+    }
+    if (hit('cutHere', e)) {
+      if (project.cutAtPlayhead(player.currentTime)) {
+        player.seek(project.snapTime(player.currentTime));
+        toast.push('cut', `✂ Cut here · ${fmtTime(player.currentTime)}`);
+      } else {
+        toast.push('warn', 'Yahan playhead line ke andar nahi hai');
       }
       return;
     }
+    if (hit('help', e)) {
+      layout.helpOpen = !layout.helpOpen;
+      return;
+    }
 
-    // ---- Alt navigation
-    if (alt) {
-      e.preventDefault();
-      switch (k) {
+    // ---- non-rebindable navigation (Alt + n)
+    if (e.altKey) {
+      switch (e.key.toLowerCase()) {
         case '1':
+          e.preventDefault();
           focusArea('rail');
           return;
         case '2':
+          e.preventDefault();
           focusArea('panel');
           return;
         case '3':
+          e.preventDefault();
           focusArea('timeline');
           return;
         case '4':
+          e.preventDefault();
           focusArea('stage');
           return;
         case '5':
         case 'n':
+          e.preventDefault();
           focusArea('header');
           return;
         case 'i':
+          e.preventDefault();
           window.dispatchEvent(new CustomEvent('t9:import'));
           return;
         case 'e':
+          e.preventDefault();
           mode.set('export');
           return;
         case 'r':
+          e.preventDefault();
           focusArea('stage');
           return;
         case 'h':
+          e.preventDefault();
           layout.helpOpen = true;
           return;
       }
       return;
     }
 
-    // ---- single keys
-    switch (e.key) {
-      case 'Escape':
-        e.preventDefault();
-        project.deselectAll();
-        return;
-      case ' ':
-      case 'k':
-        e.preventDefault();
-        if (inCut) player.toggle();
-        return;
-      case 'Delete':
-      case 'Backspace':
-        e.preventDefault();
-        {
-          const n = project.targets().length;
-          project.cutTargets();
-          project.step(1);
-          toast.push('cut', n > 1 ? `✕ ${n} lines cut` : '✕ Cut');
-        }
-        return;
-      case 'Enter':
-        e.preventDefault();
-        {
-          const cur = project.lines[project.cursor];
-          if (cur) project.setLine(cur.id, 'keep');
-        }
-        return;
-      case 'ArrowUp':
-        e.preventDefault();
-        if (inCut) {
-          const line = project.step(-1);
-          if (line) player.seek(line.startSec);
-        }
-        return;
-      case 'ArrowDown':
-        e.preventDefault();
-        if (inCut) {
-          const line = project.step(1);
-          if (line) player.seek(line.startSec);
-        }
-        return;
-      case 'ArrowLeft':
-        e.preventDefault();
-        if (inCut) player.nudge(shift ? -1 : -1 / 30);
-        return;
-      case 'ArrowRight':
-        e.preventDefault();
-        if (inCut) player.nudge(shift ? 1 : 1 / 30);
-        return;
+    if (hit('playPause', e)) {
+      if (inCut) player.toggle();
+      return;
+    }
+    if (hit('delete', e)) {
+      const n = project.targets().length;
+      project.cutTargets();
+      project.step(1);
+      toast.push('cut', n > 1 ? `✕ ${n} lines cut` : '✕ Cut');
+      return;
+    }
+    if (hit('seekBack', e)) {
+      player.seek(clamp(player.currentTime - 5, 0, project.durationSec));
+      return;
+    }
+    if (hit('seekForward', e)) {
+      player.seek(clamp(player.currentTime + 5, 0, project.durationSec));
+      return;
+    }
+    if (hit('nextLine', e)) {
+      if (!inCut) return;
+      const line = project.step(1);
+      if (line) player.seek(line.startSec);
+      return;
+    }
+    if (hit('prevLine', e)) {
+      if (!inCut) return;
+      const line = project.step(-1);
+      if (line) player.seek(line.startSec);
+      return;
+    }
+    if (hit('split', e)) {
+      if (project.splitAt(player.currentTime)) {
+        player.seek(project.snapTime(player.currentTime));
+        toast.push('split', `✂ Split at ${fmtTime(player.currentTime)}`);
+      } else {
+        toast.push('warn', '✂ Split nahi hua — line bahut chhoti hai');
+      }
+      return;
+    }
+    if (hit('cut', e)) {
+      if (!inCut) return;
+      const line = project.lines[project.cursor];
+      if (line) {
+        project.toggleLine(line.id);
+        toast.push('cut', line.keep === 'cut' ? '✓ Kept' : '✕ Cut');
+      }
+      project.step(1);
+      return;
+    }
+    if (hit('keep', e)) {
+      if (!inCut) return;
+      const line = project.lines[project.cursor];
+      if (line) {
+        project.setLine(line.id, 'keep');
+        toast.push('keep', '✓ Kept');
+      }
+      project.step(1);
+      return;
     }
 
-    switch (k) {
-      case 'x':
-        e.preventDefault();
-        if (shift) {
-          setChord('x');
-        } else if (inCut) {
-          // our instant cut — the one-hand flow
-          const line = project.lines[project.cursor];
-          if (line) {
-            project.toggleLine(line.id);
-            toast.push('cut', line.keep === 'cut' ? '✓ Kept' : '✕ Cut');
-          }
-          project.step(1);
-        }
-        return;
-      case 'v':
-        e.preventDefault();
-        if (inCut) {
-          const line = project.lines[project.cursor];
-          if (line) {
-            project.setLine(line.id, 'keep');
-            toast.push('keep', '✓ Kept');
-          }
-          project.step(1);
-        }
-        return;
-      case 'z':
-        e.preventDefault();
-        setChord('z');
-        return;
-      case 'c':
-        e.preventDefault();
-        setChord('c');
-        return;
-      case 's':
-      case 'b':
-        e.preventDefault();
-        if (project.splitAt(player.currentTime)) {
-          toast.push('split', `✂ Split at ${fmtTime(player.currentTime)}`);
-        } else {
-          toast.push('warn', '✂ Split nahi hua — line bahut chhoti hai');
-        }
-        return;
-      case 'j':
-        e.preventDefault();
-        player.seek(clamp(player.currentTime - 5, 0, project.durationSec));
-        return;
-      case 'l':
-        e.preventDefault();
-        player.seek(clamp(player.currentTime + 5, 0, project.durationSec));
-        return;
+    // Shift+X then an arrow moves the line
+    if (e.shiftKey && e.key.toLowerCase() === 'x') {
+      e.preventDefault();
+      setChord('x');
+      return;
+    }
+    // Z / C then an arrow trims the start / end of the line
+    if (e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      setChord('z');
+      return;
+    }
+    if (e.key.toLowerCase() === 'c') {
+      e.preventDefault();
+      setChord('c');
+      return;
+    }
+
+    // Arrow keys move the seeker one frame
+    if (e.key === 'ArrowLeft' && inCut) {
+      e.preventDefault();
+      player.nudge(shift ? -1 : -1 / 30);
+    } else if (e.key === 'ArrowRight' && inCut) {
+      e.preventDefault();
+      player.nudge(shift ? 1 : 1 / 30);
     }
   }
 </script>
@@ -320,3 +296,14 @@
 <DropOverlay />
 <ShortcutsHelp />
 <Toasts />
+
+<!-- The one menu, rendered at the app root so nothing can hide it. -->
+{#if menu.current}
+  <ContextMenu
+    items={menu.current.items}
+    x={menu.current.x}
+    y={menu.current.y}
+    onchoose={(id) => menu.choose(id)}
+    onclose={() => menu.close()}
+  />
+{/if}

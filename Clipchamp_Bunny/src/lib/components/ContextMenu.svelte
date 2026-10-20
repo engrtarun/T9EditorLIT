@@ -6,6 +6,10 @@
    * Fluent-style popover menu — matches Clipchamp's `fui-MenuPopover`:
    * bg #1E1E29 · radius 4px · 1px transparent stroke · shadow16 · 4px padding
    * items min-height 32px · 20px icon · 14px text
+   *
+   * It carries its own click-away catcher, so it always closes when you click
+   * somewhere else. It is rendered at the app root (see `stores/menu.svelte.ts`)
+   * so no ancestor stacking context can hide it.
    */
   let {
     items = [],
@@ -27,13 +31,26 @@
       onclose();
     }
   }
+
+  /** Keep the menu on screen when it would overflow the viewport. */
+  const pos = $derived({
+    left: Math.max(
+      8,
+      Math.min(x, (typeof window !== 'undefined' ? window.innerWidth : 1920) - 240)
+    ),
+    top: Math.max(8, y)
+  });
 </script>
 
 <svelte:window onkeydown={onKey} />
 
+<!-- click-away catcher -->
+<button class="fixed inset-0 z-[290] cursor-default" aria-label="Close menu" onclick={onclose}
+></button>
+
 <div
   class="fixed z-[300] min-w-[224px] max-w-[300px] rounded-md border border-nc-line-2 bg-[#1E1E29] p-1 shadow-2xl"
-  style="left:{x}px;top:{y}px"
+  style="left:{pos.left}px;top:{pos.top}px"
   role="menu"
 >
   {#each items as it (it.id)}

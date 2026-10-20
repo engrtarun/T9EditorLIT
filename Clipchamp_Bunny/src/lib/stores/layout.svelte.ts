@@ -27,6 +27,24 @@ class LayoutStore {
     this.timelineCollapsed = next;
     this.sourcePanelCollapsed = next;
   }
+
+  /** Panel collapse is a user choice — remember it on this machine. */
+  setSourcePanelCollapsed(v: boolean) {
+    this.sourcePanelCollapsed = v;
+    try {
+      localStorage.setItem('t9-editor-lit.panel', v ? '1' : '0');
+    } catch {
+      /* private mode */
+    }
+  }
+
+  constructor() {
+    try {
+      if (localStorage.getItem('t9-editor-lit.panel') === '1') this.sourcePanelCollapsed = true;
+    } catch {
+      /* private mode */
+    }
+  }
 }
 
 export const layout = new LayoutStore();

@@ -6,12 +6,11 @@
   import ContextMenu from './ContextMenu.svelte';
   import type { MenuItem } from '../types';
   import { mode } from '../stores/mode.svelte';
+  import { menu } from '../stores/menu.svelte';
   import { revealSource } from '../ipc';
   import { toast } from '../stores/toast.svelte';
 
   /** Clipchamp's project-name menu (captured in the .ipynb DOM extract). */
-  let projMenu = $state(false);
-  let projPos = $state({ x: 0, y: 0 });
   let renaming = $state(false);
   let draft = $state('');
 
@@ -23,27 +22,19 @@
   ];
 
   function toggleProj(e: MouseEvent) {
-    if (projMenu) {
-      projMenu = false;
-      return;
-    }
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    projPos = { x: Math.round(r.left), y: Math.round(r.bottom + 4) };
-    projMenu = true;
-  }
-
-  function projPick(id: string) {
-    projMenu = false;
-    if (id === 'rename') {
-      draft = project.name;
-      renaming = true;
-    } else if (id === 'locate') {
-      void revealSource().then((ok) =>
-        toast.push(ok ? 'info' : 'warn', ok ? 'File location opened' : 'Source path unknown')
-      );
-    } else if (id === 'new') {
-      mode.set('ingest');
-    }
+    menu.show(PROJ_ITEMS, Math.round(r.left), Math.round(r.bottom + 4), (id) => {
+      if (id === 'rename') {
+        draft = project.name;
+        renaming = true;
+      } else if (id === 'locate') {
+        void revealSource().then((ok) =>
+          toast.push(ok ? 'info' : 'warn', ok ? 'File location opened' : 'Source path unknown')
+        );
+      } else if (id === 'new') {
+        mode.set('ingest');
+      }
+    });
   }
 </script>
 
@@ -162,13 +153,3 @@
     TD
   </div>
 </header>
-
-{#if projMenu}
-  <ContextMenu
-    items={PROJ_ITEMS}
-    x={projPos.x}
-    y={projPos.y}
-    onchoose={projPick}
-    onclose={() => (projMenu = false)}
-  />
-{/if}

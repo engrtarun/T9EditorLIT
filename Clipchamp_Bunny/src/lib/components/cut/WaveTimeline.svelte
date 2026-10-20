@@ -128,6 +128,15 @@
       }
       ctx.restore();
     }
+
+    // Split dividers — every split the user made stays visible, even when both
+    // halves are kept (otherwise a split looks like it did nothing).
+    ctx.fillStyle = 'rgba(212,175,55,0.95)';
+    for (const x of project.splitMarkPositions) {
+      const px = x * zoom;
+      if (px < 0 || px > w) continue;
+      ctx.fillRect(px - 0.5, 0, 1.5, VIDEO_H);
+    }
   }
 
   function drawWave() {
@@ -189,6 +198,7 @@
     void colours;
     void segments;
     void offsets;
+    void project.splitMarkPositions;
     drawWave();
     drawVideoLane();
     drawMinimap();
@@ -264,6 +274,21 @@
       toast.push('split', `✂ Split at ${fmtTime(player.currentTime)}`);
     } else {
       toast.push('warn', '✂ Split nahi hua — line bahut chhoti hai');
+    }
+  }
+
+  /**
+   * **Cut at the playhead** — the gesture from the top: drop the playhead
+   * inside a line and cut there. The line is split at that point and the head
+   * is dropped, so the transcript shows the two halves and the timeline shows
+   * the gap.
+   */
+  function cutHere() {
+    if (project.cutAtPlayhead(player.currentTime)) {
+      player.seek(project.snapTime(player.currentTime));
+      toast.push('cut', `✂ Cut here · ${fmtTime(player.currentTime)}`);
+    } else {
+      toast.push('warn', 'Yahan playhead line ke andar nahi hai');
     }
   }
 

@@ -57,6 +57,32 @@ function baseId(id: string): string {
   return id.replace(/-[0-9a-z]+[ab]$/, '');
 }
 
+/**
+ * Split a line's **text** at the cut point, when word-level timings are known.
+ *
+ * Cutting "I LOVE U" (10 s) at 4 s then yields two rows — "I" and "LOVE U" —
+ * instead of two identical ones. Whisper returns a word array, so the backend
+ * fills `words` in and this does the rest. Without word timings both halves
+ * keep the original text, which is why the split still shows its time range.
+ */
+function applySplitText(left: TranscriptLine, right: TranscriptLine, at: number) {
+  const words = left.words;
+  if (!words?.length) return;
+  const head = words.filter((w) => w.start < at);
+  const tail = words.filter((w) => w.start >= at);
+  if (!head.length || !tail.length) return;
+  left.text = head
+    .map((w) => w.word)
+    .join(' ')
+    .trim();
+  right.text = tail
+    .map((w) => w.word)
+    .join(' ')
+    .trim();
+  left.words = head;
+  right.words = tail;
+}
+
 class ProjectStore {
   name = $state('apna-college-vite-intro');
   media = $state<MediaAsset | null>(null);
@@ -294,6 +320,25 @@ class ProjectStore {
 
   /** Edit-axis position of every segment: where it starts in the final video. */
   segmentOffsets = $derived(computeOffsets(this.orderedSegments));
+
+  /**
+   * Where the split marks land on the edit timeline, so the video lane can
+   * draw a divider for every split the user made.
+   */
+  splitMarkPositions = $derived.by(() => {
+    const out: number[] = [];
+    for (const mark of this.splitMarks) {
+      for (const s of this.orderedSegments) {
+        const off = this.segmentOffsets.get(s.id);
+        if (!off) continue;
+        if (mark >= s.startSec && mark <= s.endSec) {
+          out.push(off.start + (mark - s.startSec));
+          break;
+        }
+      }
+    }
+    return out;
+  });
 
   /** Total length of the final video (all kept segments, in order). */
   editDuration = $derived(editDurationOf(this.orderedSegments));
@@ -576,6 +621,9 @@ class ProjectStore {
     this.selectedIds = [];
   }
 
+  /** Source seconds where the user split a line — drawn as dividers on the timeline. */
+  splitMarks = $state<number[]>([]);
+
   /**
    * Split a transcript line in two (Clipchamp's ✂ / `S`).
    *
@@ -607,7 +655,43 @@ class ProjectStore {
     const tag = (++this.splitSeq).toString(36);
     const left: TranscriptLine = { ...line, id: `${base}-${tag}a`, endSec: at };
     const right: TranscriptLine = { ...line, id: `${base}-${tag}b`, startSec: at };
+    applySplitText(left, right, at);
     this.lines = [...this.lines.slice(0, idx), left, right, ...this.lines.slice(idx + 1)];
+    this.splitMarks = [...this.splitMarks, at].sort((a, b) => a - b);
+    this.cursor = idx + 1;
+    return true;
+  }
+
+  /**
+   * **Cut at the playhead** — the gesture the user actually performs: drop the
+   * playhead inside a line ("I LOVE U", 10 s) and cut at 4 s. The line is split
+   * there and the *head* is marked cut, so the transcript shows the two halves
+   * as separate rows and the timeline shows the gap.
+   */
+  cutAtPlayhead(sec: number): boolean {
+    const idx = this.lineAt(sec);
+    if (idx < 0) return false;
+    const line = this.lines[idx];
+    if (sec <= line.startSec + 0.15 || sec >= line.endSec - 0.15) return false;
+
+    this.commit();
+    const base = baseId(line.id);
+    const tag = (++this.splitSeq).toString(36);
+    const left: TranscriptLine = {
+      ...line,
+      id: `${base}-${tag}a`,
+      endSec: sec,
+      keep: 'cut' as KeepState
+    };
+    const right: TranscriptLine = {
+      ...line,
+      id: `${base}-${tag}b`,
+      startSec: sec,
+      keep: 'keep' as KeepState
+    };
+    applySplitText(left, right, sec);
+    this.lines = [...this.lines.slice(0, idx), left, right, ...this.lines.slice(idx + 1)];
+    this.splitMarks = [...this.splitMarks, sec].sort((a, b) => a - b);
     this.cursor = idx + 1;
     return true;
   }

@@ -24,6 +24,12 @@ export interface TranscriptLine {
   confidence: number;
   /** Clipchamp-style group id. Lines sharing a group move and delete together. */
   group?: string;
+  /**
+   * Word-level timings, when the engine has them (Whisper returns a `words`
+   * array). With these, splitting a line also splits its **text** — cutting
+   * "I LOVE U" at 4 s yields "I" and "LOVE U" instead of two identical rows.
+   */
+  words?: Array<{ word: string; start: number; end: number }>;
 }
 
 /** A media file. Never buffered — only a URL the <video> element streams from. */
