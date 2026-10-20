@@ -11,6 +11,7 @@
   import { layout } from '../../stores/layout.svelte';
   import { menu } from '../../stores/menu.svelte';
   import CloudMenu from '../CloudMenu.svelte';
+  import UpdateButton from '../UpdateButton.svelte';
   import BrandMark from './BrandMark.svelte';
   import type { MenuItem } from '../../types';
 
@@ -100,6 +101,9 @@
 
   <!-- cloud / providers -->
   <CloudMenu />
+
+  <!-- a newer build is waiting: offer the restart -->
+  <UpdateButton />
 
   <!-- help -->
   <button
