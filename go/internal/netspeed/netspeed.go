@@ -154,7 +154,10 @@ func Measure(ctx context.Context, opts Options) (Result, error) {
 	wg.Wait()
 	transport.CloseIdleConnections()
 
-	elapsed := time.Since(start).Seconds()
+	// Denominator is the fixed measurement window, not the (variable) wall
+	// time: this is what makes one slow burst unable to skew the number, and
+	// it matches the documented "keeps fetching for a fixed window" contract.
+	elapsed := opts.Window.Seconds()
 	if elapsed <= 0 {
 		return Result{}, errors.New("no elapsed time")
 	}
