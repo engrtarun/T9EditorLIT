@@ -1,26 +1,30 @@
 /* =========================================================
-   Nanami Kento — "No Overtime" theme tokens
+   T9 Editor LIT — brand tokens ("EDIT · CREATE · LIT")
+   Source of truth: Clipchamp_Bunny/T9 Editor LIT Branding Board.png
    Tailwind 4 @theme  ->  utilities like bg-nc-panel become
    available automatically.
+   Token names stay nc-* (legacy) so no component needs editing;
+   only the VALUES below follow the branding board:
+     Primary Blue #4D8DFF · Text/Light #F5F7FA · Background #15171B
    ========================================================= */
 
 @import 'tailwindcss';
 
 @theme {
-  --color-nc-bg: #12131a;
-  --color-nc-panel: #171821;
-  --color-nc-panel-2: #1e202b;
-  --color-nc-line: #2a2c38;
-  --color-nc-line-2: #3a3d4c;
+  --color-nc-bg: #15171b;
+  --color-nc-panel: #1a1d24;
+  --color-nc-panel-2: #212530;
+  --color-nc-line: #2b3040;
+  --color-nc-line-2: #3a4152;
 
-  --color-nc-gold: #d4af37;
-  --color-nc-gold-dim: #8a7328;
+  --color-nc-gold: #4d8dff;
+  --color-nc-gold-dim: #2f5fc0;
   --color-nc-red: #e5484d;
   --color-nc-green: #3dd68c;
 
-  --color-nc-txt: #ececf2;
-  --color-nc-mut: #9a9aa8;
-  --color-nc-mut-2: #6f6f7d;
+  --color-nc-txt: #f5f7fa;
+  --color-nc-mut: #9aa3b5;
+  --color-nc-mut-2: #6f7787;
 
   --font-sans: 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif;
   --font-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
@@ -99,5 +103,98 @@
   .nc-scroll {
     overflow-y: auto;
     overscroll-behavior: contain;
+  }
+}
+
+/* =========================================================
+   MOTION — feedback, not decoration.
+
+   The rules this file follows, so nobody has to guess:
+     · only `opacity` and `transform` are animated (compositor only, no
+       layout, no repaint, no continuous CPU while the app sits idle),
+     · nothing loops forever except a spinner that is really waiting,
+     · every animation is short enough to feel instant,
+     · Windows' "animations off" setting switches all of it off.
+   ========================================================= */
+
+/** The dashboard appearing: 180 ms fade, no zoom, no bounce. */
+@keyframes t9-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/** The editor taking over from the dashboard: a 12 px slide, 200 ms. */
+@keyframes t9-slide-in {
+  from {
+    opacity: 0;
+    transform: translate3d(12px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/** Project cards arriving one after another (the stagger lives on `--i`). */
+@keyframes t9-card-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/** A small, calm spinner — used only while real work is happening. */
+@keyframes t9-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.t9-fade-in {
+  animation: t9-fade-in 180ms ease-out both;
+}
+
+.t9-slide-in {
+  animation: t9-slide-in 200ms ease-out both;
+}
+
+/**
+ * `backwards` (not `both`): during the stagger delay the card holds the
+ * `from` state, and once its own animation is over it hands the `transform`
+ * back to CSS — so the hover lift never fights the entrance.
+ */
+.t9-card-in {
+  animation: t9-card-in 200ms ease-out backwards;
+  animation-delay: calc(var(--i, 0) * 24ms);
+}
+
+.t9-spin {
+  animation: t9-spin 700ms linear infinite;
+}
+
+/**
+ * The operating system asked for less motion — so there is less motion.
+ *
+ * Durations and delays collapse to a single frame, which leaves every state
+ * (hover, focus, open, closed) exactly as it is; only the movement is gone.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
   }
 }

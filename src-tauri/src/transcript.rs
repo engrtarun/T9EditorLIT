@@ -54,6 +54,21 @@ pub struct Project {
     pub last_opened: i64,
 }
 
+/// A project the user removed from the dashboard list.
+///
+/// The **video file is never touched** — only the app's record of it moves into
+/// the bin, so a restore brings the project back exactly as it was.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashItem {
+    pub id: String,
+    pub name: String,
+    pub source_path: String,
+    pub duration_secs: f64,
+    /// Unix seconds — when the project was moved to the bin.
+    pub deleted_at: i64,
+}
+
 fn default_keep() -> bool {
     true
 }
@@ -165,6 +180,21 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 ";
 
+/// The dashboard's bin.
+///
+/// A row here is a project the user removed from the list — **its video file is
+/// untouched**. The trash only holds the app's own record of it, so a restore
+/// brings the project back exactly as it was.
+const TRASH_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS trash (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    source_path   TEXT NOT NULL UNIQUE,
+    duration_secs REAL NOT NULL,
+    deleted_at    INTEGER NOT NULL
+);
+";
+
 pub fn open_db(path: &std::path::Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -182,6 +212,8 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
     migrate_transcripts(conn)?;
     conn.execute_batch(PROJECTS_SCHEMA)
         .map_err(|e| format!("could not init projects schema: {e}"))?;
+    conn.execute_batch(TRASH_SCHEMA)
+        .map_err(|e| format!("could not init trash schema: {e}"))?;
     migrate_paths(conn)
 }
 
@@ -504,6 +536,108 @@ pub fn delete_project(conn: &Connection, source_path: &str) -> Result<(), String
     Ok(())
 }
 
+/* ------------------------------------------------------------------- trash */
+
+/// Unix seconds, right now.
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Move a project out of the list and into the bin.
+///
+/// The row is **copied** into `trash` and then removed from `projects`, so the
+/// transcript that belongs to it stays in SQLite exactly where it was — a
+/// restore is instant and needs no re-transcription.
+pub fn trash_project(conn: &Connection, source_path: &str) -> Result<(), String> {
+    let source_path = canonical_path(source_path);
+    let now = now_unix();
+    conn.execute(
+        "INSERT INTO trash (id, name, source_path, duration_secs, deleted_at)
+           SELECT id, name, source_path, duration_secs, ?1
+             FROM projects
+            WHERE source_path = ?2
+         ON CONFLICT(source_path) DO UPDATE SET
+           name = excluded.name,
+           duration_secs = excluded.duration_secs,
+           deleted_at = excluded.deleted_at",
+        params![now, source_path],
+    )
+    .map_err(|e| format!("could not move project to trash: {e}"))?;
+    conn.execute(
+        "DELETE FROM projects WHERE source_path = ?1",
+        params![source_path],
+    )
+    .map_err(|e| format!("could not remove project from the list: {e}"))?;
+    Ok(())
+}
+
+/// Bring a project back from the bin.
+pub fn restore_project(conn: &Connection, source_path: &str) -> Result<(), String> {
+    let source_path = canonical_path(source_path);
+    conn.execute(
+        "INSERT INTO projects (id, name, source_path, duration_secs, last_opened)
+           SELECT id, name, source_path, duration_secs, ?1
+             FROM trash
+            WHERE source_path = ?2
+         ON CONFLICT(source_path) DO UPDATE SET
+           name = excluded.name,
+           duration_secs = excluded.duration_secs,
+           last_opened = excluded.last_opened",
+        params![now_unix(), source_path],
+    )
+    .map_err(|e| format!("could not restore project: {e}"))?;
+    conn.execute(
+        "DELETE FROM trash WHERE source_path = ?1",
+        params![source_path],
+    )
+    .map_err(|e| format!("could not clear project from trash: {e}"))?;
+    Ok(())
+}
+
+/// Everything currently in the bin, newest first.
+pub fn load_trash(conn: &Connection) -> Result<Vec<TrashItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, source_path, duration_secs, deleted_at
+             FROM trash ORDER BY deleted_at DESC",
+        )
+        .map_err(|e| format!("could not prepare trash select: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(TrashItem {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                source_path: r.get(2)?,
+                duration_secs: r.get(3)?,
+                deleted_at: r.get(4)?,
+            })
+        })
+        .map_err(|e| format!("could not query trash: {e}"))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| format!("could not read trash row: {e}"))?);
+    }
+    Ok(out)
+}
+
+/// Drop a project from the bin for good.
+///
+/// **Only the app's record is deleted** — the user's video file is left alone
+/// on disk, because the app never owns somebody else's footage.
+pub fn purge_trash(conn: &Connection, source_path: &str) -> Result<(), String> {
+    let source_path = canonical_path(source_path);
+    conn.execute(
+        "DELETE FROM trash WHERE source_path = ?1",
+        params![source_path],
+    )
+    .map_err(|e| format!("could not empty trash: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,5 +948,34 @@ mod tests {
         update_project_opened(&conn, "/v.mp4", now + 999).unwrap();
         let projects = load_projects(&conn).unwrap();
         assert_eq!(projects[0].last_opened, now + 999);
+    }
+
+    #[test]
+    fn trash_round_trip_moves_the_row_without_losing_it() {
+        let conn = mem_conn();
+        init_schema(&conn).unwrap();
+        save_project(&conn, "p1", "Video", "/v.mp4", 60.0, 100).unwrap();
+
+        trash_project(&conn, "/v.mp4").unwrap();
+        assert!(load_projects(&conn).unwrap().is_empty());
+        let bin = load_trash(&conn).unwrap();
+        assert_eq!(bin.len(), 1);
+        assert_eq!(bin[0].name, "Video");
+        assert_eq!(bin[0].source_path, canonical_path("/v.mp4"));
+
+        restore_project(&conn, "/v.mp4").unwrap();
+        assert!(load_trash(&conn).unwrap().is_empty());
+        assert_eq!(load_projects(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn purge_trash_forgets_the_record_but_keeps_the_project_row_out() {
+        let conn = mem_conn();
+        init_schema(&conn).unwrap();
+        save_project(&conn, "p1", "Video", "/v.mp4", 60.0, 100).unwrap();
+        trash_project(&conn, "/v.mp4").unwrap();
+        purge_trash(&conn, "/v.mp4").unwrap();
+        assert!(load_trash(&conn).unwrap().is_empty());
+        assert!(load_projects(&conn).unwrap().is_empty());
     }
 }

@@ -9,7 +9,9 @@
   import IngestMode from './lib/components/modes/IngestMode.svelte';
   import CutMode from './lib/components/modes/CutMode.svelte';
   import ExportMode from './lib/components/modes/ExportMode.svelte';
+  import HomeDashboard from './lib/components/dashboard/HomeDashboard.svelte';
   import { mode } from './lib/stores/mode.svelte';
+  import { app } from './lib/stores/app.svelte';
   import { player } from './lib/stores/player.svelte';
   import { project } from './lib/stores/project.svelte';
   import { layout } from './lib/stores/layout.svelte';
@@ -56,6 +58,16 @@
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     if (layout.helpOpen && e.key !== 'Escape') return;
+
+    // On the **dashboard** the editor's shortcuts have nothing to act on —
+    // only the shortcut sheet still makes sense there.
+    if (app.view === 'home') {
+      if (hit('help', e)) {
+        layout.helpOpen = !layout.helpOpen;
+        return;
+      }
+      return;
+    }
 
     const inCut = mode.current === 'cut';
     const shift = e.shiftKey;
@@ -270,27 +282,42 @@
 <svelte:window onkeydown={onKey} />
 
 <div class="flex h-full flex-col bg-nc-bg text-nc-txt">
-  <TopBar />
+  <!--
+    Two screens, one of them mounted at a time.
 
-  <!-- Mode isolation: {#key} on the epoch destroys the previous mode's DOM tree,
-       so its memory is released instead of being parked by the GC. -->
-  {#key mode.epoch}
-    <div class="flex min-h-0 flex-1">
-      <ModeRail />
+    `home` is the dashboard — the screen the app opens on, from the taskbar
+    icon or the desktop shortcut. `editor` is the working surface. The `{#if}`
+    is a real teardown: the dashboard's DOM is destroyed the moment the editor
+    takes over, so the two never share a heap (the zero-RAM rule).
+  -->
+  {#if app.view === 'home'}
+    <HomeDashboard />
+  {:else}
+    <!-- The editor slides in by a hair when the dashboard hands over. -->
+    <div class="t9-slide-in flex min-h-0 flex-1 flex-col">
+      <TopBar />
 
-      <main class="flex min-h-0 min-w-0 flex-1 flex-col">
-        {#if mode.current === 'ingest'}
-          <IngestMode />
-        {:else if mode.current === 'cut'}
-          <CutMode />
-        {:else}
-          <ExportMode />
-        {/if}
-      </main>
+      <!-- Mode isolation: {#key} on the epoch destroys the previous mode's DOM tree,
+           so its memory is released instead of being parked by the GC. -->
+      {#key mode.epoch}
+        <div class="flex min-h-0 flex-1">
+          <ModeRail />
 
-      <RightRail />
+          <main class="flex min-h-0 min-w-0 flex-1 flex-col">
+            {#if mode.current === 'ingest'}
+              <IngestMode />
+            {:else if mode.current === 'cut'}
+              <CutMode />
+            {:else}
+              <ExportMode />
+            {/if}
+          </main>
+
+          <RightRail />
+        </div>
+      {/key}
     </div>
-  {/key}
+  {/if}
 </div>
 
 <DropOverlay />

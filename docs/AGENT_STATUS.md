@@ -9,6 +9,53 @@ touching a lane so two agents never edit the same files.
    `git commit -m "feat(<scope>): <description>" --author="Agent <YourName> <agent@local>"`
 2. **DO NOT PUSH:** Agents must **NEVER** run `git push`. Pushing to remote is reserved exclusively for the human user.
 
+## Agent 5 (this session) — "Home dashboard (landing screen)"
+
+**Lane:** The app's landing screen — `T9 Editor LIT Dashboard.png` ke hisaab se.
+Taskbar icon / desktop shortcut / launcher se app ab **dashboard** par khulta hai;
+editor (media · cut · export) uske andar hai, koi feature hata nahi.
+
+**Status:** Complete. `svelte-check` 0 errors · `prettier --check` clean ·
+`node --test` 13/13 · `cargo test --lib` 62/62 · `cargo check` clean.
+
+**Files owned (editing):**
+
+- `Clipchamp_Bunny/src/lib/components/dashboard/{HomeDashboard,DashboardTopBar,ProjectCard,BrandMark}.svelte` (new)
+- `Clipchamp_Bunny/src/lib/dashboard.ts` (new — pure helpers: sort · "3 hours ago" · sizes)
+- `Clipchamp_Bunny/src/lib/stores/app.svelte.ts` (new — `home` <-> `editor`)
+- `Clipchamp_Bunny/src/App.svelte`, `src/main.ts`, `src/app.css` (motion + screen switch)
+- `Clipchamp_Bunny/src/lib/ipc.ts` (new wrappers only — no existing one changed)
+- `Clipchamp_Bunny/src/lib/components/TopBar.svelte` (9-dot button -> Home)
+- `Clipchamp_Bunny/src-tauri/src/lib.rs` (new commands only), `src-tauri/src/sysinfo_ext.rs`
+- `src-tauri/src/transcript.rs` (**additive only** — `trash` table + 4 functions; nothing existing touched)
+- `Clipchamp_Bunny/docs/MEMORY.md`
+
+**Do NOT touch (other agents may own):**
+
+- `go/**` — the daemon is the other agent's lane (deploy.ps1 rebuilds it automatically)
+- `Clipchamp_Bunny/src/lib/components/modes/**`, `cut/**`, `media/**` — the editor itself
+- `Clipchamp_Bunny/src/lib/stores/{project,player,media,cloud,keys,layout,toast,menu}.svelte.ts`
+
+**Contracts exposed for other agents:**
+
+- Rust: `extract_poster(path, at_secs?, width?) -> Poster { path, width, height, cached }`
+  (one frame, disk-cached at `<app_data>/cache/posters/<key>.jpg`),
+  `drive_space() -> Option<DriveSpace { drive, totalBytes, freeBytes }>`,
+  `trash_project` / `restore_project` / `load_trash` / `purge_trash` (db_path, source_path)
+- TS: `extractPoster`, `driveSpace`, `trashProject`, `restoreProject`, `loadTrash`, `purgeTrash`,
+  `updateProjectOpened`, `revealPath`; store `app` (`view`, `section`)
+- SQLite: new table `trash(id, name, source_path, duration_secs, deleted_at)` —
+  **the video file is never deleted**, only the app's row moves
+
+**Behaviour change other agents must know about:**
+
+- `main.ts` **no longer calls `project.init()`** at startup. The dashboard shows
+  the project list from one SQLite query; the project is loaded when the user
+  opens it. If you add a startup path that needs a project, call
+  `project.init()` **explicitly** — it is no longer automatic.
+
+---
+
 ## Agent 1 (this session) — "Rust media + disk transcript core"
 
 **Lane:** Chunk 2 backend foundation — audio extraction/chunking, SQLite transcript store,

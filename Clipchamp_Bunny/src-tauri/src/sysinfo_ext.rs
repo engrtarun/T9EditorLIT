@@ -6,6 +6,7 @@
 //! in the CPU budget of an i3.
 
 use serde::Serialize;
+use std::path::Path;
 use sysinfo::{Disks, Pid, System};
 
 const BYTES_PER_GB: f64 = 1_073_741_824.0;
@@ -110,4 +111,61 @@ pub fn collect() -> SystemDetails {
         uptime_hours: 0.0,
         disks,
     }
+}
+
+/* ------------------------------------------------------------------ drive */
+
+/// How much room is left on the drive that holds a given path.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveSpace {
+    /// The drive's mount point, e.g. `C:\`.
+    pub drive: String,
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+}
+
+/// The `C:` style volume a path lives on.
+fn volume_letter(path: &Path) -> Option<String> {
+    let text = path.to_string_lossy();
+    let mut chars = text.chars();
+    let letter = chars.next()?;
+    if !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    if chars.next() != Some(':') {
+        return None;
+    }
+    Some(format!("{}:", letter.to_ascii_uppercase()))
+}
+
+/// Total and free space of the drive that holds `path`.
+///
+/// Only the disk list is read — the CPU is **not** sampled, so this is cheap
+/// enough to call while the dashboard is still painting. `collect()` is the
+/// heavyweight sibling; this one answers a single question.
+pub fn drive_space(path: &Path) -> Option<DriveSpace> {
+    let want = volume_letter(path);
+    let disks = Disks::new_with_refreshed_list();
+
+    let mut fallback: Option<DriveSpace> = None;
+    for disk in disks.list() {
+        let mount = disk.mount_point().to_string_lossy().into_owned();
+        let space = DriveSpace {
+            drive: mount.clone(),
+            total_bytes: disk.total_space(),
+            free_bytes: disk.available_space(),
+        };
+        let matches = match &want {
+            Some(v) => mount.len() >= 2 && mount[..2].eq_ignore_ascii_case(v),
+            None => false,
+        };
+        if matches {
+            return Some(space);
+        }
+        if fallback.is_none() {
+            fallback = Some(space);
+        }
+    }
+    fallback
 }

@@ -474,21 +474,13 @@ fn extract_poster(
     let dir = root.join("posters");
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create poster dir: {e}"))?;
     let out = dir.join(format!("{key}.jpg"));
-
-    // 5% in: the very first frame of a recording is usually black.
-    let duration = media::MediaInfo::probe(&source)
-        .map(|i| i.duration_secs)
-        .unwrap_or(0.0);
-    let at = at_secs.unwrap_or_else(|| {
-        if duration > 0.0 {
-            (duration * 0.05).clamp(0.5, 10.0)
-        } else {
-            1.0
-        }
-    });
     let w = width.unwrap_or(480).clamp(64, 1280);
 
-    if out.is_file() {
+    // The cached still comes **first**: no FFmpeg, no ffprobe, no waiting.
+    // A half-written file (size 0) counts as no file at all.
+    let cached = out.is_file()
+        && std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false);
+    if cached {
         return Ok(Poster {
             path: out.to_string_lossy().into_owned(),
             width: w,
@@ -496,6 +488,18 @@ fn extract_poster(
             cached: true,
         });
     }
+
+    // A little way into the clip: the first frame of a recording is often black.
+    let duration = media::MediaInfo::probe(&source)
+        .map(|i| i.duration_secs)
+        .unwrap_or(0.0);
+    let at = at_secs.unwrap_or_else(|| {
+        if duration > 0.0 {
+            (duration * 0.1).clamp(1.0, 30.0)
+        } else {
+            1.0
+        }
+    });
 
     let vf = format!("scale={w}:-2");
     let status = std::process::Command::new("ffmpeg")
@@ -808,10 +812,11 @@ fn apply_staged_update(app: tauri::AppHandle) -> Result<(), String> {
 
     let script = format!(
         "@echo off\r\n\
-ping -n 5 127.0.0.1 >nul\r\n\
-taskkill /F /IM t9-editor-lit.exe >nul 2>&1\r\n\
-taskkill /F /IM t9cloud.exe >nul 2>&1\r\n\
+:waitapp\r\n\
+tasklist /FI \"IMAGENAME eq t9-editor-lit.exe\" 2>nul | find /I \"t9-editor-lit.exe\" >nul\r\n\
+if not errorlevel 1 ping -n 2 127.0.0.1 >nul & goto waitapp\r\n\
 ping -n 2 127.0.0.1 >nul\r\n\
+taskkill /F /IM t9cloud.exe >nul 2>&1\r\n\
 move /Y \"{live}\" \"{old}\" >nul 2>&1\r\n\
 move /Y \"{fresh}\" \"{live}\" >nul 2>&1\r\n\
 del /Q \"{old}\" >nul 2>&1\r\n\
