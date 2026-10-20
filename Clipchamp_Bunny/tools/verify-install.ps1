@@ -66,6 +66,10 @@ $before = Get-QueueStats
 $completedBefore = if ($before) { $before.completed } else { $null }
 Write-Host "    daemon queue completed before: $completedBefore"
 
+# The daemon log tells us whether the app actually asked for a speed reading.
+$LogFile = Join-Path $env:APPDATA 'com.engrtarun.t9editorlit\t9cloud.log'
+$logBefore = if (Test-Path $LogFile) { (Get-Content $LogFile).Count } else { 0 }
+
 Write-Host "==> Launching $Exe (no terminal, no working directory set)" -ForegroundColor Cyan
 Start-Process $Exe
 Start-Sleep -Seconds $WaitSeconds
@@ -119,4 +123,21 @@ if (Test-Path $Db) {
     }
 } else {
     Write-Host "    [FAIL] no database at $Db" -ForegroundColor Red
+}
+
+# --- did the app ask the daemon for a speed reading? -------------------------
+if (Test-Path $LogFile) {
+    $newLines = @(Get-Content $LogFile | Select-Object -Skip $logBefore)
+    $speedCalls = @($newLines | Select-String 'path=/v1/net/speed').Count
+    if ($speedCalls -gt 0) {
+        Write-Host "    [ok] the app measured the network $speedCalls time(s) - the MB/s chip is live" -ForegroundColor Green
+    } else {
+        Write-Host '    [FAIL] the app never asked for a speed reading - the chip stays blank' -ForegroundColor Red
+    }
+    $transcribes = @($newLines | Select-String 'method=POST path=/v1/transcribe').Count
+    if ($transcribes -gt 0) {
+        Write-Host "    [FAIL] $transcribes new transcription job(s) - the SQLite cache was missed" -ForegroundColor Red
+    } else {
+        Write-Host '    [ok] no transcription was requested - the transcript came off the disk' -ForegroundColor Green
+    }
 }

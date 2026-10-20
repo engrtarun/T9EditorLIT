@@ -53,11 +53,13 @@ C:\Users\pocot\Music\T9EditorLIT\
 │   │   ├── segments.ts         ← pure edit-timeline maths (+ segments.test.ts)
 │   │   ├── shortcuts.ts        ← Clipchamp shortcut registry
 │   │   ├── types.ts            ← TS ↔ Rust shape mirror
+│   │   ├── dashboard.ts        ← pure dashboard helpers (sort · "3 hours ago" · sizes)
 │   │   ├── mock.ts             ← fallback transcript (scaled)
 │   │   ├── media.ts            ← baked-asset loader (browser mode)
-│   │   ├── stores\             project · player · mode · layout · media · cloud · toast · menu · keys
+│   │   ├── stores\             project · player · mode · layout · media · cloud · toast · menu · keys · app
 │   │   └── components\         TopBar · PreviewBar · ModeRail · RightRail · CloudMenu
 │   │                            SystemMeter · ContextMenu · MenuIcon · ShortcutsHelp · Toasts
+│   │                            dashboard\{HomeDashboard,DashboardTopBar,ProjectCard,BrandMark}
 │   │                            cut\{VideoPreview,TranscriptPanel,WaveTimeline}
 │   │                            media\{MediaPanel,MediaTile}
 │   │                            modes\{IngestMode,CutMode,ExportMode}
@@ -167,16 +169,76 @@ karta hai (Windows ka `\\?\` prefix bhi hatata hai). `transcripts`, `projects`
 aur `media_cache` — teenon ke keys canonical hain, aur `migrate_paths()` purane
 rows ko naye spelling pe fold kar deta hai.
 
-### 4.10 App kholte hi apna project (dummy zero)
-`project.init()` ab, Tauri mode me:
-1. `resume_project(db)` → **last opened project**, jiska file abhi bhi disk pe hai
-   → `loadFromBackend()` → SQLite se real transcript (network zero).
-2. Nahi mila → `demo_source_path()` → demo recording (sirf agar file sach me disk pe ho).
-3. Nahi mila → **khali editor**. Mock lines kabhi nahi.
+### 4.10 App kholte hi DASHBOARD (landing screen)
 
-Desktop pe `MOCK_LINES` sirf browser mode (`loadBaked()`) me hai — wahi baked
-dummy media ke saath chalta hai. Desktop pe transcript fail hua to **error
-dikhta hai**, fake lines nahi.
+Ab app **dashboard par khulta hai** — taskbar icon, desktop shortcut, launcher
+script, sab se pehle yahi screen. Reference: `T9 Editor LIT Dashboard.png`.
+
+Pehle app seedha editor kholta tha (last project). Ab:
+
+1. `app.view = 'home'` → **HomeDashboard** — ek hi SQLite query (`load_projects`)
+   se project list, turant paint.
+2. Card pe click → `project.loadFromBackend(path)` + `mode.set('cut')` → editor.
+3. "Create a new video" → editor ka **Media mode** (blank project).
+4. "Import media" → file picker → naya project → editor.
+5. Editor ka top-bar 9-dot button → wapas dashboard.
+
+**Startup me project load NAHI hota** (`project.init()` ab `main.ts` se hat gaya).
+Dashboard ko instantly paint karna hai — probe + waveform + transcript ka kaam
+tab hota hai jab user wo project maange, home screen fade in hone ke dauraan
+nahi. Ye zero-RAM rule ka seedha application hai.
+
+Dashboard **editor ki koi feature nahi hatata** — DEAD AIR workbench, transcript
+pipeline, cut/export, shortcuts — sab editor ke andar hi rehte hain.
+
+### 4.10b Dashboard ka data — sab kuch real
+
+| Card pe kya dikhta hai | Kahan se aata hai |
+|---|---|
+| Naam, duration | `projects` table (SQLite) |
+| "Edited 3 hours ago" | `projects.last_opened` (unix seconds) |
+| File size | Rust `probe_media` (SQLite me cached) |
+| Thumbnail | Rust `extract_poster` — **ek** frame, disk cache (`cache/posters/<key>.jpg`) |
+| Storage bar | project files ka total vs drive ka total (Rust `drive_space`) |
+
+`extract_poster` alag command hai `extract_thumbnails` se — woh poora video
+1 fps pe decode karta hai (2 ghante = poora decode). Card ko sirf **ek still**
+chahiye, to woh `-ss` se seedha uss frame pe jump karke ek JPEG banata hai.
+Cache key = path + size + mtime, dobara kholne pe FFmpeg chalta hi nahi.
+
+**Poster ek-ek karke** bante hain (ek time pe ek FFmpeg child) — aath cards
+ke aath FFmpeg child parallel chala to wahi CPU burn ho jaata jo ye app
+banna hi chahta hai.
+
+### 4.10c Trash — record ka bin, video ka nahi
+
+Dashboard ka "Trash" ek **asli** table hai (`trash`): project ki row `projects`
+se nikal kar `trash` me jaati hai. **Video file kabhi nahi delete hoti** —
+sirf app ka record hatta hai, isliye "Restore" foran wapas aata hai aur
+transcript ko dobara banane ki zaroorat nahi padti. "Delete record" bhi sirf
+record hatata hai; user ka footage disk pe safe rehta hai.
+
+Rust: `transcript::trash_project / restore_project / load_trash / purge_trash`.
+
+### 4.10d Motion — feedback, decoration nahi
+
+Rules (AGENTS.md §1 ke saath): sirf `opacity` + `transform` animate hote hain
+(compositor-only — layout/repaint nahi), kuch loop nahi karta (sirf sach me
+wait karne wala spinner), aur sab kuch **Windows ke "animations off"** pe
+band ho jaata hai (`prefers-reduced-motion` → duration/delay collapse).
+
+| Kahan | Kya | Time |
+|---|---|---|
+| Dashboard khulte hi | opacity fade-in | 180 ms |
+| Editor dashboard se | fade + 12 px slide | 200 ms |
+| "Create a new video" hover | blue bright + 1 px up | 150 ms |
+| "Create a new video" press | `scale(0.98)` (instant) | — |
+| Project card hover | 2 px up + border bright + ⋮ dikhta hai | 150 ms |
+| Card stagger | 24 ms gap, 8 cards tak | 200 ms |
+| Search focus | border ka rang badalta hai, size nahi | 150 ms |
+| Storage bar | width animate hoti hai jab **real** value aata hai | 400 ms |
+
+CSS `app.css` me hai (`t9-fade-in` · `t9-slide-in` · `t9-card-in` · `t9-spin`).
 
 ### 4.11 Daemon khud app ke saath uthta hai
 `ensure_daemon()` (Tauri `setup` hook): port 7878 free ho to `t9cloud.exe`
@@ -201,6 +263,10 @@ Daemon kahan se dhoondha jaata hai: app ke saath (installed layout), phir
 | `WaveTimeline` video lane | Rust `extract_thumbnails` → real filmstrip | ✅ wired (visible in screenshots) |
 | `ExportMode` | Rust `start_export` (hybrid/copy/encode) | ✅ wired, progress event |
 | `lib/ipc.ts` → `downloadFromUrl` | Rust `download_from_url` (yt-dlp) | ✅ wired |
+| **`HomeDashboard` → `loadProjects`** | Rust `load_projects` | ✅ **wired** |
+| **`HomeDashboard` → `extractPoster`** | Rust `extract_poster` — ek frame, disk cache | ✅ **wired** |
+| **`HomeDashboard` → `driveSpace`** | Rust `drive_space` — drive ka free/total | ✅ **wired** |
+| **`HomeDashboard` → trash** | Rust `trash_project` / `restore_project` / `load_trash` / `purge_trash` | ✅ **wired** |
 | **Go `Segment.Words`** | word timings daemon se | ✅ **DONE** — `model.Word`, `groqWord`, `segmentsFromWords()` |
 | **Telegram vault → media library** | daemon se file download karke library me daalna | ❌ **TODO** |
 
@@ -274,6 +340,41 @@ hai (`%LOCALAPPDATA%\Programs\T9EditorLIT\t9-editor-lit.exe`), repo ke
 > `deploy.ps1` app ko `Stop-Process` karta hai (exe lock hota hai) — isiliye
 > build ke waqt app band rakhna padta hai.
 
+### 4.12 Self-update — app khud naya build detect karta hai
+
+Desktop app **khud update hota hai**, OpenCode jaisa chhota "Update" button:
+
+| Kya | Kahan |
+|---|---|
+| Marker file | install folder me `build.json` (`version` + `builtAt`) |
+| Staged build | `t9-editor-lit.new.exe` (+ `t9cloud.new.exe`) |
+| Detect | `installed_build()` → app 20 s me ek + window focus pe marker padhta hai |
+| Apply | `apply_staged_update()` → helper script swap karke app restart |
+| UI | top bar me chhota "Update ↓" pill |
+
+**Flow:** code change → `tools\deploy.ps1` → app chal raha hai to **stage**
+hota hai (exe lock nahi toot-ta) → app me "Update" button → click → naya
+build (app + daemon) swap hokar restart.
+
+### 4.13 Do agents ka bridge — `deploy.ps1` hi ek hi darwaza hai
+
+Mera kaam **app/UI** (`Clipchamp_Bunny/`), doosre ka **Go daemon** (`go/`).
+Desktop tak daemon pahunchne ka ek hi raasta hai:
+
+```
+Doosra agent: go/ me code badalta hai → commit
+Main:         pwsh -File tools\deploy.ps1
+```
+
+`deploy.ps1` khud **daemon rebuild** karta hai jab `go\*.go` sources binary se
+naye hon (`go build -o bin/t9cloud.exe ./cmd/t9cloud`). Aur jab daemon chal
+raha hota hai to use bhi stage karta hai (`t9cloud.new.exe`), kyunki running
+exe overwrite nahi hota — update helper dono swap karta hai.
+
+**Isiliye doosre ka koi bhi commit, ek `deploy.ps1` ke baad desktop pe live
+ho jata hai.** Usse batana: "desktop pe dekhne ke liye `tools\deploy.ps1`
+chalao" — bas.
+
 **t9cloud** (cloud AI ke liye):
 ```powershell
 cd C:\Users\pocot\Music\T9EditorLIT
@@ -326,6 +427,15 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
 - [x] **Word-level timings end to end** — Groq `timestamp_granularities[]=word` →
       daemon `segmentsFromWords()` → `model.Segment.Words` → `transcripts.words` →
       split cuts the text too
+- [x] **Home dashboard** — app ka landing screen (taskbar / shortcut / launcher se
+      yahi khulta hai). Reference: `T9 Editor LIT Dashboard.png`
+- [x] **Dashboard ka real data** — duration + "edited X ago" (SQLite), file size
+      (cached ffprobe), thumbnail (FFmpeg se **ek** frame, disk cache), storage
+      bar (drive ka real free/total)
+- [x] **Trash** — project ki row `projects` → `trash` table; **video file kabhi
+      nahi delete hoti**; restore foran wapas
+- [x] **Motion** — 180 ms fade · 2 px card lift · 24 ms stagger · `prefers-reduced-motion`
+      se sab band
 - [x] Import: file manager (multi) · link (yt-dlp) · Telegram vault (QR) · drag&drop
 - [x] New file = new project; purana library me
 - [x] **Full Clipchamp shortcut set** + **rebindable** (localStorage)
@@ -342,6 +452,7 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
 - [ ] Root ka **bakwas UI** delete karna (`src/lib/components/clipchamp/**`)
 - [ ] `Clipchamp_MIMO/` folder abhi bhi khaali hai
 - [ ] Cut-gap **drag-resize** (cut ki jagah adjust karna timeline pe)
+- [ ] Dashboard par **multi-select** (Ctrl-click se kai projects ek saath move to trash)
 
 ---
 
@@ -377,6 +488,15 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
      me copy + `explorer.exe` restart. (`tools\pin-taskbar.ps1` dono karta hai.)
 14. **Taskbar pin repo path pe mat rakho** - `target/release` `cargo clean` pe
      mita jayega aur pin toot jayega. Installed copy use karo.
+15. **Dashboard pe startup me project mat kholo** - `project.init()` ek baar
+    chala raha tha aur app ko 2-3 second late karta tha (probe + waveform +
+    transcript). Ab list ek SQLite query se aati hai aur project tab load hota
+    hai jab user use maange.
+16. **Card thumbnail ke liye `extract_thumbnails` mat use karo** - woh 1 fps pe
+    poora video decode karta hai. `extract_poster` ek frame nikalta hai
+    (`-ss` input seek) - 5 GB file pe bhi ~200 ms.
+17. **Poster ek saath mat banao** - 8 projects = 8 FFmpeg child ek saath =
+    CPU spike. Queue chalao, ek-ek karke, aur beech me UI ko frame do.
 
 ---
 

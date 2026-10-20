@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { getMemoryStats, isTauri, measureNetworkSpeed, systemDetails } from '../ipc';
   import type { MemoryStats, SystemDetails } from '../types';
 
@@ -54,10 +55,18 @@
   });
 
   async function measure() {
-    if (measuring) return;
+    // `untrack` matters here: reading `measuring` inside the effect that
+    // calls this would make the effect depend on it, so every measurement
+    // would restart the loop and the daemon would be hammered back to back.
+    if (untrack(() => measuring)) return;
     measuring = true;
-    speed = await measureNetworkSpeed(2000);
-    measuring = false;
+    try {
+      const reading = await measureNetworkSpeed(2000);
+      // Keep the last good reading: the chip must never fall back to "—".
+      if (reading) speed = reading;
+    } finally {
+      measuring = false;
+    }
   }
 
   // Auto-measure on mount + periodic refresh so the chip shows a value shortly
@@ -141,7 +150,7 @@
       <path d="M12 4v14M6 12l6 6 6-6" />
     </svg>
     <span class={speed ? 'text-nc-txt' : 'text-nc-mut-2'}>
-      {measuring ? '…' : speed ? speed.megabytesPerSec.toFixed(1) : '—'}
+      {speed ? speed.megabytesPerSec.toFixed(1) : measuring ? '…' : '—'}
     </span>
     <span class="text-nc-mut-2">MB/s</span>
   </span>

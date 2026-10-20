@@ -89,15 +89,24 @@ function applySplitText(left: TranscriptLine, right: TranscriptLine, at: number)
 }
 
 class ProjectStore {
-  name = $state('apna-college-vite-intro');
+  /**
+   * The project name.
+   *
+   * It starts empty and is filled from the file that is actually loaded, so
+   * the top bar never shows a leftover prototype name.
+   */
+  name = $state('');
   media = $state<MediaAsset | null>(null);
   lines = $state<TranscriptLine[]>([]);
   clips = $state<TimelineClip[]>([]);
-  texts = $state<TextClip[]>([
-    { id: 't1', startSec: 10, endSec: 20, text: 'Vite kya hai?', kind: 'title' },
-    { id: 't2', startSec: 96, endSec: 112, text: 'Config & Plugins', kind: 'heading' },
-    { id: 't3', startSec: 126, endSec: 142, text: 'npm install vite', kind: 'code-zoom' }
-  ]);
+  /**
+   * Text overlays for the timeline's T lane.
+   *
+   * Empty on purpose: these were three hardcoded prototype captions ("Vite
+   * kya hai?" and friends) that showed up over **every** video, real or not.
+   * The lane stays in the UI, ready for real captions.
+   */
+  texts = $state<TextClip[]>([]);
   waveform = $state<WaveformData | null>(null);
   thumbnails = $state<ThumbnailStrip | null>(null);
 
@@ -572,11 +581,15 @@ class ProjectStore {
     for (const other of media.entries) media.markUnused(other.asset.id);
   }
 
-  /** User-dropped files in the desktop app â€” they have a real path. */
+  /**
+   * User-dropped files in the **browser** (no filesystem path behind them).
+   *
+   * The desktop never comes here: Tauri's own drag-drop event hands over the
+   * real path, which is what `importPaths` needs. A blob cannot be probed by
+   * FFmpeg or stored in SQLite, so importing one on the desktop would only
+   * ever produce a fake asset.
+   */
   async importDropped(files: File[]) {
-    if (!isTauri()) return this.importBlobs(files);
-    // The webview cannot read a real path for a dropped file, so the file is
-    // streamed as a blob and probed by the engine from the temp copy.
     await this.importBlobs(files);
   }
 

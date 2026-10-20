@@ -83,3 +83,38 @@ If editing Go code:
 ```bash
 cd go && gofmt -l . && go vet ./... && go test ./...
 ```
+
+---
+
+## 6. Desktop App Ko Deliver Karna (DONO agents ke liye)
+
+Repo me **do agents** kaam karte hain — app/UI (`Clipchamp_Bunny/`) aur Go
+daemon (`go/`). User desktop app **taskbar se** chalata hai, isliye koi bhi
+kaam tabhi tak dikhega nahi jab tak wo **install** nahi hota.
+
+**Ek hi darwaza hai — `tools\deploy.ps1`:**
+
+```powershell
+cd Clipchamp_Bunny
+pwsh -File tools\deploy.ps1              # build → install → taskbar pin
+pwsh -File tools\deploy.ps1 -SkipBuild   # sirf install + pin
+pwsh -File tools\verify-install.ps1      # proof: real data, 0 API calls, MB/s live
+```
+
+Ye script khud ye sab karti hai:
+
+| Step    | Kya                                                                   |
+| ------- | --------------------------------------------------------------------- |
+| build   | `npx tauri build --no-bundle` (LTO thin → ~4 min)                     |
+| daemon  | `go/` sources naye hon to `go build -o bin/t9cloud.exe ./cmd/t9cloud` |
+| install | `%LOCALAPPDATA%\Programs\T9EditorLIT\` — app + daemon + `.env`        |
+| stage   | app chal raha ho to naye binary stage hote hain (`*.new.exe`)         |
+| pin     | Start menu shortcut + AppUserModelID + taskbar pin                    |
+
+**Running app me update:** app chal raha ho to naya build stage hota hai aur
+app ke top bar me ek chhota **"Update ↓"** button aata hai. User click karta
+hai → helper script binary swap karke app restart kar deta hai.
+
+> **Go side ke liye (doosra agent):** apna kaam commit kar do — bas. Daemon
+> rebuild aur install `deploy.ps1` khud kar deta hai. Uske baad desktop pe
+> live ho jayega.

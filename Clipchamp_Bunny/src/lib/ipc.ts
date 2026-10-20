@@ -262,6 +262,108 @@ export function loadProjects(dbPath: string): Promise<RustProject[]> {
   return invoke<RustProject[]>('load_projects', { dbPath });
 }
 
+/** Mark a project as opened now (updates its position in the list). */
+export function updateProjectOpened(
+  dbPath: string,
+  sourcePath: string,
+  lastOpened: number
+): Promise<void> {
+  return invoke('update_project_opened', { dbPath, sourcePath, lastOpened });
+}
+
+/* ------------------------------------------------------------------- trash */
+
+/** A project the user removed from the list. The video file is untouched. */
+export interface RustTrashItem {
+  id: string;
+  name: string;
+  sourcePath: string;
+  durationSecs: number;
+  /** Unix seconds — when the project was moved to the bin. */
+  deletedAt: number;
+}
+
+/** Move a project out of the list and into the bin. */
+export function trashProject(dbPath: string, sourcePath: string): Promise<void> {
+  return invoke('trash_project', { dbPath, sourcePath });
+}
+
+/** Bring a project back from the bin. */
+export function restoreProject(dbPath: string, sourcePath: string): Promise<void> {
+  return invoke('restore_project', { dbPath, sourcePath });
+}
+
+/** Everything currently in the bin, newest first. */
+export function loadTrash(dbPath: string): Promise<RustTrashItem[]> {
+  return invoke<RustTrashItem[]>('load_trash', { dbPath });
+}
+
+/** Forget a binned project for good — the app's record only, never the file. */
+export function purgeTrash(dbPath: string, sourcePath: string): Promise<void> {
+  return invoke('purge_trash', { dbPath, sourcePath });
+}
+
+/* ------------------------------------------------------------------ poster */
+
+/** One poster frame for a dashboard card. */
+export interface RustPoster {
+  /** Absolute path of the cached JPEG on disk. */
+  path: string;
+  width: number;
+  height: number;
+  /** True when the frame was already on disk — no FFmpeg was started. */
+  cached: boolean;
+}
+
+/**
+ * Extract **one** frame from a source, for the dashboard's project cards.
+ *
+ * Not `extractThumbnails`: that samples the whole video at 1 fps, which means
+ * decoding two hours of footage to fill a strip. A card needs a single still,
+ * so this seeks straight to it and grabs one frame. The JPEG is cached on
+ * disk, keyed by the source's path + size + mtime.
+ */
+export function extractPoster(path: string, atSecs?: number, width?: number): Promise<RustPoster> {
+  return invoke<RustPoster>('extract_poster', { path, atSecs, width });
+}
+
+/* ------------------------------------------------------------------ system */
+
+/** How much room is left on the drive that holds the app's data. */
+export interface RustDriveSpace {
+  /** The drive's mount point, e.g. `C:\`. */
+  drive: string;
+  totalBytes: number;
+  freeBytes: number;
+}
+
+/**
+ * Free space on the drive that holds the app's data folder.
+ *
+ * Only the disk list is read — no CPU sampling — so the dashboard can call it
+ * while it is still painting.
+ */
+export function driveSpace(): Promise<RustDriveSpace | null> {
+  return invoke<RustDriveSpace | null>('drive_space');
+}
+
+/**
+ * Reveal any path in Explorer.
+ *
+ * `revealSource` is the "current project" shortcut; this one is what the
+ * dashboard's project menu needs, where there is no current project yet.
+ */
+export async function revealPath(path: string): Promise<boolean> {
+  if (!path || !isTauri()) return false;
+  try {
+    const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+    revealItemInDir(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /* ----------------------------------------------------------------- system */
 
 /** Live RAM reading for the top-bar meter. */
@@ -348,6 +450,45 @@ export async function pickOutput(defaultName: string): Promise<string | null> {
 /* ------------------------------------------------------------------ network */
 
 /**
+ * The build sitting in the install folder.
+ *
+ * `builtAt` changes when a newer build is installed, and `updateReady` is
+ * true when that newer build is staged and only a restart is needed.
+ */
+export function installedBuild(): Promise<{
+  builtAt: string;
+  version: string;
+  updateReady: boolean;
+} | null> {
+  return invoke<{ builtAt: string; version: string; updateReady: boolean } | null>(
+    'installed_build'
+  );
+}
+
+/** Swap the staged build in and relaunch the app. */
+export function applyStagedUpdate(): Promise<void> {
+  return invoke('apply_staged_update');
+}
+
+/**
+ * The cloud daemon's health report, straight from the daemon.
+ *
+ * `null` means the daemon is not running. The `cloud` object carries the real
+ * per-provider capability strings (`"ready"`, or the reason it is not).
+ */
+export function daemonHealth(): Promise<{
+  ok?: boolean;
+  uptime_secs?: number;
+  cloud?: Record<string, string>;
+} | null> {
+  return invoke<{
+    ok?: boolean;
+    uptime_secs?: number;
+    cloud?: Record<string, string>;
+  } | null>('daemon_health');
+}
+
+/**
  * Measure real download throughput.
  *
  * The trick that makes this honest: the clock starts when the **first body
@@ -357,28 +498,30 @@ export async function pickOutput(defaultName: string): Promise<string | null> {
  *
  * It also keeps fetching for a fixed window so one slow burst cannot decide
  * the number, and reports MB/s **and** Mbps — the unit a browser shows.
+ *
+ * On the desktop the reading comes from **Rust**, which asks the daemon over a
+ * plain socket. The webview path is only the browser fallback: a browser
+ * fetch to the loopback daemon can be swallowed by the webview's own network
+ * rules, and the chip would sit on "—" while the daemon was answering.
  */
 export async function measureNetworkSpeed(
   windowMs = 3000
 ): Promise<{ mbps: number; megabytesPerSec: number } | null> {
-  // Prefer the Go daemon: parallel sockets + tuned receive buffers give an
-  // honest reading on fast links (single-socket fetch() under-reads). Fall
-  // back to the in-webview probe when the daemon is unreachable (browser dev
-  // mode, or daemon down) so the meter never goes blank.
-  try {
-    const res = await fetch(`http://127.0.0.1:7878/v1/net/speed?windowMs=${windowMs}`, {
-      cache: 'no-store'
-    });
-    if (res.ok) {
-      const data = (await res.json()) as { mbps?: number; megabytesPerSec?: number };
-      if (typeof data?.megabytesPerSec === 'number') {
-        return { mbps: data.mbps ?? 0, megabytesPerSec: data.megabytesPerSec };
+  if (isTauri()) {
+    try {
+      const speed = await invoke<{ mbps: number; megabytesPerSec: number } | null>(
+        'measure_network_speed',
+        { windowMs }
+      );
+      if (speed && typeof speed.megabytesPerSec === 'number') {
+        return speed;
       }
+    } catch {
+      /* the daemon is not up yet - fall through to the browser probe */
     }
-  } catch {
-    /* daemon not reachable - fall through */
   }
 
+  // Browser fallback: a single streaming download, timed from the first byte.
   const endpoint = 'https://speed.cloudflare.com/__down?bytes=8000000';
   let bytes = 0;
   let elapsed = 0;

@@ -1,11 +1,17 @@
 <script lang="ts">
   import { project } from '../stores/project.svelte';
   import { mode } from '../stores/mode.svelte';
+  import { isTauri } from '../ipc';
 
   /**
    * App-wide drag & drop. Drop a video anywhere in the window and it is
    * imported, probed and made the project source — the Clipchamp behaviour of
    * "drag & drop media from your device to import".
+   *
+   * On the desktop this goes through Tauri's own drag-drop event, because
+   * **only** that gives the real filesystem path. The browser's `dataTransfer`
+   * hands over a blob with no path behind it, and a blob cannot be probed by
+   * FFmpeg or written to SQLite — it would have been a fake asset.
    */
   let dragging = $state(false);
   let over = $state(false);
@@ -16,20 +22,20 @@
   }
 
   function onDragEnter(e: DragEvent) {
-    if (!isFileDrag(e)) return;
+    if (isTauri() || !isFileDrag(e)) return;
     depth++;
     dragging = true;
   }
 
   function onDragOver(e: DragEvent) {
-    if (!isFileDrag(e)) return;
+    if (isTauri() || !isFileDrag(e)) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
     over = true;
   }
 
   function onDragLeave(e: DragEvent) {
-    if (!isFileDrag(e)) return;
+    if (isTauri() || !isFileDrag(e)) return;
     depth = Math.max(0, depth - 1);
     if (depth === 0) {
       dragging = false;
@@ -38,7 +44,7 @@
   }
 
   async function onDrop(e: DragEvent) {
-    if (!isFileDrag(e)) return;
+    if (isTauri() || !isFileDrag(e)) return;
     e.preventDefault();
     depth = 0;
     dragging = false;
@@ -61,6 +67,44 @@
       mode.set('ingest');
     }
   }
+
+  // The desktop path: Tauri hands us the real paths of the dropped files.
+  $effect(() => {
+    if (!isTauri()) return;
+    let alive = true;
+    let unlisten: (() => void) | null = null;
+
+    void (async () => {
+      try {
+        const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+        const stop = await getCurrentWebview().onDragDropEvent((event) => {
+          const payload = event.payload;
+          if (payload.type === 'over') {
+            dragging = true;
+            over = true;
+          } else if (payload.type === 'leave') {
+            dragging = false;
+            over = false;
+          } else if (payload.type === 'drop') {
+            dragging = false;
+            over = false;
+            void project.importPaths(payload.paths);
+            if (mode.current !== 'ingest') mode.set('ingest');
+          }
+        });
+        if (alive) unlisten = stop;
+        else stop();
+      } catch {
+        /* the webview has no drag-drop event - the browser path still works */
+      }
+    })();
+
+    return () => {
+      alive = false;
+      unlisten?.();
+      unlisten = null;
+    };
+  });
 </script>
 
 <svelte:window

@@ -48,7 +48,7 @@ pub use media::{MediaInfo, StreamInfo};
 pub use memory::{MemoryProbe, MemoryStats};
 pub use polish::{PolishResult, PolishSettings};
 pub use thumbnail::ThumbnailStrip;
-pub use transcript::{Project, TranscriptLine};
+pub use transcript::{Project, TranscriptLine, TrashItem};
 pub use waveform::WaveformData;
 
 type ExportCancel = Mutex<Option<Arc<AtomicBool>>>;
@@ -75,6 +75,16 @@ fn get_memory_stats(probe: State<'_, Probe>) -> Result<MemoryStats, String> {
 #[tauri::command]
 fn system_details() -> Result<sysinfo_ext::SystemDetails, String> {
     Ok(sysinfo_ext::collect())
+}
+
+/// How much room is left on the drive that holds the app's data.
+///
+/// The dashboard's status bar needs one number, and it needs it *now* — so this
+/// reads the disk list only, without the CPU sampling `system_details` does.
+#[tauri::command]
+fn drive_space(app: tauri::AppHandle) -> Result<Option<sysinfo_ext::DriveSpace>, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(sysinfo_ext::drive_space(&dir))
 }
 
 /// Locate the demo source so the app has something to show on the very first
@@ -389,6 +399,129 @@ fn update_project_opened(
     transcript::update_project_opened(&conn, &source_path, last_opened)
 }
 
+/* ------------------------------------------------------------------- trash */
+
+/// Move a project out of the dashboard list and into the bin.
+///
+/// The **video file is not touched** — only the app's row moves, so a restore
+/// is instant and never re-transcribes anything.
+#[tauri::command]
+fn trash_project(db_path: String, source_path: String) -> Result<(), String> {
+    let conn = transcript::open_db(Path::new(&db_path))?;
+    transcript::trash_project(&conn, &source_path)
+}
+
+/// Bring a project back from the bin.
+#[tauri::command]
+fn restore_project(db_path: String, source_path: String) -> Result<(), String> {
+    let conn = transcript::open_db(Path::new(&db_path))?;
+    transcript::restore_project(&conn, &source_path)
+}
+
+/// Everything currently in the bin, newest first.
+#[tauri::command]
+fn load_trash(db_path: String) -> Result<Vec<TrashItem>, String> {
+    let conn = transcript::open_db(Path::new(&db_path))?;
+    transcript::load_trash(&conn)
+}
+
+/// Forget a binned project for good — the app's record only, never the file.
+#[tauri::command]
+fn purge_trash(db_path: String, source_path: String) -> Result<(), String> {
+    let conn = transcript::open_db(Path::new(&db_path))?;
+    transcript::purge_trash(&conn, &source_path)
+}
+
+/* ------------------------------------------------------------------ poster */
+
+/// One poster frame for a dashboard card.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Poster {
+    /// Absolute path of the cached JPEG on disk.
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+    /// True when the frame was already on disk — no FFmpeg was started.
+    pub cached: bool,
+}
+
+/// Extract **one** frame from a source, for the dashboard's project cards.
+///
+/// This is deliberately not `extract_thumbnails`: that one samples the whole
+/// video at 1 fps, which means decoding two hours of footage to fill a strip.
+/// A card needs a single still, so this seeks straight to it (`-ss` before
+/// `-i` = input seek) and grabs one frame.
+///
+/// The JPEG lands in the on-disk cache, keyed by the source's path + size +
+/// mtime, so the second visit to the dashboard costs nothing and a replaced
+/// file gets a fresh frame instead of a stale one.
+#[tauri::command]
+fn extract_poster(
+    app: tauri::AppHandle,
+    path: String,
+    at_secs: Option<f64>,
+    width: Option<u32>,
+) -> Result<Poster, String> {
+    let source = PathBuf::from(&path);
+    if !source.is_file() {
+        return Err(format!("source file not found: {path}"));
+    }
+
+    let meta = std::fs::metadata(&source).map_err(|e| e.to_string())?;
+    let key = cache::source_key(&source, &meta)?;
+    let root = cache_root(&app)?;
+    let dir = root.join("posters");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create poster dir: {e}"))?;
+    let out = dir.join(format!("{key}.jpg"));
+
+    // 5% in: the very first frame of a recording is usually black.
+    let duration = media::MediaInfo::probe(&source)
+        .map(|i| i.duration_secs)
+        .unwrap_or(0.0);
+    let at = at_secs.unwrap_or_else(|| {
+        if duration > 0.0 {
+            (duration * 0.05).clamp(0.5, 10.0)
+        } else {
+            1.0
+        }
+    });
+    let w = width.unwrap_or(480).clamp(64, 1280);
+
+    if out.is_file() {
+        return Ok(Poster {
+            path: out.to_string_lossy().into_owned(),
+            width: w,
+            height: (w * 9 / 16).max(2),
+            cached: true,
+        });
+    }
+
+    let vf = format!("scale={w}:-2");
+    let status = std::process::Command::new("ffmpeg")
+        .args(["-y", "-hide_banner", "-nostats", "-loglevel", "error"])
+        .arg("-ss")
+        .arg(format!("{at:.3}"))
+        .arg("-i")
+        .arg(&source)
+        .args(["-frames:v", "1", "-vf", &vf, "-q:v", "5", "-f", "image2"])
+        .arg(&out)
+        .status()
+        .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
+
+    if !status.success() || !out.is_file() {
+        let _ = std::fs::remove_file(&out);
+        return Err("ffmpeg could not extract a poster frame".to_string());
+    }
+
+    Ok(Poster {
+        path: out.to_string_lossy().into_owned(),
+        width: w,
+        height: (w * 9 / 16).max(2),
+        cached: false,
+    })
+}
+
 /// Polish render: background music with optional sidechain ducking and text overlay.
 #[tauri::command]
 async fn polish_render(
@@ -544,6 +677,213 @@ fn canonical_source_path(path: String) -> Result<String, String> {
     Ok(transcript::canonical_path(&path))
 }
 
+/* ========================================================== network meter */
+
+/// Download throughput, as the daemon measures it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Speed {
+    pub mbps: f64,
+    pub megabytes_per_sec: f64,
+}
+
+/**
+ * Ask the cloud daemon how fast the link is.
+ *
+ * The measurement lives in the **Rust** side on purpose. Doing it from the
+ * webview meant the number went through the browser's fetch, and from there
+ * it was silently swallowed — the chip stayed on "—" while the daemon was
+ * cheerfully answering every request. A plain TCP request has no CORS, no
+ * content-security policy and no webview quirks, so the reading either
+ * arrives or it fails loudly.
+ */
+#[tauri::command]
+fn measure_network_speed(window_ms: Option<u32>) -> Result<Option<Speed>, String> {
+    let ms = window_ms.unwrap_or(2000).clamp(500, 15000);
+    let path = format!("/v1/net/speed?windowMs={ms}");
+
+    let Some(body) = http_get_json("127.0.0.1", DAEMON_PORT, &path) else {
+        return Ok(None);
+    };
+    match serde_json::from_str::<Speed>(&body) {
+        Ok(speed) => Ok(Some(speed)),
+        Err(e) => Err(format!("daemon sent an unreadable speed reading: {e}")),
+    }
+}
+
+/**
+ * The cloud daemon's own health report.
+ *
+ * Returned as raw JSON because the shape belongs to the Go daemon, not to
+ * this app. The UI reads `cloud.transcribe`, `cloud.analyze` and `cloud.vault`
+ * to decide which providers are genuinely ready — instead of pretending they
+ * are connected.
+ */
+#[tauri::command]
+fn daemon_health() -> Result<Option<serde_json::Value>, String> {
+    let Some(body) = http_get_json("127.0.0.1", DAEMON_PORT, "/healthz") else {
+        return Ok(None);
+    };
+    serde_json::from_str(&body)
+        .map(Some)
+        .map_err(|e| format!("daemon sent an unreadable health report: {e}"))
+}
+
+/* ============================================================ self update */
+
+/**
+ * The build that is installed next to the running executable.
+ *
+ * The desktop app updates itself from disk: the deploy script writes a
+ * `build.json` marker and, when the app is already running, stages the new
+ * executable as `t9-editor-lit.new.exe`. Comparing the marker with the one
+ * the app started on tells the user there is a newer build waiting.
+ */
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledBuild {
+    /// ISO-8601 timestamp of the build that sits in the install folder.
+    pub built_at: String,
+    /// The version string of that build.
+    pub version: String,
+    /// True when a newer build is staged and only a restart is needed.
+    pub update_ready: bool,
+}
+
+/// The folder the app was installed into.
+fn install_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf))
+}
+
+/// Read the `build.json` marker the deploy script writes.
+#[tauri::command]
+fn installed_build() -> Result<Option<InstalledBuild>, String> {
+    let Some(dir) = install_dir() else {
+        return Ok(None);
+    };
+    let marker = dir.join("build.json");
+    if !marker.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&marker)
+        .map_err(|e| format!("could not read {}: {e}", marker.display()))?;
+    let mut build: InstalledBuild = serde_json::from_str(&text)
+        .map_err(|e| format!("could not parse {}: {e}", marker.display()))?;
+
+    // A staged executable means a newer build is waiting to be swapped in.
+    build.update_ready = dir.join("t9-editor-lit.new.exe").is_file();
+    Ok(Some(build))
+}
+
+/**
+ * Swap the staged build in and relaunch.
+ *
+ * Windows will not let a running executable be overwritten, so the swap is
+ * done by a tiny helper script: it waits for this process to go away, moves
+ * the old binary aside, puts the new one in its place and starts the app
+ * again. The pinned taskbar icon keeps working — it points at the same path.
+ */
+#[tauri::command]
+fn apply_staged_update(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(dir) = install_dir() else {
+        return Err("cannot work out the install folder".to_string());
+    };
+    let staged = dir.join("t9-editor-lit.new.exe");
+    if !staged.is_file() {
+        return Err("there is no staged update to apply".to_string());
+    }
+    // The helper is written fresh every time, so a half-finished earlier
+    // attempt cannot leave a broken script behind.
+    //
+    // Every path in it is **absolute**: a relative path would be resolved
+    // against whatever folder the helper happened to start in, and the swap
+    // would then quietly do nothing.
+    let helper = dir.join("t9-apply-update.cmd");
+    let live = dir.join("t9-editor-lit.exe");
+    let fresh = dir.join("t9-editor-lit.new.exe");
+    let old = dir.join("t9-editor-lit.old.exe");
+    let daemon_live = dir.join("t9cloud.exe");
+    let daemon_fresh = dir.join("t9cloud.new.exe");
+    let daemon_old = dir.join("t9cloud.old.exe");
+
+    let script = format!(
+        "@echo off\r\n\
+ping -n 5 127.0.0.1 >nul\r\n\
+taskkill /F /IM t9-editor-lit.exe >nul 2>&1\r\n\
+taskkill /F /IM t9cloud.exe >nul 2>&1\r\n\
+ping -n 2 127.0.0.1 >nul\r\n\
+move /Y \"{live}\" \"{old}\" >nul 2>&1\r\n\
+move /Y \"{fresh}\" \"{live}\" >nul 2>&1\r\n\
+del /Q \"{old}\" >nul 2>&1\r\n\
+move /Y \"{daemon_live}\" \"{daemon_old}\" >nul 2>&1\r\n\
+move /Y \"{daemon_fresh}\" \"{daemon_live}\" >nul 2>&1\r\n\
+del /Q \"{daemon_old}\" >nul 2>&1\r\n\
+start \"\" \"{live}\"\r\n",
+        live = live.to_string_lossy(),
+        old = old.to_string_lossy(),
+        fresh = fresh.to_string_lossy(),
+        daemon_live = daemon_live.to_string_lossy(),
+        daemon_old = daemon_old.to_string_lossy(),
+        daemon_fresh = daemon_fresh.to_string_lossy(),
+    );
+    std::fs::write(&helper, script)
+        .map_err(|e| format!("could not write {}: {e}", helper.display()))?;
+
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.arg("/C")
+        .arg(&helper)
+        .current_dir(&dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW — no console flashes; the app simply restarts.
+        cmd.creation_flags(0x0800_0000);
+    }
+
+    cmd.spawn()
+        .map_err(|e| format!("could not start the update helper: {e}"))?;
+
+    // Give the helper a moment to attach, then close down.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    app.exit(0);
+    Ok(())
+}
+
+/// A minimal HTTP/1.1 GET over a raw socket, returning the body.
+
+/// The daemon is a loopback service that speaks plain HTTP, so this needs no
+/// HTTP client crate — which keeps the dependency list (and the build) small.
+fn http_get_json(host: &str, port: u16, path: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let mut stream = TcpStream::connect((host, port)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(20))).ok()?;
+    stream.set_write_timeout(Some(Duration::from_secs(10))).ok()?;
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).ok()?;
+    let text = String::from_utf8_lossy(&raw).into_owned();
+
+    // Split the head from the body; a chunked body is not expected here
+    // because the daemon sends a plain JSON document.
+    let (head, body) = text.split_once("\r\n\r\n")?;
+    if !head.starts_with("HTTP/1.1 200") {
+        return None;
+    }
+    Some(body.trim().to_string())
+}
+
 /**
  * The source path of the project the user last worked on, if its file is still
  * on disk. This is what the app opens on start-up, so it lands on the real
@@ -565,8 +905,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_memory_stats,
             system_details,
+            drive_space,
             demo_source_path,
             canonical_source_path,
+            measure_network_speed,
+            daemon_health,
+            installed_build,
+            apply_staged_update,
             resume_project,
             check_yt_dlp,
             download_from_url,
@@ -586,6 +931,11 @@ pub fn run() {
             save_project,
             load_projects,
             update_project_opened,
+            trash_project,
+            restore_project,
+            load_trash,
+            purge_trash,
+            extract_poster,
             start_export,
             cancel_export,
             plan_export,

@@ -79,21 +79,78 @@ if (-not (Test-Path $BuiltExe)) {
 Write-Step "Installing into $InstallDir"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-# The running app holds a lock on its own executable.
-$running = Get-Process -Name 't9-editor-lit' -ErrorAction SilentlyContinue
-if ($running) {
-    Write-Ok 'Closing the running app'
-    $running | Stop-Process -Force
-    Start-Sleep -Milliseconds 800
+# Leftovers from an earlier update attempt: a half-swapped binary would be
+# worse than no binary at all.
+foreach ($stale in @('t9-editor-lit.old.exe', 't9cloud.old.exe')) {
+    $stalePath = Join-Path $InstallDir $stale
+    if (Test-Path $stalePath) {
+        Remove-Item $stalePath -Force -ErrorAction SilentlyContinue
+        Write-Ok "removed the leftover $stale"
+    }
 }
 
-Copy-Item $BuiltExe (Join-Path $InstallDir $ExeName) -Force
-Write-Ok $ExeName
+$running = Get-Process -Name 't9-editor-lit' -ErrorAction SilentlyContinue
+
+if ($running) {
+    # The app is open, so its executable is locked. The new build is **staged**
+    # next to it instead, and the running app shows a small "Update" button:
+    # one click swaps the binary and starts the new build.
+    Write-Ok 'The app is running - staging the new build for a restart'
+    Copy-Item $BuiltExe (Join-Path $InstallDir 't9-editor-lit.new.exe') -Force
+    Write-Ok 't9-editor-lit.new.exe (staged)'
+} else {
+    Copy-Item $BuiltExe (Join-Path $InstallDir $ExeName) -Force
+    Write-Ok $ExeName
+}
+
+# The marker the app reads to notice a newer build.
+$buildInfo = @{
+    version  = '0.1.0'
+    builtAt  = (Get-Date).ToUniversalTime().ToString('o')
+    stagedAt = if ($running) { (Get-Date).ToUniversalTime().ToString('o') } else { $null }
+} | ConvertTo-Json
+Set-Content -Path (Join-Path $InstallDir 'build.json') -Value $buildInfo -Encoding UTF8
+Write-Ok 'build.json (update marker)'
 
 $Daemon = Join-Path $RepoRoot 'go\bin\t9cloud.exe'
+
+# The Go daemon is the **other agent's** scope. When its sources are newer
+# than the binary, rebuild it here - otherwise a daemon change would never
+# reach the desktop app.
+$GoRoot = Join-Path $RepoRoot 'go'
+if (Test-Path $GoRoot) {
+    $newestSource = Get-ChildItem $GoRoot -Recurse -Include *.go -File |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $needsBuild = $true
+    if ($newestSource -and (Test-Path $Daemon)) {
+        $needsBuild = $newestSource.LastWriteTime -gt (Get-Item $Daemon).LastWriteTime
+    }
+    if ($needsBuild) {
+        Write-Step 'Rebuilding the t9cloud daemon (Go side)'
+        Push-Location $GoRoot
+        try {
+            & go build -o bin/t9cloud.exe ./cmd/t9cloud
+            if ($LASTEXITCODE -ne 0) { throw "go build failed with exit code $LASTEXITCODE" }
+            Write-Ok 't9cloud.exe rebuilt'
+        } finally {
+            Pop-Location
+        }
+    } else {
+        Write-Step 'The daemon is up to date'
+    }
+}
+
 if (Test-Path $Daemon) {
-    Copy-Item $Daemon (Join-Path $InstallDir 't9cloud.exe') -Force
-    Write-Ok 't9cloud.exe (cloud daemon)'
+    # A running daemon locks its own executable, so it is staged the same way
+    # as the app and swapped in by the update helper.
+    $daemonRunning = Get-Process -Name 't9cloud' -ErrorAction SilentlyContinue
+    if ($daemonRunning) {
+        Copy-Item $Daemon (Join-Path $InstallDir 't9cloud.new.exe') -Force
+        Write-Ok 't9cloud.new.exe (staged - the running daemon is swapped in on restart)'
+    } else {
+        Copy-Item $Daemon (Join-Path $InstallDir 't9cloud.exe') -Force
+        Write-Ok 't9cloud.exe (cloud daemon)'
+    }
 } else {
     Write-Warn 'go\bin\t9cloud.exe is missing - cloud features stay offline'
 }
@@ -120,7 +177,13 @@ Write-Ok $Shortcut
 # ----------------------------------------------------------------- 4. pin ---
 if (-not $SkipPin) {
     Write-Step 'Pinning to the taskbar'
-    & (Join-Path $PSScriptRoot 'pin-taskbar.ps1') -Shortcut $Shortcut
+    # The pin script owns the Start menu shortcut and the AppUserModelID; it
+    # needs the install folder, not the .lnk, because it writes its own
+    # shortcut where Windows looks for it.
+    & (Join-Path $PSScriptRoot 'pin-taskbar.ps1') -InstallDir $InstallDir
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn 'the shell refused the pin - pin it by hand from the Start menu search'
+    }
 }
 
 # -------------------------------------------------------------- 5. launch ---
@@ -132,3 +195,11 @@ if ($Launch) {
 
 Write-Step 'Done'
 Write-Host "    The app now lives in $InstallDir" -ForegroundColor Green
+if ($running) {
+    Write-Host ''
+    Write-Host '    The app is still running the old build.' -ForegroundColor Yellow
+    Write-Host '    Its top bar now shows a small "Update" button - click it and the' -ForegroundColor Yellow
+    Write-Host '    new build (app + cloud daemon) is swapped in and started.' -ForegroundColor Yellow
+} else {
+    Write-Host '    The pinned taskbar icon starts the new build directly.' -ForegroundColor Green
+}

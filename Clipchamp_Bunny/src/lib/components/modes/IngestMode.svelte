@@ -289,7 +289,13 @@
           <div class="mb-3 flex items-center gap-2">
             <h3 class="text-[10px] font-bold tracking-widest text-nc-mut">TRANSCRIPT PIPELINE</h3>
             <div class="flex-1"></div>
-            <span class="font-mono text-[11px] text-nc-gold">{progress.toFixed(0)}%</span>
+            {#if isTauri()}
+              <span class="font-mono text-[11px] text-nc-gold">
+                {project.pipeline ? (project.pipeline.fraction * 100).toFixed(0) : '0'}%
+              </span>
+            {:else}
+              <span class="font-mono text-[11px] text-nc-gold">{progress.toFixed(0)}%</span>
+            {/if}
           </div>
 
           <!-- the real cloud pipeline, running once per imported source -->
@@ -314,31 +320,39 @@
             </div>
           {/if}
 
-          <div class="mb-4 h-1.5 overflow-hidden rounded-full bg-nc-panel-2">
-            <div
-              class="h-full rounded-full bg-gradient-to-r from-nc-gold to-nc-gold-dim transition-[width] duration-200"
-              style="width:{progress}%"
-            ></div>
-          </div>
-          <ol class="space-y-2">
-            {#each STEPS as s, i (s.label)}
-              {@const state = i < stepIndex ? 'done' : i === stepIndex ? 'active' : 'idle'}
-              <li class="flex items-center gap-3 text-xs">
-                <span
-                  class="grid h-5 w-5 shrink-0 place-items-center rounded-full border text-[10px]
-                         {state === 'done'
-                    ? 'border-nc-green bg-nc-green/15 text-nc-green'
-                    : state === 'active'
-                      ? 'border-nc-gold bg-nc-gold/15 text-nc-gold'
-                      : 'border-nc-line-2 text-nc-mut-2'}"
-                >
-                  {state === 'done' ? '✓' : i + 1}
-                </span>
-                <span class={state === 'idle' ? 'text-nc-mut-2' : 'text-nc-txt'}>{s.label}</span>
-                <span class="ml-auto font-mono text-[10px] text-nc-mut-2">{s.detail}</span>
-              </li>
-            {/each}
-          </ol>
+          <!--
+            The walkthrough below is the **browser** stand-in: there is no
+            engine in the browser, so it shows what the real pipeline would
+            do. On the desktop only the real progress above is shown, because
+            a fake percentage is worse than no percentage.
+          -->
+          {#if !isTauri()}
+            <div class="mb-4 h-1.5 overflow-hidden rounded-full bg-nc-panel-2">
+              <div
+                class="h-full rounded-full bg-gradient-to-r from-nc-gold to-nc-gold-dim transition-[width] duration-200"
+                style="width:{progress}%"
+              ></div>
+            </div>
+            <ol class="space-y-2">
+              {#each STEPS as s, i (s.label)}
+                {@const state = i < stepIndex ? 'done' : i === stepIndex ? 'active' : 'idle'}
+                <li class="flex items-center gap-3 text-xs">
+                  <span
+                    class="grid h-5 w-5 shrink-0 place-items-center rounded-full border text-[10px]
+                           {state === 'done'
+                      ? 'border-nc-green bg-nc-green/15 text-nc-green'
+                      : state === 'active'
+                        ? 'border-nc-gold bg-nc-gold/15 text-nc-gold'
+                        : 'border-nc-line-2 text-nc-mut-2'}"
+                  >
+                    {state === 'done' ? '✓' : i + 1}
+                  </span>
+                  <span class={state === 'idle' ? 'text-nc-mut-2' : 'text-nc-txt'}>{s.label}</span>
+                  <span class="ml-auto font-mono text-[10px] text-nc-mut-2">{s.detail}</span>
+                </li>
+              {/each}
+            </ol>
+          {/if}
 
           <button
             onclick={() => mode.set('cut')}
