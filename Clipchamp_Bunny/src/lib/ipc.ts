@@ -40,6 +40,18 @@ export function demoSourcePath(): Promise<string | null> {
   return invoke<string | null>('demo_source_path');
 }
 
+/**
+ * The one spelling of a path that always identifies the same file.
+ *
+ * The transcript table is keyed by path, so the *string* has to be stable. A
+ * path built from the working directory spells itself differently depending
+ * on where the app was launched from — which is how the taskbar launch missed
+ * the cache and re-transcribed the video.
+ */
+export function canonicalSourcePath(path: string): Promise<string> {
+  return invoke<string>('canonical_source_path', { path });
+}
+
 /** Open the native file picker and return the chosen path. */
 export async function pickVideo(): Promise<string | null> {
   if (!isTauri()) return null;
@@ -203,6 +215,51 @@ export function setTranscriptKeep(
   keep: boolean
 ): Promise<void> {
   return invoke('set_transcript_keep', { dbPath, sourcePath, id, keep });
+}
+
+/* ---------------------------------------------------------------- projects */
+
+export interface RustProject {
+  id: string;
+  name: string;
+  sourcePath: string;
+  durationSecs: number;
+  lastOpened: number;
+}
+
+/**
+ * The source path of the project that was opened last, if its file is still
+ * on disk.
+ *
+ * This is what the app opens on start-up: the user's own video, with the
+ * transcript that is already in SQLite. No API call, no mock lines.
+ */
+export function resumeProject(dbPath: string): Promise<string | null> {
+  return invoke<string | null>('resume_project', { dbPath });
+}
+
+/** Remember a project so it can be reopened later. */
+export function saveProject(
+  dbPath: string,
+  id: string,
+  name: string,
+  sourcePath: string,
+  durationSecs: number,
+  lastOpened: number
+): Promise<void> {
+  return invoke('save_project', {
+    dbPath,
+    id,
+    name,
+    sourcePath,
+    durationSecs,
+    lastOpened
+  });
+}
+
+/** Every known project, most recently opened first. */
+export function loadProjects(dbPath: string): Promise<RustProject[]> {
+  return invoke<RustProject[]>('load_projects', { dbPath });
 }
 
 /* ----------------------------------------------------------------- system */

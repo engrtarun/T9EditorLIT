@@ -26,6 +26,7 @@ import { media } from './media.svelte';
 import { runAnalysis, runCorrection, runTranscription, toLineFlag } from '../pipeline';
 import {
   assetUrl,
+  canonicalSourcePath,
   defaultDbPath,
   demoSourcePath,
   detectSilence,
@@ -35,6 +36,8 @@ import {
   isTauri,
   loadTranscript,
   probeMedia,
+  resumeProject,
+  saveProject,
   saveTranscript,
   setSourcePath
 } from '../ipc';
@@ -134,15 +137,34 @@ class ProjectStore {
    * In Tauri this goes through the real Rust engine: ffprobe â†’ SQLite cache,
    * FFmpeg waveform, FFmpeg filmstrip, SQLite transcript. In the browser it
    * falls back to the media baked by `tools/generate-media.mjs`.
+   *
+   * On the desktop there is never a mock transcript: the app opens the project
+   * the user last worked on, and only when there is none does it fall back to
+   * the demo recording - and only if that file is really on disk.
    */
   async init() {
     try {
       if (isTauri()) {
-        const path = await demoSourcePath();
-        if (path) {
-          await this.loadFromBackend(path);
+        const db = await defaultDbPath();
+
+        // 1. The project the user last worked on: the real file, with the
+        //    transcript already sitting in SQLite. No API call, no mock lines.
+        const resumed = await resumeProject(db).catch(() => null);
+        if (resumed) {
+          await this.loadFromBackend(resumed);
           return;
         }
+
+        // 2. First run: the demo recording, but only if it is really on disk.
+        const demo = await demoSourcePath();
+        if (demo) {
+          await this.loadFromBackend(demo);
+          return;
+        }
+
+        // 3. Nothing on disk: an empty editor, not an invented transcript.
+        this.ready = true;
+        return;
       }
       await this.loadBaked();
     } catch (e) {
@@ -165,13 +187,16 @@ class ProjectStore {
     this.ready = true;
   }
 
-  /** Real engine path: probe â†’ waveform â†’ filmstrip â†’ transcript (SQLite). */
+  /** Real engine path: probe, waveform, filmstrip, transcript (SQLite). */
   async loadFromBackend(path: string) {
-    const info = await probeMedia(path);
+    // One spelling for the file, so the SQLite key is the same whatever the
+    // working directory was when the app was launched.
+    const canonical = await canonicalSourcePath(path).catch(() => path);
+    const info = await probeMedia(canonical);
     this.media = {
       id: crypto.randomUUID(),
-      name: path.split(/[\\/]/).pop() ?? 'video',
-      url: assetUrl(path),
+      name: canonical.split(/[\\/]/).pop() ?? 'video',
+      url: assetUrl(canonical),
       durationSecs: info.durationSecs,
       width: info.width ?? 0,
       height: info.height ?? 0,
@@ -183,13 +208,13 @@ class ProjectStore {
       channels: null
     };
     this.name = this.media.name.replace(/\.[^.]+$/, '');
-    this.sourcePath = path;
-    setSourcePath(path);
+    this.sourcePath = canonical;
+    setSourcePath(canonical);
 
     // Make sure the source is in the library too, so its media tile (and the
-    // â‹® menu on it) exists.
-    if (!media.byPath(path)) {
-      const entry = media.addPath(path, this.media.name, info.sizeBytes);
+    // menu on it) exists.
+    if (!media.byPath(canonical)) {
+      const entry = media.addPath(canonical, this.media.name, info.sizeBytes);
       media.probed(entry.asset.id, {
         durationSecs: info.durationSecs,
         width: info.width ?? 0,
@@ -205,19 +230,43 @@ class ProjectStore {
     }
 
     const [wave, thumbs] = await Promise.all([
-      extractWaveform(path).catch(() => null),
-      extractThumbnails(path).catch(() => null)
+      extractWaveform(canonical).catch(() => null),
+      extractThumbnails(canonical).catch(() => null)
     ]);
     if (wave) this.waveform = wave;
     if (thumbs) this.thumbnails = thumbs;
 
     try {
-      this.lines = await this.ensureTranscript(path, info.durationSecs);
+      this.lines = await this.ensureTranscript(canonical, info.durationSecs);
+      this.loadError = null;
     } catch (e) {
+      // No mock lines here. On the desktop the user gets the real reason the
+      // transcript could not be produced, and a retry.
       this.loadError = e instanceof Error ? e.message : String(e);
-      this.lines = scaleLines(MOCK_LINES, info.durationSecs);
+      this.lines = [];
     }
+
+    // Remember the project, so the next launch opens this very file.
+    void this.rememberProject(canonical, info.durationSecs);
+
     this.ready = true;
+  }
+
+  /** Write this project to the `projects` table (most-recently-opened wins). */
+  private async rememberProject(path: string, durationSecs: number) {
+    try {
+      const db = await defaultDbPath();
+      await saveProject(
+        db,
+        crypto.randomUUID(),
+        this.name || path.split(/[\\/]/).pop() || 'project',
+        path,
+        durationSecs,
+        Math.floor(Date.now() / 1000)
+      );
+    } catch {
+      /* the project list is a convenience, never a blocker */
+    }
   }
 
   /** Live pipeline state, shown in the Media mode while the cloud works. */

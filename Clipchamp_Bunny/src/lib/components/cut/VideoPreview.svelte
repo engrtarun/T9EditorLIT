@@ -175,11 +175,16 @@
           <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
         </svg>
       </div>
-      <p class="text-sm font-semibold">Overtime nahi karna hai.</p>
-      <p class="mt-2 text-xs leading-relaxed text-nc-mut">
-        Prototype me mock transcript chal raha hai. Apni video load karne ke liye
-        <b class="text-nc-gold">Ingest</b> mode pe jao.
-      </p>
+      {#if project.loadError}
+        <p class="text-sm font-semibold text-nc-red">Video load nahi hua.</p>
+        <p class="mt-2 text-xs leading-relaxed text-nc-mut">{project.loadError}</p>
+      {:else}
+        <p class="text-sm font-semibold">Overtime nahi karna hai.</p>
+        <p class="mt-2 text-xs leading-relaxed text-nc-mut">
+          Koi video nahi khuli. Apni video load karne ke liye
+          <b class="text-nc-gold">Media</b> mode pe jao.
+        </p>
+      {/if}
     </div>
   {/if}
 </div>

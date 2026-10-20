@@ -27,7 +27,10 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [profile.release]
 codegen-units = 1
-lto = true
+# "thin" instead of "fat": the binary is a couple of percent bigger and the
+# runtime speed is the same, but the link step drops from ~20 minutes to a
+# few — which is what makes the taskbar build actually usable for iteration.
+lto = "thin"
 opt-level = 3
 panic = "abort"
 strip = true

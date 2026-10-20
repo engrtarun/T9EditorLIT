@@ -6,6 +6,7 @@
 
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
+use std::path::{Component, Path, PathBuf};
 
 /// One word with its own timing, straight out of Whisper's `words` array.
 ///
@@ -60,6 +61,85 @@ fn default_flag() -> String {
     "none".to_string()
 }
 
+/* --------------------------------------------------------------- paths */
+
+/**
+ * Collapse a path to the one spelling that always identifies the same file.
+ *
+ * The transcript table is keyed by `source_path`, so the *string* has to be
+ * stable — the file being the same is not enough. A path that was built from
+ * the working directory (`…/Clipchamp_Bunny/../resource_Clipchamp/clip.mp4`)
+ * spells a different string depending on where the app was launched from, and
+ * that is exactly what used to happen: launching from the taskbar missed the
+ * SQLite cache, re-transcribed the whole video and paid for the API again.
+ *
+ * The rules:
+ *   * relative → resolved against the working directory,
+ *   * `..` and `.` → collapsed,
+ *   * symlinks → resolved,
+ *   * Windows' `\\?\` verbatim prefix → removed (it breaks asset URLs).
+ */
+pub fn canonical_path(path: &str) -> String {
+    let raw = Path::new(path);
+    let absolute = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(raw)
+    };
+
+    let resolved = std::fs::canonicalize(&absolute).unwrap_or_else(|_| lexical_clean(&absolute));
+    strip_verbatim(resolved.to_string_lossy().into_owned())
+}
+
+/// Collapse `.` and `..` without touching the filesystem.
+fn lexical_clean(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // `..` at the root has nothing to pop — keep it, or the path
+                // would climb above the drive.
+                if !out.pop() {
+                    out.push(comp.as_os_str());
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Windows canonicalisation hands back a `\\?\` verbatim path. The webview
+/// cannot stream from that, so the prefix is removed again.
+fn strip_verbatim(path: String) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    path
+}
+
+/// Every distinct `source_path` stored in a table.
+fn distinct_paths(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
+    let sql = format!("SELECT DISTINCT source_path FROM {table}");
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("could not prepare {table} path scan: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| format!("could not query {table} paths: {e}"))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| format!("could not read {table} path: {e}"))?);
+    }
+    Ok(out)
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS transcripts (
     source_path    TEXT NOT NULL,
@@ -101,7 +181,63 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("could not init transcript schema: {e}"))?;
     migrate_transcripts(conn)?;
     conn.execute_batch(PROJECTS_SCHEMA)
-        .map_err(|e| format!("could not init projects schema: {e}"))
+        .map_err(|e| format!("could not init projects schema: {e}"))?;
+    migrate_paths(conn)
+}
+
+/// Fold older, working-directory-dependent paths onto the canonical spelling.
+///
+/// A database written before this change may hold
+/// `…/Clipchamp_Bunny/../resource_Clipchamp/clip.mp4` as the key for a video
+/// that is also reachable as `…/resource_Clipchamp/clip.mp4`. Both spell the
+/// same file, but SQLite sees two different rows — so the second launch (from
+/// a different folder) found an empty table and re-ran the whole pipeline.
+///
+/// When both spellings exist the canonical copy wins: it is the one a proper
+/// launch wrote, and therefore the fresher one.
+fn migrate_paths(conn: &Connection) -> Result<(), String> {
+    for old in distinct_paths(conn, "transcripts")? {
+        let new = canonical_path(&old);
+        if new == old {
+            continue;
+        }
+        // Drop the stale rows whose id is already present under the canonical
+        // key — the primary key would otherwise reject the move.
+        conn.execute(
+            "DELETE FROM transcripts
+              WHERE source_path = ?1
+                AND id IN (SELECT id FROM transcripts WHERE source_path = ?2)",
+            params![old, new],
+        )
+        .map_err(|e| format!("could not drop duplicate transcript rows: {e}"))?;
+        conn.execute(
+            "UPDATE transcripts SET source_path = ?1 WHERE source_path = ?2",
+            params![new, old],
+        )
+        .map_err(|e| format!("could not canonicalise transcript paths: {e}"))?;
+    }
+
+    for old in distinct_paths(conn, "projects")? {
+        let new = canonical_path(&old);
+        if new == old {
+            continue;
+        }
+        // `projects.source_path` is UNIQUE, so a canonical row has to be
+        // removed before the stale one can move onto its key.
+        conn.execute(
+            "DELETE FROM projects
+              WHERE source_path = ?1
+                AND EXISTS (SELECT 1 FROM projects WHERE source_path = ?2)",
+            params![old, new],
+        )
+        .map_err(|e| format!("could not drop duplicate project rows: {e}"))?;
+        conn.execute(
+            "UPDATE projects SET source_path = ?1 WHERE source_path = ?2",
+            params![new, old],
+        )
+        .map_err(|e| format!("could not canonicalise project paths: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Bring an older transcripts table up to the current columns.
@@ -159,6 +295,7 @@ pub fn save_transcript(
     source_path: &str,
     lines: &[TranscriptLine],
 ) -> Result<(), String> {
+    let source_path = canonical_path(source_path);
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("could not start transaction: {e}"))?;
@@ -206,6 +343,7 @@ pub fn load_transcript(
     conn: &Connection,
     source_path: &str,
 ) -> Result<Vec<TranscriptLine>, String> {
+    let source_path = canonical_path(source_path);
     let mut stmt = conn
         .prepare(
             "SELECT id, start_secs, end_secs, text, keep, flag, original_text, words
@@ -246,6 +384,7 @@ pub fn load_transcript(
 }
 
 pub fn set_keep(conn: &Connection, source_path: &str, id: &str, keep: bool) -> Result<(), String> {
+    let source_path = canonical_path(source_path);
     conn.execute(
         "UPDATE transcripts SET keep = ?1 WHERE source_path = ?2 AND id = ?3",
         params![if keep { 1 } else { 0 }, source_path, id],
@@ -255,6 +394,7 @@ pub fn set_keep(conn: &Connection, source_path: &str, id: &str, keep: bool) -> R
 }
 
 pub fn set_flag(conn: &Connection, source_path: &str, id: &str, flag: &str) -> Result<(), String> {
+    let source_path = canonical_path(source_path);
     conn.execute(
         "UPDATE transcripts SET flag = ?1 WHERE source_path = ?2 AND id = ?3",
         params![flag, source_path, id],
@@ -264,6 +404,7 @@ pub fn set_flag(conn: &Connection, source_path: &str, id: &str, flag: &str) -> R
 }
 
 pub fn delete_transcript(conn: &Connection, source_path: &str) -> Result<(), String> {
+    let source_path = canonical_path(source_path);
     conn.execute(
         "DELETE FROM transcripts WHERE source_path = ?1",
         params![source_path],
@@ -281,6 +422,7 @@ pub fn save_project(
     duration_secs: f64,
     last_opened: i64,
 ) -> Result<(), String> {
+    let source_path = canonical_path(source_path);
     conn.execute(
         "INSERT INTO projects (id, name, source_path, duration_secs, last_opened)
          VALUES (?1, ?2, ?3, ?4, ?5)
@@ -322,12 +464,28 @@ pub fn load_projects(conn: &Connection) -> Result<Vec<Project>, String> {
     Ok(out)
 }
 
+/// The source path of the most recently opened project whose file is still there.
+///
+/// This is what makes "open the app" mean "open *my* last video, with its real
+/// transcript" instead of "show the demo recording". Projects are ordered by
+/// `last_opened`, and a project whose file has since been moved or deleted is
+/// skipped rather than reported as an error.
+pub fn resume_project(conn: &Connection) -> Result<Option<String>, String> {
+    for project in load_projects(conn)? {
+        if Path::new(&project.source_path).exists() {
+            return Ok(Some(project.source_path));
+        }
+    }
+    Ok(None)
+}
+
 /// Mark a project as opened now (updates `last_opened` to current unix seconds).
 pub fn update_project_opened(
     conn: &Connection,
     source_path: &str,
     last_opened: i64,
 ) -> Result<(), String> {
+    let source_path = canonical_path(source_path);
     conn.execute(
         "UPDATE projects SET last_opened = ?1 WHERE source_path = ?2",
         params![last_opened, source_path],
@@ -337,6 +495,7 @@ pub fn update_project_opened(
 }
 
 pub fn delete_project(conn: &Connection, source_path: &str) -> Result<(), String> {
+    let source_path = canonical_path(source_path);
     conn.execute(
         "DELETE FROM projects WHERE source_path = ?1",
         params![source_path],
@@ -364,6 +523,7 @@ mod tests {
             keep: true,
             flag: "none".into(),
             original_text: String::new(),
+            words: None,
         }
     }
 
@@ -381,6 +541,7 @@ mod tests {
                 keep: true,
                 flag: "none".into(),
                 original_text: String::new(),
+                words: None,
             },
             TranscriptLine {
                 id: "2".into(),
@@ -390,6 +551,7 @@ mod tests {
                 keep: false,
                 flag: "fumble".into(),
                 original_text: String::new(),
+                words: None,
             },
         ];
         save_transcript(&conn, "/v.mp4", &lines).unwrap();
@@ -470,6 +632,124 @@ mod tests {
         assert!(load_transcript(&conn, "/v.mp4").unwrap().is_empty());
     }
 
+    /* ------------------------------------------------------ path handling */
+
+    #[test]
+    fn canonical_path_collapses_dot_dot() {
+        let dir = std::env::temp_dir().join("t9editorlit-canon-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("clip.mp4");
+        std::fs::write(&file, b"x").unwrap();
+
+        let direct = canonical_path(&file.to_string_lossy());
+        let roundabout = canonical_path(&dir.join("..").join(dir.file_name().unwrap()).join("clip.mp4").to_string_lossy());
+
+        assert_eq!(direct, roundabout);
+        assert!(!direct.contains(".."));
+    }
+
+    #[test]
+    fn canonical_path_is_stable_for_a_missing_file() {
+        // A file that does not exist yet still gets a stable, absolute key.
+        let missing = std::env::temp_dir().join("t9editorlit-not-here").join("x.mp4");
+        let a = canonical_path(&missing.to_string_lossy());
+        let b = canonical_path(&missing.to_string_lossy());
+        assert_eq!(a, b);
+        assert!(std::path::Path::new(&a).is_absolute());
+    }
+
+    #[test]
+    fn one_file_two_spellings_share_one_transcript_row() {
+        let conn = mem_conn();
+        init_schema(&conn).unwrap();
+
+        let dir = std::env::temp_dir().join("t9editorlit-two-spellings");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("clip.mp4");
+        std::fs::write(&file, b"x").unwrap();
+
+        let direct = file.to_string_lossy().into_owned();
+        let roundabout = dir
+            .join("..")
+            .join(dir.file_name().unwrap())
+            .join("clip.mp4")
+            .to_string_lossy()
+            .into_owned();
+
+        save_transcript(&conn, &direct, &[line("1", "hello")]).unwrap();
+        // The second spelling has to find the very same row.
+        let loaded = load_transcript(&conn, &roundabout).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].text, "hello");
+    }
+
+    #[test]
+    fn migration_folds_an_old_spelling_onto_the_canonical_one() {
+        let conn = mem_conn();
+        init_schema(&conn).unwrap();
+
+        let dir = std::env::temp_dir().join("t9editorlit-migrate-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("clip.mp4");
+        std::fs::write(&file, b"x").unwrap();
+        let canonical = canonical_path(&file.to_string_lossy());
+
+        // Write a row the way the old code did: keyed by a spelled-out path.
+        let old = dir
+            .join("..")
+            .join(dir.file_name().unwrap())
+            .join("clip.mp4")
+            .to_string_lossy()
+            .into_owned();
+        conn.execute(
+            "INSERT INTO transcripts (source_path, id, start_secs, end_secs, text, keep, flag, original_text, words)
+             VALUES (?1, '1', 0.0, 1.0, 'purana line', 1, 'none', '', '')",
+            params![old],
+        )
+        .unwrap();
+
+        // Opening the database again runs the migration.
+        init_schema(&conn).unwrap();
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM transcripts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+
+        let loaded = load_transcript(&conn, &canonical).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].text, "purana line");
+    }
+
+    #[test]
+    fn resume_project_skips_a_project_whose_file_is_gone() {
+        let conn = mem_conn();
+        init_schema(&conn).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let dir = std::env::temp_dir().join("t9editorlit-resume-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let alive = dir.join("alive.mp4");
+        std::fs::write(&alive, b"x").unwrap();
+
+        // The most recent project points at a file that is not there.
+        save_project(&conn, "p2", "Gone", "/definitely/not/here.mp4", 10.0, now).unwrap();
+        save_project(
+            &conn,
+            "p1",
+            "Alive",
+            &alive.to_string_lossy(),
+            10.0,
+            now - 100,
+        )
+        .unwrap();
+
+        assert_eq!(resume_project(&conn).unwrap(), Some(canonical_path(&alive.to_string_lossy())));
+    }
+
     #[test]
     fn save_and_load_project() {
         let conn = mem_conn();
@@ -482,7 +762,9 @@ mod tests {
         let projects = load_projects(&conn).unwrap();
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].name, "My Video");
-        assert_eq!(projects[0].source_path, "/v.mp4");
+        // The stored path is the canonical one, so the same file always lands
+        // on the same row no matter how it was spelled on the way in.
+        assert_eq!(projects[0].source_path, canonical_path("/v.mp4"));
         assert!((projects[0].duration_secs - 120.5).abs() < f64::EPSILON);
         assert_eq!(projects[0].last_opened, now);
     }

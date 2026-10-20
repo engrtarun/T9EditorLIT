@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS media_cache (
 
 pub fn init_media_cache_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(MEDIA_CACHE_SCHEMA)
-        .map_err(|e| format!("could not init media cache schema: {e}"))
+        .map_err(|e| format!("could not init media cache schema: {e}"))?;
+    migrate_media_cache_paths(conn)
 }
 
 fn media_fingerprint(path: &Path) -> Result<(u64, i64), String> {
@@ -129,6 +130,45 @@ pub fn store_cached_media(
         params![source_path, size as i64, mtime, json],
     )
     .map_err(|e| format!("could not cache media info: {e}"))?;
+    Ok(())
+}
+
+/// Fold working-directory-dependent cache keys onto the canonical spelling.
+///
+/// `media_cache.source_path` is the primary key, so the same file reached
+/// through two different spellings would be probed twice. The rows are cheap to
+/// rebuild (one ffprobe), but the stale ones should not pile up.
+fn migrate_media_cache_paths(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT source_path FROM media_cache")
+        .map_err(|e| format!("could not prepare media cache path scan: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| format!("could not query media cache paths: {e}"))?;
+    let mut paths = Vec::new();
+    for row in rows {
+        paths.push(row.map_err(|e| format!("could not read media cache path: {e}"))?);
+    }
+    drop(stmt);
+
+    for old in paths {
+        let new = super::transcript::canonical_path(&old);
+        if new == old {
+            continue;
+        }
+        conn.execute(
+            "DELETE FROM media_cache
+              WHERE source_path = ?1
+                AND EXISTS (SELECT 1 FROM media_cache WHERE source_path = ?2)",
+            params![old, new],
+        )
+        .map_err(|e| format!("could not drop duplicate media cache rows: {e}"))?;
+        conn.execute(
+            "UPDATE media_cache SET source_path = ?1 WHERE source_path = ?2",
+            params![new, old],
+        )
+        .map_err(|e| format!("could not canonicalise media cache paths: {e}"))?;
+    }
     Ok(())
 }
 
@@ -219,7 +259,10 @@ impl MediaInfo {
         if !path.exists() {
             return Err(format!("file not found: {}", path.display()));
         }
-        let key = path.to_string_lossy().into_owned();
+        // The cache key has to be the *canonical* path: the same file reached
+        // through two spellings would otherwise be probed twice, and the
+        // migration above would keep re-folding the rows.
+        let key = super::transcript::canonical_path(&path.to_string_lossy());
         if let Some(cached) = load_cached_media(conn, &key, path) {
             return Ok(cached);
         }

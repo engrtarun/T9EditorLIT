@@ -49,6 +49,13 @@ echo [3/3] Launching T9 Editor LIT...
 taskkill /f /im t9-editor-lit.exe >nul 2>&1
 taskkill /f /im nanami-cut.exe >nul 2>&1
 
+REM The installed copy (taskbar wala) wins when it is there.
+if exist "%LOCALAPPDATA%\Programs\T9EditorLIT\t9-editor-lit.exe" (
+    echo       installed copy - starting.
+    start "" "%LOCALAPPDATA%\Programs\T9EditorLIT\t9-editor-lit.exe"
+    goto :done
+)
+
 if exist "src-tauri\target\release\t9-editor-lit.exe" (
     echo       release build - starting.
     start "" "src-tauri\target\release\t9-editor-lit.exe"
@@ -70,4 +77,9 @@ if exist "src-tauri\target\release\t9-editor-lit.exe" (
 
 echo.
 echo T9 Editor LIT closed.
+goto :eof
+
+:done
+echo.
+echo T9 Editor LIT running ^(installed copy^).
 endlocal

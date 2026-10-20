@@ -77,32 +77,56 @@ fn system_details() -> Result<sysinfo_ext::SystemDetails, String> {
     Ok(sysinfo_ext::collect())
 }
 
-/// Locate the bundled demo source so the app has something to show on first
-/// run. Checks the packaged resource folder first, then the dev checkout.
+/// Locate the demo source so the app has something to show on the very first
+/// run, before the user has imported anything.
+///
+/// The search is deliberately **independent of the working directory**: a
+/// shortcut pinned to the taskbar starts the app from wherever Explorer feels
+/// like, and a path built from `cwd` would silently stop resolving — which is
+/// how the app used to fall back to the mock transcript on desktop.
+///
+/// The path that comes back is canonical, so it is also the right key for the
+/// SQLite cache.
 #[tauri::command]
 fn demo_source_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    const DEMO: &str = "resource_Clipchamp/clipchamp_OBSrecord.mp4";
+
     let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // Packaged resource folder (installer build).
     if let Ok(dir) = app.path().resource_dir() {
+        candidates.push(dir.join(DEMO));
         candidates.push(dir.join("clipchamp_OBSrecord.mp4"));
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("../resource_Clipchamp/clipchamp_OBSrecord.mp4"));
-        candidates.push(cwd.join("resource_Clipchamp/clipchamp_OBSrecord.mp4"));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        // src-tauri/target/<profile>/nanami-cut.exe → repo root
-        let root = exe
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent());
-        if let Some(root) = root {
-            candidates.push(root.join("resource_Clipchamp/clipchamp_OBSrecord.mp4"));
+
+    // The executable's folder and every folder above it — four levels climbs
+    // from `target/release` to the repository root.
+    if let Some(exe) = std::env::current_exe().ok()
+        && let Some(dir) = exe.parent()
+    {
+        let mut up = dir.to_path_buf();
+        for _ in 0..4 {
+            candidates.push(up.join(DEMO));
+            let Some(parent) = up.parent().map(Path::to_path_buf) else {
+                break;
+            };
+            up = parent;
         }
     }
+
+    // The working directory, as a last resort for a plain `cargo run`.
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(DEMO));
+        if let Some(parent) = cwd.parent() {
+            candidates.push(parent.join(DEMO));
+        }
+    }
+
     for c in candidates {
-        if c.exists() {
-            return Ok(Some(c.to_string_lossy().into_owned()));
+        if c.is_file() {
+            return Ok(Some(transcript::canonical_path(
+                &c.to_string_lossy(),
+            )));
         }
     }
     Ok(None)
@@ -425,6 +449,112 @@ fn plan_export(app: tauri::AppHandle, request: ExportRequest) -> Result<ExportPl
 
 /* ================================================================== runner */
 
+/// Port the `t9cloud` cloud daemon listens on.
+const DAEMON_PORT: u16 = 7878;
+
+/** Is the cloud daemon already listening? */
+fn daemon_is_up() -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+    let addr = SocketAddr::from(([127, 0, 0, 1], DAEMON_PORT));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
+/**
+ * Start `t9cloud` in the background when it is not already running.
+ *
+ * The app needs the daemon for transcription, for the Gemini flags and for the
+ * network meter. When the app is launched from the taskbar there is no
+ * terminal to run the launcher script, so the app brings its own cloud brain
+ * up: hidden, with no console window, and only if the port is still free.
+ *
+ * The daemon binary is looked for next to the executable (the installed
+ * layout) and then in `go/bin` of the repository checkout.
+ */
+fn ensure_daemon(app: &tauri::AppHandle) {
+    if daemon_is_up() {
+        return;
+    }
+
+    let Some(exe) = std::env::current_exe().ok() else {
+        return;
+    };
+    let Some(dir) = exe.parent() else {
+        return;
+    };
+
+    // The executable folder, then every folder above it — four levels is
+    // enough to climb from `target/release` to the repository root.
+    let mut roots: Vec<PathBuf> = vec![dir.to_path_buf()];
+    let mut up = dir.to_path_buf();
+    for _ in 0..4 {
+        let Some(parent) = up.parent().map(Path::to_path_buf) else {
+            break;
+        };
+        up = parent;
+        roots.push(up.clone());
+    }
+
+    let daemon = roots
+        .iter()
+        .map(|r| r.join("t9cloud.exe"))
+        .chain(roots.iter().map(|r| r.join("go").join("bin").join("t9cloud.exe")))
+        .find(|p| p.is_file());
+    let Some(daemon) = daemon else {
+        return;
+    };
+
+    // The daemon reads its API keys from a `.env` file.
+    let env_file = roots.iter().map(|r| r.join(".env")).find(|p| p.is_file());
+
+    let mut cmd = std::process::Command::new(&daemon);
+    if let Some(env_file) = env_file {
+        cmd.arg("-env").arg(env_file);
+    }
+
+    // The daemon's output goes to a log file next to the database, so a
+    // transcription failure can be read without a console attached.
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(log) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("t9cloud.log"))
+            && let Ok(err_log) = log.try_clone()
+        {
+            cmd.stdout(std::process::Stdio::from(log));
+            cmd.stderr(std::process::Stdio::from(err_log));
+        }
+    }
+    cmd.stdin(std::process::Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW — no console flashing behind the app.
+        cmd.creation_flags(0x0800_0000);
+    }
+
+    let _ = cmd.spawn();
+}
+
+/** The canonical spelling of a path — one string that always means one file. */
+#[tauri::command]
+fn canonical_source_path(path: String) -> Result<String, String> {
+    Ok(transcript::canonical_path(&path))
+}
+
+/**
+ * The source path of the project the user last worked on, if its file is still
+ * on disk. This is what the app opens on start-up, so it lands on the real
+ * video instead of the demo recording.
+ */
+#[tauri::command]
+fn resume_project(db_path: String) -> Result<Option<String>, String> {
+    let conn = transcript::open_db(Path::new(&db_path))?;
+    transcript::resume_project(&conn)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -436,6 +566,8 @@ pub fn run() {
             get_memory_stats,
             system_details,
             demo_source_path,
+            canonical_source_path,
+            resume_project,
             check_yt_dlp,
             download_from_url,
             probe_media,
@@ -464,6 +596,8 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title("T9 Editor LIT — dev")?;
             }
+            // The cloud brain comes up with the app - no terminal needed.
+            ensure_daemon(app.handle());
             Ok(())
         })
         .run(tauri::generate_context!())

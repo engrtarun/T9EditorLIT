@@ -63,7 +63,9 @@ C:\Users\pocot\Music\T9EditorLIT\
 │   │                            modes\{IngestMode,CutMode,ExportMode}
 │   ├── src-tauri\              ← Tauri shell; engine root se #[path] se share hota hai
 │   ├── public\assets\          ← baked demo media (waveform.json, thumbs/, media.json)
-│   └── tools\generate-media.mjs ← demo media baker (real FFmpeg commands)
+│   ├── tools\generate-media.mjs ← demo media baker (real FFmpeg commands)
+│   └── tools\deploy.ps1        ← ★ build → install → taskbar pin (one click update)
+│       tools\pin-taskbar.ps1   ← ★ taskbar pin ka pura logic
 ├── src-tauri\src\              ← ★ SHARED Rust engine (transcript.rs, export.rs, waveform.rs…)
 ├── go\                         ← t9cloud daemon (Groq/Gemini/Telegram)
 ├── Launch-T9EditorLIT.bat/.ps1 ← ★ launchers
@@ -72,6 +74,22 @@ C:\Users\pocot\Music\T9EditorLIT\
 
 > ⚠ `src\lib\components\clipchamp\**` (root me) = **purana bakwas UI**. Chheda nahi gaya.
 > `Clipchamp_Bunny/` hi canonical hai.
+
+### 3b. Installed app (taskbar wala)
+
+```
+C:\Users\pocot\AppData\Local\Programs\T9EditorLIT\
+├── t9-editor-lit.exe     ← app (copy of target/release)
+├── t9cloud.exe           ← cloud daemon (copy of go/bin)
+├── .env                  ← API keys (copy of repo .env)
+└── T9 Editor LIT.lnk    ← ★ taskbar pin yahi hai
+```
+
+Repo ka `target/release` clean ho jaye tab bhi pin zinda rehta hai — isiliye
+app **copy** karke install hota hai, seedha repo path pe pin nahi.
+
+> ⚠ Repo ka `.env` aur `go/bin/t9cloud.exe` copy hote hain — install folder
+> `.gitignore` ke bahar hai (AppData), isliye git me kuch nahi aata.
 
 ---
 
@@ -136,6 +154,38 @@ Chain: `Groq → go/internal/cloud/cloud.go (segmentsFromWords) → model.Segmen
 2. Miss → `extract_audio_chunks` → `POST /v1/transcribe` → `/v1/correct` → `/v1/analyze`
    → `save_transcript(db, path, …)`.
 3. Agli baar: step 1 hi hit karta hai. **API kabhi dobara nahi bulta.**
+
+### 4.9 Canonical path — DB ka key
+`transcripts.source_path` SQLite ka key hai, isliye **string** stable hona chahiye,
+file wahi hone se kaafi nahi. Pehle path `cwd` se banta tha
+(`…/Clipchamp_Bunny/../resource_Clipchamp/clip.mp4`), aur `cwd` badalne se
+**same file ka naya row** banta — cache miss → dobara API call → aur app
+taskbar se khulti to **mock transcript** dikhata.
+
+Ab `transcript::canonical_path()` har path ko absolute + `..`-free + symlink-free
+karta hai (Windows ka `\\?\` prefix bhi hatata hai). `transcripts`, `projects`
+aur `media_cache` — teenon ke keys canonical hain, aur `migrate_paths()` purane
+rows ko naye spelling pe fold kar deta hai.
+
+### 4.10 App kholte hi apna project (dummy zero)
+`project.init()` ab, Tauri mode me:
+1. `resume_project(db)` → **last opened project**, jiska file abhi bhi disk pe hai
+   → `loadFromBackend()` → SQLite se real transcript (network zero).
+2. Nahi mila → `demo_source_path()` → demo recording (sirf agar file sach me disk pe ho).
+3. Nahi mila → **khali editor**. Mock lines kabhi nahi.
+
+Desktop pe `MOCK_LINES` sirf browser mode (`loadBaked()`) me hai — wahi baked
+dummy media ke saath chalta hai. Desktop pe transcript fail hua to **error
+dikhta hai**, fake lines nahi.
+
+### 4.11 Daemon khud app ke saath uthta hai
+`ensure_daemon()` (Tauri `setup` hook): port 7878 free ho to `t9cloud.exe`
+spawn hota hai — `CREATE_NO_WINDOW` (console nahi dikhta), output
+`%APPDATA%\com.engrtarun.t9editorlit\t9cloud.log` me. Isiliye taskbar se
+click karna kaafi hai, terminal ki zaroorat nahi.
+
+Daemon kahan se dhoondha jaata hai: app ke saath (installed layout), phir
+`go/bin/t9cloud.exe` (repo layout). `.env` bhi wahi se.
 
 ---
 
@@ -206,6 +256,24 @@ npm run check        :: svelte-check
 npm test             :: node --test
 ```
 
+### Taskbar wala app — update kaise karte hain
+
+```powershell
+cd Clipchamp_Bunny
+pwsh -File tools\deploy.ps1              :: build → install → taskbar pin
+pwsh -File tools\deploy.ps1 -SkipBuild   :: sirf install + pin (binary pehle se bana ho)
+pwsh -File tools\deploy.ps1 -Launch      :: install + pin + chal bhi de
+pwsh -File tools\pin-taskbar.ps1         :: sirf pin (shortcut pehle se bani ho)
+```
+
+**Flow:** code change → `tools\deploy.ps1` → app band → taskbar icon click →
+naya version. Pin kabhi nahi toot-ta, kyunki shortcut ek **stable path** par
+hai (`%LOCALAPPDATA%\Programs\T9EditorLIT\t9-editor-lit.exe`), repo ke
+`target/release` par nahi.
+
+> `deploy.ps1` app ko `Stop-Process` karta hai (exe lock hota hai) — isiliye
+> build ke waqt app band rakhna padta hai.
+
 **t9cloud** (cloud AI ke liye):
 ```powershell
 cd C:\Users\pocot\Music\T9EditorLIT
@@ -246,6 +314,15 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
       — *verified live*: 31 real Hindi lines for the OBS recording, all with word timings
 - [x] **SQLite cache** — API sirf import pe
       — *verified live*: app restart → daemon `completed` count **unchanged** (0 new calls)
+- [x] **Canonical path keys** — `..`-free, absolute, stable; `transcripts` /
+      `projects` / `media_cache` teeno migrate ho jaate hain
+- [x] **Dummy zero on desktop** — app apna **last project** kholta hai (real
+      transcript, SQLite se); demo sirf tab jab file sach me ho; warna khali
+      editor. Mock lines sirf browser mode me.
+- [x] **Taskbar pin** — `tools\deploy.ps1` build → install → pin; stable install
+      path `%LOCALAPPDATA%\Programs\T9EditorLIT\`
+- [x] **Daemon auto-start** — app `t9cloud` ko khud uthata hai (hidden), to
+      taskbar se click karne se cloud bhi chalta hai
 - [x] **Word-level timings end to end** — Groq `timestamp_granularities[]=word` →
       daemon `segmentsFromWords()` → `model.Segment.Words` → `transcripts.words` →
       split cuts the text too
@@ -285,13 +362,21 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
 9. **Rust modules `crate::` use karte hain** — `#[path]` se nest karne pe `crate::media`
    resolve nahi hota. Modules crate-root pe declare karo.
 10. **`.env` me empty values** silently rehte hain (vault disable ho jaata hai) — check karo.
-11. **Release build 15+ min leta hai** — profile me `lto = true` + `opt-level = 3` +
+11. **Release build 15+ min leta hai** — profile me `lto = "thin"` + `opt-level = 3` +
     `codegen-units = 1`. Link phase me `rustc` ~600 MB RAM leta hai aur CPU pe
     ata rehta hai — **hang nahi hua, bas slow hai**. Beech me `npm run build`
     mat chalao (dist ka hash badal jaata hai). Iteration ke liye `npm run app`
-    (tauri dev) use karo — wo LTO nahi karta. Agar link time bura lage to
-    `Cargo.toml` me `lto = "thin"` kar sakta hai (quality almost same, link 3-4×
-    faster).
+     (tauri dev) use karo - wo LTO nahi karta. Profile me **`lto = "thin"`** hai: link 3-4× tez,
+     binary thoda bada, runtime speed same. Isiliye `tools\deploy.ps1` ab practical hai.
+12. **`cwd` pe depend mat karo** - app ka data path `cwd` se banta tha, to
+     taskbar se launch karne pe dummy transcript aa raha tha. Ab har path
+     canonical hai aur `resume_project()` last project khulta hai.
+13. **Taskbar pin ka shell verb Win11 pe kaam nahi karta** -
+     `InvokeVerb("taskbarpin")` silent fail karta hai. Kaam karta hai: shortcut ko
+     `%APPDATA%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar`
+     me copy + `explorer.exe` restart. (`tools\pin-taskbar.ps1` dono karta hai.)
+14. **Taskbar pin repo path pe mat rakho** - `target/release` `cargo clean` pe
+     mita jayega aur pin toot jayega. Installed copy use karo.
 
 ---
 

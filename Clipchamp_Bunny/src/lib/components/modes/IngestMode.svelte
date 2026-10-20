@@ -5,7 +5,7 @@
   import { cloud } from '../../stores/cloud.svelte';
   import MediaPanel from '../media/MediaPanel.svelte';
   import { toast } from '../../stores/toast.svelte';
-  import { isTauri } from '../../ipc';
+  import { isTauri, demoSourcePath } from '../../ipc';
   import { fmtShort } from '../../utils';
   import type { SilenceRange } from '../../types';
 
@@ -77,6 +77,32 @@
         running = false;
       }, total + 200)
     );
+  }
+
+  /**
+   * The "keep going without a file" button.
+   *
+   * On the desktop this opens the **real** demo recording from disk — the
+   * same file the app opens on its very first run, with a real transcript.
+   * Only the browser build (no filesystem, no engine) falls back to the
+   * animated walkthrough.
+   */
+  async function openDemo() {
+    if (!isTauri()) {
+      run();
+      return;
+    }
+    try {
+      const path = await demoSourcePath();
+      if (!path) {
+        toast.push('warn', 'Demo recording nahi mili — apni video import karo');
+        return;
+      }
+      await project.loadFromBackend(path);
+      mode.set('cut');
+    } catch (e) {
+      toast.push('warn', `Demo nahi khul paaya: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   function onDrop(e: DragEvent) {
@@ -185,10 +211,10 @@
             5 GB · 2 ghante · 4K 60FPS chalega. Video kabhi RAM me nahi jayegi.
           </p>
           <button
-            onclick={run}
+            onclick={openDemo}
             class="text-[11px] text-nc-mut underline underline-offset-2 hover:text-nc-gold"
           >
-            …ya mock project se aage badhao
+            …ya demo recording kholo
           </button>
         </div>
 
