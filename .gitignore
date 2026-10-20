@@ -34,6 +34,8 @@ data/
 media/
 cache/
 *.mp4
+!resource_Clipchamp/*.mp4
+!Clipchamp_Bunny/public/assets/*.mp4
 *.mkv
 *.mov
 *.webm
