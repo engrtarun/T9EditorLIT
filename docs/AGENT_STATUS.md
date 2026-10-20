@@ -102,6 +102,14 @@ the clock — every number real, one Rust call per second.
   directory traversal (no buffers, no RAM growth).
 - Polling only runs while a screen shows the bar, so an idle app costs nothing.
 
+**One thing for the next agent (do not do this while you are mid-edit):**
+
+`components/TopBar.svelte` still carries the self-update logic inline. It now
+lives in **`components/UpdateButton.svelte`** and the dashboard already uses
+it. Swapping the editor's inline block for `<UpdateButton />` is a one-line
+import + one-line tag — it was left alone here because that file was being
+edited at the time.
+
 ---
 
 ## Agent 1 (this session) — "Rust media + disk transcript core"
