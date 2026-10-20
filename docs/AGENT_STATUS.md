@@ -56,6 +56,54 @@ editor (media · cut · export) uske andar hai, koi feature hata nahi.
 
 ---
 
+## Agent 6 (this session) — "Status bar: live system meters"
+
+**Lane:** The dashboard's footer (`SystemFooter.svelte`). RAM, disk, network and
+the clock — every number real, one Rust call per second.
+
+**Status:** Complete. `svelte-check` 0 errors · `prettier --check` clean ·
+`node --test` 13/13 · `cargo test --lib` 67/67 · `cargo check` clean.
+
+**Files owned (editing):**
+
+- `Clipchamp_Bunny/src-tauri/src/meters.rs` (new — network probe, app-storage
+  probe, `system_snapshot`, `set_system_clock`)
+- `Clipchamp_Bunny/src-tauri/src/lib.rs` (module + two commands; additive only)
+- `Clipchamp_Bunny/src/lib/stores/meters.svelte.ts` (new — the 1 s heartbeat)
+- `Clipchamp_Bunny/src/lib/components/SystemFooter.svelte` (new — the bar)
+- `Clipchamp_Bunny/src/lib/components/WorldClock.svelte` (new — the popup)
+- `Clipchamp_Bunny/src/lib/{ipc.ts,types.ts}` (new wrappers + mirrors)
+- `Clipchamp_Bunny/src/lib/components/dashboard/HomeDashboard.svelte` (footer only)
+
+**Do NOT touch (other agents may own):**
+
+- `go/**` — the Go daemon is the other agent's lane. The network meter reads
+  the **OS interface counters** from Rust, so the daemon needs no change.
+- `Clipchamp_Bunny/src/lib/components/TopBar.svelte`, `SystemMeter.svelte` —
+  the editor's own meter is untouched for now.
+- `src-tauri/src/memory.rs`, `src-tauri/src/transcript.rs` — shared engine, read-only here.
+
+**Contracts exposed:**
+
+- Rust: `system_snapshot() -> SystemSnapshot { ram: { appMb, totalMb, usedMb, usedPercent },
+  drive: { mount, totalBytes, freeBytes }, appStorageBytes, net: { downBps, upBps, interface } }`,
+  `set_system_clock(timeZone?, utcIso) -> String` (admin-only on Windows; the
+  real error comes back)
+- TS: `systemSnapshot()`, `setSystemClock(tz, iso)`, store `meters`
+  (`snapshot`, `error`, `start()` / `stop()` — reference counted)
+
+**Design decisions worth knowing:**
+
+- Network speed comes from the **OS counters** (`sysinfo::Networks`), not a
+  speed test: a probe measures the probe, costs traffic, and needs the daemon.
+- The busiest adapter is reported, not the sum of all adapters — summing
+  double counts a VPN tunnel and the physical link.
+- The app's own disk size is cached for 20 s and walked by a streaming
+  directory traversal (no buffers, no RAM growth).
+- Polling only runs while a screen shows the bar, so an idle app costs nothing.
+
+---
+
 ## Agent 1 (this session) — "Rust media + disk transcript core"
 
 **Lane:** Chunk 2 backend foundation — audio extraction/chunking, SQLite transcript store,

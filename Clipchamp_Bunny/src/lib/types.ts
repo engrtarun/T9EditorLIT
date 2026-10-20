@@ -100,6 +100,45 @@ export interface DiskInfo {
   usedPercent: number;
 }
 
+/** RAM reading for the status bar — mirrors Rust `RamReading`. */
+export interface RamReading {
+  /** This app's whole process tree, in MB. */
+  appMb: number;
+  /** The machine's total RAM, in MB. */
+  totalMb: number;
+  /** The machine's used RAM, in MB. */
+  usedMb: number;
+  /** The machine's used RAM, in percent. */
+  usedPercent: number;
+}
+
+/** The drive the app's data folder lives on — mirrors Rust `DriveReading`. */
+export interface DriveReading {
+  /** Mount point, e.g. `C:\`. */
+  mount: string;
+  totalBytes: number;
+  freeBytes: number;
+}
+
+/** Network throughput — mirrors Rust `NetReading`. */
+export interface NetReading {
+  /** Bytes per second, down. */
+  downBps: number;
+  /** Bytes per second, up. */
+  upBps: number;
+  /** The interface the numbers came from. */
+  interface: string;
+}
+
+/** One reading of every meter — mirrors Rust `SystemSnapshot`. */
+export interface SystemSnapshot {
+  ram: RamReading;
+  drive: DriveReading;
+  /** Bytes the app itself keeps on disk. */
+  appStorageBytes: number;
+  net: NetReading;
+}
+
 /** Full machine snapshot from the Rust `system_details` command. */
 export interface SystemDetails {
   osName: string;

@@ -35,6 +35,13 @@ mod waveform;
 
 mod sysinfo_ext;
 
+mod meters;
+
+pub use meters::{
+    set_system_clock, system_snapshot, AppStorageProbe, DriveReading, NetReading, NetworkProbe,
+    RamReading, SystemSnapshot,
+};
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -771,7 +778,10 @@ fn installed_build() -> Result<Option<InstalledBuild>, String> {
     }
     let text = std::fs::read_to_string(&marker)
         .map_err(|e| format!("could not read {}: {e}", marker.display()))?;
-    let mut build: InstalledBuild = serde_json::from_str(&text)
+    // A byte-order mark would make the JSON parser choke, and the update
+    // button would silently never appear.
+    let text = text.trim_start_matches('\u{feff}');
+    let mut build: InstalledBuild = serde_json::from_str(text)
         .map_err(|e| format!("could not parse {}: {e}", marker.display()))?;
 
     // A staged executable means a newer build is waiting to be swapped in.
@@ -901,16 +911,19 @@ fn resume_project(db_path: String) -> Result<Option<String>, String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
+pub fn run() {    tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(memory::MemoryProbe::new()))
+        .manage(Mutex::new(NetworkProbe::new()))
+        .manage(AppStorageProbe::new())
         .manage(Mutex::new(None::<Arc<AtomicBool>>))
         .invoke_handler(tauri::generate_handler![
             get_memory_stats,
             system_details,
             drive_space,
+            system_snapshot,
+            set_system_clock,
             demo_source_path,
             canonical_source_path,
             measure_network_speed,
@@ -957,4 +970,26 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running T9 Editor LIT");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The daemon is a plain HTTP service on the loopback interface, so the
+    /// hand-rolled GET has to return its body. This test needs the daemon
+    /// running; it skips itself when it is not.
+    #[test]
+    fn http_get_json_reads_the_daemon() {
+        let Some(body) = http_get_json("127.0.0.1", DAEMON_PORT, "/healthz") else {
+            eprintln!("daemon is not running - skipping");
+            return;
+        };
+        assert!(body.contains("\"ok\""), "unexpected body: {body}");
+    }
+
+    #[test]
+    fn http_get_json_returns_none_for_a_bad_port() {
+        assert!(http_get_json("127.0.0.1", 9, "/healthz").is_none());
+    }
 }

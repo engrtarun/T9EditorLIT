@@ -25,11 +25,11 @@
   import { menu } from '../../stores/menu.svelte';
   import DashboardTopBar from './DashboardTopBar.svelte';
   import ProjectCard from './ProjectCard.svelte';
+  import SystemFooter from '../SystemFooter.svelte';
   import {
     assetUrl,
     defaultDbPath,
     demoSourcePath,
-    driveSpace,
     extractPoster,
     isTauri,
     loadProjects,
@@ -49,7 +49,6 @@
     ago,
     fmtBytes,
     fmtDuration,
-    fmtGb,
     SORT_LABEL,
     sortProjects,
     type ProjectCard as Card,
@@ -66,9 +65,6 @@
   let query = $state('');
   let sort = $state<SortKey>('recent');
   let view = $state<'grid' | 'list'>('grid');
-  /** Total size of the project files — the dashboard's storage figure. */
-  let projectsBytes = $state(0);
-  let drive = $state<{ drive: string; totalBytes: number; freeBytes: number } | null>(null);
   /** The project whose name is being edited inline. */
   let renamingPath = $state<string | null>(null);
   let renameDraft = $state('');
@@ -97,11 +93,6 @@
       cards.filter((c) => c.project.name.toLowerCase().includes(query.trim().toLowerCase())),
       sort
     )
-  );
-
-  /** How much of the drive the projects take — a sliver, most of the time. */
-  const storagePct = $derived(
-    drive && drive.totalBytes > 0 ? Math.min(100, (projectsBytes / drive.totalBytes) * 100) : 0
   );
 
   /* ------------------------------------------------------------ loading */
@@ -136,7 +127,6 @@
       cards = await browserFallback();
       loading = false;
     }
-    void loadDrive();
   }
 
   async function browserFallback(): Promise<Card[]> {
@@ -172,17 +162,14 @@
    * a real frame, never a blank box.
    */
   async function hydrate(list: RustProject[]) {
-    let bytes = 0;
     for (const p of list) {
       try {
         const info = await probeMedia(p.sourcePath);
-        bytes += info.sizeBytes;
         patch(p.sourcePath, (c) => ({ ...c, sizeBytes: info.sizeBytes }));
       } catch {
         /* the file has moved or is gone — the card keeps what it knows */
       }
     }
-    projectsBytes = bytes;
 
     for (const p of list) {
       try {
@@ -194,16 +181,6 @@
       }
       // Give the UI a frame between frames.
       await new Promise((r) => setTimeout(r, 0));
-    }
-  }
-
-  async function loadDrive() {
-    if (!isTauri()) return;
-    try {
-      const d = await driveSpace();
-      if (d) drive = { drive: d.drive, totalBytes: d.totalBytes, freeBytes: d.freeBytes };
-    } catch {
-      /* the drive figure is a nicety, never a blocker */
     }
   }
 
@@ -872,34 +849,10 @@
 
       <!-- --------------------------------------------------- status bar -->
       <footer
-        class="flex h-9 shrink-0 items-center gap-3 border-t border-nc-line bg-nc-panel px-4"
-        title="Local projects — the size of your imported video files against the drive they live on"
+        class="flex h-9 shrink-0 items-center border-t border-nc-line bg-nc-panel px-4"
+        title="Live system meters — RAM, disk and network, read from the OS once a second"
       >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.7"
-          class="text-nc-mut-2"
-          aria-hidden="true"
-        >
-          <path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" />
-          <path d="M4 12h16" />
-        </svg>
-        <span class="text-[11.5px] text-nc-mut">Local projects</span>
-        <span class="relative h-1 w-28 overflow-hidden rounded-full bg-nc-line">
-          <span
-            class="absolute inset-y-0 left-0 rounded-full bg-nc-gold transition-[width] duration-[400ms] ease-out"
-            style="width:{storagePct}%"
-          ></span>
-        </span>
-        <span class="font-mono text-[11px] text-nc-mut-2">
-          {projectsBytes > 0 ? fmtBytes(projectsBytes) : '—'}{drive
-            ? ` / ${fmtGb(drive.totalBytes)}`
-            : ''}
-        </span>
+        <SystemFooter />
       </footer>
     </div>
   </div>

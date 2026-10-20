@@ -22,6 +22,7 @@ import type {
   MediaInfo,
   SilenceRange,
   SystemDetails,
+  SystemSnapshot,
   ThumbnailStrip,
   WaveformData
 } from './types';
@@ -345,6 +346,27 @@ export interface RustDriveSpace {
  */
 export function driveSpace(): Promise<RustDriveSpace | null> {
   return invoke<RustDriveSpace | null>('drive_space');
+}
+
+/**
+ * One reading of every meter the status bar shows: RAM, drive, the app's own
+ * disk usage and the network throughput.
+ *
+ * One call per second is enough for all of them, and it costs the app no
+ * memory: the Rust side reads counters and adds up file sizes, nothing else.
+ */
+export function systemSnapshot(): Promise<SystemSnapshot> {
+  return invoke<SystemSnapshot>('system_snapshot');
+}
+
+/**
+ * Move the machine's clock (and optionally its time zone).
+ *
+ * Windows only lets a privileged process do this, so it can fail — the real
+ * reason comes back as the error message.
+ */
+export function setSystemClock(timeZone: string | null, utcIso: string): Promise<string> {
+  return invoke('set_system_clock', { timeZone, utcIso });
 }
 
 /**

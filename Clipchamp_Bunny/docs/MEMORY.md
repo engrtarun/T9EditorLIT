@@ -220,8 +220,41 @@ record hatata hai; user ka footage disk pe safe rehta hai.
 
 Rust: `transcript::trash_project / restore_project / load_trash / purge_trash`.
 
-### 4.10d Motion — feedback, decoration nahi
+### 4.10e Status bar — asli meters (RAM / disk / net / clock)
 
+Footer ab 5 honest readings dikhata hai, **ek Rust call per second**:
+
+| Item | Kahan se | Kitna costly |
+|---|---|---|
+| **App** — app ka apna disk (DB + cache + logs) | `meters.rs` → `dir_size()` (streaming walk) | 20s me ek baar, TTL cache |
+| **Device** — drive used / total | `sysinfo_ext::drive_space()` | ek disk list, ~1 ms |
+| **Net** — ↓ / ↑ bytes per second | `sysinfo::Networks` interface counters | ek interface list, ~1 ms |
+| **RAM** — app ka tree + machine used/total | shared `memory::MemoryProbe` | memory + process table refresh |
+| **Clock** — Delhi ka time/date/day | `Intl` (Asia/Kolkata), zero cost | — |
+
+**Net OS counters se aata hai, speed-test se nahi.** Speed-test khud traffic
+kharcha karta hai aur "speed" se "speed" measure karta hai — woh number link
+ka nahi, probe ka hota hai. OS counters wahi number dete hain jo Task Manager
+deta hai, bina kisi traffic ke.
+
+**Ek interface, sabse wala:** har adapter ka alag count karna VPN tunnel +
+physical link ko double count karta. Isliye sabse zyada traffic wala adapter
+hi report hota hai (tooltip me interface ka naam).
+
+**Set system clock:** `set_system_clock` → PowerShell `Set-TimeZone` +
+`Set-Date`. Windows me ye **admin** maangta hai — error aata hai to asli
+wajah dikhti hai ("administrator chahiye"), jhootha success nahi.
+
+**RAM impact zero:** kuch buffer nahi banta, koi file read nahi hoti (sirf
+`metadata`), numbers hi IPC se cross karte hain. Polling **sirf tab** chalti
+hai jab koi screen ye bar dikha rahi ho (`meters.start()` / `stop()`, ref-counted).
+
+Reusable: `stores/meters.svelte.ts` (store) · `components/SystemFooter.svelte`
+(bar) · `components/WorldClock.svelte` (popup) · `src-tauri/src/meters.rs`
+(Rust). Editor ka apna RAM meter abhi apna polling rakhta hai — future me
+wahi store use kar sakta hai.
+
+### 4.10d Motion — feedback, decoration nahi
 Rules (AGENTS.md §1 ke saath): sirf `opacity` + `transform` animate hote hain
 (compositor-only — layout/repaint nahi), kuch loop nahi karta (sirf sach me
 wait karne wala spinner), aur sab kuch **Windows ke "animations off"** pe
