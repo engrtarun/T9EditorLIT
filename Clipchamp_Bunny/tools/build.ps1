@@ -104,6 +104,22 @@ try {
 
     Push-Location $AppDir
     try {
+        # The frontend is built **here**, and its exit code is checked, before
+        # the Rust build starts.
+        #
+        # This is the step that bit us: a stray brace in `ipc.ts` made the
+        # frontend build fail, the old `dist/` stayed on disk, and the
+        # executable was built with that old frontend - so the app called
+        # commands the Rust side did not have, and the error was invisible.
+        # Building it first and stopping on failure keeps a stale `dist/`
+        # from ever being embedded.
+        Write-Host '==> Building the frontend' -ForegroundColor Cyan
+        & npm run build
+        if ($LASTEXITCODE -ne 0) {
+            throw "the frontend build failed (exit code $LASTEXITCODE) - the old dist/ would have been embedded"
+        }
+        Write-Host '    [ok] frontend built' -ForegroundColor Green
+
         # The link step is the fragile one on a small machine: it needs a
         # gigabyte of RAM, and it fails with `LNK1181` when another build is
         # using the same output file or the machine is out of memory. Retrying
