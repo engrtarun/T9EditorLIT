@@ -192,6 +192,8 @@ export interface TextClip {
   endSec: number;
   text: string;
   kind: 'title' | 'heading' | 'code-zoom';
+  /** Eye toggle on the T track — hidden text stays in the lane but not on the canvas. */
+  hidden?: boolean;
 }
 
 export interface ProjectState {
@@ -216,7 +218,15 @@ export type MenuIcon =
   | 'bolt'
   | 'disk'
   | 'qr'
-  | 'key';
+  | 'key'
+  | 'split'
+  | 'scissors'
+  | 'volume'
+  | 'volumeOff'
+  | 'eye'
+  | 'eyeOff'
+  | 'text'
+  | 'film';
 
 /** One row in a popover menu. `divider: true` renders a separator instead of an item. */
 export interface MenuItem {

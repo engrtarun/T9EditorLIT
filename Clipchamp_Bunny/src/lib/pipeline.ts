@@ -1,5 +1,6 @@
 import type { AudioChunk } from './types';
 import type { LineFlag } from './types';
+import { logTranscriptionJob } from './ipc';
 
 /**
  * The cloud pipeline: `t9cloud` on 127.0.0.1:7878.
@@ -87,21 +88,38 @@ export async function runTranscription(
   chunks: AudioChunk[],
   onProgress?: Progress
 ): Promise<CloudSegment[]> {
-  const created = await post<CloudJob>('/v1/transcribe', {
-    source_path: sourcePath,
-    chunks: chunks.map((c) => ({
-      path: c.path,
-      offset_secs: c.offsetSecs,
-      index: c.index
-    })),
-    // Hinglish tech vocabulary bias for Whisper.
-    prompt: 'Aapne Hindi aur English mein baat ki, coding tutorial.'
-  });
-  const done = await waitJob(created.id, onProgress);
-  if (!done.transcript?.length) {
-    throw new Error(done.error || 'transcribe returned no segments');
+  // Telemetry: one `transcription_jobs` row when the run settles — the
+  // engine writes it fire-and-forget, nothing here waits on SQLite.
+  const audioSecs = chunks.reduce((sum, c) => sum + (c.durationSecs || 0), 0);
+  const t0 = Date.now();
+  try {
+    const created = await post<CloudJob>('/v1/transcribe', {
+      source_path: sourcePath,
+      chunks: chunks.map((c) => ({
+        path: c.path,
+        offset_secs: c.offsetSecs,
+        index: c.index
+      })),
+      // Hinglish tech vocabulary bias for Whisper.
+      prompt: 'Aapne Hindi aur English mein baat ki, coding tutorial.'
+    });
+    const done = await waitJob(created.id, onProgress);
+    if (!done.transcript?.length) {
+      throw new Error(done.error || 'transcribe returned no segments');
+    }
+    logTranscriptionJob(sourcePath, 'done', 'groq', audioSecs, '', (Date.now() - t0) / 1000);
+    return done.transcript;
+  } catch (e) {
+    logTranscriptionJob(
+      sourcePath,
+      'failed',
+      'groq',
+      audioSecs,
+      String(e),
+      (Date.now() - t0) / 1000
+    );
+    throw e;
   }
-  return done.transcript;
 }
 
 /** Autocorrect: clean up Whisper's spelling before the analyser judges it. */

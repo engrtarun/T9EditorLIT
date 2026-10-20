@@ -407,20 +407,55 @@ type chatResponse struct {
 // maps that back far more reliably than a second Whisper pass would, and it
 // costs a fraction as much.
 func (c *GroqClient) Chat(ctx context.Context, system, user string) (string, error) {
-	if c.ChatModel == "" {
+	// Deterministic: the same line must correct to the same text every run,
+	// otherwise re-transcribing a video silently churns the transcript.
+	return c.chat(ctx, c.ChatModel, system, user, 0, 8192)
+}
+
+// defaultGreetingModel is the model behind the dashboard line.
+//
+// It is deliberately NOT GROQ_CHAT_MODEL. That one is a reasoning model, and a
+// creative prompt makes it spend the whole token budget thinking: measured on
+// this key, gpt-oss-120b returned finish_reason "length" with 218 reasoning
+// tokens and an empty completion, at both 220 and 700 max_tokens. qwen3 answers
+// the same prompt in ~30 tokens with no reasoning pass - cheaper, faster, and
+// it follows the "Roman script" rule.
+//
+// GROQ_GREETING_MODEL overrides it without touching the autocorrect model.
+const defaultGreetingModel = "qwen/qwen3.8-27b"
+
+func greetingModel() string {
+	if m := strings.TrimSpace(os.Getenv("GROQ_GREETING_MODEL")); m != "" {
+		return m
+	}
+	return defaultGreetingModel
+}
+
+// ChatCreative is the same transport with room to breathe: a little
+// temperature so two calls do not return the same sentence, and a small token
+// budget because these answers are one line, not a transcript.
+func (c *GroqClient) ChatCreative(ctx context.Context, system, user string) (string, error) {
+	return c.chat(ctx, greetingModel(), system, user, 0.8, 200)
+}
+
+func (c *GroqClient) chat(
+	ctx context.Context,
+	model, system, user string,
+	temperature float64,
+	maxTokens int,
+) (string, error) {
+	if model == "" {
 		return "", errors.New("groq chat model is not configured (set GROQ_CHAT_MODEL)")
 	}
 
 	payload, err := json.Marshal(chatRequest{
-		Model: c.ChatModel,
+		Model: model,
 		Messages: []chatMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
-		// Deterministic: the same line must correct to the same text every run,
-		// otherwise re-transcribing a video silently churns the transcript.
-		Temperature: 0,
-		MaxTokens:   8192,
+		Temperature: temperature,
+		MaxTokens:   maxTokens,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode groq chat request: %w", err)

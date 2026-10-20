@@ -43,9 +43,10 @@ type Deps struct {
 
 // Server wires the HTTP routes.
 type Server struct {
-	deps  Deps
-	mux   *http.ServeMux
-	store *jobStore
+	deps     Deps
+	mux      *http.ServeMux
+	store    *jobStore
+	greeting *greetingState
 }
 
 // New builds the server. The job store is created here and the queue's OnDone
@@ -57,9 +58,10 @@ func New(deps Deps) *Server {
 	}
 
 	s := &Server{
-		deps:  deps,
-		mux:   http.NewServeMux(),
-		store: newJobStore(),
+		deps:     deps,
+		mux:      http.NewServeMux(),
+		store:    newJobStore(),
+		greeting: &greetingState{},
 	}
 
 	deps.Queue.SetOnDone(s.store.finish)
@@ -73,6 +75,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/transcribe", s.handleTranscribe)
 	s.mux.HandleFunc("POST /v1/correct", s.handleCorrect)
 	s.mux.HandleFunc("POST /v1/analyze", s.handleAnalyze)
+
+	// Dashboard greeting: one Groq line per language, cached on this side so
+	// twenty app launches cost a single call.
+	s.mux.HandleFunc("GET /v1/greeting", s.handleGreeting)
 
 	// Telegram vault. Authorisation is a QR scan, so login is three calls:
 	// ask for a code, poll for the phase, and read the status that says

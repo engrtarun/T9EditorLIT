@@ -10,67 +10,23 @@
   import { menu } from '../stores/menu.svelte';
   import { applyStagedUpdate, installedBuild, isTauri, revealSource } from '../ipc';
   import { toast } from '../stores/toast.svelte';
+  import UpdateButton from './UpdateButton.svelte';
 
   /** Clipchamp's project-name menu (captured in the .ipynb DOM extract). */
   let renaming = $state(false);
   let draft = $state('');
 
   /**
-   * Self-update.
+   * Commit the rename from the top bar.
    *
-   * The build that is installed next to the running executable carries a
-   * `build.json` marker. When a newer build has been installed while this
-   * one was running, the marker changes and the app offers a restart. The
-   * restart swaps the executable and starts the new build — the pinned
-   * taskbar icon keeps working because it points at the same path.
+   * It must reach SQLite, not just the store: the dashboard reloads its cards
+   * from the `projects` table, so an in-memory rename vanished the moment the
+   * user went home (the dashboard's own rename always did save).
    */
-  let updateReady = $state(false);
-  let runningBuild = $state<string | null>(null);
-  let applying = $state(false);
-
-  async function checkUpdate() {
-    if (!isTauri()) return;
-    try {
-      const build = await installedBuild();
-      if (!build) return;
-      if (runningBuild === null) {
-        // First reading of this session: this is the build we are running.
-        runningBuild = build.builtAt;
-        return;
-      }
-      updateReady = build.builtAt !== runningBuild || build.updateReady;
-    } catch {
-      /* the marker is missing - a dev build, nothing to update */
-    }
-  }
-
-  $effect(() => {
-    if (!isTauri()) return;
-    let alive = true;
-    void checkUpdate();
-    const iv = setInterval(() => {
-      if (alive) void checkUpdate();
-    }, 20000);
-    const onFocus = () => {
-      if (alive) void checkUpdate();
-    };
-    window.addEventListener('focus', onFocus);
-    return () => {
-      alive = false;
-      clearInterval(iv);
-      window.removeEventListener('focus', onFocus);
-    };
-  });
-
-  async function restartIntoNewBuild() {
-    if (applying) return;
-    applying = true;
-    try {
-      await applyStagedUpdate();
-    } catch (e) {
-      applying = false;
-      toast.push('warn', `Update nahi lag paaya: ${e instanceof Error ? e.message : e}`);
-    }
+  function commitRename() {
+    const next = draft.trim();
+    if (next && next !== project.name) void project.rename(next);
+    renaming = false;
   }
 
   const PROJ_ITEMS: MenuItem[] = [
@@ -106,7 +62,10 @@
 >
   <!-- app launcher (9 dots) — the way back to the dashboard -->
   <button
-    onclick={() => app.goHome('home')}
+    onclick={() =>
+      // Write any edit still inside the debounce window before the dashboard
+      // re-reads SQLite — otherwise a fast Home click shows a stale card.
+      void project.flush().then(() => app.goHome('home'))}
     class="grid h-8 w-8 place-items-center rounded-md text-nc-mut transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
     title="Home"
     aria-label="Home"
@@ -143,15 +102,9 @@
   {#if renaming}
     <input
       bind:value={draft}
-      onblur={() => {
-        if (draft.trim()) project.name = draft.trim();
-        renaming = false;
-      }}
+      onblur={commitRename}
       onkeydown={(e) => {
-        if (e.key === 'Enter') {
-          if (draft.trim()) project.name = draft.trim();
-          renaming = false;
-        }
+        if (e.key === 'Enter') commitRename();
         if (e.key === 'Escape') renaming = false;
       }}
       class="ml-1 w-[190px] rounded-md border border-nc-gold bg-nc-panel-2 px-2 py-1 text-[13px] outline-none"
@@ -176,34 +129,7 @@
   <div class="flex-1"></div>
 
   <!-- a newer build is installed: offer the restart -->
-  {#if updateReady}
-    <button
-      onclick={restartIntoNewBuild}
-      disabled={applying}
-      class="group mr-1 flex shrink-0 items-center rounded-md border border-nc-line bg-nc-panel-2 px-2 py-[3px] text-[11px] leading-4 font-medium text-nc-mut transition-colors hover:border-nc-gold/50 hover:text-nc-gold disabled:opacity-50"
-      title="A newer build is installed. Click to restart into it."
-    >
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 14 14"
-        fill="none"
-        aria-hidden="true"
-        class="shrink-0"
-      >
-        <path
-          d="M7 11V3M3.5 7.63128L7 11L10.5 7.63128"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
-      <span class="ms-1.5 me-px transition-colors duration-150 group-hover:text-nc-gold">
-        {applying ? 'Restarting…' : 'Update'}
-      </span>
-    </button>
-  {/if}
+  <UpdateButton />
 
   <!-- RAM · this app · network, click for full PC details -->
   <SystemMeter />

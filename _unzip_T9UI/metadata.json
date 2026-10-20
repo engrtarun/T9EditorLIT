@@ -1,6 +1,0 @@
-{
-  "name": "RatioCut - Programming Tutorial Video Editor",
-  "description": "Minimalist dark-themed desktop video editor with Nanami 7:3 ratio aesthetic for rapid transcript-based cutting of programming tutorials.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

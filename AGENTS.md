@@ -52,7 +52,7 @@ Welcome, AI Agent. Read this document before inspecting, modifying, or generatin
 ├──────────────────────────────────────────────┤
 │ media.rs · ffmpeg.rs · memory.rs             │  Pure Rust logic, unit-tested
 ├──────────────────────────────────────────────┤
-│ t9cloud Go daemon (127.0.0.1:8787)           │  Groq Whisper, Gemini flags, Telegram MTProto
+│ t9cloud Go daemon (127.0.0.1:7878)           │  Groq Whisper, Gemini flags, Telegram MTProto
 └──────────────────────────────────────────────┘
 ```
 
@@ -92,29 +92,54 @@ Repo me **do agents** kaam karte hain — app/UI (`Clipchamp_Bunny/`) aur Go
 daemon (`go/`). User desktop app **taskbar se** chalata hai, isliye koi bhi
 kaam tabhi tak dikhega nahi jab tak wo **install** nahi hota.
 
-**Ek hi darwaza hai — `tools\deploy.ps1`:**
+**Ek hi darwaza hai — `Clipchamp_Bunny\tools\deploy.ps1`.** Poora contract,
+form fields, queue rules, exit codes aur troubleshooting:
+[`docs/AGENT_DEPLOY_PROTOCOL.md`](docs/AGENT_DEPLOY_PROTOCOL.md).
+
+Har deploy pehle **SQLite ledger** me ek work order banata hai:
+
+| Field | Switch | Kya |
+| ----- | ------ | --- |
+| Agent | `-Agent` | kaun deploy kar raha hai |
+| Model | `-Model` | exact `provider/model` id |
+| Task | `-Task` | kya change ho raha hai |
+| Why | `-Why` | kyun zaroori hai |
+| ETA | `-EtaMinutes` | build + install + verify ka honest estimate |
+| Scope | `-Scope` | `app` · `go` · `both` · `docs` |
+| Priority | `-Priority` | 0–100 (default 50; >60 ke liye `-Emergency`) |
 
 ```powershell
 cd Clipchamp_Bunny
-pwsh -File tools\deploy.ps1              # build → install → taskbar pin
-pwsh -File tools\deploy.ps1 -SkipBuild   # sirf install + pin
-pwsh -File tools\verify-install.ps1      # proof: real data, 0 API calls, MB/s live
+pwsh -File tools\deploy.ps1 -Interactive     # form, phir build
+pwsh -File tools\deploy.ps1 -Status          # ledger: active + queue
+pwsh -File tools\deploy.ps1 -Doctor          # installed state check
 ```
+
+Ya repo root se double-click: `Deploy-T9EditorLIT.bat`.
 
 Ye script khud ye sab karti hai:
 
-| Step    | Kya                                                                   |
-| ------- | --------------------------------------------------------------------- |
-| build   | `npx tauri build --no-bundle` (LTO thin → ~4 min)                     |
-| daemon  | `go/` sources naye hon to `go build -o bin/t9cloud.exe ./cmd/t9cloud` |
-| install | `%LOCALAPPDATA%\Programs\T9EditorLIT\` — app + daemon + `.env`        |
-| stage   | app chal raha ho to naye binary stage hote hain (`*.new.exe`)         |
-| pin     | Start menu shortcut + AppUserModelID + taskbar pin                    |
+| Step | Kya |
+| ---- | --- |
+| ledger | work order + fair queue (one active, FIFO, priority aging) |
+| build | `build.ps1` → frontend + `npx tauri build --no-bundle`, SHA-256 manifest |
+| daemon | `go/` sources naye hon to rebuild + restart/stage `t9cloud` |
+| install | `%LOCALAPPDATA%\Programs\T9EditorLIT\` — app + daemon + `.env` |
+| stage | app chal raha ho to `t9-editor-lit.new.exe` / `t9cloud.new.exe` |
+| verify | hashes, `build.json`, `/healthz`, no repo-exe instances |
+| pin | Start menu shortcut + AppUserModelID + taskbar pin |
 
 **Running app me update:** app chal raha ho to naya build stage hota hai aur
-app ke top bar me ek chhota **"Update ↓"** button aata hai. User click karta
-hai → helper script binary swap karke app restart kar deta hai.
+top bar me chhota **"Update"** button aata hai (sirf staged exe hone par).
+User click karta hai → helper app + daemon swap karke restart karta hai.
+App band ho to build seedha install hota hai; button ki zaroorat nahi.
+
+**Ledger hi sach hai:** `shipped` ke bina desktop pe change nahi pahuncha.
+"Build chal raha hai" tabhi bolo jab `deploy.ps1 -Status` me `ACTIVE` ho.
+"Baad me bata dunga" completion nahi hai — `shipped`, `failed`, ya
+`cancelled` me se ek close karo.
 
 > **Go side ke liye (doosra agent):** apna kaam commit kar do — bas. Daemon
-> rebuild aur install `deploy.ps1` khud kar deta hai. Uske baad desktop pe
-> live ho jayega.
+> rebuild aur install `deploy.ps1` khud kar deta hai. Tumhe alag se
+> `go build` ya `t9cloud` restart nahi karna. Bas `-Scope go` (ya `both`)
+> ke saath deploy chalao.

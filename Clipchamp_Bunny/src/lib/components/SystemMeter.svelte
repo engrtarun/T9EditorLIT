@@ -33,7 +33,7 @@
     };
   }
 
-  // Poll RAM every 1.5 s — cheap, and it is the number people care about.
+  // Poll RAM: 2s normal, adaptive 4s backoff when system is under high RAM pressure (>88%).
   $effect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -45,7 +45,8 @@
       } catch {
         /* keep the last good reading */
       }
-      timer = setTimeout(tick, 1500);
+      const interval = stats && stats.usedPercent > 88 ? 4000 : 2000;
+      timer = setTimeout(tick, interval);
     };
     void tick();
     return () => {

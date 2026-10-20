@@ -132,8 +132,10 @@ class KeysStore {
     const wantCtrl = combo.includes('ctrl');
     const wantShift = combo.includes('shift');
     const wantAlt = combo.includes('alt');
-
-    if ((e.ctrlKey || e.metaKey) !== wantCtrl) return false;
+    // Windows key (metaKey) is used by OS shortcuts like Win+Shift+S (Snipping Tool).
+    // It must NEVER be treated as Ctrl, or it will hijack system shortcuts.
+    if (e.metaKey) return false;
+    if (e.ctrlKey !== wantCtrl) return false;
     if (e.shiftKey !== wantShift) return false;
     if (e.altKey !== wantAlt) return false;
 

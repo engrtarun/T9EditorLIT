@@ -55,6 +55,17 @@
   }
 
   function onKey(e: KeyboardEvent) {
+    // System shortcuts & screenshot keys must never be captured or blocked:
+    // PrintScreen, Snapshot, F1-F12, and any Meta / Windows key chord (e.g. Win+Shift+S).
+    if (
+      e.key === 'PrintScreen' ||
+      e.key === 'Snapshot' ||
+      e.metaKey ||
+      e.key.startsWith('F')
+    ) {
+      return;
+    }
+
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     if (layout.helpOpen && e.key !== 'Escape') return;
@@ -194,6 +205,11 @@
       return;
     }
     if (hit('delete', e)) {
+      if (project.selectedTextId) {
+        project.removeText(project.selectedTextId);
+        toast.push('cut', '✕ Text clip deleted');
+        return;
+      }
       const n = project.targets().length;
       project.cutTargets();
       project.step(1);
@@ -251,21 +267,23 @@
     }
 
     // Shift+X then an arrow moves the line
-    if (e.shiftKey && e.key.toLowerCase() === 'x') {
+    if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'x') {
       e.preventDefault();
       setChord('x');
       return;
     }
-    // Z / C then an arrow trims the start / end of the line
-    if (e.key.toLowerCase() === 'z') {
-      e.preventDefault();
-      setChord('z');
-      return;
-    }
-    if (e.key.toLowerCase() === 'c') {
-      e.preventDefault();
-      setChord('c');
-      return;
+    // Z / C then an arrow trims the start / end of the line (plain un-modified keys only)
+    if (!e.ctrlKey && !e.shiftKey && !e.altKey) {
+      if (e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        setChord('z');
+        return;
+      }
+      if (e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        setChord('c');
+        return;
+      }
     }
 
     // Arrow keys move the seeker one frame

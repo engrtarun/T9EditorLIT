@@ -1,0 +1,11 @@
+{
+  "$comment": "Copy this file, fill every field, then: pwsh -File tools\\deploy.ps1 -FormFile .\\my-deploy.json",
+  "agent": "opencode",
+  "model": "opencode/deepseek-v4.1-flash-free",
+  "session": "S-opencode-20261020-2130",
+  "task": "fix the export button state after a successful export",
+  "why": "the button stays disabled, so the user cannot export the same cut twice",
+  "etaMinutes": 25,
+  "scope": "both",
+  "priority": 50
+}

@@ -9,32 +9,25 @@
  *   nanami          charcoal + rose/gold  (T9's own look)
  *   clipchamp-light the shipped app's real light tokens
  *
+ * The names, labels and cycle order live in `lib/themes.ts` so the top-bar
+ * toggle, the Settings picker and the allow-list can never drift apart.
+ *
  * `t9-theme` is read before first paint by static/theme-init.js; this store
  * is the writer, and it applies the attribute immediately on construction
  * so a theme set mid-session takes effect without waiting for an effect.
  */
 
-export type ThemeId = "clipchamp" | "nanami" | "clipchamp-light";
+import { isThemeId, nextThemeId, type ThemeId } from "../themes";
 
-/** Cycles in this order when the toggle button is pressed. */
-const ORDER: readonly ThemeId[] = ["clipchamp", "nanami", "clipchamp-light"];
+export { THEME_HINT, THEME_LABEL, THEMES } from "../themes";
+export type { ThemeId } from "../themes";
 
 const STORAGE_KEY = "t9-theme";
-
-export const THEME_LABEL: Record<ThemeId, string> = {
-  clipchamp: "Clipchamp dark",
-  nanami: "Nanami",
-  "clipchamp-light": "Clipchamp light",
-};
-
-function isTheme(value: string | null): value is ThemeId {
-  return value !== null && (ORDER as readonly string[]).includes(value);
-}
 
 function readStored(): ThemeId {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (isTheme(stored)) return stored;
+    if (isThemeId(stored)) return stored;
   } catch {
     // Storage unavailable (private mode) — fall through to the default.
   }
@@ -67,13 +60,11 @@ class ThemeStore {
 
   /** Next palette in the cycle — also what the toggle button's tooltip shows. */
   toggle(): void {
-    const index = ORDER.indexOf(this.current);
-    this.apply(ORDER[(index + 1) % ORDER.length]);
+    this.apply(nextThemeId(this.current));
   }
 
   get next(): ThemeId {
-    const index = ORDER.indexOf(this.current);
-    return ORDER[(index + 1) % ORDER.length];
+    return nextThemeId(this.current);
   }
 }
 

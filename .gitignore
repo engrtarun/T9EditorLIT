@@ -31,7 +31,11 @@ data/
 *.sqlite3
 
 # ---------- Media / extracted audio (can be GBs) ----------
-media/
+# NOTE: never ignore a bare `media/` - it also hides source folders such as
+# Clipchamp_Bunny/src/lib/components/media/, which silently drops their
+# Tailwind classes from the build (a whole directory the scanner cannot see).
+# The extensions below already cover the multi-GB files.
+/media/
 cache/
 *.mp4
 !resource_Clipchamp/*.mp4
@@ -86,3 +90,5 @@ tmp_*.txt
 coverage/
 *.lcov
 .kilocode/
+.kilo/
+deepclonewebsite/

@@ -76,6 +76,15 @@ test('reordering segments reorders the transcript rows', () => {
   );
 });
 
+test('segment ids stay stable when an earlier clip is removed', () => {
+  seq = 0;
+  const lines = [line(0, 2), line(2, 4), line(10, 12), line(20, 22)];
+  const before = buildSegments(lines);
+  const b = before.find((s) => s.startSec === 10)!;
+  const after = buildSegments(lines.map((l) => (l.startSec === 0 ? { ...l, keep: 'cut' } : l)));
+  assert.equal(after.find((s) => s.startSec === 10)?.id, b.id);
+});
+
 test('a cut line is attached to the segment it interrupts', () => {
   seq = 0;
   const lines = [line(0, 5, 'keep', 'a'), line(5, 8, 'cut', 'gap'), line(8, 12, 'keep', 'b')];

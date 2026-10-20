@@ -61,6 +61,8 @@
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "PrintScreen" || e.key === "Snapshot") return;
       const t = player.currentTime;
       const i = transcript.lines.findIndex((l) => t >= l.startSecs && t < l.endSecs);
       if (i < 0) return;

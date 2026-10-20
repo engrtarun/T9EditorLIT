@@ -19,6 +19,7 @@
    *      lot off.
    */
   import { app } from '../../stores/app.svelte';
+  import { greeting } from '../../stores/greeting.svelte';
   import { mode } from '../../stores/mode.svelte';
   import { project } from '../../stores/project.svelte';
   import { toast } from '../../stores/toast.svelte';
@@ -55,6 +56,10 @@
     type SortKey
   } from '../../dashboard';
   import type { MenuItem } from '../../types';
+
+  // One greeting per app open. The store caches and guards repeats, so this
+  // line never waits for the network.
+  greeting.init();
 
   /* ------------------------------------------------------------- state */
 
@@ -461,10 +466,11 @@
           {#if app.section === 'home'}
             <!-- greeting -->
             <h1
-              class="t9-fade-in text-[27px] font-bold tracking-tight text-nc-txt"
+              class="t9-fade-in max-w-[980px] text-[27px] font-bold tracking-tight text-nc-txt"
               style="animation-delay:60ms"
+              title={greeting.text}
             >
-              Good to see you again
+              {greeting.text}
             </h1>
             <p class="t9-fade-in mt-1 text-[13px] text-nc-mut" style="animation-delay:100ms">
               Pick up where you left off.

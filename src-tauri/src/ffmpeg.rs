@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A completed child-process run.
 pub struct RunOutput {
@@ -30,17 +30,36 @@ impl RunOutput {
 /// FFmpeg is chatty on stderr even on success (stream sizes, speed, etc.), so
 /// both streams are always collected.
 pub fn run(program: &str, args: &[&str]) -> Result<RunOutput, String> {
+    // Version/encoder/filter listings run dozens of times a session and hold
+    // no real workload — they would only add noise to the child metrics.
+    let trivial = is_trivial_probe(args);
+    let started = Instant::now();
     let output = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("failed to spawn `{program}`: {e}"))?;
+        .map_err(|e| {
+            if !trivial {
+                crate::stats::log_child(program, started.elapsed().as_millis() as i64, -1);
+            }
+            format!("failed to spawn `{program}`: {e}")
+        })?;
 
+    let status = output.status.code().unwrap_or(-1);
+    if !trivial {
+        crate::stats::log_child(program, started.elapsed().as_millis() as i64, status);
+    }
     Ok(RunOutput {
-        status: output.status.code().unwrap_or(-1),
+        status,
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
+}
+
+/// True for the cheap informational probes that are not worth recording.
+fn is_trivial_probe(args: &[&str]) -> bool {
+    args.iter()
+        .any(|a| matches!(*a, "-version" | "-encoders" | "-decoders" | "-filters" | "-hwaccels"))
 }
 
 /// Probe a media file, returning raw ffprobe JSON.
@@ -150,6 +169,7 @@ pub fn run_streaming<A: AsRef<std::ffi::OsStr>>(
     cancel: Option<Arc<AtomicBool>>,
     mut on_line: impl FnMut(&str),
 ) -> Result<StreamOutput, String> {
+    let started = Instant::now();
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -221,6 +241,10 @@ pub fn run_streaming<A: AsRef<std::ffi::OsStr>>(
         Ok(mutex) => mutex.into_inner().unwrap_or_default(),
         Err(_) => String::new(),
     };
+
+    // Streaming runs are real workloads (export pieces, chunk extraction) —
+    // always worth one telemetry row.
+    crate::stats::log_child(program, started.elapsed().as_millis() as i64, status);
 
     Ok(StreamOutput {
         status,

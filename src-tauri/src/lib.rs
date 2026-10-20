@@ -24,6 +24,7 @@ mod keyframes;
 mod media;
 mod memory;
 mod polish;
+mod stats;
 mod thumbnail;
 mod transcript;
 mod waveform;
@@ -71,13 +72,17 @@ fn get_memory_stats(probe: State<'_, Probe>) -> Result<MemoryStats, String> {
 /// Results are cached in SQLite keyed by path + size + mtime, so re-importing
 /// an unchanged file skips ffprobe entirely (instant on a 5 GB source).
 #[tauri::command]
-fn probe_media(app: tauri::AppHandle, path: String) -> Result<MediaInfo, String> {
+async fn probe_media(app: tauri::AppHandle, path: String) -> Result<MediaInfo, String> {
     let path = PathBuf::from(path);
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let db_path = dir.join("t9editorlit.db");
-    let conn = transcript::open_db(&db_path)?;
-    media::init_media_cache_schema(&conn)?;
-    MediaInfo::probe_cached(&path, &conn)
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = dir.join("t9editorlit.db");
+        let conn = transcript::open_db(&db_path)?;
+        media::init_media_cache_schema(&conn)?;
+        MediaInfo::probe_cached(&path, &conn)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Which hardware encoders this machine can actually use (QuickSync on Intel
@@ -104,7 +109,7 @@ fn check_ffmpeg() -> Result<String, String> {
 
 /// Extract mono 16 kHz audio from a source video into ~segment_secs WAV chunks.
 #[tauri::command]
-fn extract_audio_chunks(
+async fn extract_audio_chunks(
     path: String,
     out_dir: Option<String>,
     segment_secs: Option<f64>,
@@ -114,7 +119,10 @@ fn extract_audio_chunks(
         Some(d) => PathBuf::from(d),
         None => std::env::temp_dir().join("t9editorlit").join("chunks"),
     };
-    audio::extract_chunks(&source, &out, segment_secs.unwrap_or(300.0))
+    let seg = segment_secs.unwrap_or(300.0);
+    tauri::async_runtime::spawn_blocking(move || audio::extract_chunks(&source, &out, seg))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Detect silent spans (dead air) in a source's audio with FFmpeg.
@@ -122,16 +130,17 @@ fn extract_audio_chunks(
 /// Returns time ranges so the frontend can mark them cut. Pass
 /// `minSecs` ≥ ~0.8 to only remove real pauses, keeping the edit natural.
 #[tauri::command]
-fn detect_silence(
+async fn detect_silence(
     path: String,
     noise_db: Option<f64>,
     min_secs: Option<f64>,
 ) -> Result<Vec<audio::SilenceRange>, String> {
-    audio::detect_silence(
-        &PathBuf::from(path),
-        noise_db.unwrap_or(-30.0),
-        min_secs.unwrap_or(0.8),
-    )
+    let source = PathBuf::from(path);
+    let db = noise_db.unwrap_or(-30.0);
+    let mins = min_secs.unwrap_or(0.8);
+    tauri::async_runtime::spawn_blocking(move || audio::detect_silence(&source, db, mins))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Default on-disk SQLite path for transcript/cut state.
@@ -160,7 +169,7 @@ fn default_cache_dir(app: tauri::AppHandle) -> Result<String, String> {
 /// Returns the cache directory plus frame count; the frontend derives each
 /// file name (`thumb_00001.jpg`, …) and loads them through the asset protocol.
 #[tauri::command]
-fn extract_thumbnails(
+async fn extract_thumbnails(
     app: tauri::AppHandle,
     path: String,
     out_dir: Option<String>,
@@ -172,14 +181,16 @@ fn extract_thumbnails(
         Some(d) => PathBuf::from(d),
         None => cache_root(&app)?,
     };
-    thumbnail::extract(&source, &root, fps, width)
+    tauri::async_runtime::spawn_blocking(move || thumbnail::extract(&source, &root, fps, width))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Waveform peaks for the timeline, cached as JSON on disk keyed by source
 /// mtime. Streams FFmpeg through a fixed 32 KB buffer — a 5 GB source never
 /// lands in this process's heap.
 #[tauri::command]
-fn extract_waveform(
+async fn extract_waveform(
     app: tauri::AppHandle,
     path: String,
     out_dir: Option<String>,
@@ -190,7 +201,10 @@ fn extract_waveform(
         Some(d) => PathBuf::from(d),
         None => cache_root(&app)?,
     };
-    waveform::extract(&source, &root, bars.unwrap_or(1200) as usize)
+    let count = bars.unwrap_or(1200) as usize;
+    tauri::async_runtime::spawn_blocking(move || waveform::extract(&source, &root, count))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Load transcript lines for a source video from SQLite.
@@ -269,10 +283,9 @@ async fn polish_render(
     polish::run_polish(&app, &source, &output, &settings)
 }
 
-/// Start a smart hybrid export. Runs synchronously on a worker thread; progress
-/// is streamed to the UI via the `export-progress` event.
+/// Start a smart hybrid export; progress is streamed via `export-progress`.
 #[tauri::command]
-fn start_export(
+async fn start_export(
     app: tauri::AppHandle,
     cancel: State<'_, ExportCancel>,
     request: ExportRequest,
@@ -281,7 +294,12 @@ fn start_export(
     *cancel
         .lock()
         .map_err(|_| "export lock poisoned".to_string())? = Some(Arc::clone(&flag));
-    let result = export::run_export(app, flag, request);
+    let cancel_flag = Arc::clone(&flag);
+    let app_clone = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || export::run_export(app_clone, cancel_flag, request))
+        .await
+        .map_err(|e| e.to_string())?;
+
     *cancel
         .lock()
         .map_err(|_| "export lock poisoned".to_string())? = None;
@@ -301,23 +319,27 @@ fn cancel_export(cancel: State<'_, ExportCancel>) {
 /// Plan an export without running it — returns the piece breakdown, estimated
 /// size, and any warnings so the UI can show a preview before the render.
 #[tauri::command]
-fn plan_export(app: tauri::AppHandle, request: ExportRequest) -> Result<ExportPlan, String> {
-    let cancel = Arc::new(AtomicBool::new(false));
-    let scan_app = app.clone();
-    let on_scan = move |msg: &str| {
-        let _ = scan_app.emit(
-            "export-progress",
-            serde_json::json!({
-                "stage": "scan",
-                "pieceIndex": 0,
-                "pieceCount": 0,
-                "percent": 0.0,
-                "message": msg,
-            }),
-        );
-    };
-    let (_, plan, _) = export::prepare(&request, Some(cancel), Some(&on_scan))?;
-    Ok(plan)
+async fn plan_export(app: tauri::AppHandle, request: ExportRequest) -> Result<ExportPlan, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let scan_app = app.clone();
+        let on_scan = move |msg: &str| {
+            let _ = scan_app.emit(
+                "export-progress",
+                serde_json::json!({
+                    "stage": "scan",
+                    "pieceIndex": 0,
+                    "pieceCount": 0,
+                    "percent": 0.0,
+                    "message": msg,
+                }),
+            );
+        };
+        let (_, plan, _) = export::prepare(&request, Some(cancel), Some(&on_scan))?;
+        Ok(plan)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

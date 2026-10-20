@@ -22,13 +22,17 @@
    */
   let { video }: { video: HTMLVideoElement | null } = $props();
 
-  // 16:9 sample buffer. Tiny on purpose — dominant colours only.
+  // 16:9 sample buffer. Tiny on purpose — dominant colours only (~5 KB RAM).
   const W = 48;
   const H = 27;
   const FRAME_MS = 100; // ~10 fps sampling throttle, like YouTube's loop
   const NEW_FRAME_ALPHA = 0.25; // per-tick blend weight (glow responsiveness)
 
   let canvas: HTMLCanvasElement | null = $state(null);
+
+  // Soft atmospheric bloom: saturated, smooth gaussian blur, radial falloff feathering into darkness
+  const style =
+    'opacity:.8;filter:blur(64px) saturate(1.45) brightness(1.05);-webkit-mask-image:radial-gradient(ellipse at center,#000 45%,transparent 85%);mask-image:radial-gradient(ellipse at center,#000 45%,transparent 85%)';
 
   $effect(() => {
     const v = video;
@@ -139,14 +143,12 @@
   });
 </script>
 
-<!-- behind everything in the stage; the media box covers the centre and the
-     glow blooms out into the stage padding. Masked so nothing bleeds onto
-     the neighbouring panels. -->
+<!-- behind everything; fades out softly so nothing bleeds into neighbouring panels -->
 <canvas
   bind:this={canvas}
   width={W}
   height={H}
   aria-hidden="true"
-  class="pointer-events-none absolute inset-0 h-full w-full"
-  style="opacity:.75;filter:blur(96px) saturate(1.4) brightness(1);-webkit-mask-image:radial-gradient(ellipse at center,#000 55%,transparent 96%);mask-image:radial-gradient(ellipse at center,#000 55%,transparent 96%)"
+  class="pointer-events-none absolute inset-0 -z-10 h-full w-full"
+  {style}
 ></canvas>

@@ -44,5 +44,27 @@
     <rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3h-3zM18 18h3v3h-3z" />
   {:else if name === 'key'}
     <circle cx="8" cy="14" r="4" /><path d="M11 11l8-8 2 2-2 2 2 2-3 3-2-2-2 2" />
+  {:else if name === 'split'}
+    <path d="M12 3v18M5 7h4M5 17h4M15 7h4M15 17h4" />
+  {:else if name === 'scissors'}
+    <circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" />
+    <path d="M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12" />
+  {:else if name === 'volume'}
+    <path d="M4 9v6h4l5 4V5L8 9z" /><path d="M16 8.5a5 5 0 0 1 0 7" /><path
+      d="M18.5 6a8 8 0 0 1 0 12"
+    />
+  {:else if name === 'volumeOff'}
+    <path d="M4 9v6h4l5 4V5L8 9z" /><path d="M16 9l5 5M21 9l-5 5" />
+  {:else if name === 'eye'}
+    <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z" /><circle cx="12" cy="12" r="2.5" />
+  {:else if name === 'eyeOff'}
+    <path d="M3 3l18 18" /><path d="M10.6 6.2A11 11 0 0 1 12 6c6.5 0 10 6 10 6a17 17 0 0 1-3 3.6" />
+    <path d="M6.6 6.6C3.7 8.4 2 12 2 12s3.5 6 10 6a11 11 0 0 0 5.4-1.4" />
+  {:else if name === 'text'}
+    <path d="M5 5h14M12 5v14M8 19h8" />
+  {:else if name === 'film'}
+    <rect x="3" y="4" width="18" height="16" rx="2" /><path
+      d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"
+    />
   {/if}
 </svg>

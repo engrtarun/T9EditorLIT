@@ -63,6 +63,7 @@
   };
 
   function jump(line: TranscriptLine) {
+    project.clearTextSelection();
     project.cursor = project.lines.findIndex((l) => l.id === line.id);
     player.seek(line.startSec);
   }

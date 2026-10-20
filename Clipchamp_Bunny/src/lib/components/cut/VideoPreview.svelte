@@ -3,6 +3,7 @@
   import { project } from '../../stores/project.svelte';
   import { thumbUrl } from '../../media';
   import { fmtTime } from '../../utils';
+  import AmbientGlow from './AmbientGlow.svelte';
 
   let videoEl: HTMLVideoElement | null = $state(null);
   let stage: HTMLDivElement | null = $state(null);
@@ -84,6 +85,32 @@
   const inCut = $derived(project.isCutAt(player.currentTime));
   /** The first filmstrip frame doubles as the poster, so the canvas is never black. */
   const poster = $derived(project.thumbnails ? thumbUrl(project.thumbnails, 0) : undefined);
+
+  /** Edit-timeline position — text clips are stored on the edit axis. */
+  const editPos = $derived(project.editTimeAt(player.currentTime));
+
+  const activeTexts = $derived.by(() => {
+    if (project.isTrackHidden('text') || editPos == null) return [];
+    return project.texts.filter((t) => !t.hidden && editPos >= t.startSec && editPos < t.endSec);
+  });
+
+  const currentSegment = $derived(
+    project.segments.find(
+      (s) => player.currentTime >= s.startSec && player.currentTime < s.endSec
+    ) ?? null
+  );
+
+  const audioHidden = $derived(
+    project.isTrackHidden('audio') ||
+      (currentSegment ? project.isSegmentMuted(currentSegment.id) : false)
+  );
+  const videoHidden = $derived(project.isTrackHidden('video'));
+
+  $effect(() => {
+    const v = videoEl;
+    if (!v) return;
+    v.muted = audioHidden;
+  });
 </script>
 
 <!-- PREVIEW STAGE — no toolbar; Clipchamp keeps the transport in the timeline row below -->
@@ -91,12 +118,21 @@
   bind:this={stage}
   data-focus="stage"
   tabindex="-1"
-  class="relative grid min-h-0 flex-1 place-items-center bg-nc-bg p-4 outline-none"
+  class="relative grid min-h-0 flex-1 place-items-center overflow-hidden bg-nc-bg p-4 outline-none"
 >
   {#if project.media}
-    <!-- 16:9 frame that fits the stage, like Clipchamp's `aspect-ratio-preview` -->
+    <!-- YouTube-style Ambient Mode glow: strictly BEHIND the 16:9 player,
+         blooming outward from behind the player edges. Zero-RAM canvas (5 KB). -->
     <div
-      class="relative aspect-video max-h-full w-full max-w-[min(100%,calc((100vh-330px)*16/9))] overflow-hidden rounded bg-black shadow-2xl"
+      class="pointer-events-none absolute aspect-video max-h-full w-full max-w-[min(100%,calc((100vh-330px)*16/9))] scale-110 -z-0"
+      aria-hidden="true"
+    >
+      <AmbientGlow video={videoEl} />
+    </div>
+
+    <!-- 16:9 frame that fits the stage, sitting in front of the ambient glow -->
+    <div
+      class="relative z-10 aspect-video max-h-full w-full max-w-[min(100%,calc((100vh-330px)*16/9))] overflow-hidden rounded bg-black shadow-2xl"
     >
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
@@ -104,7 +140,7 @@
         src={project.media.url}
         {poster}
         preload="auto"
-        class="h-full w-full object-contain"
+        class="relative z-10 h-full w-full object-contain {videoHidden ? 'invisible' : ''}"
         onloadedmetadata={onLoaded}
         ontimeupdate={onTimeUpdate}
         onplay={onPlay}
@@ -112,15 +148,36 @@
         onclick={() => player.toggle()}
       ></video>
 
+      <!-- Text lane overlays. Times are edit-axis seconds, so reordering and
+           trimming the transcript moves the captions with the picture. -->
+      {#if activeTexts.length}
+        <div
+          class="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col items-center gap-2 p-6 text-center"
+        >
+          {#each activeTexts as t (t.id)}
+            <div
+              class="max-w-[90%] whitespace-pre-wrap break-words
+                     {t.kind === 'title'
+                ? 'text-4xl font-black uppercase leading-tight tracking-tight text-white drop-shadow-[0_2px_8px_rgba(0,0,0,.9)]'
+                : t.kind === 'code-zoom'
+                  ? 'rounded border border-nc-gold/40 bg-black/85 px-3 py-2 font-mono text-lg text-nc-gold shadow-xl'
+                  : 'rounded bg-black/65 px-3 py-1.5 text-2xl font-bold text-white shadow-lg backdrop-blur-sm'}"
+            >
+              {t.text}
+            </div>
+          {/each}
+        </div>
+      {/if}
+
       {#if curLine?.keep === 'cut'}
         <div
-          class="pointer-events-none absolute inset-0 border-2 border-nc-red/70"
+          class="pointer-events-none absolute inset-0 z-20 border-2 border-nc-red/70"
           style="background:repeating-linear-gradient(45deg,transparent,transparent 10px,rgba(229,72,77,.14) 10px,rgba(229,72,77,.14) 20px)"
         ></div>
       {/if}
 
-      <!-- status chip, top-left of the canvas (Clipchamp has nothing here — our addition) -->
-      <div class="pointer-events-none absolute top-2 left-2 flex max-w-[70%] flex-col gap-1">
+      <!-- status chip, top-left of the canvas -->
+      <div class="pointer-events-none absolute top-2 left-2 z-20 flex max-w-[70%] flex-col gap-1">
         {#if inCut}
           <span
             class="w-fit rounded bg-nc-red/85 px-2 py-0.5 text-[10px] font-bold tracking-wider text-white"
@@ -141,10 +198,10 @@
       </div>
     </div>
 
-    <!-- fullscreen, bottom-right of the canvas (Clipchamp places it here) -->
+    <!-- fullscreen, bottom-right of the stage -->
     <button
       onclick={toggleFullscreen}
-      class="absolute right-4 bottom-4 grid h-8 w-8 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+      class="absolute right-4 bottom-4 z-20 grid h-8 w-8 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
       title="Fullscreen"
     >
       <svg

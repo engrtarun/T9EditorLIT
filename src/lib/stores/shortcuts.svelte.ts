@@ -137,9 +137,10 @@ export function comboFor(id: string): string | null {
 }
 
 function matches(event: KeyboardEvent, s: ShortcutDef): boolean {
-  // `meta` is folded into `ctrl` so Cmd on macOS behaves like Ctrl on Windows,
-  // which is how Microsoft documents the same shortcut for both platforms.
-  if (!!s.ctrl !== (event.ctrlKey || event.metaKey)) return false;
+  // On Windows, metaKey is the Windows key (used by Win+Shift+S, Win+V, etc.)
+  // Never treat metaKey as Ctrl on Windows.
+  if (event.metaKey) return false;
+  if (!!s.ctrl !== event.ctrlKey) return false;
   // Shift must match exactly: leaving it out means "no modifier", so
   // Ctrl + Shift + Z cannot be swallowed by the plain Ctrl + Z binding.
   if ((s.shift ?? false) !== event.shiftKey) return false;
@@ -187,6 +188,16 @@ class ShortcutStore {
    * otherwise typing "s" into the rename box would split the clip.
    */
   handle(event: KeyboardEvent): void {
+    // System shortcuts & screenshot keys must never be captured or blocked
+    if (
+      event.key === "PrintScreen" ||
+      event.key === "Snapshot" ||
+      event.metaKey ||
+      event.key.startsWith("F")
+    ) {
+      return;
+    }
+
     const target = event.target as HTMLElement | null;
     const tag = target?.tagName;
     const typing =
@@ -198,7 +209,7 @@ class ShortcutStore {
     // Escape and Ctrl + / still fire while typing: you must be able to close a
     // dialog or undo an accidental focus without leaving the field first.
     const alwaysReachable =
-      event.key === "Escape" || ((event.ctrlKey || event.metaKey) && event.key === "/");
+      event.key === "Escape" || (event.ctrlKey && event.key === "/");
 
     if (typing && !alwaysReachable) return;
 

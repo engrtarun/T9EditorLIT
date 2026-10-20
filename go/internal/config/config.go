@@ -89,7 +89,7 @@ func Load(envPath string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Addr:                pick(get("T9CLOUD_ADDR"), "127.0.0.1:8787"),
+		Addr:                pick(get("T9CLOUD_ADDR"), "127.0.0.1:7878"),
 		Workers:             pickInt(get("T9CLOUD_WORKERS"), 2),
 		QueueCapacity:       pickInt(get("T9CLOUD_QUEUE_CAPACITY"), 32),
 		MaxAttempts:         pickInt(get("T9CLOUD_MAX_ATTEMPTS"), 3),

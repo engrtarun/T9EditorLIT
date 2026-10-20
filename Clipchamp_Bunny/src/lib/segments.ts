@@ -25,7 +25,10 @@ export function buildSegments(lines: TranscriptLine[]): Segment[] {
     }
     if (!cur || line.startSec - cur.endSec > 0.35) {
       cur = {
-        id: `seg-${segs.length}`,
+        // Keyed by the first kept line, not the array index: deleting an
+        // earlier clip must not renumber this one (selection, mute and trim
+        // state all hang off this id).
+        id: `seg-${line.id}`,
         startSec: line.startSec,
         endSec: line.endSec,
         lines: []

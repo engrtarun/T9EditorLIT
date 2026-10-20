@@ -121,22 +121,28 @@ Asli cutting sirf **Export** me, ek baar. Isi liye 5 GB edit "palak jhapak" me h
 
 ---
 
-## 8. Theme — Nanami Kento "No Overtime"
+## 8. Theme — T9 Editor LIT (branding board)
+
+> Source: `Clipchamp_Bunny/T9 Editor LIT Branding Board.png` — "EDIT · CREATE · LIT".
+> Legacy token names `--nc-*` rehne diye gaye hain (koi component edit nahi hua),
+> sirf **values** branding board se hain. Primary accent = **blue** (gold nahi).
 
 | Token | Value | Use |
 | ----- | ----- | --- |
-| `--nc-bg` | `#12131A` | app background (deep charcoal, raat-friendly) |
-| `--nc-panel` | `#171821` | panels |
-| `--nc-panel-2` | `#1E202B` | raised / hover |
-| `--nc-line` | `#2A2C38` | borders |
-| `--nc-gold` | `#D4AF37` | primary accent (buttons, active rail, keep) |
-| `--nc-gold-dim` | `#8A7328` | inactive gold |
+| `--nc-bg` | `#15171B` | app background (branding board "Background") |
+| `--nc-panel` | `#1A1D24` | panels |
+| `--nc-panel-2` | `#212530` | raised / hover |
+| `--nc-line` | `#2B3040` | borders |
+| `--nc-gold` | `#4D8DFF` | primary accent — buttons, active rail, keep (branding board "Primary Blue") |
+| `--nc-gold-dim` | `#2F5FC0` | inactive accent |
 | `--nc-red` | `#E5484D` | cut / fumble |
 | `--nc-green` | `#3DD68C` | keep |
-| `--nc-txt` | `#ECECF2` | text |
-| `--nc-mut` | `#9A9AA8` | muted |
+| `--nc-txt` | `#F5F7FA` | text (branding board "Text / Light") |
+| `--nc-mut` | `#9AA3B5` | muted |
 
-Nanami ka rule: **no overtime, no wasted work, 7:3 ratio one strike.**
+Branding rules (board ke DO's & DON'Ts): original high-quality assets use karo,
+clear space maintain karo, colours na badlo, low-res versions na use karo,
+extra elements/text na jodo.
 
 ---
 

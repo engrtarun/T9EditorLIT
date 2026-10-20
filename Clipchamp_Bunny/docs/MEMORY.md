@@ -371,21 +371,36 @@ npm test             :: node --test
 
 ### Taskbar wala app — update kaise karte hain
 
+Har deploy ek **work order** hai, sirf build nahi:
+
 ```powershell
 cd Clipchamp_Bunny
-pwsh -File tools\deploy.ps1              :: build → install → taskbar pin
-pwsh -File tools\deploy.ps1 -SkipBuild   :: sirf install + pin (binary pehle se bana ho)
-pwsh -File tools\deploy.ps1 -Launch      :: install + pin + chal bhi de
-pwsh -File tools\pin-taskbar.ps1         :: sirf pin (shortcut pehle se bani ho)
+
+pwsh -File tools\deploy.ps1 -Interactive
+# ya:
+pwsh -File tools\deploy.ps1 `
+  -Agent "opencode" `
+  -Model "opencode/deepseek-v4.1-flash-free" `
+  -Task "fix the export button state" `
+  -Why "the button stays disabled after a successful export" `
+  -EtaMinutes 25 -Scope both
+
+pwsh -File tools\deploy.ps1 -Status     # ledger: active + queue + recent
+pwsh -File tools\deploy.ps1 -Doctor     # installed app + daemon health
+pwsh -File tools\verify-install.ps1     # real data, 0 API calls, MB/s live
 ```
 
-**Flow:** code change → `tools\deploy.ps1` → app band → taskbar icon click →
-naya version. Pin kabhi nahi toot-ta, kyunki shortcut ek **stable path** par
-hai (`%LOCALAPPDATA%\Programs\T9EditorLIT\t9-editor-lit.exe`), repo ke
-`target/release` par nahi.
+Poora form/queue/exit-code contract:
+[`docs/AGENT_DEPLOY_PROTOCOL.md`](../../docs/AGENT_DEPLOY_PROTOCOL.md).
 
-> `deploy.ps1` app ko `Stop-Process` karta hai (exe lock hota hai) — isiliye
-> build ke waqt app band rakhna padta hai.
+**Flow:** code change → `tools\deploy.ps1` → ledger work order → build +
+install/stage + daemon → hash verify → `shipped`. Taskbar shortcut ka path
+stable hai (`%LOCALAPPDATA%\Programs\T9EditorLIT\t9-editor-lit.exe`), repo ke
+`target\release` par nahi.
+
+> App **band** ho to build seedha install hota hai. App **chal raha** ho to
+> build `t9-editor-lit.new.exe` ke roop me stage hota hai; app band karne ki
+> zaroorat nahi, aur install folder ko haath se chhedna nahi.
 
 ### 4.12 Self-update — app khud naya build detect karta hai
 
@@ -393,34 +408,43 @@ Desktop app **khud update hota hai**, OpenCode jaisa chhota "Update" button:
 
 | Kya | Kahan |
 |---|---|
-| Marker file | install folder me `build.json` (`version` + `builtAt`) |
+| Marker file | install folder me `build.json` (`buildId`, `appSha256`, `mode`, `daemonVersion`, timestamps) |
 | Staged build | `t9-editor-lit.new.exe` (+ `t9cloud.new.exe`) |
-| Detect | `installed_build()` → app 20 s me ek + window focus pe marker padhta hai |
-| Apply | `apply_staged_update()` → helper script swap karke app restart |
-| UI | top bar me chhota "Update ↓" pill |
+| Detect | `installed_build()` → app har **5 s** me marker + staged exe dekhta hai |
+| Apply | `apply_staged_update()` → helper app + daemon swap karke restart |
+| UI | top bar me chhota "Update" pill **sirf staged exe hone par** |
 
-**Flow:** code change → `tools\deploy.ps1` → app chal raha hai to **stage**
-hota hai (exe lock nahi toot-ta) → app me "Update" button → click → naya
-build (app + daemon) swap hokar restart.
+Marker timestamp ya version badalne se button nahi aata — **staged executable**
+hi trigger hai. Isliye false "update available" nahi dikhta.
+
+**Flow:** code change → `deploy.ps1` → app chal raha hai to **stage** hota
+hai (exe lock nahi toot-ta) → app me "Update" → click → naya build (app +
+daemon) swap hokar restart. Restart ke baad app marker ko `mode: installed`
+kar deta hai aur `appliedAtUnix` likhta hai (helper JSON edit nahi kar sakta),
+warna `-Doctor` hamesha "staged" dikhata rehta.
 
 ### 4.13 Do agents ka bridge — `deploy.ps1` hi ek hi darwaza hai
 
 Mera kaam **app/UI** (`Clipchamp_Bunny/`), doosre ka **Go daemon** (`go/`).
-Desktop tak daemon pahunchne ka ek hi raasta hai:
+Desktop tak dono ka kaam ek hi raaste se pahunchta hai:
 
-```
-Doosra agent: go/ me code badalta hai → commit
-Main:         pwsh -File tools\deploy.ps1
+```text
+Agent A: app/UI change → commit
+Agent B: go/ change     → commit
+        ↓
+deploy.ps1 (SQLite ledger, ek active deploy)
+        ↓
+installed app + t9cloud daemon + build.json + evidence
 ```
 
-`deploy.ps1` khud **daemon rebuild** karta hai jab `go\*.go` sources binary se
-naye hon (`go build -o bin/t9cloud.exe ./cmd/t9cloud`). Aur jab daemon chal
-raha hota hai to use bhi stage karta hai (`t9cloud.new.exe`), kyunki running
-exe overwrite nahi hota — update helper dono swap karta hai.
+`deploy.ps1` khud **daemon rebuild** karta hai jab `go/**/*.go`, `go.mod`,
+`go.sum` ka hash binary ke `-version` se alag ho. Daemon idle ho to turant
+restart, busy ho to `t9cloud.new.exe` stage; app band ho aur job in-flight ho
+to 90 s wait karta hai, phir **bina job kill kiye** fail karta hai.
 
 **Isiliye doosre ka koi bhi commit, ek `deploy.ps1` ke baad desktop pe live
 ho jata hai.** Usse batana: "desktop pe dekhne ke liye `tools\deploy.ps1`
-chalao" — bas.
+chalao" — bas. Status chat me nahi, `deploy.ps1 -Status` me dekho.
 
 **t9cloud** (cloud AI ke liye):
 ```powershell
@@ -505,8 +529,9 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
 
 ## 9. Gotchas (jo maine galti se seekha)
 
-1. **Release exe lock** — app chal raha ho toh `npm run app:build` fail hota hai
-   ("Access is denied"). Pehle `Stop-Process` karo.
+1. **Release exe lock** — `npm run app:build` ek running exe ko overwrite nahi kar sakta
+   ("Access is denied"). Taskbar app ko `Stop-Process` mat karo; `deploy.ps1` app band ho to
+   seedha install karta hai, chal raha ho to `t9-editor-lit.new.exe` stage karta hai.
 2. **Build ke beech me `npm run build` mat chalao** — `dist` ka hash badal jaata hai aur
    Tauri build fail hota hai ("failed to read asset … dist/assets/…").
 3. **`structuredClone` Svelte ke reactive proxy pe fail hota hai** — plain `{...l}` copies use karo.

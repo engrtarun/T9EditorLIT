@@ -34,13 +34,18 @@ import {
   extractThumbnails,
   extractWaveform,
   isTauri,
+  loadProjects,
   loadTranscript,
+  logAppEvent,
+  logEditAction,
   probeMedia,
   resumeProject,
   saveProject,
   saveTranscript,
-  setSourcePath
+  setSourcePath,
+  updateProjectOpened
 } from '../ipc';
+import type { RustProject } from '../ipc';
 
 /**
  * Undo snapshot. Holds the whole line array, not just the keep flags â€”
@@ -51,7 +56,16 @@ import {
  * SQLite; this in-memory copy is the prototype's stand-in. The history cap
  * keeps the heap bounded on long transcripts.
  */
-type Snapshot = TranscriptLine[];
+interface Snapshot {
+  lines: TranscriptLine[];
+  texts: TextClip[];
+  segmentOrder: string[];
+  splitMarks: number[];
+  mutedSegments: string[];
+  hiddenTracks: TrackId[];
+}
+
+export type TrackId = 'text' | 'video' | 'audio';
 
 /**
  * Splitting produces `ln-012-1a` / `ln-012-1b`; undo must still find the parent.
@@ -107,6 +121,12 @@ class ProjectStore {
    * The lane stays in the UI, ready for real captions.
    */
   texts = $state<TextClip[]>([]);
+  /** Selected text clip on the T lane (separate from transcript selection). */
+  selectedTextId = $state<string | null>(null);
+  /** Clip ids whose audio is muted (Clipchamp's speaker button on the clip). */
+  mutedSegments = $state<string[]>([]);
+  /** Whole tracks hidden by the eye/Hide control. */
+  hiddenTracks = $state<TrackId[]>([]);
   waveform = $state<WaveformData | null>(null);
   thumbnails = $state<ThumbnailStrip | null>(null);
 
@@ -160,14 +180,16 @@ class ProjectStore {
         //    transcript already sitting in SQLite. No API call, no mock lines.
         const resumed = await resumeProject(db).catch(() => null);
         if (resumed) {
-          await this.loadFromBackend(resumed);
+          // Resume is not an edit: `touch: false` keeps the stored clock, so
+          // start-up alone never claims "Edited just now".
+          await this.loadFromBackend(resumed, { touch: false });
           return;
         }
 
         // 2. First run: the demo recording, but only if it is really on disk.
         const demo = await demoSourcePath();
         if (demo) {
-          await this.loadFromBackend(demo);
+          await this.loadFromBackend(demo, { touch: false });
           return;
         }
 
@@ -183,6 +205,7 @@ class ProjectStore {
   }
 
   private async loadBaked() {
+    this.resetEditState();
     const [media, waveform, thumbnails] = await Promise.all([
       loadMediaInfo(),
       loadWaveform(),
@@ -193,11 +216,26 @@ class ProjectStore {
     this.waveform = waveform;
     this.thumbnails = thumbnails;
     this.lines = scaleLines(MOCK_LINES, media.durationSecs);
+    this.restoreUiState();
     this.ready = true;
   }
 
-  /** Real engine path: probe, waveform, filmstrip, transcript (SQLite). */
-  async loadFromBackend(path: string) {
+  /**
+   * Real engine path: probe, waveform, filmstrip, transcript (SQLite).
+   *
+   * `touch` marks the project as opened *now* — true for a deliberate open or
+   * import, false for the silent resume at start-up (which would otherwise
+   * stamp "Edited just now" on a video the user never touched this session).
+   */
+  async loadFromBackend(path: string, opts: { touch?: boolean } = {}) {
+    const touch = opts.touch !== false;
+
+    // Whatever the previous project still has pending must be written under
+    // ITS path before this session switches files — and the timer must be
+    // cancelled, or it would later write these lines under the new one.
+    await this.flush();
+    this.resetEditState();
+
     // One spelling for the file, so the SQLite key is the same whatever the
     // working directory was when the app was launched.
     const canonical = await canonicalSourcePath(path).catch(() => path);
@@ -219,6 +257,19 @@ class ProjectStore {
     this.name = this.media.name.replace(/\.[^.]+$/, '');
     this.sourcePath = canonical;
     setSourcePath(canonical);
+
+    // A rename lives in SQLite, not in the filename: take the stored name when
+    // a row exists for this file, so reopening cannot wipe a custom rename —
+    // and stamp "opened now" only for a deliberate open, never for a resume.
+    const stored = await this.storedProject(canonical);
+    if (stored?.row?.name) this.name = stored.row.name;
+    if (touch && stored?.row) {
+      try {
+        await updateProjectOpened(stored.db, canonical, Math.floor(Date.now() / 1000));
+      } catch {
+        /* the clock is a nicety, never a blocker */
+      }
+    }
 
     // Make sure the source is in the library too, so its media tile (and the
     // menu on it) exists.
@@ -254,15 +305,26 @@ class ProjectStore {
       this.loadError = e instanceof Error ? e.message : String(e);
       this.lines = [];
     }
+    this.restoreUiState();
 
-    // Remember the project, so the next launch opens this very file.
-    void this.rememberProject(canonical, info.durationSecs);
+    // Remember the project, so the next launch opens this very file. The clock
+    // stays honest: a resume keeps the old stamp, an open/import gets "now".
+    void this.rememberProject(
+      canonical,
+      info.durationSecs,
+      touch ? undefined : stored?.row?.lastOpened
+    );
 
     this.ready = true;
   }
 
-  /** Write this project to the `projects` table (most-recently-opened wins). */
-  private async rememberProject(path: string, durationSecs: number) {
+  /**
+   * Write this project to the `projects` table (most-recently-opened wins).
+   *
+   * `openedAt` lets a caller keep an existing clock — the start-up resume
+   * passes the stored value so it does not fake a fresh edit.
+   */
+  private async rememberProject(path: string, durationSecs: number, openedAt?: number) {
     try {
       const db = await defaultDbPath();
       await saveProject(
@@ -271,10 +333,51 @@ class ProjectStore {
         this.name || path.split(/[\\/]/).pop() || 'project',
         path,
         durationSecs,
-        Math.floor(Date.now() / 1000)
+        openedAt ?? Math.floor(Date.now() / 1000)
       );
     } catch {
       /* the project list is a convenience, never a blocker */
+    }
+  }
+
+  /** The `projects` row for a source: the stored rename and the edit clock. */
+  private async storedProject(path: string): Promise<{ db: string; row?: RustProject } | null> {
+    if (!isTauri()) return null;
+    try {
+      const db = await defaultDbPath();
+      const row = (await loadProjects(db)).find((p) => p.sourcePath === path);
+      return { db, row };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Rename the project and keep it in SQLite — the dashboard reads the name
+   * from the `projects` table, so an in-memory rename would vanish on reload.
+   */
+  async rename(name: string): Promise<void> {
+    const next = name.trim();
+    if (!next) return;
+    const previous = this.name;
+    this.name = next;
+    if (!isTauri() || !this.sourcePath) return;
+    try {
+      const db = await defaultDbPath();
+      const row = (await loadProjects(db)).find((p) => p.sourcePath === this.sourcePath);
+      await saveProject(
+        db,
+        row?.id ?? crypto.randomUUID(),
+        next,
+        this.sourcePath,
+        row?.durationSecs ?? this.media?.durationSecs ?? 0,
+        // A rename keeps the edit clock: it changes the label, not the work.
+        row?.lastOpened ?? Math.floor(Date.now() / 1000)
+      );
+      logEditAction(next, 'rename', { from: previous, to: next });
+    } catch (e) {
+      /* the name is right for this session even if the write failed */
+      logAppEvent('error', 'rename', String(e));
     }
   }
 
@@ -412,9 +515,155 @@ class ProjectStore {
           words: l.words
         }))
       );
+      // Progress trail: one row per real save (fires at most once per
+      // debounced burst — never per keystroke).
+      logEditAction(this.name || path, 'autosave', {
+        lines: this.lines.length,
+        cut: this.cutCount,
+        kept: this.keptCount
+      });
       return true;
-    } catch {
+    } catch (e) {
+      logAppEvent('error', 'persist', String(e));
       return false;
+    }
+  }
+
+  /** Pending debounced write — `null` when nothing is dirty. */
+  private autosave: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Text clips, clip mutes, track hides and the user's segment order are UI
+   * state, not transcript rows. They live in localStorage (small, synchronous,
+   * no extra SQLite schema): the transcript itself stays in SQLite on disk.
+   */
+  private uiStateKey(): string | null {
+    const id = this.sourcePath ?? this.media?.name;
+    return id ? `t9.timelineUi:${id}` : null;
+  }
+
+  private saveUiState() {
+    const key = this.uiStateKey();
+    if (!key) return;
+    try {
+      const payload = {
+        texts: this.texts,
+        segmentOrder: this.segmentOrder,
+        splitMarks: this.splitMarks,
+        mutedSegments: this.mutedSegments,
+        hiddenTracks: this.hiddenTracks
+      };
+      localStorage.setItem(key, JSON.stringify(payload));
+    } catch {
+      /* private mode / quota — the edit still works for this session */
+    }
+  }
+
+  private restoreUiState() {
+    const key = this.uiStateKey();
+    if (!key) return;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const data = JSON.parse(raw) as {
+        texts?: TextClip[];
+        segmentOrder?: string[];
+        splitMarks?: number[];
+        mutedSegments?: string[];
+        hiddenTracks?: TrackId[];
+      };
+      if (Array.isArray(data.texts)) {
+        this.texts = data.texts
+          .filter(
+            (t) =>
+              t &&
+              typeof t.id === 'string' &&
+              typeof t.text === 'string' &&
+              typeof t.startSec === 'number' &&
+              typeof t.endSec === 'number' &&
+              t.endSec > t.startSec
+          )
+          .map((t) => ({
+            id: t.id,
+            text: t.text,
+            startSec: t.startSec,
+            endSec: t.endSec,
+            kind: t.kind === 'title' || t.kind === 'code-zoom' ? t.kind : 'heading',
+            hidden: t.hidden === true
+          }));
+      }
+      if (Array.isArray(data.segmentOrder)) {
+        this.segmentOrder = data.segmentOrder.filter((x) => typeof x === 'string');
+      }
+      if (Array.isArray(data.splitMarks)) {
+        this.splitMarks = data.splitMarks
+          .filter((x): x is number => typeof x === 'number' && Number.isFinite(x))
+          .sort((a, b) => a - b);
+      }
+      if (Array.isArray(data.mutedSegments)) {
+        this.mutedSegments = data.mutedSegments.filter((x) => typeof x === 'string');
+      }
+      if (Array.isArray(data.hiddenTracks)) {
+        this.hiddenTracks = data.hiddenTracks.filter(
+          (x): x is TrackId => x === 'text' || x === 'video' || x === 'audio'
+        );
+      }
+    } catch {
+      /* corrupt entry — start clean rather than block the project */
+    }
+  }
+
+  /** Switching files must not leak the previous project's text or order. */
+  private resetEditState() {
+    this.lines = [];
+    this.texts = [];
+    this.waveform = null;
+    this.thumbnails = null;
+    this.cursor = 0;
+    this.selectedIds = [];
+    this.selectedTextId = null;
+    this.clipboard = null;
+    this.segmentOrder = [];
+    this.splitMarks = [];
+    this.mutedSegments = [];
+    this.hiddenTracks = [];
+    this.past = [];
+    this.future = [];
+    this.splitSeq = 0;
+  }
+
+  private scheduleAutosave() {
+    if (this.autosave !== null) clearTimeout(this.autosave);
+    this.autosave = setTimeout(() => {
+      this.autosave = null;
+      // Save UI state *after* the edit that scheduled this timer, otherwise
+      // localStorage trails the mutation by one action.
+      this.saveUiState();
+      if (!isTauri()) return;
+      void this.persist();
+      void this.touchEdited();
+    }, 750);
+  }
+
+  /** Write a pending edit straight away — before the dashboard reloads. */
+  async flush() {
+    this.saveUiState();
+    if (this.autosave === null) return;
+    clearTimeout(this.autosave);
+    this.autosave = null;
+    await this.persist();
+    await this.touchEdited();
+  }
+
+  /** Stamp the project's last-edited time in SQLite (the "Edited …" label). */
+  private async touchEdited() {
+    const path = this.sourcePath;
+    if (!path || !isTauri()) return;
+    try {
+      const db = await defaultDbPath();
+      await updateProjectOpened(db, path, Math.floor(Date.now() / 1000));
+    } catch {
+      /* the clock is a nicety, never a blocker */
     }
   }
 
@@ -595,21 +844,37 @@ class ProjectStore {
 
   /** User-dropped files must not navigate the window away. */
   private snapshot(): Snapshot {
-    // Plain object copies â€” `structuredClone` cannot clone Svelte's reactive
-    // proxies, and every TranscriptLine field is a primitive anyway.
-    return this.lines.map((l) => ({ ...l }));
+    // Plain object copies — `structuredClone` cannot clone Svelte's reactive
+    // proxies, and every field we keep here is a primitive or an array.
+    return {
+      lines: this.lines.map((l) => ({ ...l })),
+      texts: this.texts.map((t) => ({ ...t })),
+      segmentOrder: [...this.segmentOrder],
+      splitMarks: [...this.splitMarks],
+      mutedSegments: [...this.mutedSegments],
+      hiddenTracks: [...this.hiddenTracks]
+    };
   }
 
   private apply(snap: Snapshot) {
-    this.lines = snap.map((l) => ({ ...l }));
+    this.lines = snap.lines.map((l) => ({ ...l }));
+    this.texts = snap.texts.map((t) => ({ ...t }));
+    this.segmentOrder = [...snap.segmentOrder];
+    this.splitMarks = [...snap.splitMarks];
+    this.mutedSegments = [...snap.mutedSegments];
+    this.hiddenTracks = [...snap.hiddenTracks];
     this.cursor = Math.max(0, Math.min(this.lines.length - 1, this.cursor));
     this.selectedIds = [];
+    this.selectedTextId = null;
+    this.scheduleAutosave();
   }
 
   private commit() {
     this.past.push(this.snapshot());
     if (this.past.length > 30) this.past.shift();
     this.future.length = 0;
+    // Every mutating edit passes through here — the single place to save it.
+    this.scheduleAutosave();
   }
 
   toggleLine(id: string) {
@@ -652,17 +917,55 @@ class ProjectStore {
   isSelected = (id: string) => this.selectedIds.includes(id);
 
   toggleSelect(id: string) {
+    this.selectedTextId = null;
     this.selectedIds = this.isSelected(id)
       ? this.selectedIds.filter((x) => x !== id)
       : [...this.selectedIds, id];
   }
 
+  /** Replace or extend the transcript/clip selection in one go. */
+  selectMany(ids: string[], additive = false) {
+    this.selectedTextId = null;
+    const next = additive ? [...this.selectedIds] : [];
+    const seen = new Set(next);
+    for (const id of ids) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        next.push(id);
+      }
+    }
+    this.selectedIds = next;
+  }
+
+  /** Ctrl-click: each line in `ids` flips, so a whole clip toggles together. */
+  toggleMany(ids: string[]) {
+    this.selectedTextId = null;
+    const set = new Set(this.selectedIds);
+    const allSelected = ids.every((id) => set.has(id));
+    for (const id of ids) {
+      if (allSelected) set.delete(id);
+      else set.add(id);
+    }
+    this.selectedIds = [...set];
+  }
+
+  selectText(id: string | null) {
+    this.selectedTextId = id;
+    if (id) this.selectedIds = [];
+  }
+
+  clearTextSelection() {
+    this.selectedTextId = null;
+  }
+
   selectAll() {
+    this.selectedTextId = null;
     this.selectedIds = this.lines.map((l) => l.id);
   }
 
   deselectAll() {
     this.selectedIds = [];
+    this.selectedTextId = null;
   }
 
   /** The lines a destructive command should act on: the selection, else the cursor line. */
@@ -680,6 +983,7 @@ class ProjectStore {
     const ids = new Set(targets.map((t) => t.id));
     this.lines = this.lines.map((l) => (ids.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l));
     this.selectedIds = [];
+    this.selectedTextId = null;
   }
 
   /* ------------------------------------------------------------ clipboard */
@@ -727,6 +1031,183 @@ class ProjectStore {
     if (Math.abs(next - cur.endSec) < 0.01) return;
     this.commit();
     this.lines = this.lines.map((l) => (l.id === cur.id ? { ...l, endSec: next } : l));
+  }
+
+  /* ------------------------------------------------------- edit timeline */
+  isSegmentMuted = (id: string) => this.mutedSegments.includes(id);
+
+  /** Speaker button on a clip — preview mutes this source range. */
+  toggleSegmentMute(id: string) {
+    this.commit();
+    this.mutedSegments = this.isSegmentMuted(id)
+      ? this.mutedSegments.filter((x) => x !== id)
+      : [...this.mutedSegments, id];
+  }
+
+  isTrackHidden = (track: TrackId) => this.hiddenTracks.includes(track);
+
+  toggleTrackHidden(track: TrackId) {
+    this.commit();
+    this.hiddenTracks = this.isTrackHidden(track)
+      ? this.hiddenTracks.filter((x) => x !== track)
+      : [...this.hiddenTracks, track];
+  }
+
+  /**
+   * Delete whole clips. Marking every line `cut` is what closes the gap:
+   * `buildSegments()` simply stops producing the segment, and every later
+   * offset slides left automatically.
+   */
+  cutSegments(ids: string[]): number {
+    const wanted = new Set(ids);
+    const targets = this.segments.filter((s) => wanted.has(s.id)).flatMap((s) => s.lines);
+    if (!targets.length) return 0;
+    this.commit();
+    const lineIds = new Set(targets.map((l) => l.id));
+    this.lines = this.lines.map((l) =>
+      lineIds.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l
+    );
+    this.selectedIds = [];
+    this.selectedTextId = null;
+    this.segmentOrder = this.segmentOrder.filter((id) => !wanted.has(id));
+    this.mutedSegments = this.mutedSegments.filter((id) => !wanted.has(id));
+    return targets.length;
+  }
+
+  /** Keep order and mute state pointing at a clip whose id changes after a trim. */
+  private remapSegmentId(oldId: string, newId: string) {
+    if (oldId === newId) return;
+    const remap = (ids: string[]) => {
+      const out: string[] = [];
+      for (const id of ids) {
+        const next = id === oldId ? newId : id;
+        if (!out.includes(next)) out.push(next);
+      }
+      return out;
+    };
+    this.segmentOrder = remap(this.segmentOrder);
+    this.mutedSegments = remap(this.mutedSegments);
+  }
+
+  /**
+   * Move a clip's **start** edge inward to `targetSec`, cutting any whole
+   * transcript lines the edge sweeps past. Only inward trims are offered:
+   * extending would require resurrecting source that is already cut.
+   */
+  trimSegmentStartTo(segId: string, targetSec: number): boolean {
+    const seg = this.segments.find((s) => s.id === segId);
+    if (!seg) return false;
+    const target = Math.min(seg.endSec - 0.3, Math.max(seg.startSec + 0.02, targetSec));
+    if (target <= seg.startSec + 0.01) return false;
+    this.commit();
+    const updates = new Map<string, Partial<TranscriptLine>>();
+    for (const line of seg.lines) {
+      if (target >= line.endSec - 0.05) {
+        updates.set(line.id, { keep: 'cut' });
+      } else {
+        if (target > line.startSec) updates.set(line.id, { startSec: target });
+        break;
+      }
+    }
+    const survivors = new Set(
+      seg.lines.filter((l) => updates.get(l.id)?.keep !== 'cut').map((l) => l.id)
+    );
+    this.lines = this.lines.map((l) => (updates.has(l.id) ? { ...l, ...updates.get(l.id) } : l));
+    const next = this.segments.find((s) => s.lines.some((l) => survivors.has(l.id)));
+    if (next) this.remapSegmentId(seg.id, next.id);
+    return true;
+  }
+
+  /** Move a clip's **end** edge inward to `targetSec` (same rules as start). */
+  trimSegmentEndTo(segId: string, targetSec: number): boolean {
+    const seg = this.segments.find((s) => s.id === segId);
+    if (!seg) return false;
+    const target = Math.max(seg.startSec + 0.3, Math.min(seg.endSec - 0.02, targetSec));
+    if (target >= seg.endSec - 0.01) return false;
+    this.commit();
+    const updates = new Map<string, Partial<TranscriptLine>>();
+    for (const line of [...seg.lines].reverse()) {
+      if (target <= line.startSec + 0.05) {
+        updates.set(line.id, { keep: 'cut' });
+      } else {
+        if (target < line.endSec) updates.set(line.id, { endSec: target });
+        break;
+      }
+    }
+    this.lines = this.lines.map((l) => (updates.has(l.id) ? { ...l, ...updates.get(l.id) } : l));
+    return true;
+  }
+
+  /* ------------------------------------------------------------- text lane */
+  private clampText(startSec: number, endSec: number): [number, number] {
+    const total = Math.max(0.3, this.editDuration);
+    let s = Math.max(0, Math.min(total - 0.3, startSec));
+    let e = Math.max(s + 0.3, Math.min(total, endSec));
+    if (e - s < 0.3) e = Math.min(total, s + 0.3);
+    s = Math.max(0, Math.min(s, e - 0.3));
+    return [s, e];
+  }
+
+  addText(
+    text: string,
+    startSec: number,
+    endSec: number,
+    kind: TextClip['kind'] = 'heading'
+  ): TextClip | null {
+    const clean = text.trim();
+    if (!clean) return null;
+    const [s, e] = this.clampText(startSec, endSec);
+    this.commit();
+    const clip: TextClip = {
+      id: `txt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      startSec: s,
+      endSec: e,
+      text: clean,
+      kind
+    };
+    this.texts = [...this.texts, clip];
+    this.selectedTextId = clip.id;
+    this.selectedIds = [];
+    return clip;
+  }
+
+  updateText(
+    id: string,
+    patch: Partial<Pick<TextClip, 'text' | 'kind' | 'startSec' | 'endSec' | 'hidden'>>
+  ) {
+    const cur = this.texts.find((t) => t.id === id);
+    if (!cur) return;
+    const next: TextClip = { ...cur, ...patch };
+    if (patch.startSec !== undefined || patch.endSec !== undefined) {
+      [next.startSec, next.endSec] = this.clampText(next.startSec, next.endSec);
+    }
+    if (!next.text.trim()) return;
+    next.text = next.text.trim();
+    this.commit();
+    this.texts = this.texts.map((t) => (t.id === id ? next : t));
+  }
+
+  moveText(id: string, startSec: number, endSec: number) {
+    const cur = this.texts.find((t) => t.id === id);
+    if (!cur) return;
+    const [s, e] = this.clampText(startSec, endSec);
+    if (Math.abs(s - cur.startSec) < 0.01 && Math.abs(e - cur.endSec) < 0.01) return;
+    this.commit();
+    this.texts = this.texts.map((t) => (t.id === id ? { ...t, startSec: s, endSec: e } : t));
+  }
+
+  removeText(id: string) {
+    if (!this.texts.some((t) => t.id === id)) return;
+    this.commit();
+    this.texts = this.texts.filter((t) => t.id !== id);
+    if (this.selectedTextId === id) this.selectedTextId = null;
+  }
+
+  toggleTextHidden(id: string) {
+    const cur = this.texts.find((t) => t.id === id);
+    if (!cur) return;
+    this.commit();
+    this.texts = this.texts.map((t) => (t.id === id ? { ...t, hidden: !t.hidden } : t));
   }
 
   /** Clipchamp: X + â† / â†’  (move the item earlier / later). */

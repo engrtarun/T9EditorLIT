@@ -480,11 +480,17 @@ export async function pickOutput(defaultName: string): Promise<string | null> {
 export function installedBuild(): Promise<{
   builtAt: string;
   version: string;
+  buildId: string;
+  runningBuildId: string;
   updateReady: boolean;
 } | null> {
-  return invoke<{ builtAt: string; version: string; updateReady: boolean } | null>(
-    'installed_build'
-  );
+  return invoke<{
+    builtAt: string;
+    version: string;
+    buildId: string;
+    runningBuildId: string;
+    updateReady: boolean;
+  } | null>('installed_build');
 }
 
 /** Swap the staged build in and relaunch the app. */
@@ -632,4 +638,61 @@ export async function measureNetworkSpeed(
   } catch {
     return null;
   }
+}
+
+/* ==========================================================================
+ * Telemetry (SQLite via the stats writer)
+ *
+ * Every function here is **fire-and-forget**: logging must never slow an
+ * edit, block a save, or surface an error to the user. Failures collapse
+ * into a resolved promise / no-op — the Rust side itself batches into one
+ * background transaction, so a call here costs a single tiny channel send.
+ * ========================================================================== */
+
+/** One diagnostic line: `warn` · `error` · `info`, a component, a message. */
+export function logAppEvent(level: string, component: string, message: string): void {
+  if (!isTauri()) return;
+  void invoke('log_app_event', { level, component, message }).catch(() => {});
+}
+
+/** One real edit burst (autosave, rename, …) — the user-progress trail. */
+export function logEditAction(project: string, action: string, payload: unknown = {}): void {
+  if (!isTauri()) return;
+  void invoke('log_edit_action', {
+    project,
+    action,
+    payload: JSON.stringify(payload)
+  }).catch(() => {});
+}
+
+/** One finished transcription run (`done` · `failed`), recorded with its span. */
+export function logTranscriptionJob(
+  sourcePath: string,
+  status: string,
+  provider: string,
+  audioSecs: number,
+  error: string,
+  elapsedSecs: number
+): void {
+  if (!isTauri()) return;
+  void invoke('log_transcription_job', {
+    sourcePath,
+    status,
+    provider,
+    audioSecs,
+    error,
+    elapsedSecs
+  }).catch(() => {});
+}
+
+/** Read a small persisted key (flags, last options); `null` when absent. */
+export function statsGet(key: string): Promise<string | null> {
+  if (!isTauri()) return Promise.resolve(null);
+  return invoke<string | null>('stats_kv_get', { key }).catch(() => null);
+}
+
+/** Persist a small key — on-disk, tiny, fire-and-forget friendly. */
+export function statsSet(key: string, value: string): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('stats_kv_set', { key, value }).catch(() => {});
 }

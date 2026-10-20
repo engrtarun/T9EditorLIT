@@ -12,8 +12,8 @@ func TestLoadDefaultsToLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Addr != "127.0.0.1:8787" {
-		t.Errorf("Addr = %q, want 127.0.0.1:8787", cfg.Addr)
+	if cfg.Addr != "127.0.0.1:7878" {
+		t.Errorf("Addr = %q, want 127.0.0.1:7878", cfg.Addr)
 	}
 	if cfg.Workers != 2 {
 		t.Errorf("Workers = %d, want 2", cfg.Workers)

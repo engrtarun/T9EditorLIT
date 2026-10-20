@@ -8,9 +8,11 @@
    * that are always there.
    */
   import { app } from '../../stores/app.svelte';
+  import { greeting } from '../../stores/greeting.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { menu } from '../../stores/menu.svelte';
   import CloudMenu from '../CloudMenu.svelte';
+  import SystemMeter from '../SystemMeter.svelte';
   import UpdateButton from '../UpdateButton.svelte';
   import BrandMark from './BrandMark.svelte';
   import type { MenuItem } from '../../types';
@@ -29,6 +31,20 @@
     menu.show(SECTIONS, Math.round(r.left), Math.round(r.bottom + 4), (id) => {
       app.goHome(id as 'home' | 'videos' | 'trash');
     });
+  }
+
+  /** The TD avatar is the language switch: English or Hinglish (default). */
+  function openLanguage(e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    menu.show(
+      [
+        { id: 'hi', label: 'Hinglish (default)' },
+        { id: 'en', label: 'English' }
+      ],
+      Math.round(r.right - 168),
+      Math.round(r.bottom + 6),
+      (id) => greeting.setLang(id === 'en' ? 'en' : 'hi')
+    );
   }
 </script>
 
@@ -99,6 +115,9 @@
     </label>
   </div>
 
+  <!-- RAM / this app / network: the same honesty meter as the editor -->
+  <SystemMeter />
+
   <!-- cloud / providers -->
   <CloudMenu />
 
@@ -115,11 +134,14 @@
     ?
   </button>
 
-  <!-- avatar -->
-  <div
-    class="ml-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-nc-gold text-[10px] font-bold text-white"
-    title="T9 Editor LIT"
+  <!-- avatar = language switch (English / Hinglish) -->
+  <button
+    onclick={openLanguage}
+    class="ml-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-nc-gold text-[10px] font-bold text-white transition-[filter] duration-150 hover:brightness-110"
+    title="Language · {greeting.lang === 'en' ? 'English' : 'Hinglish'}"
+    aria-label="Choose language"
+    aria-haspopup="menu"
   >
     TD
-  </div>
+  </button>
 </header>

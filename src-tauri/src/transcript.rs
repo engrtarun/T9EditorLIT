@@ -195,6 +195,11 @@ CREATE TABLE IF NOT EXISTS trash (
 );
 ";
 
+use std::collections::HashSet;
+use std::sync::Mutex;
+
+static INITIALIZED_DBS: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+
 pub fn open_db(path: &std::path::Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -202,7 +207,31 @@ pub fn open_db(path: &std::path::Path) -> Result<Connection, String> {
     }
     let conn = Connection::open(path)
         .map_err(|e| format!("could not open transcript db {}: {e}", path.display()))?;
-    init_schema(&conn)?;
+
+    // WAL mode + NORMAL synchronous: concurrent reads never block writes,
+    // and writes append sequentially to WAL without expensive disk locks.
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA busy_timeout = 5000;",
+    )
+    .map_err(|e| format!("could not configure sqlite pragmas: {e}"))?;
+
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let already_init = {
+        let mut guard = INITIALIZED_DBS.lock().unwrap_or_else(|e| e.into_inner());
+        let set = guard.get_or_insert_with(HashSet::new);
+        if set.contains(&canonical) {
+            true
+        } else {
+            set.insert(canonical);
+            false
+        }
+    };
+
+    if !already_init {
+        init_schema(&conn)?;
+    }
     Ok(conn)
 }
 

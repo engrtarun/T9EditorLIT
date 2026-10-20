@@ -1,228 +1,1539 @@
 <#
 .SYNOPSIS
-    Install T9 Editor LIT to a stable folder and (re)pin it to the taskbar.
+    The one door from source code to the installed desktop app + localhost daemon.
 
 .DESCRIPTION
-    The app is launched from the taskbar, so it must live at a path that does
-    not move when the repository is rebuilt or `cargo clean` runs. This script
-    copies the freshly built executable into
+    A deploy is a work order, not a build command. Before anything is built,
+    the ledger records:
 
-        %LOCALAPPDATA%\Programs\T9EditorLIT\
+      * who is deploying (agent name, model id, session)
+      * what and why (task, reason)
+      * how long they think it will take (ETA)
+      * when they arrived, started and finished
 
-    together with the `t9cloud` cloud daemon and the `.env` file, writes a
-    shortcut and pins that shortcut to the taskbar.
+    Then it serialises the queue (one active deploy), builds, installs the app,
+    updates the t9cloud daemon, writes the build.json marker, verifies every
+    hash, and closes the work order as `shipped`. The ledger is the only
+    truthful status: "build is running" or "I will notify you later" is not a
+    status.
 
-    After this script has run once, updating the app is just: build, run this
-    script again. The pinned icon never changes.
+    The update path is deliberately boring:
+
+      - app not running  -> new exe is installed in place, taskbar opens it
+      - app running      -> new exe is staged as t9-editor-lit.new.exe, the
+                            app polls build.json and shows the Update button
+      - daemon running   -> restarted immediately if the queue is idle, or
+                            staged as t9cloud.new.exe when a job is in flight
+
+    Every successful deploy writes evidence to
+    %LOCALAPPDATA%\T9EditorLIT\deploy\evidence\<workId>.json and the SQLite
+    ledger at %LOCALAPPDATA%\T9EditorLIT\deploy\ledger.db.
+
+.PARAMETER Agent
+    Who is deploying. Required unless T9_AGENT is set or -Interactive/-FormFile
+    is used.
+
+.PARAMETER Model
+    Exact model id (for example opencode/deepseek-v4.1-flash-free). Required
+    unless T9_MODEL / OPENCODE_MODEL / OPENCODE_MODEL_ID is set.
+
+.PARAMETER Task
+    Short description of the change (at least 8 characters).
+
+.PARAMETER Why
+    Why the change exists (at least 12 characters). "update" is not a reason.
+
+.PARAMETER EtaMinutes
+    Honest estimate for build + install + verify, excluding queue wait.
+
+.PARAMETER Scope
+    app, go, both or docs. `both` is the normal full desktop deploy.
 
 .PARAMETER SkipBuild
-    Do not rebuild - just install the executable that is already in target/.
+    Reuse the newest build manifest. It is verified against its SHA-256 and
+    refused if the manifest is from a different git commit (unless -Force).
 
-.PARAMETER SkipPin
-    Install and create the shortcut, but do not touch the taskbar.
+.PARAMETER Interactive
+    Ask the form questions in the terminal. Deploy.bat uses this.
 
-.PARAMETER Launch
-    Start the app after installing.
+.PARAMETER FormFile
+    Read the form fields from a JSON file. See docs/AGENT_DEPLOY_PROTOCOL.md.
+
+.PARAMETER Doctor
+    Read-only health check of the installed app, marker, stage and daemon.
+
+.PARAMETER Status
+    Print the SQLite queue and recent work orders, then exit.
 
 .EXAMPLE
-    pwsh -File tools/deploy.ps1
-    pwsh -File tools/deploy.ps1 -SkipBuild -Launch
+    pwsh -File tools\deploy.ps1 -Interactive
+
+.EXAMPLE
+    pwsh -File tools\deploy.ps1 `
+      -Agent "opencode" `
+      -Model "opencode/deepseek-v4.1-flash-free" `
+      -Task "fix the export button state" `
+      -Why "the button stays disabled after a successful export" `
+      -EtaMinutes 25 -Scope both
+
+.EXAMPLE
+    pwsh -File tools\deploy.ps1 -Status
+    pwsh -File tools\deploy.ps1 -Doctor
 #>
 [CmdletBinding()]
 param(
+    [string]$Agent = $env:T9_AGENT,
+    [string]$Model = $env:T9_MODEL,
+    [string]$Session = $env:T9_SESSION,
+    [string]$Task = $env:T9_TASK,
+    [string]$Why = $env:T9_WHY,
+    [int]$EtaMinutes = 0,
+    [ValidateSet('app', 'go', 'both', 'docs')]
+    [string]$Scope = 'app',
+    [int]$Priority = 50,
+    [switch]$Emergency,
     [switch]$SkipBuild,
     [switch]$SkipPin,
-    [switch]$Launch
+    [switch]$Launch,
+    [switch]$Interactive,
+    [switch]$NoWait,
+    [int]$MaxWaitMinutes = 0,
+    [string]$FormFile = '',
+    [string]$BuildManifest = '',
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\T9EditorLIT'),
+    [switch]$Doctor,
+    [switch]$Status,
+    [switch]$Json,
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$AppDir   = $PSScriptRoot | Split-Path -Parent          # Clipchamp_Bunny
-$RepoRoot = $AppDir | Split-Path -Parent                # repository root
-$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\T9EditorLIT'
-$ExeName  = 't9-editor-lit.exe'
-$Shortcut = Join-Path $InstallDir 'T9 Editor LIT.lnk'
-
-# The same target folder the build used. An agent that builds in its own
-# folder (T9_TARGET_DIR) must install from that same folder.
-$Target = Join-Path $AppDir 'src-tauri\target'
-if ($env:T9_TARGET_DIR) { $Target = $env:T9_TARGET_DIR }
-
-function Write-Step([string]$Message) {
-    Write-Host "==> $Message" -ForegroundColor Cyan
-}
-
-function Write-Ok([string]$Message) {
-    Write-Host "    [ok] $Message" -ForegroundColor Green
-}
-
-function Write-Warn([string]$Message) {
-    Write-Host "    [!]  $Message" -ForegroundColor Yellow
-}
-
-# ---------------------------------------------------------------- 1. build ---
-if (-not $SkipBuild) {
-    Write-Step 'Building the release executable'
-    # The build takes a lock first: two agents building at the same time
-    # interleave `dist/` and the crate's sources, and the executable that
-    # comes out is a mixture of both. See tools\build.ps1.
-    & (Join-Path $PSScriptRoot 'build.ps1')
-    if ($LASTEXITCODE -ne 0) { throw "the build failed (exit code $LASTEXITCODE)" }
-} else {
-    Write-Step 'Skipping the build (--SkipBuild)'
-}
-
-$BuiltExe = Join-Path $Target "release\$ExeName"
-if (-not (Test-Path $BuiltExe)) {
-    throw "No executable at $BuiltExe - run without -SkipBuild first."
-}
-
-# -------------------------------------------------------------- 2. install ---
-Write-Step "Installing into $InstallDir"
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-
-# Leftovers from an earlier update attempt: a half-swapped binary would be
-# worse than no binary at all.
-foreach ($stale in @('t9-editor-lit.old.exe', 't9cloud.old.exe')) {
-    $stalePath = Join-Path $InstallDir $stale
-    if (Test-Path $stalePath) {
-        Remove-Item $stalePath -Force -ErrorAction SilentlyContinue
-        Write-Ok "removed the leftover $stale"
-    }
-}
-
-$running = Get-Process -Name 't9-editor-lit' -ErrorAction SilentlyContinue
-
-if ($running) {
-    # The app is open, so its executable is locked. The new build is **staged**
-    # next to it instead, and the running app shows a small "Update" button:
-    # one click swaps the binary and starts the new build.
-    Write-Ok 'The app is running - staging the new build for a restart'
-    Copy-Item $BuiltExe (Join-Path $InstallDir 't9-editor-lit.new.exe') -Force
-    Write-Ok 't9-editor-lit.new.exe (staged)'
-} else {
-    Copy-Item $BuiltExe (Join-Path $InstallDir $ExeName) -Force
-    Write-Ok $ExeName
-    # A build staged by an earlier run is now older than what is installed.
-    # Leaving it there would let the app "update" itself backwards.
-    $staleStage = Join-Path $InstallDir 't9-editor-lit.new.exe'
-    if (Test-Path $staleStage) {
-        Remove-Item $staleStage -Force
-        Write-Ok 'removed a stale staged build'
-    }
-}
-
-# The marker the app reads to notice a newer build. It is written **without**
-# a byte-order mark: a BOM would make the app's JSON parser fail and the
-# update button would never appear.
-$buildInfo = @{
-    version  = '0.1.0'
-    builtAt  = (Get-Date).ToUniversalTime().ToString('o')
-    stagedAt = if ($running) { (Get-Date).ToUniversalTime().ToString('o') } else { $null }
-} | ConvertTo-Json
-[System.IO.File]::WriteAllText(
-    (Join-Path $InstallDir 'build.json'),
-    $buildInfo,
-    (New-Object System.Text.UTF8Encoding($false))
-)
-Write-Ok 'build.json (update marker)'
-
-$Daemon = Join-Path $RepoRoot 'go\bin\t9cloud.exe'
-
-# The Go daemon is the **other agent's** scope. When its sources are newer
-# than the binary, rebuild it here - otherwise a daemon change would never
-# reach the desktop app.
+# --------------------------------------------------------------------- paths
+$AppDir = $PSScriptRoot | Split-Path -Parent
+$RepoRoot = $AppDir | Split-Path -Parent
+$ExeName = 't9-editor-lit.exe'
+$DaemonName = 't9cloud.exe'
+$InstallExe = Join-Path $InstallDir $ExeName
+$InstallMarker = Join-Path $InstallDir 'build.json'
+$StageExe = Join-Path $InstallDir 't9-editor-lit.new.exe'
+$StageDaemon = Join-Path $InstallDir 't9cloud.new.exe'
+$LedgerScript = Join-Path $PSScriptRoot 'deploy-ledger.mjs'
+$BuildScript = Join-Path $PSScriptRoot 'build.ps1'
+$PinScript = Join-Path $PSScriptRoot 'pin-taskbar.ps1'
 $GoRoot = Join-Path $RepoRoot 'go'
-if (Test-Path $GoRoot) {
-    $newestSource = Get-ChildItem $GoRoot -Recurse -Include *.go -File |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    $needsBuild = $true
-    if ($newestSource -and (Test-Path $Daemon)) {
-        $needsBuild = $newestSource.LastWriteTime -gt (Get-Item $Daemon).LastWriteTime
+$DefaultBuildDir = Join-Path $AppDir 'src-tauri\target'
+
+if ($env:LOCALAPPDATA) {
+    $DeployDir = Join-Path $env:LOCALAPPDATA 'T9EditorLIT\deploy'
+} else {
+    $DeployDir = Join-Path $RepoRoot '.t9\deploy'
+}
+$BuildDir = Join-Path $DeployDir 'builds'
+$LogDir = Join-Path $DeployDir 'logs'
+$EvidenceDir = Join-Path $DeployDir 'evidence'
+$LockPath = Join-Path $DeployDir 'deploy.lock'
+$LedgerDb = if ($env:T9_LEDGER_DB) { [IO.Path]::GetFullPath($env:T9_LEDGER_DB) } else { Join-Path $DeployDir 'ledger.db' }
+$env:T9_LEDGER_DB = $LedgerDb
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+$script:WorkId = $null
+$script:WorkToken = $null
+$script:RunId = $null
+$script:Finished = $false
+$script:ExitCode = 0
+$script:HeartbeatProcess = $null
+$script:DeployLock = $null
+$script:TranscriptStarted = $false
+$script:EvidencePath = $null
+$buildId = ''
+
+# --------------------------------------------------------------------- node
+$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeCommand) {
+    throw 'Node.js is required (node:sqlite). Install Node 22.5+ and retry.'
+}
+$Node = $nodeCommand.Source
+$nodeVersion = (& $Node -p 'process.versions.node' 2>$null | Out-String).Trim()
+try {
+    if ([version]$nodeVersion -lt [version]'22.5.0') {
+        throw "Node $nodeVersion is too old"
     }
-    if ($needsBuild) {
-        Write-Step 'Rebuilding the t9cloud daemon (Go side)'
-        Push-Location $GoRoot
+} catch {
+    throw "could not read the Node version (got '$nodeVersion'); Node 22.5+ is required"
+}
+if (-not (Test-Path $LedgerScript)) {
+    throw "the ledger script is missing: $LedgerScript"
+}
+if (-not (Test-Path $BuildScript)) {
+    throw "the build script is missing: $BuildScript"
+}
+
+# ------------------------------------------------------------------ helpers
+function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
+function Write-Ok([string]$Message) { Write-Host "    [ok] $Message" -ForegroundColor Green }
+function Write-Warn([string]$Message) { Write-Host "    [!]  $Message" -ForegroundColor Yellow }
+function Write-Bad([string]$Message) { Write-Host "    [x]  $Message" -ForegroundColor Red }
+function Write-Dim([string]$Message) { Write-Host "    $Message" -ForegroundColor DarkGray }
+
+function Initialize-DeployDirs {
+    foreach ($dir in @($DeployDir, $BuildDir, $LogDir, $EvidenceDir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+}
+
+# ConvertFrom-Json turns every ISO-8601 string into a [datetime]. Casting that
+# to [string] yields the current culture ("10/20/2026 16:08:31"), which is not
+# a timestamp the marker or Rust code should carry. Put the round-trip form
+# back whenever a value is known to be a date.
+function ConvertTo-IsoText {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime().ToString('o') }
+    return [string]$Value
+}
+
+function Get-Prop {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($Name)) { return $Object[$Name] }
+        return $null
+    }
+    $prop = $Object.PSObject.Properties[$Name]
+    if ($prop) { return $prop.Value }
+    return $null
+}
+
+function Read-JsonFile([string]$Path) {
+    if (-not (Test-Path $Path)) { return $null }
+    try {
+        return (Get-Content -Path $Path -Raw -ErrorAction Stop | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Get-Sha256([string]$Path) {
+    if (-not $Path -or -not (Test-Path $Path)) { return $null }
+    return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Invoke-Ledger {
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    $output = & $Node --no-warnings $LedgerScript @Arguments 2>&1
+    $code = $LASTEXITCODE
+    $text = ($output | Out-String).Trim()
+    if ($code -ne 0) {
+        throw "deploy ledger '$($Arguments[0])' failed (exit $code): $text"
+    }
+    if (-not $text) { return $null }
+    try {
+        return $text | ConvertFrom-Json
+    } catch {
+        throw "deploy ledger returned unreadable JSON: $text"
+    }
+}
+
+function Invoke-LedgerHuman {
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    & $Node --no-warnings $LedgerScript @Arguments
+    return $LASTEXITCODE
+}
+
+function Get-GitText([string[]]$GitArgs) {
+    try {
+        $value = & git -C $RepoRoot @GitArgs 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        return (($value | Out-String).Trim())
+    } catch {
+        return $null
+    }
+}
+
+function Get-ProcessPath([int]$ProcessId) {
+    try {
+        $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        if ($cim -and $cim.ExecutablePath) { return $cim.ExecutablePath }
+    } catch {
+        # the process may have exited
+    }
+    try {
+        return (Get-Process -Id $ProcessId -ErrorAction Stop).Path
+    } catch {
+        return $null
+    }
+}
+
+function Get-ProcessesByName([string]$Name) {
+    $result = @()
+    foreach ($proc in @(Get-Process -Name $Name -ErrorAction SilentlyContinue)) {
+        $path = $null
+        try { $path = $proc.Path } catch { $path = Get-ProcessPath $proc.Id }
+        if (-not $path) { $path = Get-ProcessPath $proc.Id }
+        $result += [pscustomobject]@{ Id = $proc.Id; Path = $path }
+    }
+    return $result
+}
+
+function Test-PathInDir([string]$Path, [string]$Dir) {
+    if (-not $Path -or -not $Dir) { return $false }
+    try {
+        $full = [IO.Path]::GetFullPath($Path)
+        $dirFull = [IO.Path]::GetFullPath($Dir).TrimEnd('\') + '\'
+        return $full.StartsWith($dirFull, [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
+    }
+}
+
+function Get-AppProcesses { return @(Get-ProcessesByName 't9-editor-lit') }
+function Get-DaemonProcesses { return @(Get-ProcessesByName 't9cloud') }
+
+function Get-DaemonHealth {
+    try {
+        return Invoke-RestMethod -Uri 'http://127.0.0.1:7878/healthz' -TimeoutSec 3 -ErrorAction Stop
+    } catch {
+        return $null
+    }
+}
+
+function Wait-DaemonHealth([string]$ExpectedVersion = '', [int]$TimeoutSeconds = 20) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $health = Get-DaemonHealth
+        if ($health) {
+            $version = [string](Get-Prop $health 'version')
+            if (-not $ExpectedVersion -or $version -eq $ExpectedVersion) { return $health }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    return (Get-DaemonHealth)
+}
+
+function Get-DaemonVersion([string]$Path) {
+    if (-not (Test-Path $Path)) { return $null }
+    try {
+        $output = & $Path -version 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $text = ($output | Out-String).Trim()
+        if (-not $text) { return $null }
+        $parts = $text -split '\s+'
+        return $parts[-1]
+    } catch {
+        return $null
+    }
+}
+
+function Stop-Processes([object[]]$Processes) {
+    foreach ($proc in @($Processes)) {
+        if (-not $proc) { continue }
         try {
-            & go build -o bin/t9cloud.exe ./cmd/t9cloud
-            if ($LASTEXITCODE -ne 0) { throw "go build failed with exit code $LASTEXITCODE" }
-            Write-Ok 't9cloud.exe rebuilt'
-        } finally {
-            Pop-Location
-        }
-    } else {
-        Write-Step 'The daemon is up to date'
-    }
-}
-
-if (Test-Path $Daemon) {
-    # A running daemon locks its own executable, so it is staged the same way
-    # as the app and swapped in by the update helper.
-    $daemonRunning = Get-Process -Name 't9cloud' -ErrorAction SilentlyContinue
-    if ($daemonRunning) {
-        Copy-Item $Daemon (Join-Path $InstallDir 't9cloud.new.exe') -Force
-        Write-Ok 't9cloud.new.exe (staged - the running daemon is swapped in on restart)'
-    } else {
-        Copy-Item $Daemon (Join-Path $InstallDir 't9cloud.exe') -Force
-        Write-Ok 't9cloud.exe (cloud daemon)'
-        # Same story as the app: a stale staged daemon is older than the one
-        # that was just installed.
-        $staleDaemon = Join-Path $InstallDir 't9cloud.new.exe'
-        if (Test-Path $staleDaemon) {
-            Remove-Item $staleDaemon -Force
-            Write-Ok 'removed a stale staged daemon'
+            Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+            Write-Dim "stopped pid $($proc.Id) $($proc.Path)"
+        } catch {
+            Write-Warn "could not stop pid $($proc.Id): $($_.Exception.Message)"
         }
     }
-} else {
-    Write-Warn 'go\bin\t9cloud.exe is missing - cloud features stay offline'
 }
 
-$EnvFile = Join-Path $RepoRoot '.env'
-if (Test-Path $EnvFile) {
-    Copy-Item $EnvFile (Join-Path $InstallDir '.env') -Force
-    Write-Ok '.env (API keys for the daemon)'
-} else {
-    Write-Warn '.env is missing - the daemon will start without API keys'
-}
-
-# ------------------------------------------------------------- 3. shortcut ---
-Write-Step 'Writing the shortcut'
-$ws = New-Object -ComObject WScript.Shell
-$lnk = $ws.CreateShortcut($Shortcut)
-$lnk.TargetPath       = Join-Path $InstallDir $ExeName
-$lnk.WorkingDirectory = $InstallDir
-$lnk.IconLocation     = "$InstallDir\$ExeName,0"
-$lnk.Description      = 'T9 Editor LIT - transcript-first video cutter'
-$lnk.Save()
-Write-Ok $Shortcut
-
-# ----------------------------------------------------------------- 4. pin ---
-if (-not $SkipPin) {
-    Write-Step 'Pinning to the taskbar'
-    # The pin script owns the Start menu shortcut and the AppUserModelID; it
-    # needs the install folder, not the .lnk, because it writes its own
-    # shortcut where Windows looks for it.
-    & (Join-Path $PSScriptRoot 'pin-taskbar.ps1') -InstallDir $InstallDir
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warn 'the shell refused the pin - pin it by hand from the Start menu search'
+function Close-ForeignApps([object[]]$Processes) {
+    $items = @($Processes)
+    if ($items.Count -eq 0) { return }
+    foreach ($proc in $items) {
+        Write-Warn "closing non-installed app pid $($proc.Id): $($proc.Path)"
+        try {
+            $live = Get-Process -Id $proc.Id -ErrorAction Stop
+            [void]$live.CloseMainWindow()
+        } catch {
+            # already gone
+        }
+    }
+    Start-Sleep -Seconds 4
+    foreach ($proc in $items) {
+        if (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue) {
+            try {
+                Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+            } catch {
+                throw "could not close pid $($proc.Id); close it manually and run deploy again"
+            }
+        }
     }
 }
 
-# -------------------------------------------------------------- 5. launch ---
-if ($Launch) {
-    Write-Step 'Starting the app'
-    Start-Process (Join-Path $InstallDir $ExeName)
-    Write-Ok 'launched'
+function Prepare-AppProcesses {
+    $all = @(Get-AppProcesses)
+    $foreign = @($all | Where-Object { -not (Test-PathInDir $_.Path $InstallDir) })
+    if ($foreign.Count -gt 0) {
+        Write-Step 'Closing app instances that do not come from the install folder'
+        Close-ForeignApps $foreign
+    }
+    $all = @(Get-AppProcesses)
+    $foreign = @($all | Where-Object { -not (Test-PathInDir $_.Path $InstallDir) })
+    if ($foreign.Count -gt 0) {
+        throw 'a non-installed app is still running; close it and retry (the taskbar app is the only supported entry point)'
+    }
+    $installed = @($all | Where-Object { Test-PathInDir $_.Path $InstallDir })
+    return [pscustomobject]@{ Running = ($installed.Count -gt 0); Processes = $installed }
 }
 
-Write-Step 'Done'
-Write-Host "    The app now lives in $InstallDir" -ForegroundColor Green
-if ($running) {
+function Wait-FileLock([string]$Path, [int]$TimeoutSeconds = 1200) {
+    $start = Get-Date
+    $waited = 0
+    while ($true) {
+        try {
+            return [IO.File]::Open(
+                $Path,
+                [IO.FileMode]::OpenOrCreate,
+                [IO.FileAccess]::ReadWrite,
+                [IO.FileShare]::None
+            )
+        } catch {
+            if (((Get-Date) - $start).TotalSeconds -ge $TimeoutSeconds) {
+                throw "timed out waiting for the deploy lock: $Path"
+            }
+            if ($waited % 20 -eq 0) {
+                Write-Dim "waiting for the deploy lock ($waited s)"
+            }
+            Start-Sleep -Seconds 2
+            $waited += 2
+        }
+    }
+}
+
+function Get-GoBuildId {
+    if (-not (Test-Path $GoRoot)) { return $null }
+    $files = @(
+        Get-ChildItem $GoRoot -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -eq '.go' -or $_.Name -eq 'go.mod' -or $_.Name -eq 'go.sum' } |
+            Sort-Object FullName
+    )
+    if ($files.Count -eq 0) { return $null }
+    $builder = [System.Text.StringBuilder]::new()
+    foreach ($file in $files) {
+        $relative = $file.FullName.Substring($GoRoot.Length).Replace('\', '/')
+        [void]$builder.Append($relative).Append(':').Append((Get-Sha256 $file.FullName)).Append("`n")
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes($builder.ToString())
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    return "go-$($hash.Substring(0, 16))"
+}
+
+function Resolve-BuildManifest([string]$Explicit, [string]$BuildId) {
+    if ($BuildId) {
+        $byId = Join-Path $BuildDir "$BuildId.json"
+        if (Test-Path $byId) { return $byId }
+    }
+    if ($Explicit) {
+        if (-not (Test-Path $Explicit)) { throw "build manifest not found: $Explicit" }
+        return (Resolve-Path $Explicit).Path
+    }
+    $latest = Join-Path $BuildDir 'latest.json'
+    if (Test-Path $latest) { return $latest }
+    $fallback = Join-Path $DefaultBuildDir 'release\build-manifest.json'
+    if (Test-Path $fallback) { return $fallback }
+    return $null
+}
+
+function Sync-EnvFile {
+    $source = Join-Path $RepoRoot '.env'
+    $destination = Join-Path $InstallDir '.env'
+    if (-not (Test-Path $source)) {
+        if (-not (Test-Path $destination)) {
+            Write-Warn 'no .env in the repository or install folder - cloud features stay offline'
+        }
+        return
+    }
+    $sourceSha = Get-Sha256 $source
+    $destinationSha = Get-Sha256 $destination
+    if ($destinationSha -eq $sourceSha) { return }
+
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    if (Test-Path $destination) {
+        Copy-Item $destination "$destination.bak" -Force
+    }
+    $temp = Join-Path $InstallDir '.env.tmp'
+    Copy-Item $source $temp -Force
+    if ((Get-Sha256 $temp) -ne $sourceSha) {
+        Remove-Item $temp -Force -ErrorAction SilentlyContinue
+        throw 'copied .env hash mismatch'
+    }
+    Move-Item $temp $destination -Force
+    Write-Ok 'installed the repository .env (cloud keys and T9CLOUD_ADDR)'
+}
+
+function Start-InstalledDaemon {
+    $exe = Join-Path $InstallDir $DaemonName
+    if (-not (Test-Path $exe)) { return $null }
+    $envFile = Join-Path $InstallDir '.env'
+    $outLog = Join-Path $LogDir 't9cloud.out.log'
+    $errLog = Join-Path $LogDir 't9cloud.err.log'
+    try {
+        if (Test-Path $envFile) {
+            $argLine = "-env `"$envFile`""
+            return Start-Process -FilePath $exe -ArgumentList $argLine -WorkingDirectory $InstallDir `
+                -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
+        }
+        return Start-Process -FilePath $exe -WorkingDirectory $InstallDir `
+            -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
+    } catch {
+        Write-Warn "could not start the daemon: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Write-BuildMarker {
+    param(
+        [string]$Mode,
+        [string]$BuildId,
+        [string]$BuiltAt,
+        [string]$AppSha,
+        [string]$DaemonBuildId,
+        [string]$DaemonSha,
+        [string]$DaemonVersion,
+        [object]$Manifest
+    )
+    $now = (Get-Date).ToUniversalTime().ToString('o')
+    $marker = [ordered]@{
+        version        = '0.1.0'
+        buildId        = $BuildId
+        builtAt        = $BuiltAt
+        installedAt    = $now
+        stagedAt       = if ($Mode -eq 'staged') { $now } else { $null }
+        mode           = $Mode
+        gitCommit      = Get-Prop $Manifest 'gitCommit'
+        gitDirty       = [bool](Get-Prop $Manifest 'gitDirty')
+        workId         = $script:WorkId
+        agent          = $Agent
+        model          = $Model
+        scope          = $Scope
+        appSha256      = $AppSha
+        daemonBuildId  = $DaemonBuildId
+        daemonSha256   = $DaemonSha
+        daemonVersion  = $DaemonVersion
+        host           = $env:COMPUTERNAME
+    }
+    $json = $marker | ConvertTo-Json -Depth 6
+    $temp = Join-Path $InstallDir '.build.json.tmp'
+    [IO.File]::WriteAllText($temp, $json, $Utf8NoBom)
+    Move-Item -Path $temp -Destination $InstallMarker -Force
+    return [pscustomobject]$marker
+}
+
+function Install-App {
+    param(
+        [string]$SourceExe,
+        [string]$Sha256,
+        [string]$BuildId,
+        [string]$BuiltAt,
+        [object]$Manifest
+    )
+    Write-Step 'Installing the app'
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    $temp = Join-Path $InstallDir ".t9-install-$BuildId.exe"
+    Copy-Item -Path $SourceExe -Destination $temp -Force
+    $tempSha = Get-Sha256 $temp
+    if ($tempSha -ne $Sha256) {
+        Remove-Item $temp -Force -ErrorAction SilentlyContinue
+        throw "copied app hash mismatch: $tempSha != $Sha256"
+    }
+
+    $appProcs = @(Get-AppProcesses)
+    $installed = @($appProcs | Where-Object { Test-PathInDir $_.Path $InstallDir })
+    $foreign = @($appProcs | Where-Object { -not (Test-PathInDir $_.Path $InstallDir) })
+    if ($foreign.Count -gt 0) {
+        Close-ForeignApps $foreign
+        $appProcs = @(Get-AppProcesses)
+        $installed = @($appProcs | Where-Object { Test-PathInDir $_.Path $InstallDir })
+        if (@($appProcs | Where-Object { -not (Test-PathInDir $_.Path $InstallDir) }).Count -gt 0) {
+            throw 'a non-installed app is still running; close it and retry'
+        }
+    }
+
+    if ($installed.Count -gt 0) {
+        Write-Ok "the installed app is running (pid $($installed[0].Id)) - staging the new build"
+        if (Test-Path $StageExe) { Remove-Item $StageExe -Force }
+        Move-Item -Path $temp -Destination $StageExe -Force
+        $stageSha = Get-Sha256 $StageExe
+        if ($stageSha -ne $Sha256) {
+            throw "staged app hash mismatch: $stageSha != $Sha256"
+        }
+        return [pscustomobject]@{
+            Mode      = 'staged'
+            LiveSha   = Get-Sha256 $InstallExe
+            StagedSha = $stageSha
+            Running   = $true
+        }
+    }
+
+    Write-Ok 'the installed app is not running - installing the build directly'
+    $old = Join-Path $InstallDir 't9-editor-lit.old.exe'
+    if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue }
+    $movedOld = $false
+    try {
+        if (Test-Path $InstallExe) {
+            Move-Item -Path $InstallExe -Destination $old -Force
+            $movedOld = $true
+        }
+        Move-Item -Path $temp -Destination $InstallExe -Force
+    } catch {
+        # The app may have started between the check and the move. Fall back
+        # to staging rather than leaving a half-installed folder.
+        Write-Warn "direct install failed ($($_.Exception.Message)); switching to stage mode"
+        if ($movedOld -and (Test-Path $old) -and -not (Test-Path $InstallExe)) {
+            Move-Item $old $InstallExe -Force
+        }
+        if (Test-Path $temp) {
+            if (Test-Path $StageExe) { Remove-Item $StageExe -Force -ErrorAction SilentlyContinue }
+            Move-Item $temp $StageExe -Force
+        }
+        $stageSha = Get-Sha256 $StageExe
+        if ($stageSha -ne $Sha256) {
+            throw 'could not install or stage the app'
+        }
+        return [pscustomobject]@{
+            Mode      = 'staged'
+            LiveSha   = Get-Sha256 $InstallExe
+            StagedSha = $stageSha
+            Running   = $true
+        }
+    }
+
+    $liveSha = Get-Sha256 $InstallExe
+    if ($liveSha -ne $Sha256) {
+        if ($movedOld -and (Test-Path $old)) {
+            Remove-Item $InstallExe -Force -ErrorAction SilentlyContinue
+            Move-Item $old $InstallExe -Force
+        }
+        throw "installed app hash mismatch: $liveSha != $Sha256"
+    }
+    if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $StageExe) { Remove-Item $StageExe -Force -ErrorAction SilentlyContinue }
+    return [pscustomobject]@{
+        Mode      = 'installed'
+        LiveSha   = $liveSha
+        StagedSha = $null
+        Running   = $false
+    }
+}
+
+function Install-Daemon {
+    param(
+        [string]$Source,
+        [string]$Sha,
+        [string]$Version,
+        [bool]$AppRunning,
+        [bool]$Required
+    )
+    $live = Join-Path $InstallDir $DaemonName
+    $stage = Join-Path $InstallDir 't9cloud.new.exe'
+    $old = Join-Path $InstallDir 't9cloud.old.exe'
+    $liveSha = Get-Sha256 $live
+    $liveVersion = Get-DaemonVersion $live
+
+    if (-not $Source -or -not (Test-Path $Source) -or -not $Sha -or -not $Version) {
+        if (Test-Path $live) {
+            Write-Warn "no fresh daemon binary; keeping the installed daemon ($liveVersion)"
+            return [pscustomobject]@{
+                Mode      = 'unchanged'
+                Sha       = $liveSha
+                Version   = $liveVersion
+                Pending   = $false
+            }
+        }
+        if ($Required) { throw 't9cloud daemon is missing and no fresh build was produced' }
+        Write-Warn 't9cloud daemon is missing - cloud features stay offline'
+        return [pscustomobject]@{ Mode = 'missing'; Sha = $null; Version = $null; Pending = $false }
+    }
+
+    $needsUpdate = -not (Test-Path $live) -or $liveSha -ne $Sha -or $liveVersion -ne $Version
+    if (-not $needsUpdate) {
+        if (Test-Path $stage) { Remove-Item $stage -Force -ErrorAction SilentlyContinue }
+        $procs = @(Get-DaemonProcesses)
+        if ($procs.Count -eq 0) {
+            Write-Step 'Starting the t9cloud daemon'
+            $null = Start-InstalledDaemon
+            $health = Wait-DaemonHealth $Version 20
+            if (-not $health) { throw 'the daemon did not answer /healthz after start' }
+        }
+        Write-Ok "daemon is already current ($Version)"
+        return [pscustomobject]@{
+            Mode      = 'unchanged'
+            Sha       = $liveSha
+            Version   = $Version
+            Pending   = $false
+        }
+    }
+
+    $health = Get-DaemonHealth
+    $queue = Get-Prop $health 'queue'
+    $inFlight = [int](Get-Prop $queue 'in_flight')
+    if ($inFlight -gt 0 -and $AppRunning) {
+        Write-Warn "daemon has $inFlight job(s) in flight - staging t9cloud.new.exe; the Update click will swap it"
+        Copy-Item -Path $Source -Destination $stage -Force
+        $stageSha = Get-Sha256 $stage
+        if ($stageSha -ne $Sha) { throw "staged daemon hash mismatch: $stageSha != $Sha" }
+        return [pscustomobject]@{
+            Mode      = 'staged'
+            Sha       = $stageSha
+            Version   = $liveVersion
+            Pending   = $true
+        }
+    }
+
+    if ($inFlight -gt 0 -and -not $AppRunning) {
+        Write-Warn "daemon has $inFlight job(s) in flight; waiting up to 90 s for the queue to drain"
+        $deadline = (Get-Date).AddSeconds(90)
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 5
+            $health = Get-DaemonHealth
+            $inFlight = [int](Get-Prop (Get-Prop $health 'queue') 'in_flight')
+            if ($inFlight -le 0) { break }
+        }
+        if ($inFlight -gt 0) {
+            throw "daemon still has $inFlight job(s) in flight; wait for them and run deploy again (nothing was killed)"
+        }
+    }
+
+    $procs = @(Get-DaemonProcesses)
+    if ($procs.Count -gt 0) {
+        Write-Step "Restarting the t9cloud daemon ($liveVersion -> $Version)"
+        Stop-Processes $procs
+        Start-Sleep -Seconds 1
+    }
+
+    $temp = Join-Path $InstallDir ".t9-daemon-$Version.exe"
+    Copy-Item -Path $Source -Destination $temp -Force
+    $tempSha = Get-Sha256 $temp
+    if ($tempSha -ne $Sha) { throw "copied daemon hash mismatch: $tempSha != $Sha" }
+    if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue }
+    $movedOld = $false
+    try {
+        if (Test-Path $live) {
+            Move-Item $live $old -Force
+            $movedOld = $true
+        }
+        Move-Item $temp $live -Force
+    } catch {
+        if ($movedOld -and (Test-Path $old) -and -not (Test-Path $live)) {
+            Move-Item $old $live -Force
+        }
+        throw "could not install the daemon: $($_.Exception.Message)"
+    }
+    $newSha = Get-Sha256 $live
+    if ($newSha -ne $Sha) {
+        if ($movedOld -and (Test-Path $old)) {
+            Remove-Item $live -Force -ErrorAction SilentlyContinue
+            Move-Item $old $live -Force
+        }
+        throw "installed daemon hash mismatch: $newSha != $Sha"
+    }
+    if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue }
+
+    Write-Step 'Starting the t9cloud daemon'
+    $null = Start-InstalledDaemon
+    $health = Wait-DaemonHealth $Version 25
+    if (-not $health) { throw 'the daemon did not answer /healthz after restart' }
+    $actualVersion = [string](Get-Prop $health 'version')
+    if ($actualVersion -ne $Version) {
+        throw "daemon reports version '$actualVersion', expected '$Version'"
+    }
+    if (Test-Path $stage) { Remove-Item $stage -Force -ErrorAction SilentlyContinue }
+    Write-Ok "daemon $Version is live at http://127.0.0.1:7878"
+    return [pscustomobject]@{
+        Mode      = 'restarted'
+        Sha       = $Sha
+        Version   = $Version
+        Pending   = $false
+    }
+}
+
+function Show-Doctor {
+    Write-Step 'Deployment doctor'
+    $ok = $true
+    if (-not (Test-Path $InstallDir)) {
+        Write-Bad "install folder missing: $InstallDir"
+        return $false
+    }
+    $liveSha = Get-Sha256 $InstallExe
+    $stageSha = Get-Sha256 $StageExe
+    $marker = Read-JsonFile $InstallMarker
+    $health = Get-DaemonHealth
+    $appProcs = @(Get-AppProcesses)
+    $foreign = @($appProcs | Where-Object { -not (Test-PathInDir $_.Path $InstallDir) })
+    $installedProcs = @($appProcs | Where-Object { Test-PathInDir $_.Path $InstallDir })
+
+    if (-not (Test-Path $InstallExe)) {
+        Write-Bad "app missing: $InstallExe"
+        $ok = $false
+    } else {
+        Write-Ok "app: $InstallExe"
+        Write-Dim "sha256: $liveSha"
+    }
+
+    if (-not $marker) {
+        Write-Bad "marker missing or unreadable: $InstallMarker"
+        $ok = $false
+    } else {
+        $buildId = [string](Get-Prop $marker 'buildId')
+        $mode = [string](Get-Prop $marker 'mode')
+        $markerAppSha = [string](Get-Prop $marker 'appSha256')
+        if (-not $buildId -or -not $mode) {
+            Write-Bad 'marker predates the build ledger (no buildId/mode) - run a deploy'
+            $ok = $false
+        } else {
+            Write-Ok "marker: build=$buildId mode=$mode"
+        }
+        if ($markerAppSha) {
+            $actual = if ($stageSha) { $stageSha } else { $liveSha }
+            if ($actual -ne $markerAppSha) {
+                Write-Bad "app hash does not match marker ($actual != $markerAppSha)"
+                $ok = $false
+            } else {
+                Write-Ok 'app hash matches the marker'
+            }
+        }
+        $daemonExpected = [string](Get-Prop $marker 'daemonVersion')
+        $daemonTarget = [string](Get-Prop $marker 'daemonBuildId')
+        if ($health -and $daemonExpected) {
+            $actualVersion = [string](Get-Prop $health 'version')
+            if ($actualVersion -ne $daemonExpected) {
+                Write-Bad "daemon version mismatch (live $actualVersion, marker $daemonExpected)"
+                $ok = $false
+            } else {
+                Write-Ok "daemon live: $actualVersion"
+            }
+        } elseif ($health -and $daemonTarget) {
+            Write-Dim "daemon live: $([string](Get-Prop $health 'version')) (target $daemonTarget)"
+        } elseif ($daemonTarget) {
+            Write-Bad "daemon is not running (expected $daemonTarget)"
+            $ok = $false
+        }
+    }
+
+    if ($stageSha) {
+        Write-Warn "staged app update present: $StageExe"
+        Write-Dim "sha256: $stageSha (the app should show Update within 5 s)"
+    } else {
+        Write-Ok 'no staged app update'
+    }
+    if (Test-Path $StageDaemon) {
+        Write-Warn "staged daemon update present: $StageDaemon"
+    }
+    if ($installedProcs.Count -gt 0) {
+        Write-Ok "installed app is running (pid $($installedProcs[0].Id))"
+    } else {
+        Write-Warn 'installed app is not running'
+    }
+    if ($foreign.Count -gt 0) {
+        Write-Bad "non-installed app instance(s): $(($foreign | ForEach-Object { "$($_.Id) $($_.Path)" }) -join '; ')"
+        $ok = $false
+    }
+    if (-not $health) {
+        Write-Warn 'daemon health endpoint is not reachable'
+    }
+    return $ok
+}
+
+function Stop-Heartbeat {
+    if ($script:HeartbeatProcess) {
+        try {
+            if (-not $script:HeartbeatProcess.HasExited) {
+                Stop-Process -Id $script:HeartbeatProcess.Id -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+            # already gone
+        }
+        $script:HeartbeatProcess = $null
+    }
+}
+
+function Close-WorkOrder {
+    param(
+        [string]$Outcome,
+        [string]$ErrorText = '',
+        [string]$Mode = '',
+        [string]$BuildId = '',
+        [string]$Evidence = ''
+    )
+    if (-not $script:WorkId -or -not $script:WorkToken -or $script:Finished) { return $null }
+    $finishArgs = @(
+        'finish', '--json',
+        "--id=$($script:WorkId)",
+        "--token=$($script:WorkToken)",
+        "--outcome=$Outcome"
+    )
+    if ($Mode) { $finishArgs += "--mode=$Mode" }
+    if ($BuildId) { $finishArgs += "--build-id=$BuildId" }
+    if ($ErrorText) { $finishArgs += "--error=$ErrorText" }
+    if ($Evidence) { $finishArgs += "--evidence=$Evidence" }
+    try {
+        $result = Invoke-Ledger $finishArgs
+        $script:Finished = $true
+        return $result
+    } catch {
+        Write-Warn "could not close the ledger work order: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Close-Session {
+    if (-not $Session) { return }
+    try {
+        $null = Invoke-Ledger @('session-end', '--json', "--session=$Session")
+    } catch {
+        Write-Warn "could not close the session record: $($_.Exception.Message)"
+    }
+}
+
+function Write-EvidenceFile([object]$Evidence) {
+    $path = Join-Path $EvidenceDir "$($script:WorkId).json"
+    [IO.File]::WriteAllText($path, ($Evidence | ConvertTo-Json -Depth 12), $Utf8NoBom)
+    return $path
+}
+
+function Print-Form {
     Write-Host ''
-    Write-Host '    The app is still running the old build.' -ForegroundColor Yellow
-    Write-Host '    Its top bar now shows a small "Update" button - click it and the' -ForegroundColor Yellow
-    Write-Host '    new build (app + cloud daemon) is swapped in and started.' -ForegroundColor Yellow
-} else {
-    Write-Host '    The pinned taskbar icon starts the new build directly.' -ForegroundColor Green
+    Write-Host 'T9 deploy request - the form is part of the deploy.' -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host '  -Agent       who is deploying (your agent name)' -ForegroundColor Gray
+    Write-Host '  -Model       exact model id (provider/model)' -ForegroundColor Gray
+    Write-Host '  -Task        what changes (8+ characters)' -ForegroundColor Gray
+    Write-Host '  -Why         why it matters (12+ characters)' -ForegroundColor Gray
+    Write-Host '  -EtaMinutes  honest estimate for build+install+verify' -ForegroundColor Gray
+    Write-Host '  -Scope       app | go | both | docs (default app)' -ForegroundColor Gray
+    Write-Host '  -Priority    0..100 (default 50; >60 needs -Emergency)' -ForegroundColor Gray
+    Write-Host ''
+    Write-Host 'Example:' -ForegroundColor Yellow
+    Write-Host '  pwsh -File tools\deploy.ps1 `' -ForegroundColor DarkGray
+    Write-Host '    -Agent "opencode" `' -ForegroundColor DarkGray
+    Write-Host '    -Model "opencode/deepseek-v4.1-flash-free" `' -ForegroundColor DarkGray
+    Write-Host '    -Task "fix the export button state" `' -ForegroundColor DarkGray
+    Write-Host '    -Why "the button stays disabled after a successful export" `' -ForegroundColor DarkGray
+    Write-Host '    -EtaMinutes 25 -Scope both' -ForegroundColor DarkGray
+    Write-Host ''
 }
+
+# ------------------------------------------------------------------- boot
+Initialize-DeployDirs
+
+if ($Status) {
+    $statusArgs = @('status', "--db=$LedgerDb")
+    if ($Json) { $statusArgs += '--json' }
+    & $Node --no-warnings $LedgerScript @statusArgs
+    exit $LASTEXITCODE
+}
+
+if ($Doctor) {
+    if (Show-Doctor) { exit 0 }
+    exit 1
+}
+
+# Guarantee the schema before the first request. This is also what makes a
+# brand-new machine work without a separate setup step.
+$null = Invoke-Ledger @('init', "--db=$LedgerDb")
+
+# ------------------------------------------------------------------- form
+if ($FormFile) {
+    if (-not (Test-Path $FormFile)) { throw "form file not found: $FormFile" }
+    $form = Read-JsonFile $FormFile
+    if (-not $form) { throw "form file is not valid JSON: $FormFile" }
+    if (-not $Agent) { $Agent = [string](Get-Prop $form 'agent') }
+    if (-not $Model) { $Model = [string](Get-Prop $form 'model') }
+    if (-not $Session) { $Session = [string](Get-Prop $form 'session') }
+    if (-not $Task) { $Task = [string](Get-Prop $form 'task') }
+    if (-not $Why) { $Why = [string](Get-Prop $form 'why') }
+    if ($EtaMinutes -le 0) { $EtaMinutes = [int](Get-Prop $form 'etaMinutes') }
+    if (-not $PSBoundParameters.ContainsKey('Scope') -and (Get-Prop $form 'scope')) {
+        $Scope = [string](Get-Prop $form 'scope')
+    }
+    if (-not $PSBoundParameters.ContainsKey('Priority') -and (Get-Prop $form 'priority')) {
+        $Priority = [int](Get-Prop $form 'priority')
+    }
+}
+
+if (-not $Model) {
+    foreach ($envName in @('T9_MODEL', 'OPENCODE_MODEL', 'OPENCODE_MODEL_ID')) {
+        $value = [Environment]::GetEnvironmentVariable($envName)
+        if ($value) { $Model = $value; break }
+    }
+}
+
+if ($Interactive) {
+    Write-Host ''
+    Write-Host 'T9 deploy request' -ForegroundColor Cyan
+    Write-Host 'Answer six questions. The ledger records them before any build.' -ForegroundColor DarkGray
+    $answer = Read-Host "Agent name [$Agent]"
+    if ($answer) { $Agent = $answer }
+    $answer = Read-Host "Model id [$Model]"
+    if ($answer) { $Model = $answer }
+    $answer = Read-Host 'Task (what changes)'
+    if ($answer) { $Task = $answer }
+    $answer = Read-Host 'Why (why it matters)'
+    if ($answer) { $Why = $answer }
+    $answer = Read-Host "ETA in minutes [$([Math]::Max(10, $EtaMinutes))]"
+    if ($answer) { $EtaMinutes = [int]$answer }
+    $answer = Read-Host "Scope app|go|both|docs [$Scope]"
+    if ($answer) { $Scope = $answer }
+    $answer = Read-Host "Priority 0..100 [$Priority]"
+    if ($answer) { $Priority = [int]$answer }
+}
+
+if (-not $Agent) { $Agent = '' }
+if (-not $Model) { $Model = '' }
+if (-not $Task) { $Task = '' }
+if (-not $Why) { $Why = '' }
+
+$Agent = $Agent.Trim()
+$Model = $Model.Trim()
+$Task = ($Task -replace '\s+', ' ').Trim()
+$Why = ($Why -replace '\s+', ' ').Trim()
+$Scope = if ($Scope) { $Scope.ToLowerInvariant() } else { 'app' }
+
+$missing = @()
+if ($Agent.Length -lt 2) { $missing += 'Agent (2+ characters)' }
+if ($Model.Length -lt 3) { $missing += 'Model (3+ characters)' }
+if ($Task.Length -lt 8) { $missing += 'Task (8+ characters)' }
+if ($Why.Length -lt 12) { $missing += 'Why (12+ characters)' }
+if ($EtaMinutes -lt 1 -or $EtaMinutes -gt 480) { $missing += 'EtaMinutes (1..480)' }
+if ($Scope -notin @('app', 'go', 'both', 'docs')) { $missing += 'Scope (app|go|both|docs)' }
+if ($Priority -lt 0 -or $Priority -gt 100) { $missing += 'Priority (0..100)' }
+if ($Priority -gt 60 -and -not $Emergency) { $missing += 'Priority above 60 needs -Emergency' }
+
+if ($missing.Count -gt 0) {
+    Print-Form
+    Write-Bad "missing or invalid: $($missing -join ', ')"
+    exit 2
+}
+
+if ($Emergency) { $Priority = [Math]::Max($Priority, 90) }
+if (-not $Session) {
+    $safeAgent = $Agent -replace '[^A-Za-z0-9._-]', '-'
+    $Session = "S-$safeAgent-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))"
+}
+if (-not $Session.ToLowerInvariant().StartsWith('s-')) { $Session = "S-$Session" }
+
+$gitCommit = Get-GitText @('rev-parse', 'HEAD')
+$gitShort = Get-GitText @('rev-parse', '--short', 'HEAD')
+$gitBranch = Get-GitText @('rev-parse', '--abbrev-ref', 'HEAD')
+$gitStatus = Get-GitText @('status', '--porcelain')
+$gitDirty = [bool]($gitStatus -and $gitStatus.Length -gt 0)
+
+Write-Host ''
+Write-Host 'T9 deploy request' -ForegroundColor Cyan
+Write-Host "  agent:   $Agent" -ForegroundColor Gray
+Write-Host "  model:   $Model" -ForegroundColor Gray
+Write-Host "  task:    $Task" -ForegroundColor Gray
+Write-Host "  why:     $Why" -ForegroundColor Gray
+Write-Host "  eta:     $EtaMinutes min" -ForegroundColor Gray
+Write-Host "  scope:   $Scope" -ForegroundColor Gray
+Write-Host "  session: $Session" -ForegroundColor DarkGray
+Write-Host "  git:     $(if ($gitShort) { $gitShort } else { 'unknown' }) $(if ($gitDirty) { '(dirty)' } else { '' })" -ForegroundColor DarkGray
+
+if ($Interactive) {
+    $confirm = Read-Host 'Proceed? [Y/n]'
+    if ($confirm -match '^[nN]') {
+        Write-Host 'Cancelled before a work order was created.' -ForegroundColor Yellow
+        exit 0
+    }
+}
+
+$transcript = Join-Path $LogDir "deploy-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+try {
+    Start-Transcript -Path $transcript -Append | Out-Null
+    $script:TranscriptStarted = $true
+} catch {
+    Write-Warn "could not start the log transcript: $($_.Exception.Message)"
+}
+
+try {
+    # ------------------------------------------------------------- request
+    Write-Step 'Recording the work order'
+    $requestArgs = @(
+        'request', '--json',
+        "--agent=$Agent",
+        "--model=$Model",
+        "--task=$Task",
+        "--why=$Why",
+        "--eta=$EtaMinutes",
+        "--scope=$Scope",
+        "--priority=$Priority",
+        "--session=$Session",
+        "--worktree=$AppDir",
+        "--agent-pid=$PID"
+    )
+    if ($Emergency) { $requestArgs += '--emergency' }
+    if ($gitCommit) { $requestArgs += "--commit=$gitCommit" }
+    if ($gitBranch) { $requestArgs += "--branch=$gitBranch" }
+    if ($gitDirty) { $requestArgs += '--git-dirty' }
+
+    $request = Invoke-Ledger $requestArgs
+    $script:WorkId = [string](Get-Prop $request 'workId')
+    $script:WorkToken = [string](Get-Prop $request 'token')
+    if (-not $script:WorkId -or -not $script:WorkToken) {
+        throw 'the ledger did not return a work id and token'
+    }
+    $position = Get-Prop $request 'position'
+    $queueDepth = Get-Prop $request 'queueDepth'
+    $etaAhead = Get-Prop $request 'etaAheadMinutes'
+    Write-Ok "work order $($script:WorkId) queued at position $position/$queueDepth"
+    Write-Dim "estimated work ahead: $etaAhead min (your ETA: $EtaMinutes min)"
+    if (@(Get-Prop $request 'expired').Count -gt 0) {
+        Write-Warn "recovered $(@(Get-Prop $request 'expired').Count) stale work order(s) first"
+    }
+
+    # --------------------------------------------------------------- claim
+    $leaseMinutes = [Math]::Max(10, [Math]::Min(90, $EtaMinutes + 15))
+    $maxWait = if ($MaxWaitMinutes -gt 0) {
+        $MaxWaitMinutes
+    } else {
+        [Math]::Max(10, [Math]::Min(180, $EtaMinutes + 30))
+    }
+    $waitStart = Get-Date
+    $claim = $null
+    while ($true) {
+        $claim = Invoke-Ledger @(
+            'claim', '--json',
+            "--id=$($script:WorkId)",
+            "--token=$($script:WorkToken)",
+            "--lease-minutes=$leaseMinutes"
+        )
+        $state = [string](Get-Prop $claim 'state')
+        if ($state -eq 'active') { break }
+        if ($state -ne 'waiting') { throw "unexpected claim state: $state" }
+
+        $active = Get-Prop $claim 'active'
+        $position = Get-Prop $claim 'position'
+        $queueDepth = Get-Prop $claim 'queueDepth'
+        $etaAhead = Get-Prop $claim 'etaAheadMinutes'
+        $line = "[queue] position $position/$queueDepth, about $etaAhead min of work ahead"
+        if ($active) {
+            $line += " | active: $([string](Get-Prop $active 'id')) $([string](Get-Prop $active 'agent')) / $([string](Get-Prop $active 'model')) - $([string](Get-Prop $active 'task'))"
+        }
+        Write-Host $line -ForegroundColor Yellow
+
+        if ($NoWait) {
+            $null = Close-WorkOrder -Outcome 'cancelled' -ErrorText 'queue busy and -NoWait was set'
+            throw "queue is busy; work order $($script:WorkId) was cancelled (re-run without -NoWait to wait)"
+        }
+        $elapsed = ((Get-Date) - $waitStart).TotalMinutes
+        if ($elapsed -gt $maxWait) {
+            $null = Close-WorkOrder -Outcome 'cancelled' -ErrorText "queue wait exceeded $maxWait min"
+            throw "queue wait exceeded $maxWait min; work order $($script:WorkId) was cancelled"
+        }
+        # claim() refreshes the queued heartbeat, so a long wait is not
+        # mistaken for a vanished agent.
+        Start-Sleep -Seconds (Get-Random -Minimum 8 -Maximum 14)
+    }
+
+    $script:RunId = [string](Get-Prop $claim 'runId')
+    Write-Ok "work order is active (run $($script:RunId), lease $leaseMinutes min)"
+    Write-Dim "arrived: $((Get-Date).ToString('HH:mm:ss'))  |  deploy lock: $LockPath"
+
+    $script:DeployLock = Wait-FileLock $LockPath 1200
+    Write-Ok 'deploy lock held (a second deploy cannot interleave the install)'
+
+    # A separate Node process keeps the lease alive during a long cargo link.
+    # It also exits by itself if this PowerShell process dies (--parent-pid).
+    $heartbeatLine = "--no-warnings `"$LedgerScript`" heartbeat-loop --id=$($script:WorkId) --token=$($script:WorkToken) --interval=20 --lease-minutes=$leaseMinutes --phase=build --parent-pid=$PID"
+    try {
+        $script:HeartbeatProcess = Start-Process -FilePath $Node -ArgumentList $heartbeatLine -WindowStyle Hidden -PassThru
+    } catch {
+        Write-Warn "heartbeat loop did not start: $($_.Exception.Message)"
+    }
+
+    # --------------------------------------------------------------- build
+    if ($SkipBuild) {
+        Write-Step 'Reusing the newest verified build (-SkipBuild)'
+        $manifestPath = Resolve-BuildManifest -Explicit $BuildManifest -BuildId ''
+        if (-not $manifestPath) {
+            throw '-SkipBuild needs a build manifest; run build.ps1 first or drop -SkipBuild'
+        }
+        $manifest = Read-JsonFile $manifestPath
+        if (-not $manifest) { throw "build manifest is unreadable: $manifestPath" }
+        $buildId = [string](Get-Prop $manifest 'buildId')
+        $builtExe = [string](Get-Prop $manifest 'exe')
+        $builtSha = [string](Get-Prop $manifest 'sha256')
+        $builtAt = ConvertTo-IsoText (Get-Prop $manifest 'builtAt')
+        if (-not $buildId -or -not $builtExe -or -not $builtSha) {
+            throw "build manifest is missing buildId/exe/sha256: $manifestPath"
+        }
+        if (-not (Test-Path $builtExe)) {
+            throw "the manifest points at a missing executable: $builtExe"
+        }
+        $actual = Get-Sha256 $builtExe
+        if ($actual -ne $builtSha) {
+            throw "the executable no longer matches the manifest ($actual != $builtSha); rebuild it"
+        }
+        $manifestCommit = [string](Get-Prop $manifest 'gitCommit')
+        if ($manifestCommit -and $gitCommit -and $manifestCommit -ne $gitCommit -and -not $Force) {
+            throw "the build is from commit $manifestCommit, HEAD is $gitCommit; run without -SkipBuild (or pass -Force if you really mean it)"
+        }
+        Write-Ok "using build $buildId from $manifestPath"
+    } else {
+        $short = if ($gitShort) { $gitShort } else { 'nogit' }
+        $buildId = "app-$short-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))-$(-join ((1..4) | ForEach-Object { '{0:x}' -f (Get-Random -Minimum 0 -Maximum 16) }))"
+        Write-Step "Building $buildId"
+        # Do not capture the build's stdout: npm/tauri write a lot of it. The
+        # manifest file is the contract.
+        & $BuildScript -BuildId $buildId -WorkId $script:WorkId -Agent $Agent -Model $Model | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "build.ps1 failed (exit code $LASTEXITCODE)" }
+        $manifestPath = Resolve-BuildManifest -Explicit '' -BuildId $buildId
+        if (-not $manifestPath) {
+            $manifestPath = Resolve-BuildManifest -Explicit '' -BuildId ''
+        }
+        if (-not $manifestPath) { throw "no build manifest was written for $buildId" }
+        $manifest = Read-JsonFile $manifestPath
+        if (-not $manifest) { throw "build manifest is unreadable: $manifestPath" }
+        $builtExe = [string](Get-Prop $manifest 'exe')
+        $builtSha = [string](Get-Prop $manifest 'sha256')
+        $builtAt = ConvertTo-IsoText (Get-Prop $manifest 'builtAt')
+        if ([string](Get-Prop $manifest 'buildId') -ne $buildId) {
+            throw "the manifest says build $([string](Get-Prop $manifest 'buildId')), expected $buildId"
+        }
+        if (-not (Test-Path $builtExe)) { throw "the build did not produce $builtExe" }
+        $actual = Get-Sha256 $builtExe
+        if ($actual -ne $builtSha) { throw "built executable hash mismatch: $actual != $builtSha" }
+        Write-Ok "build $buildId -> $builtExe"
+        Write-Dim "sha256: $builtSha"
+    }
+
+    $null = Invoke-Ledger @('heartbeat', '--json', "--id=$($script:WorkId)", "--token=$($script:WorkToken)", '--phase=install', "--lease-minutes=$leaseMinutes")
+
+    # -------------------------------------------------------- app processes
+    $appState = Prepare-AppProcesses
+    if ($appState.Running) {
+        Write-Ok "installed app is running (pid $($appState.Processes[0].Id)) - the new build will be staged"
+    } else {
+        Write-Ok 'installed app is not running - the new build will be installed directly'
+    }
+
+    # -------------------------------------------------------------- daemon
+    Sync-EnvFile
+    $goBuildId = Get-GoBuildId
+    $repoDaemon = Join-Path $GoRoot 'bin\t9cloud.exe'
+    $daemonSource = $null
+    $daemonSha = $null
+    $daemonVersion = $null
+    $daemonRequired = $Scope -in @('go', 'both')
+    $goCommand = Get-Command go -ErrorAction SilentlyContinue
+
+    if ($goBuildId -and $goCommand) {
+        $repoDaemonVersion = Get-DaemonVersion $repoDaemon
+        $needsGoBuild = -not (Test-Path $repoDaemon) -or $repoDaemonVersion -ne $goBuildId
+        if ($needsGoBuild) {
+            Write-Step "Building the t9cloud daemon ($goBuildId)"
+            New-Item -ItemType Directory -Force -Path (Join-Path $GoRoot 'bin') | Out-Null
+            $goOut = Join-Path $GoRoot "bin\t9cloud-$($goBuildId.Substring(3, 8)).exe"
+            Push-Location $GoRoot
+            try {
+                & go build -trimpath -ldflags "-s -w -X github.com/engrtarun/T9EditorLIT/go/internal/api.Version=$goBuildId" -o $goOut ./cmd/t9cloud
+                if ($LASTEXITCODE -ne 0) { throw "go build failed (exit code $LASTEXITCODE)" }
+            } finally {
+                Pop-Location
+            }
+            $daemonSource = $goOut
+            $daemonSha = Get-Sha256 $goOut
+            $daemonVersion = Get-DaemonVersion $goOut
+            if ($daemonVersion -ne $goBuildId) {
+                throw "the built daemon reports version '$daemonVersion', expected '$goBuildId'"
+            }
+            # Keep the conventional repo path usable for the launchers. A
+            # running repo daemon locks its own exe, so this is best-effort.
+            try {
+                Copy-Item $goOut $repoDaemon -Force
+            } catch {
+                Write-Warn 'could not refresh go\bin\t9cloud.exe (a repo daemon may be running); the versioned binary is still used'
+            }
+            Write-Ok "daemon built ($goBuildId)"
+        } else {
+            $daemonSource = $repoDaemon
+            $daemonSha = Get-Sha256 $repoDaemon
+            $daemonVersion = $repoDaemonVersion
+            Write-Ok "daemon is already built ($daemonVersion)"
+        }
+    } elseif (Test-Path (Join-Path $InstallDir $DaemonName)) {
+        $daemonSource = Join-Path $InstallDir $DaemonName
+        $daemonSha = Get-Sha256 $daemonSource
+        $daemonVersion = Get-DaemonVersion $daemonSource
+        if ($goBuildId -and $daemonVersion -ne $goBuildId -and $daemonRequired) {
+            throw "go is not installed and the installed daemon is '$daemonVersion', expected '$goBuildId'; install Go and retry"
+        }
+        Write-Warn "go is not available; keeping the installed daemon ($daemonVersion)"
+    } elseif ($daemonRequired) {
+        throw 'go is not installed and there is no installed daemon to keep'
+    }
+
+    $daemonState = Install-Daemon -Source $daemonSource -Sha $daemonSha -Version $daemonVersion `
+        -AppRunning $appState.Running -Required $daemonRequired
+    if ($daemonState.Pending) {
+        Write-Warn "daemon update is staged; the app's Update click will swap it"
+    }
+
+    # ----------------------------------------------------------- install app
+    $appInstall = Install-App -SourceExe $builtExe -Sha256 $builtSha -BuildId $buildId -BuiltAt $builtAt -Manifest $manifest
+
+    $daemonActualVersion = $daemonVersion
+    if ($daemonState.Mode -ne 'staged' -and $daemonState.Mode -ne 'missing') {
+        $healthNow = Get-DaemonHealth
+        if ($healthNow) { $daemonActualVersion = [string](Get-Prop $healthNow 'version') }
+    }
+
+    $marker = Write-BuildMarker -Mode $appInstall.Mode -BuildId $buildId -BuiltAt $builtAt `
+        -AppSha $builtSha -DaemonBuildId $daemonVersion -DaemonSha $daemonSha `
+        -DaemonVersion $daemonActualVersion -Manifest $manifest
+    Write-Ok "build.json written (mode $($appInstall.Mode), build $buildId)"
+
+    # ------------------------------------------------------------- verify
+    Write-Step 'Verifying what actually landed'
+    $liveSha = Get-Sha256 $InstallExe
+    $stageSha = Get-Sha256 $StageExe
+    $health = Get-DaemonHealth
+    $appProcs = @(Get-AppProcesses)
+    $foreign = @($appProcs | Where-Object { -not (Test-PathInDir $_.Path $InstallDir) })
+    $installedProcs = @($appProcs | Where-Object { Test-PathInDir $_.Path $InstallDir })
+    $markerNow = Read-JsonFile $InstallMarker
+    $checks = @()
+
+    $appShaNow = if ($appInstall.Mode -eq 'staged') { $stageSha } else { $liveSha }
+    $checks += [pscustomobject]@{
+        name   = 'app-hash'
+        ok     = ($appShaNow -eq $builtSha)
+        detail = "installed/staged $appShaNow vs build $builtSha"
+    }
+    $checks += [pscustomobject]@{
+        name   = 'marker-build'
+        ok     = ([string](Get-Prop $markerNow 'buildId') -eq $buildId)
+        detail = "marker $([string](Get-Prop $markerNow 'buildId')) vs build $buildId"
+    }
+    $checks += [pscustomobject]@{
+        name   = 'marker-app-hash'
+        ok     = ([string](Get-Prop $markerNow 'appSha256') -eq $builtSha)
+        detail = 'marker build.json carries the app hash'
+    }
+    $checks += [pscustomobject]@{
+        name   = 'no-foreign-app'
+        ok     = ($foreign.Count -eq 0)
+        detail = "$($foreign.Count) non-installed app instance(s)"
+    }
+    if ($appInstall.Mode -eq 'staged') {
+        $checks += [pscustomobject]@{
+            name   = 'staged-app'
+            ok     = ($stageSha -eq $builtSha -and $installedProcs.Count -gt 0)
+            detail = "stage=$stageSha, installed app running=$($installedProcs.Count -gt 0)"
+        }
+    } else {
+        $checks += [pscustomobject]@{
+            name   = 'installed-app'
+            ok     = ($liveSha -eq $builtSha)
+            detail = "live=$liveSha"
+        }
+    }
+    if ($daemonState.Mode -eq 'staged') {
+        $stageDaemonSha = Get-Sha256 $StageDaemon
+        $checks += [pscustomobject]@{
+            name   = 'staged-daemon'
+            ok     = ($stageDaemonSha -eq $daemonSha)
+            detail = "t9cloud.new.exe=$stageDaemonSha; localhost applies on the Update click"
+        }
+    } elseif ($daemonState.Mode -eq 'missing') {
+        $checks += [pscustomobject]@{
+            name   = 'daemon'
+            ok     = $false
+            detail = 'daemon is missing'
+        }
+    } else {
+        $healthVersion = if ($health) { [string](Get-Prop $health 'version') } else { $null }
+        $checks += [pscustomobject]@{
+            name   = 'daemon-live'
+            ok     = ($health -and $healthVersion -eq $daemonVersion)
+            detail = if ($health) { "http://127.0.0.1:7878 -> $healthVersion (expected $daemonVersion)" } else { 'no /healthz' }
+        }
+    }
+
+    $failedChecks = @($checks | Where-Object { -not $_.ok })
+    $evidence = [ordered]@{
+        schema       = 1
+        ok           = ($failedChecks.Count -eq 0)
+        workId       = $script:WorkId
+        runId        = $script:RunId
+        buildId      = $buildId
+        builtAt      = $builtAt
+        mode         = $appInstall.Mode
+        agent        = $Agent
+        model        = $Model
+        session      = $Session
+        scope        = $Scope
+        etaMinutes   = $EtaMinutes
+        createdAt    = (Get-Date).ToUniversalTime().ToString('o')
+        git          = [ordered]@{
+            commit = $gitCommit
+            short  = $gitShort
+            branch = $gitBranch
+            dirty  = $gitDirty
+        }
+        manifestPath = $manifestPath
+        app          = [ordered]@{
+            exe    = $builtExe
+            sha256 = $builtSha
+        }
+        install      = [ordered]@{
+            dir           = $InstallDir
+            live          = $InstallExe
+            liveSha256    = $liveSha
+            staged        = $StageExe
+            stagedSha256  = $stageSha
+            running       = ($installedProcs.Count -gt 0)
+            processIds    = @($installedProcs | ForEach-Object { $_.Id })
+        }
+        marker       = $markerNow
+        daemon       = [ordered]@{
+            buildId = $daemonVersion
+            sha256  = $daemonSha
+            version = $daemonActualVersion
+            mode    = $daemonState.Mode
+            health  = $health
+        }
+        checks       = $checks
+        transcript   = if ($script:TranscriptStarted) { $transcript } else { $null }
+    }
+    $script:EvidencePath = Write-EvidenceFile $evidence
+
+    foreach ($check in $checks) {
+        if ($check.ok) {
+            Write-Ok "$($check.name): $($check.detail)"
+        } else {
+            Write-Bad "$($check.name): $($check.detail)"
+        }
+    }
+    if ($failedChecks.Count -gt 0) {
+        throw "verification failed: $(($failedChecks | ForEach-Object { $_.name }) -join ', ')"
+    }
+
+    # --------------------------------------------------------------- pin
+    if (-not $SkipPin) {
+        Write-Step 'Refreshing the Start menu / taskbar shortcut'
+        $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue)
+        if ($pwsh) {
+            & $pwsh.Source -NoProfile -File $PinScript -InstallDir $InstallDir | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn 'the shell refused the pin - the Start menu shortcut is still updated'
+            }
+        } else {
+            Write-Warn 'pwsh not found; skipping the taskbar pin'
+        }
+    }
+
+    # ------------------------------------------------------------- launch
+    if ($Launch) {
+        if ($appInstall.Mode -eq 'staged') {
+            Write-Warn 'the app is already running; click Update in its top bar to apply the staged build'
+        } else {
+            Write-Step 'Starting the installed app'
+            Start-Process -FilePath $InstallExe
+            Start-Sleep -Seconds 3
+            $runningNow = @(Get-AppProcesses | Where-Object { Test-PathInDir $_.Path $InstallDir })
+            if ($runningNow.Count -gt 0) { Write-Ok "app started (pid $($runningNow[0].Id))" }
+            else { Write-Warn 'the app did not stay running; run deploy.ps1 -Doctor' }
+        }
+    }
+
+    # ------------------------------------------------------------- finish
+    Stop-Heartbeat
+    $finishArgs = @(
+        'finish', '--json',
+        "--id=$($script:WorkId)",
+        "--token=$($script:WorkToken)",
+        "--outcome=shipped",
+        "--mode=$($appInstall.Mode)",
+        "--build-id=$buildId",
+        "--evidence=$($script:EvidencePath)"
+    )
+    # Do not name this $finished: PowerShell variables are case-insensitive, so it
+    # would collide with the $script:Finished guard and turn into $true.
+    $finishResult = Invoke-Ledger $finishArgs
+    $script:Finished = $true
+    Close-Session
+
+    Write-Host ''
+    Write-Host '============================================================' -ForegroundColor Green
+    Write-Host "  SHIPPED  $($script:WorkId)" -ForegroundColor Green
+    Write-Host '============================================================' -ForegroundColor Green
+    Write-Host "  build:   $buildId" -ForegroundColor Gray
+    Write-Host "  model:   $Agent / $Model" -ForegroundColor Gray
+    if ($appInstall.Mode -eq 'staged') {
+        Write-Host '  app:     STAGED - the running app shows Update within 5 s; click it.' -ForegroundColor Yellow
+    } else {
+        Write-Host "  app:     INSTALLED - taskbar starts $InstallExe" -ForegroundColor Green
+    }
+    if ($daemonState.Mode -eq 'staged') {
+        Write-Host '  daemon:  STAGED - the same Update click swaps it.' -ForegroundColor Yellow
+    } elseif ($daemonState.Mode -eq 'missing') {
+        Write-Host '  daemon:  MISSING - cloud features stay offline.' -ForegroundColor Yellow
+    } else {
+        Write-Host "  daemon:  LIVE $daemonActualVersion at http://127.0.0.1:7878" -ForegroundColor Green
+    }
+    $duration = Get-Prop $finishResult 'durationMinutes'
+    $etaDelta = Get-Prop $finishResult 'etaDeltaMinutes'
+    if ($null -ne $duration) {
+        $deltaText = if ($null -ne $etaDelta) {
+            $sign = if ([double]$etaDelta -gt 0) { '+' } else { '' }
+            "$sign$etaDelta min vs ETA $EtaMinutes min"
+        } else {
+            "ETA $EtaMinutes min"
+        }
+        Write-Host "  ledger:  shipped in $duration min ($deltaText)" -ForegroundColor Gray
+    } else {
+        Write-Host '  ledger:  shipped (this work order was already closed)' -ForegroundColor Gray
+    }
+    Write-Host "  proof:   $($script:EvidencePath)" -ForegroundColor DarkGray
+    Write-Host "  log:     $transcript" -ForegroundColor DarkGray
+    Write-Host ''
+    if ($appInstall.Mode -eq 'staged') {
+        Write-Host '  Nothing else to do. Do not say "I will notify later" - the app is' -ForegroundColor Yellow
+        Write-Host '  waiting for the user to click Update, and the ledger says shipped.' -ForegroundColor Yellow
+    } else {
+        Write-Host '  Nothing else to do. The taskbar icon opens this exact build.' -ForegroundColor Green
+    }
+    Write-Host ''
+} catch {
+    $message = $_.Exception.Message
+    Write-Host ''
+    Write-Bad $message
+    if ($script:WorkId -and -not $script:Finished) {
+        $failure = [ordered]@{
+            schema    = 1
+            ok        = $false
+            workId    = $script:WorkId
+            buildId   = if ($buildId) { $buildId } else { $null }
+            agent     = $Agent
+            model     = $Model
+            error     = $message
+            createdAt = (Get-Date).ToUniversalTime().ToString('o')
+        }
+        try {
+            $script:EvidencePath = Write-EvidenceFile $failure
+        } catch {
+            Write-Warn 'could not write the failure evidence file'
+        }
+        $null = Close-WorkOrder -Outcome 'failed' -ErrorText $message -Evidence $script:EvidencePath
+        Close-Session
+    }
+    $script:ExitCode = 5
+} finally {
+    Stop-Heartbeat
+    if ($script:DeployLock) {
+        $script:DeployLock.Close()
+        $script:DeployLock = $null
+    }
+    if ($script:TranscriptStarted) {
+        try {
+            Stop-Transcript | Out-Null
+        } catch {
+            # transcript already gone
+        }
+    }
+}
+
+exit $script:ExitCode
