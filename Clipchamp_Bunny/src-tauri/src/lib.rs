@@ -758,6 +758,13 @@ pub struct InstalledBuild {
     /// The version string of that build.
     pub version: String,
     /// True when a newer build is staged and only a restart is needed.
+    ///
+    /// `default` matters: the marker file on disk (`build.json`) is written by
+    /// the deploy script and does **not** carry this field — the answer is
+    /// worked out here instead, by looking for the staged executable. Without
+    /// the default the whole file would fail to parse and the update button
+    /// would never appear.
+    #[serde(default)]
     pub update_ready: bool,
 }
 
@@ -991,5 +998,29 @@ mod tests {
     #[test]
     fn http_get_json_returns_none_for_a_bad_port() {
         assert!(http_get_json("127.0.0.1", 9, "/healthz").is_none());
+    }
+
+    /// The marker the deploy script writes has no `updateReady` field — the
+    /// answer is worked out from the staged executable instead. If the parser
+    /// demanded the field, the marker would fail to parse and the update
+    /// button would silently never appear.
+    #[test]
+    fn the_deploy_marker_parses_without_an_update_ready_field() {
+        let marker = r#"{
+  "stagedAt": "2026-10-20T09:52:27.2295144Z",
+  "version": "0.1.0",
+  "builtAt": "2026-10-20T09:52:27.2144309Z"
+}"#;
+        let build: InstalledBuild = serde_json::from_str(marker).expect("marker must parse");
+        assert_eq!(build.version, "0.1.0");
+        assert!(!build.update_ready, "the staged flag is worked out at runtime");
+    }
+
+    /// A marker that does carry the field is still fine.
+    #[test]
+    fn a_marker_with_the_field_parses_too() {
+        let marker = r#"{"builtAt":"2026-10-20T09:52:27Z","version":"0.1.0","updateReady":true}"#;
+        let build: InstalledBuild = serde_json::from_str(marker).expect("marker must parse");
+        assert!(build.update_ready);
     }
 }
