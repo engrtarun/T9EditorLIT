@@ -167,6 +167,27 @@ Isi wajah se daemon `vault: TELEGRAM_API_ID / API_HASH not set` bolta hai.
 
 ---
 
+## 5b. Doosra agent parallel me kaam kar raha hai
+
+Is repo pe **TARUN DILWAL (tera doosra session)** bhi commit karta hai. Uska kaam
+**Go daemon side** hai — mera kaam **app/UI side**. Merge dono ke beech hota hai.
+
+Uske commits (jo maine dekhe):
+- `14b98b7` — **net speed probe Go daemon me** (`go/internal/netspeed`, 4 parallel
+  sockets + tuned receive buffers) + `GET /v1/net/speed?windowMs=`. Frontend me
+  `measureNetworkSpeed()` ab **daemon ko prefer** karta hai, browser fetch sirf
+  fallback hai. ✅ dono merge ho chuke hain, conflict nahi.
+- `dd9f770` — `media` commit.
+
+**Rule:** Go side ka kaam wahi karega (daemon = cloud brain), frontend side mera.
+`lib/ipc.ts` shared hai — usme dono ka kaam aata hai, dhyan rakhna.
+
+**Doosre agent ke saath kaam karte waqt:** `git status` me uske pending changes
+dikhte hain (root `src/lib/components/clipchamp/**` etc.) — unhe **stage mat karo**,
+wo uski baar ki hain. Sirf apne scope ko stage karo.
+
+---
+
 ## 6. Commands
 
 ```bat
@@ -213,6 +234,9 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
 - [x] Dead-air workbench (threshold slider default 3 s = Clipchamp rule, silence list, cut-all)
 - [x] **Real pipeline**: Rust chunks → Groq Whisper → correct → Gemini flags → SQLite
 - [x] **SQLite cache** — API sirf import pe
+- [x] **Word-level timings end to end** — Groq `timestamp_granularities[]=word` →
+      daemon `segmentsFromWords()` → `model.Segment.Words` → `transcripts.words` →
+      split cuts the text too
 - [x] Import: file manager (multi) · link (yt-dlp) · Telegram vault (QR) · drag&drop
 - [x] New file = new project; purana library me
 - [x] **Full Clipchamp shortcut set** + **rebindable** (localStorage)
