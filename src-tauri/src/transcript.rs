@@ -7,6 +7,19 @@
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
+/// One word with its own timing, straight out of Whisper's `words` array.
+///
+/// This is what makes a split *cut the text* as well as the timeline: cutting
+/// "I LOVE U" after 4 s can then yield "I" and "LOVE U" instead of two
+/// identical rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Word {
+    pub word: String,
+    pub start: f64,
+    pub end: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptLine {
@@ -24,6 +37,10 @@ pub struct TranscriptLine {
     /// to decide whether a line is worth flagging as fixed.
     #[serde(default)]
     pub original_text: String,
+    /// Word-level timings, when the engine produced them. Stored as a JSON blob
+    /// in one column; absent means "no word alignment for this line".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<Vec<Word>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +70,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
     keep           INTEGER NOT NULL,
     flag           TEXT NOT NULL,
     original_text  TEXT NOT NULL DEFAULT '',
+    words          TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (source_path, id)
 );
 ";
@@ -94,11 +112,16 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
 /// videos into theirs. Adding the column is safe: it defaults to empty, which
 /// is exactly what an uncorrected line should read as.
 fn migrate_transcripts(conn: &Connection) -> Result<(), String> {
-    if column_exists(conn, "transcripts", "original_text")? {
-        return Ok(());
+    if !column_exists(conn, "transcripts", "original_text")? {
+        conn.execute_batch("ALTER TABLE transcripts ADD COLUMN original_text TEXT NOT NULL DEFAULT ''")
+            .map_err(|e| format!("could not add transcripts.original_text: {e}"))?;
     }
-    conn.execute_batch("ALTER TABLE transcripts ADD COLUMN original_text TEXT NOT NULL DEFAULT ''")
-        .map_err(|e| format!("could not add transcripts.original_text: {e}"))?;
+    // Word-level timings, same reasoning: a missing column would break every
+    // query on a database written before this change.
+    if !column_exists(conn, "transcripts", "words")? {
+        conn.execute_batch("ALTER TABLE transcripts ADD COLUMN words TEXT NOT NULL DEFAULT ''")
+            .map_err(|e| format!("could not add transcripts.words: {e}"))?;
+    }
     Ok(())
 }
 
@@ -149,11 +172,16 @@ pub fn save_transcript(
     {
         let mut stmt = tx
             .prepare(
-                "INSERT INTO transcripts (source_path, id, start_secs, end_secs, text, keep, flag, original_text)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO transcripts (source_path, id, start_secs, end_secs, text, keep, flag, original_text, words)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )
             .map_err(|e| format!("could not prepare insert: {e}"))?;
         for line in lines {
+            let words_json = match &line.words {
+                Some(w) if !w.is_empty() => serde_json::to_string(w)
+                    .map_err(|e| format!("could not encode words: {e}"))?,
+                _ => String::new(),
+            };
             stmt.execute(params![
                 source_path,
                 line.id,
@@ -163,6 +191,7 @@ pub fn save_transcript(
                 if line.keep { 1 } else { 0 },
                 line.flag,
                 line.original_text,
+                words_json,
             ])
             .map_err(|e| format!("could not insert transcript line: {e}"))?;
         }
@@ -179,7 +208,7 @@ pub fn load_transcript(
 ) -> Result<Vec<TranscriptLine>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, start_secs, end_secs, text, keep, flag, original_text
+            "SELECT id, start_secs, end_secs, text, keep, flag, original_text, words
              FROM transcripts WHERE source_path = ?1
              ORDER BY start_secs ASC",
         )
@@ -187,6 +216,13 @@ pub fn load_transcript(
 
     let rows = stmt
         .query_map(params![source_path], |r| {
+            let words_json = r.get::<_, Option<String>>(7)?.unwrap_or_default();
+            let words = if words_json.is_empty() {
+                None
+            } else {
+                // A malformed blob must not sink the whole transcript.
+                serde_json::from_str::<Vec<Word>>(&words_json).ok()
+            };
             Ok(TranscriptLine {
                 id: r.get(0)?,
                 start_secs: r.get(1)?,
@@ -197,6 +233,7 @@ pub fn load_transcript(
                 // COALESCE guards a database that predates the migration in
                 // some other way; a NULL here would fail the String read.
                 original_text: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                words,
             })
         })
         .map_err(|e| format!("could not query transcript: {e}"))?;

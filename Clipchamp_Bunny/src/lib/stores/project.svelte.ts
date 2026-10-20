@@ -197,12 +197,14 @@ class ProjectStore {
       if (stored?.length) {
         this.lines = stored.map((l) => ({
           id: l.id,
-          startSec: l.startSec,
-          endSec: l.endSec,
+          startSec: l.startSecs,
+          endSec: l.endSecs,
           text: l.text,
           flag: (l.flag as LineFlag) ?? 'none',
           keep: l.keep ? 'keep' : 'cut',
-          confidence: 1
+          confidence: 1,
+          // Word timings ride along, so a split can cut the *text* too.
+          words: l.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
         }));
       } else {
         this.lines = scaleLines(MOCK_LINES, info.durationSecs);
@@ -263,12 +265,13 @@ class ProjectStore {
         path,
         this.lines.map((l) => ({
           id: l.id,
-          startSec: l.startSec,
-          endSec: l.endSec,
+          startSecs: l.startSec,
+          endSecs: l.endSec,
           text: l.text,
           flag: l.flag,
           keep: l.keep === 'keep',
-          confidence: l.confidence
+          originalText: '',
+          words: l.words
         }))
       );
       return true;

@@ -157,19 +157,24 @@ export function defaultDbPath(): Promise<string> {
   return invoke<string>('default_db_path');
 }
 
-export function loadTranscript(
-  dbPath: string,
-  sourcePath: string
-): Promise<
-  Array<{
-    id: string;
-    startSec: number;
-    endSec: number;
-    text: string;
-    flag: string;
-    keep: boolean;
-  }>
-> {
+export interface RustWord {
+  word: string;
+  start: number;
+  end: number;
+}
+
+export interface RustTranscriptLine {
+  id: string;
+  startSecs: number;
+  endSecs: number;
+  text: string;
+  keep: boolean;
+  flag: string;
+  originalText: string;
+  words?: RustWord[];
+}
+
+export function loadTranscript(dbPath: string, sourcePath: string): Promise<RustTranscriptLine[]> {
   return invoke('load_transcript', { dbPath, sourcePath });
 }
 
