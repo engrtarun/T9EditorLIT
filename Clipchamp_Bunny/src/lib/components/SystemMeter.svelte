@@ -56,9 +56,24 @@
   async function measure() {
     if (measuring) return;
     measuring = true;
-    speed = await measureNetworkSpeed(3000);
+    speed = await measureNetworkSpeed(2000);
     measuring = false;
   }
+
+  // Auto-measure on mount + periodic refresh so the chip shows a value shortly
+  // after the app opens and keeps updating without needing the popover.
+  $effect(() => {
+    let alive = true;
+    const run = () => {
+      if (alive) void measure();
+    };
+    void run();
+    const iv = setInterval(run, 15000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  });
 
   $effect(() => {
     if (open) {
