@@ -17,3 +17,6 @@ dev.log
 vite5175.log
 preview.log
 .preview-port
+
+# An agent that builds in its own target folder
+src-tauri/target-*/
