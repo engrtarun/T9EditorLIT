@@ -318,8 +318,9 @@ Isi wajah se daemon `vault: TELEGRAM_API_ID / API_HASH not set` bolta hai.
 
 ## 5b. Doosra agent parallel me kaam kar raha hai
 
-Is repo pe **TARUN DILWAL (tera doosra session)** bhi commit karta hai. Uska kaam
-**Go daemon side** hai — mera kaam **app/UI side**. Merge dono ke beech hota hai.
+Is repo pe **TARUN DILWAL (tera doosra session)** bhi commit karta hai. Uska
+kaam **Go daemon side** hai — mera kaam **app/UI side**. Merge dono ke beech
+hota hai.
 
 Uske commits (jo maine dekhe):
 - `14b98b7` — **net speed probe Go daemon me** (`go/internal/netspeed`, 4 parallel
@@ -327,13 +328,26 @@ Uske commits (jo maine dekhe):
   `measureNetworkSpeed()` ab **daemon ko prefer** karta hai, browser fetch sirf
   fallback hai. ✅ dono merge ho chuke hain, conflict nahi.
 - `dd9f770` — `media` commit.
+- `5e69d85` / `c7c184e` / `2552101` / `d047219` — **ab woh app par bhi kaam
+  kar raha hai**: shared `components/UpdateButton.svelte` (dashboard + editor
+  dono me), status bar (12-hour clock + battery, `src-tauri/src/meters.rs`),
+  aur mera `build.json` parse bug fix (`update_ready` ko `#[serde(default)]`).
 
 **Rule:** Go side ka kaam wahi karega (daemon = cloud brain), frontend side mera.
 `lib/ipc.ts` shared hai — usme dono ka kaam aata hai, dhyan rakhna.
 
 **Doosre agent ke saath kaam karte waqt:** `git status` me uske pending changes
-dikhte hain (root `src/lib/components/clipchamp/**` etc.) — unhe **stage mat karo**,
-wo uski baar ki hain. Sirf apne scope ko stage karo.
+dikhte hain — unhe **stage mat karo**, wo uski baar ki hain. Sirf apne scope ko
+stage karo.
+
+> ⚠ **Ab dono `Clipchamp_Bunny/` me kaam kar rahe hain.** Isliye:
+> - `TopBar.svelte` ka inline update-block hata diya — ab `<UpdateButton />`
+>   use hota hai (uska shared component, dashboard pe bhi yahi chalta hai).
+> - `lib.rs` aur `project.svelte.ts` dono touch ho sakte hain — **chhota edit**
+>   karo, aur build se pehle `npm run check` chalao (uska `flush()` jaisa
+>   adhoora method tree me reh gaya tha).
+> - Uski taraf se handoff [`docs/AGENT_STATUS.md`](../../docs/AGENT_STATUS.md)
+>   me padha jata hai — wahan "one thing for the next agent" likha hota hai.
 
 ---
 

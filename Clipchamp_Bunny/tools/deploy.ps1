@@ -58,14 +58,12 @@ function Write-Warn([string]$Message) {
 
 # ---------------------------------------------------------------- 1. build ---
 if (-not $SkipBuild) {
-    Write-Step 'Building the release executable (this takes a few minutes)...'
-    Push-Location $AppDir
-    try {
-        & npx tauri build --no-bundle
-        if ($LASTEXITCODE -ne 0) { throw "tauri build failed with exit code $LASTEXITCODE" }
-    } finally {
-        Pop-Location
-    }
+    Write-Step 'Building the release executable'
+    # The build takes a lock first: two agents building at the same time
+    # interleave `dist/` and the crate's sources, and the executable that
+    # comes out is a mixture of both. See tools\build.ps1.
+    & (Join-Path $PSScriptRoot 'build.ps1')
+    if ($LASTEXITCODE -ne 0) { throw "the build failed (exit code $LASTEXITCODE)" }
 } else {
     Write-Step 'Skipping the build (--SkipBuild)'
 }
@@ -101,15 +99,28 @@ if ($running) {
 } else {
     Copy-Item $BuiltExe (Join-Path $InstallDir $ExeName) -Force
     Write-Ok $ExeName
+    # A build staged by an earlier run is now older than what is installed.
+    # Leaving it there would let the app "update" itself backwards.
+    $staleStage = Join-Path $InstallDir 't9-editor-lit.new.exe'
+    if (Test-Path $staleStage) {
+        Remove-Item $staleStage -Force
+        Write-Ok 'removed a stale staged build'
+    }
 }
 
-# The marker the app reads to notice a newer build.
+# The marker the app reads to notice a newer build. It is written **without**
+# a byte-order mark: a BOM would make the app's JSON parser fail and the
+# update button would never appear.
 $buildInfo = @{
     version  = '0.1.0'
     builtAt  = (Get-Date).ToUniversalTime().ToString('o')
     stagedAt = if ($running) { (Get-Date).ToUniversalTime().ToString('o') } else { $null }
 } | ConvertTo-Json
-Set-Content -Path (Join-Path $InstallDir 'build.json') -Value $buildInfo -Encoding UTF8
+[System.IO.File]::WriteAllText(
+    (Join-Path $InstallDir 'build.json'),
+    $buildInfo,
+    (New-Object System.Text.UTF8Encoding($false))
+)
 Write-Ok 'build.json (update marker)'
 
 $Daemon = Join-Path $RepoRoot 'go\bin\t9cloud.exe'
@@ -150,6 +161,13 @@ if (Test-Path $Daemon) {
     } else {
         Copy-Item $Daemon (Join-Path $InstallDir 't9cloud.exe') -Force
         Write-Ok 't9cloud.exe (cloud daemon)'
+        # Same story as the app: a stale staged daemon is older than the one
+        # that was just installed.
+        $staleDaemon = Join-Path $InstallDir 't9cloud.new.exe'
+        if (Test-Path $staleDaemon) {
+            Remove-Item $staleDaemon -Force
+            Write-Ok 'removed a stale staged daemon'
+        }
     }
 } else {
     Write-Warn 'go\bin\t9cloud.exe is missing - cloud features stay offline'
