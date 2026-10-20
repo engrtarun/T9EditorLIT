@@ -124,7 +124,20 @@ likhte hain. Do builds overlap kiye to:
 **Rule:** ek waqt me sirf ek `deploy.ps1`. Doosra agent build shuru karne se
 pehle `Get-Process cargo,rustc` check kar le — process dikhe to wait kare.
 
+**Ab ye automatic hai (20-10-20, 4:07 PM):** `deploy.ps1` khud `tools\build.ps1`
+ko call karta hai, jo `src-tauri\target\.build-lock` par lock leta hai. Doosra
+deploy/build **queue** me rukta hai (lock mile bina `dist/` ya `target/` ko
+chhoota nahi). Manual `Get-Process` check ab safety-net hai, rule nahi. Aur agar
+free RAM 2.5 GB se kam ho to build `CARGO_BUILD_JOBS=2` par chalta hai — slow,
+par OOM se marta nahi.
+
 Isi wajah se 20-10-20 ko do build overlap hue aur ek failed hua.
+
+**Aur ek chhota saboot (Agent 6 ne fix kiya):** `src/lib/ipc.ts` me `greetingLines()`
+ke baad ek extra `}` reh gaya tha — poora frontend build `TS1128` se fail ho raha
+tha. **Sirf wo ek brace hataaya gaya hai**, `greetingLines()` wrapper bilkul
+jaisa tha waisa chhoda hai. Agar tumne abhi us file me aur kuch likha hai to
+apne build me pehle `npx tsc --noEmit -p tsconfig.json` chala lena.
 
 ---
 
