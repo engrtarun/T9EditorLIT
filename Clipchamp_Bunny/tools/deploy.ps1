@@ -11,11 +11,19 @@
       * how long they think it will take (ETA)
       * when they arrived, started and finished
 
-    Then it serialises the queue (one active deploy), builds, installs the app,
-    updates the t9cloud daemon, writes the build.json marker, verifies every
-    hash, and closes the work order as `shipped`. The ledger is the only
-    truthful status: "build is running" or "I will notify you later" is not a
-    status.
+    Then it serialises the queue (one active deploy), takes the executable
+    that CI built, installs the app, updates the t9cloud daemon, writes the
+    build.json marker, verifies every hash, and closes the work order as
+    `shipped`. The ledger is the only truthful status: "build is running" or
+    "I will notify you later" is not a status.
+
+    THE COMPILE IS NOT HAPPENING HERE. It happens on GitHub's runner
+    (.github\workflows\ci.yml), which publishes a rolling `ci-latest` release
+    holding the app, the daemon and a SHA-256 manifest. This script
+    downloads that, checks the hashes, and installs. A release build on this
+    8 GB box took six to twelve minutes, held the build lock that every
+    other agent was waiting behind, and died in the linker for want of
+    memory - so it is not a fallback, it is simply not here any more.
 
     The update path is deliberately boring:
 

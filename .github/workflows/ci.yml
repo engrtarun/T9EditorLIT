@@ -192,15 +192,11 @@ jobs:
       # Linting only the root crate meant the code that reaches the user's
       # desktop was the code CI had never looked at.
       #
-      # It reports, it does not block: this crate has 24 clippy findings
-      # today, and the files they are in belong to work other agents have in
-      # flight. Making it a hard gate now would red every push for a reason
-      # that has nothing to do with the change being pushed. The count is
-      # visible in the log, and the gate gets turned on when the count is
-      # zero.
-      - name: Lint the crate that actually ships (clippy, advisory)
+      # This is a hard gate. It was advisory while it had findings, and it
+      # has none now: the crate that ships is warning-clean under
+      # `clippy -D warnings`, so there is nothing left to excuse.
+      - name: Lint the crate that actually ships (clippy)
         working-directory: Clipchamp_Bunny/src-tauri
-        continue-on-error: true
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test

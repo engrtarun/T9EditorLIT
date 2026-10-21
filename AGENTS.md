@@ -347,10 +347,26 @@ identity:
   installed daemon carries the version that work order intended to install.
 - Canary, staged vs live, the Update button, `-Doctor`: all unchanged.
 
-### 10.5 If CI is down
+### 10.5 There is no local build to fall back to
 
-`deploy.ps1` without `-Ci` still compiles locally. It is slower and it can
-still OOM on this machine, but it is the fallback, not the main path.
+That used to be here: "if CI is down, `deploy.ps1` without `-Ci` still compiles
+locally". It is gone, and it is gone on purpose.
+
+A local release build on this box takes six to twelve minutes, holds the
+build lock that every other agent is waiting behind, and dies in the linker
+for want of memory. Keeping it as a "fallback" meant it was not a fallback -
+it was the path that everybody fell back **to** the first time anything went
+wrong, and every one of those times cost the whole queue.
+
+So there is one path now. If CI is down or red:
+
+1. **push** - the compile is CI's job, and it is free for you
+2. **watch the run** - `AGENTS.md` §12 has the three-line recipe
+3. **deploy** - `deploy.ps1 -Ci` installs the `ci-latest` artifact
+
+If the run is red, the deploy says so and installs nothing. That is the
+correct outcome: a red CI run means the code does not compile, and shipping
+it anyway would be the bug.
 
 ---
 
