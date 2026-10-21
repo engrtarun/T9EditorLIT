@@ -289,6 +289,41 @@ release, checks its SHA-256 against CI's own manifest, and then goes through
 the **same** pipeline a local build does: ledger work order, build lock,
 canary, marker, doctor. Only the compiler moved; the contract did not.
 
+### 10.2.1 If you are one of several agents
+
+This is the part that matters when ten agents share one repository.
+
+**Your deploy installs YOUR commit's build. It waits for it.**
+
+```text
+you push          →  CI queues your build (it does NOT cancel other
+                      agents' builds - that is the whole point of the
+                      separate artifact workflow)
+you deploy -Ci    →  the deploy asks for ci-<your commit>
+                   →  if CI has not published it yet, the deploy WAITS
+                      (up to 12 minutes) instead of installing somebody
+                      else's build
+```
+
+Without that, the rolling release moves under you: you push at 10:00,
+somebody else pushes at 10:05, and at 10:10 a plain "install the newest
+build" hands you _their_ binary while the ledger records that your work
+shipped. So:
+
+| Situation                                                  | What happens            |
+| ---------------------------------------------------------- | ----------------------- |
+| Your commit's build is not published yet                   | the deploy waits for it |
+| The rolling release holds a different commit               | it is not used          |
+| A release named after your commit holds a different commit | refused                 |
+| You want a specific commit                                 | `-ExpectCommit <sha>`   |
+
+**Push early.** The wait is not wasted time - you are working while CI
+builds. Pushing at the last minute means waiting at the last minute.
+
+**One shared tree is still one shared tree.** Two agents editing the same
+`.svelte` will merge badly (§8). A worktree per agent is the answer
+(§10.3).
+
 `-Ci` tells you when the binary is not what you think it is:
 
 - the CI build is from a different commit than your HEAD
