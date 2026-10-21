@@ -668,7 +668,42 @@ commit-pinned CI test: 3/3 pass
 **jaldi push karo** (CI parallel build karta hai, tum kaam karte raho) aur
 **har agent ka apna worktree** (ek file, ek agent).
 
-### 8.11 Ek baat jo bachi thi - aur ab nahi bachi
+### 8.11 Do asli races jo sirf live test me hi mile
+
+Web search se jo pata chala wo theory thi. Ye do **live test** me mile, aur dono
+isi design me the:
+
+**1. Rolling release ka asset replace.** Ek real deploy ne manifest padha
+(`ci-latest`), aur usi waqt doosre agent ka build us release ke assets
+replace kar raha tha. Download ko **404 ("the specified blob does not exist")**
+mila — jo file abhi abhi manifest me thi. Deploy doosre ke publish par mar gaya.
+
+**Iska hal:** deploy **ab rolling release use hi nahi karta**. Per-commit
+release ek **fact** hai — woh kabhi nahi hilti — aur agar woh abhi bani nahi
+hai to deploy **wait** karta hai. Rolling release bachi hai, log dekhne ke liye;
+machine use nahi karti.
+
+**2. Asset download beech me.** Ek commit ka **re-run** apne assets ko
+`--clobber` se replace karta hai, aur beech me gira download ko 404 milta hai.
+Ab download **ek baar retry** karta hai.
+
+### 8.12 Aur ek baat jo live test ne sikhayi
+
+Ek deploy jiske commit ka artifact **cancel** ho chuka tha, usne **12 minute
+wait** kiya aur phir **imaandaar fail** hua — doosre ka build install karne ke
+bajaye. Yahi wo property hai jo 10 agents ke liye zaroori hai: _"maine kuch
+nahi banaya"_ kehna, _"maine kuch banaya"_ kehne se behtar hai.
+
+Tumhara timeline block usi test me ye dikha raha tha:
+
+```
+AAPKA ORDER: KHATAM - FAILED
+   WO-20261021T170104-da83a4
+   22:31:04 par apply hua, 22:42:27 par khatam
+   poora laga: 11.4 min  (aapka andaza tha 15 min)
+```
+
+### 8.13 Ek baat jo bachi thi - aur ab nahi bachi
 
 **Exit code 1** safal deploys par aa raha tha. Root cause: **PowerShell exit
 code ko last NATIVE COMMAND ka status deta hai**. Is pipeline me wo ek
