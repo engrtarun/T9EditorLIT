@@ -317,9 +317,11 @@ async fn start_export(
         .map_err(|_| "export lock poisoned".to_string())? = Some(Arc::clone(&flag));
     let cancel_flag = Arc::clone(&flag);
     let app_clone = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || export::run_export(app_clone, cancel_flag, request))
-        .await
-        .map_err(|e| e.to_string())?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        export::run_export(app_clone, cancel_flag, request)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     *cancel
         .lock()

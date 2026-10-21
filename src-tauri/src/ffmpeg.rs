@@ -102,8 +102,12 @@ pub fn run(program: &str, args: &[&str]) -> Result<RunOutput, String> {
 
 /// True for the cheap informational probes that are not worth recording.
 fn is_trivial_probe(args: &[&str]) -> bool {
-    args.iter()
-        .any(|a| matches!(*a, "-version" | "-encoders" | "-decoders" | "-filters" | "-hwaccels"))
+    args.iter().any(|a| {
+        matches!(
+            *a,
+            "-version" | "-encoders" | "-decoders" | "-filters" | "-hwaccels"
+        )
+    })
 }
 
 /// Probe a media file, returning raw ffprobe JSON.

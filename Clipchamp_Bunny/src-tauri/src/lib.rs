@@ -46,8 +46,8 @@ mod sysinfo_ext;
 mod meters;
 
 pub use meters::{
-    set_system_clock, system_snapshot, AppStorageProbe, DriveReading, NetReading, NetworkProbe,
-    RamReading, SystemSnapshot,
+    AppStorageProbe, DriveReading, NetReading, NetworkProbe, RamReading, SystemSnapshot,
+    set_system_clock, system_snapshot,
 };
 
 use std::path::{Path, PathBuf};
@@ -57,7 +57,9 @@ use tauri::{Emitter, Manager, State};
 
 pub use audio::AudioChunk;
 pub use env::{EnvEntry, EnvInfo};
-pub use export::{ExportOptions, ExportPlan, ExportProgress, ExportRequest, ExportResult, Piece, Segment};
+pub use export::{
+    ExportOptions, ExportPlan, ExportProgress, ExportRequest, ExportResult, Piece, Segment,
+};
 pub use ffmpeg::HardwareSupport;
 pub use media::{MediaInfo, StreamInfo};
 pub use memory::{MemoryProbe, MemoryStats};
@@ -149,9 +151,7 @@ fn demo_source_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
 
     for c in candidates {
         if c.is_file() {
-            return Ok(Some(transcript::canonical_path(
-                &c.to_string_lossy(),
-            )));
+            return Ok(Some(transcript::canonical_path(&c.to_string_lossy())));
         }
     }
     Ok(None)
@@ -160,7 +160,9 @@ fn demo_source_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
 /// Is `yt-dlp` on PATH? Used to enable the "import from a link" option.
 #[tauri::command]
 fn check_yt_dlp() -> Result<bool, String> {
-    Ok(ffmpeg::run("yt-dlp", &["--version"]).map(|o| o.success()).unwrap_or(false))
+    Ok(ffmpeg::run("yt-dlp", &["--version"])
+        .map(|o| o.success())
+        .unwrap_or(false))
 }
 
 /// Download a video from a URL with `yt-dlp` (YouTube and friends).
@@ -418,10 +420,7 @@ async fn extract_waveform(
 
 /// Load transcript lines for a source video from SQLite.
 #[tauri::command]
-fn load_transcript(
-    db_path: String,
-    source_path: String,
-) -> Result<Vec<TranscriptLine>, String> {
+fn load_transcript(db_path: String, source_path: String) -> Result<Vec<TranscriptLine>, String> {
     let conn = transcript::open_db(Path::new(&db_path))?;
     transcript::load_transcript(&conn, &source_path)
 }
@@ -582,7 +581,9 @@ fn extract_poster_sync(
     // The cached still comes **first**: no FFmpeg, no ffprobe, no waiting.
     // A half-written file (size 0) counts as no file at all.
     let cached = out.is_file()
-        && std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false);
+        && std::fs::metadata(&out)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
     if cached {
         return Ok(Poster {
             path: out.to_string_lossy().into_owned(),
@@ -664,8 +665,7 @@ async fn import_thumbnail(
             .unwrap_or_else(|| "jpg".to_string());
         let out = dir.join(format!("{key}.{ext}"));
         // The copy itself is the OS's work; we only hand it two paths.
-        std::fs::copy(&source, &out)
-            .map_err(|e| format!("could not copy the picture: {e}"))?;
+        std::fs::copy(&source, &out).map_err(|e| format!("could not copy the picture: {e}"))?;
         Ok(out.to_string_lossy().into_owned())
     })
     .await
@@ -702,7 +702,10 @@ fn clear_custom_thumbnail(app: tauri::AppHandle, source_path: String) -> Result<
     if !dir.is_dir() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+    for entry in std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
         let path = entry.path();
         if path.file_stem().and_then(|s| s.to_str()) == Some(key.as_str()) {
             let _ = std::fs::remove_file(&path);
@@ -732,7 +735,9 @@ async fn start_export(
     request: ExportRequest,
 ) -> Result<ExportResult, String> {
     let flag = Arc::new(AtomicBool::new(false));
-    *cancel.lock().map_err(|_| "export lock poisoned".to_string())? = Some(Arc::clone(&flag));
+    *cancel
+        .lock()
+        .map_err(|_| "export lock poisoned".to_string())? = Some(Arc::clone(&flag));
     let cancel_flag = Arc::clone(&flag);
     let app_clone = app.clone();
 
@@ -748,7 +753,14 @@ async fn start_export(
         let res = export::run_export(app_clone, cancel_flag, request);
         stats::set_phase("idle");
         match &res {
-            Ok(r) => stats::log_export(&project, &preset, &out_path, r.size_bytes as i64, "done", started),
+            Ok(r) => stats::log_export(
+                &project,
+                &preset,
+                &out_path,
+                r.size_bytes as i64,
+                "done",
+                started,
+            ),
             Err(e) => {
                 stats::log_export(&project, &preset, &out_path, 0, "failed", started);
                 stats::log_event("error", "export", e);
@@ -759,7 +771,9 @@ async fn start_export(
     .await
     .map_err(|e| e.to_string())?;
 
-    *cancel.lock().map_err(|_| "export lock poisoned".to_string())? = None;
+    *cancel
+        .lock()
+        .map_err(|_| "export lock poisoned".to_string())? = None;
     result
 }
 
@@ -849,7 +863,11 @@ fn ensure_daemon(app: &tauri::AppHandle) {
     let daemon = roots
         .iter()
         .map(|r| r.join("t9cloud.exe"))
-        .chain(roots.iter().map(|r| r.join("go").join("bin").join("t9cloud.exe")))
+        .chain(
+            roots
+                .iter()
+                .map(|r| r.join("go").join("bin").join("t9cloud.exe")),
+        )
         .find(|p| p.is_file());
     let Some(daemon) = daemon else {
         return;
@@ -1021,7 +1039,9 @@ pub struct InstalledBuild {
 
 /// The folder the app was installed into.
 fn install_dir() -> Option<PathBuf> {
-    std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf))
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
 }
 
 /// Rewrite a `staged` marker after the staged executable has been applied.
@@ -1036,9 +1056,13 @@ fn install_dir() -> Option<PathBuf> {
 fn normalize_installed_marker() {
     let Some(dir) = install_dir() else { return };
     let marker = dir.join("build.json");
-    let Ok(text) = std::fs::read_to_string(&marker) else { return };
+    let Ok(text) = std::fs::read_to_string(&marker) else {
+        return;
+    };
     let has_staged = dir.join("t9-editor-lit.new.exe").is_file();
-    let Some(updated) = normalized_marker_json(&text, has_staged) else { return };
+    let Some(updated) = normalized_marker_json(&text, has_staged) else {
+        return;
+    };
     let _ = std::fs::write(&marker, updated);
 }
 
@@ -1057,12 +1081,18 @@ fn normalized_marker_json(text: &str, has_staged: bool) -> Option<String> {
     if object.get("mode").and_then(|mode| mode.as_str()) != Some("staged") {
         return None;
     }
-    object.insert("mode".to_string(), serde_json::Value::String("installed".to_string()));
+    object.insert(
+        "mode".to_string(),
+        serde_json::Value::String("installed".to_string()),
+    );
     let applied_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
-    object.insert("appliedAtUnix".to_string(), serde_json::Value::from(applied_at));
+    object.insert(
+        "appliedAtUnix".to_string(),
+        serde_json::Value::from(applied_at),
+    );
     Some(serde_json::to_string_pretty(&value).ok()? + "\n")
 }
 
@@ -1216,8 +1246,12 @@ fn http_get_json(host: &str, port: u16, path: &str) -> Option<String> {
 
     let addr: SocketAddr = format!("{host}:{port}").parse().ok()?;
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(1500)).ok()?;
-    stream.set_read_timeout(Some(Duration::from_millis(3000))).ok()?;
-    stream.set_write_timeout(Some(Duration::from_millis(1500))).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(3000)))
+        .ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(1500)))
+        .ok()?;
 
     let request = format!(
         "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
@@ -1249,7 +1283,8 @@ fn resume_project(db_path: String) -> Result<Option<String>, String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {    tauri::Builder::default()
+pub fn run() {
+    tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(memory::MemoryProbe::new()))
@@ -1320,10 +1355,7 @@ pub fn run() {    tauri::Builder::default()
             // 15s RAM sampler. Fire-and-forget by design — a failure here
             // degrades to no-op logging, never a broken launch.
             if let Ok(dir) = app.path().app_data_dir() {
-                stats::start(
-                    &dir.join("nanamicut.db"),
-                    env!("CARGO_PKG_VERSION").trim(),
-                );
+                stats::start(&dir.join("nanamicut.db"), env!("CARGO_PKG_VERSION").trim());
             }
             // The cloud brain comes up with the app - no terminal needed.
             ensure_daemon(app.handle());
@@ -1374,7 +1406,10 @@ mod tests {
 }"#;
         let build: InstalledBuild = serde_json::from_str(marker).expect("marker must parse");
         assert_eq!(build.version, "0.1.0");
-        assert!(!build.update_ready, "the staged flag is worked out at runtime");
+        assert!(
+            !build.update_ready,
+            "the staged flag is worked out at runtime"
+        );
     }
 
     /// A marker that does carry the field is still fine.
@@ -1396,7 +1431,8 @@ mod tests {
   "stagedAt": "2026-10-20T16:12:21Z",
   "appSha256": "abc"
 }"#;
-        let updated = normalized_marker_json(marker, false).expect("staged marker should be repaired");
+        let updated =
+            normalized_marker_json(marker, false).expect("staged marker should be repaired");
         let value: serde_json::Value = serde_json::from_str(&updated).expect("valid json");
         assert_eq!(value["mode"], "installed");
         assert_eq!(value["buildId"], "app-test");

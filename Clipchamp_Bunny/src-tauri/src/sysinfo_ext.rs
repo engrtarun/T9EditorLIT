@@ -61,11 +61,7 @@ pub fn collect() -> SystemDetails {
         .unwrap_or_else(|| "CPU".to_string());
     let cpu_threads = sys.cpus().len();
     let cpu_usage_percent = sys.global_cpu_usage();
-    let cpu_frequency_mhz = sys
-        .cpus()
-        .first()
-        .map(|c| c.frequency())
-        .unwrap_or(0);
+    let cpu_frequency_mhz = sys.cpus().first().map(|c| c.frequency()).unwrap_or(0);
 
     let pid = Pid::from_u32(std::process::id());
     let app = sys.process(pid);

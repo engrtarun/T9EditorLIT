@@ -11,7 +11,13 @@ fn main() {
     let build_id = env::var("T9_BUILD_ID").unwrap_or_else(|_| "dev".to_string());
     let build_id = build_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>();
     fs::write(
         out.join("build_id.rs"),

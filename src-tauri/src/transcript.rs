@@ -310,8 +310,10 @@ fn migrate_paths(conn: &Connection) -> Result<(), String> {
 /// is exactly what an uncorrected line should read as.
 fn migrate_transcripts(conn: &Connection) -> Result<(), String> {
     if !column_exists(conn, "transcripts", "original_text")? {
-        conn.execute_batch("ALTER TABLE transcripts ADD COLUMN original_text TEXT NOT NULL DEFAULT ''")
-            .map_err(|e| format!("could not add transcripts.original_text: {e}"))?;
+        conn.execute_batch(
+            "ALTER TABLE transcripts ADD COLUMN original_text TEXT NOT NULL DEFAULT ''",
+        )
+        .map_err(|e| format!("could not add transcripts.original_text: {e}"))?;
     }
     // Word-level timings, same reasoning: a missing column would break every
     // query on a database written before this change.
@@ -376,8 +378,9 @@ pub fn save_transcript(
             .map_err(|e| format!("could not prepare insert: {e}"))?;
         for line in lines {
             let words_json = match &line.words {
-                Some(w) if !w.is_empty() => serde_json::to_string(w)
-                    .map_err(|e| format!("could not encode words: {e}"))?,
+                Some(w) if !w.is_empty() => {
+                    serde_json::to_string(w).map_err(|e| format!("could not encode words: {e}"))?
+                }
                 _ => String::new(),
             };
             stmt.execute(params![
@@ -824,7 +827,12 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
 
         let direct = canonical_path(&file.to_string_lossy());
-        let roundabout = canonical_path(&dir.join("..").join(dir.file_name().unwrap()).join("clip.mp4").to_string_lossy());
+        let roundabout = canonical_path(
+            &dir.join("..")
+                .join(dir.file_name().unwrap())
+                .join("clip.mp4")
+                .to_string_lossy(),
+        );
 
         assert_eq!(direct, roundabout);
         assert!(!direct.contains(".."));
@@ -833,7 +841,9 @@ mod tests {
     #[test]
     fn canonical_path_is_stable_for_a_missing_file() {
         // A file that does not exist yet still gets a stable, absolute key.
-        let missing = std::env::temp_dir().join("t9editorlit-not-here").join("x.mp4");
+        let missing = std::env::temp_dir()
+            .join("t9editorlit-not-here")
+            .join("x.mp4");
         let a = canonical_path(&missing.to_string_lossy());
         let b = canonical_path(&missing.to_string_lossy());
         assert_eq!(a, b);
@@ -929,7 +939,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(resume_project(&conn).unwrap(), Some(canonical_path(&alive.to_string_lossy())));
+        assert_eq!(
+            resume_project(&conn).unwrap(),
+            Some(canonical_path(&alive.to_string_lossy()))
+        );
     }
 
     #[test]

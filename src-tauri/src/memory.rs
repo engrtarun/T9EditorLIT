@@ -62,7 +62,8 @@ impl MemoryProbe {
             self.update_app_tree();
         } else {
             let pids: Vec<Pid> = self.known_tree.iter().copied().collect();
-            self.sys.refresh_processes(ProcessesToUpdate::Some(&pids), true);
+            self.sys
+                .refresh_processes(ProcessesToUpdate::Some(&pids), true);
         }
 
         let total = self.sys.total_memory();

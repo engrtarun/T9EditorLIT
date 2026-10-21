@@ -166,14 +166,18 @@ pub fn import_custom(source: &str, image: &Path, root: &Path) -> Result<String, 
     }
 
     let dir = root.join("thumbs").join("custom");
-    fs::create_dir_all(&dir)
-        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
 
     // One file per source: re-uploading replaces the poster in place.
     let key = cache::hash_hex(&[source.as_bytes()]);
     let dest = dir.join(format!("{key}.{ext}"));
-    fs::copy(image, &dest)
-        .map_err(|e| format!("could not copy {} to {}: {e}", image.display(), dest.display()))?;
+    fs::copy(image, &dest).map_err(|e| {
+        format!(
+            "could not copy {} to {}: {e}",
+            image.display(),
+            dest.display()
+        )
+    })?;
     Ok(dest.to_string_lossy().into_owned())
 }
 

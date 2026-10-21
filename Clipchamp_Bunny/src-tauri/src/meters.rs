@@ -365,22 +365,20 @@ pub fn system_snapshot(
 /// The date is given in UTC (`Z`), so no timezone maths happens here: the
 /// shell interprets it and converts.
 #[tauri::command]
-pub fn set_system_clock(
-    time_zone: Option<String>,
-    utc_iso: String,
-) -> Result<String, String> {
+pub fn set_system_clock(time_zone: Option<String>, utc_iso: String) -> Result<String, String> {
     if utc_iso.trim().is_empty() {
         return Err("no time given".to_string());
     }
 
     let mut script = String::new();
-    if let Some(tz) = time_zone.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+    if let Some(tz) = time_zone
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
         // Single quotes are escaped so a zone name can never break out of the
         // quoted argument.
-        script.push_str(&format!(
-            "Set-TimeZone -Id '{}'; ",
-            tz.replace('\'', "''")
-        ));
+        script.push_str(&format!("Set-TimeZone -Id '{}'; ", tz.replace('\'', "''")));
     }
     script.push_str(&format!(
         "Set-Date -Date '{}'",

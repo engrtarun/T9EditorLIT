@@ -20,9 +20,9 @@
 // crate (the sibling app records no exports of its own).
 #![allow(dead_code)]
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -436,7 +436,15 @@ fn insert(conn: &Connection, msg: &Msg) -> Result<(), rusqlite::Error> {
                 "INSERT INTO transcription_jobs
                      (source_path, status, provider, audio_secs, error, started_at, finished_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![source, status, provider, audio_secs, error, started_at, finished_at],
+                params![
+                    source,
+                    status,
+                    provider,
+                    audio_secs,
+                    error,
+                    started_at,
+                    finished_at
+                ],
             )?;
         }
         Msg::Export {
@@ -452,7 +460,15 @@ fn insert(conn: &Connection, msg: &Msg) -> Result<(), rusqlite::Error> {
                 "INSERT INTO exports
                      (project, preset, out_path, size_bytes, status, started_at, finished_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![project, preset, out_path, size_bytes, status, started_at, finished_at],
+                params![
+                    project,
+                    preset,
+                    out_path,
+                    size_bytes,
+                    status,
+                    started_at,
+                    finished_at
+                ],
             )?;
         }
         Msg::Transfer {
@@ -511,7 +527,11 @@ fn sampler_loop() {
         std::thread::sleep(Duration::from_secs(15));
         let stats = probe.sample();
         let phase = PHASE.lock().map(|p| p.clone()).unwrap_or_default();
-        let phase = if phase.is_empty() { "idle".to_string() } else { phase };
+        let phase = if phase.is_empty() {
+            "idle".to_string()
+        } else {
+            phase
+        };
         send(Msg::Metric {
             ts: now(),
             app_mb: stats.app_mb as i64,
@@ -647,11 +667,7 @@ pub fn set_phase(phase: &str) {
 /// Current phase, `idle` when unset.
 pub fn phase() -> String {
     let p = PHASE.lock().map(|g| g.clone()).unwrap_or_default();
-    if p.is_empty() {
-        "idle".to_string()
-    } else {
-        p
-    }
+    if p.is_empty() { "idle".to_string() } else { p }
 }
 
 /// This process's session row id (0 before `start`).
@@ -723,8 +739,22 @@ mod tests {
     #[test]
     fn kv_upserts_and_session_end_closes_once() {
         let conn = mem_db();
-        insert(&conn, &Msg::Kv { key: "k".to_string(), value: "v1".to_string() }).unwrap();
-        insert(&conn, &Msg::Kv { key: "k".to_string(), value: "v2".to_string() }).unwrap();
+        insert(
+            &conn,
+            &Msg::Kv {
+                key: "k".to_string(),
+                value: "v1".to_string(),
+            },
+        )
+        .unwrap();
+        insert(
+            &conn,
+            &Msg::Kv {
+                key: "k".to_string(),
+                value: "v2".to_string(),
+            },
+        )
+        .unwrap();
         let value: String = conn
             .query_row("SELECT value FROM kv WHERE key = 'k'", [], |r| r.get(0))
             .unwrap();
@@ -738,7 +768,11 @@ mod tests {
         let id = conn.last_insert_rowid();
         insert(&conn, &Msg::SessionEnd { id }).unwrap();
         let first_ended: i64 = conn
-            .query_row("SELECT ended_at FROM sessions WHERE id = ?1", params![id], |r| r.get(0))
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
             .unwrap();
         insert(&conn, &Msg::SessionEnd { id }).unwrap();
         let (ended, clean): (i64, i64) = conn
