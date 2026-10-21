@@ -105,9 +105,9 @@ impl MemoryProbe {
         const STEADY_EVERY: u32 = 40; // …and every ~60 s once settled
 
         if self.sample_count <= WARMUP_SAMPLES {
-            self.sample_count % WARMUP_EVERY == 0
+            self.sample_count.is_multiple_of(WARMUP_EVERY)
         } else {
-            self.sample_count % STEADY_EVERY == 0
+            self.sample_count.is_multiple_of(STEADY_EVERY)
         }
     }
 

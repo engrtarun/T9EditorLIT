@@ -308,7 +308,7 @@ pub fn start(db_path: &Path, app_version: &str) {
     }
 
     // The sampler rides the same channel: no second connection, no lock.
-    thread::spawn(move || sampler_loop());
+    thread::spawn(sampler_loop);
 }
 
 /// Flush everything and stop the writer. Called from Tauri's `ExitRequested`
