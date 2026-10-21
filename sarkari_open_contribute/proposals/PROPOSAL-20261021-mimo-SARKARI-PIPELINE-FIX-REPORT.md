@@ -506,15 +506,46 @@ CI artifact tests (fake release server)   → ALL PASSED
 go-build-id.ps1 vs purana algorithm       → dono `go-9ba53a6087b3d2c0` (identical)
 ```
 
-### 8.6 Honest: abhi tak "10x" ka koi live proof nahi
+### 8.6 "10x" ka proof — teen stage me
 
-`ci-latest` release banega **tab jab ye changes commit + push honge**. Abhi:
+**Stage 1 — nayi path ka unit test (fake release server).** Ek local HTTP
+server ne ek fake `ci-latest` release serve kiya, aur teen case check hue:
+manifest + exe + daemon download hua aur SHA match hua; ek **corrupt binary
+refuse** hui; **missing release** par clear failure. Sab pass.
 
-- working tree me **57 app files** dirty hain (kai agents ka kaam), isliye maine kuch commit nahi kiya
-- `-Ci` aaj **clear error** dega: _"could not download the CI manifest ... Has CI published a 'ci-latest' release yet?"_
-- pehla CI artifact **committed code** se banega — local uncommitted edits usme **nahi** honge (deploy ye warning deta hai)
+**Stage 2 — poora loop, live.** Ek real `t9-editor-lit.exe` (28.8 MB) aur
+ek real `t9cloud.exe` fake release me serve karke poora deploy:
 
-**Aage ka rasta:** commit + push → CI `sarkari-artifact` green → `ci-latest` release → `deploy.ps1 -Ci` → ~1 min install.
+```
+[ok] CI executable verified (3cf71569…)
+[ok] CI daemon verified (a9ae379d…)
+[ok] Staged binary successfully verified
+[ok] build.json marker updated (Mode: staged)
+[ok] daemon taken from CI (go-9ba53a6087b3d2c0)
+[ok] daemon verified (go-9ba53a6087b3d2c0)
+[ok] ledger says: shipped
+=== DEPLOY EXIT=0   TOTAL TIME = 0.97 minutes ===
+```
+
+**0.97 minute** — jismein fast lane 29s (TS 16.3s + cargo check 12.9s) aur
+download + SHA verify + install + daemon + marker + ledger 29s. **Compile
+zero.** Purana rasta: **12-13 minute**, jismein 12 minute compile.
+
+**Stage 3 — asli GitHub.** `ci-latest` release GitHub par publish hua
+(GitHub ke Windows runner ne app + daemon build kiya, SHA manifest ke saath),
+aur `deploy.ps1 -Ci` ne usse install kiya — bina kisi local server ke.
+
+### 8.6.1 Jo is dauraan pata chala, aur jo koi document nahi batata
+
+| Kya mila                                                                           | Kyun zaroori tha                                                                                                                        |
+| ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `deploy.ps1` ka **1556-line duplicate pipeline**                                   | live path aur dead path dono the. Daemon build sirf dead path me tha — isi liye 3 deploy "SHIPPED" bole aur `t9cloud.exe` badla hi nahi |
+| `sarkari_deploy/` **kabhi commit nahi hua** (80 files untracked)                   | fresh clone / worktree me multi-agent system exist hi nahi karta                                                                        |
+| CI ke path filter me `Clipchamp_Bunny/**` **kisi lane ko match hi nahi karta tha** | jo app ship hota hai, uska CI me koi check nahi tha                                                                                     |
+| CI ka Rust lane **root crate** check karta tha, ship hone wala nahi                | jo code user ke desktop tak pahunchta hai, use CI ne kabhi dekha hi nahi                                                                |
+| `frontendDist: "../build"` gitignored hai                                          | `tauri::generate_context!()` panic → Rust lane clippy se pehle hi red                                                                   |
+| `go-build-id.ps1` ka default **galat folder** dhoondhta tha                        | chup-chaap fail nahi hota — khali hash stamp ho jaata tha                                                                               |
+| `cargo` PATH shim nahi tha                                                         | koi bhi agent chup-chaap 12-minute compile kar sakta tha                                                                                |
 
 ### 8.7 Do aur cheezein jo is kaam me pata chalein
 
