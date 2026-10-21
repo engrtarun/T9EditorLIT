@@ -1,0 +1,216 @@
+name: Sarkari artifact
+
+# ─────────────────────────────────────────────────────────────────────────
+# Why this is a SEPARATE workflow from ci.yml
+# ─────────────────────────────────────────────────────────────────────────
+# ci.yml has `cancel-in-progress: true`, which is right for the fast lanes:
+# when an agent pushes a fix, the previous run's feedback is stale and
+# cancelling it saves minutes. It is exactly wrong for the ARTIFACT.
+#
+# Six of the fifteen runs today ended as "cancelled". With ten agents
+# pushing, that is nine of ten runs cancelled - nine agents with no
+# artifact, and the rolling release still holding whatever the last
+# completed run built. The pipeline would have looked green while nine
+# people waited for a binary that was never going to arrive.
+#
+# So the artifact gets its own workflow, and its own concurrency group, with
+# cancelling switched OFF. Every push to main produces an artifact. They
+# queue instead of cancelling each other, which is what a queue is for.
+#
+# The artifact is also published under its OWN commit tag, not only under
+# the rolling one. `ci-latest` is a pointer that moves; `ci-<sha>` is a
+# fact. An agent that pushed commit 1234 wants the build of commit 1234,
+# and can be told so.
+# ─────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# NOT cancellable. See above.
+concurrency:
+  group: sarkari-artifact
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  artifact:
+    name: Build the sarkari artifact
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            Clipchamp_Bunny/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Clipchamp_Bunny/src-tauri
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache: true
+          cache-dependency-path: go/go.sum
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          Push-Location Clipchamp_Bunny
+          npm ci
+          Pop-Location
+
+      # tauri::generate_context!() reads frontendDist out of
+      # tauri.conf.json and panics when the path is not there. The root app
+      # is a SvelteKit app whose adapter-static output lands in ../build, and
+      # that directory only exists after a frontend build. The placeholder is
+      # only needed for the checks; the build below produces the real one.
+      - name: Make the frontend paths exist for the context macro
+        shell: pwsh
+        run: |
+          foreach ($dir in @('build', 'Clipchamp_Bunny/dist')) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            $index = Join-Path $dir 'index.html'
+            if (-not (Test-Path $index)) {
+              '<!doctype html><title>placeholder</title>' | Set-Content $index
+            }
+          }
+
+      # The daemon's version is a hash of the Go sources, and it is computed
+      # by Clipchamp_Bunny\tools\go-build-id.ps1 - the same file
+      # sarkariKaam.ps1 dot-sources. Two copies of that algorithm would
+      # drift, and a perfectly good CI daemon would then look stale to the
+      # deploy.
+      - name: Work out the identity
+        id: ident
+        shell: pwsh
+        env:
+          T9_GO_ROOT: go
+        run: |
+          $goId = & pwsh -NoProfile -File Clipchamp_Bunny/tools/go-build-id.ps1
+          if (-not $goId) { throw 'could not compute the Go source id' }
+          $short = $env:GITHUB_SHA.Substring(0, 7)
+          "go_id=$goId" >> $env:GITHUB_OUTPUT
+          "build_id=ci-$short" >> $env:GITHUB_OUTPUT
+
+      - name: Build the app
+        shell: pwsh
+        env:
+          T9_BUILD_ID: ${{ steps.ident.outputs.build_id }}
+        working-directory: Clipchamp_Bunny
+        run: npx tauri build --no-bundle
+
+      - name: Build the Go daemon
+        shell: pwsh
+        env:
+          GO_ID: ${{ steps.ident.outputs.go_id }}
+        working-directory: go
+        run: |
+          New-Item -ItemType Directory -Force -Path ../dist | Out-Null
+          go build -trimpath -ldflags "-s -w -X github.com/engrtarun/T9EditorLIT/go/internal/api.Version=$env:GO_ID" -o ../dist/t9cloud.exe ./cmd/t9cloud
+
+      - name: Collect the artifacts
+        shell: pwsh
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          $dist = Join-Path $root 'dist'
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          $exe = Join-Path $root 'Clipchamp_Bunny\src-tauri\target\release\t9-editor-lit.exe'
+          if (-not (Test-Path $exe)) { throw "the build did not produce $exe" }
+          Copy-Item $exe $dist -Force
+
+      # The manifest is the contract. deploy.ps1 refuses to install an
+      # executable whose SHA-256 is not the one written here, and it waits
+      # for the artifact of the commit it was asked to install.
+      - name: Write the manifest
+        shell: pwsh
+        env:
+          BUILD_ID: ${{ steps.ident.outputs.build_id }}
+          GO_ID: ${{ steps.ident.outputs.go_id }}
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          $dist = Join-Path $root 'dist'
+          $exe = Join-Path $dist 't9-editor-lit.exe'
+          $daemon = Join-Path $dist 't9cloud.exe'
+          $appSha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $daemonSha = (Get-FileHash $daemon -Algorithm SHA256).Hash.ToLowerInvariant()
+          $daemonVersion = ((& $daemon -version) | Out-String).Trim() -split '\s+' | Select-Object -Last 1
+          if ($daemonVersion -ne $env:GO_ID) {
+            throw "the built daemon reports '$daemonVersion', expected '$($env:GO_ID)'"
+          }
+          $manifest = [ordered]@{
+            schema     = 1
+            kind       = 'sarkari-ci-artifact'
+            buildId    = $env:BUILD_ID
+            builtAt    = (Get-Date).ToUniversalTime().ToString('o')
+            gitCommit  = $env:GITHUB_SHA
+            gitShort   = $env:GITHUB_SHA.Substring(0, 7)
+            gitBranch  = $env:GITHUB_REF_NAME
+            ciRunId    = $env:GITHUB_RUN_ID
+            ciRunUrl   = "$($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID)"
+            goSourceId = $env:GO_ID
+            app        = [ordered]@{
+              asset = 't9-editor-lit.exe'
+              sha256 = $appSha
+              size  = (Get-Item $exe).Length
+            }
+            daemon     = [ordered]@{
+              asset   = 't9cloud.exe'
+              sha256  = $daemonSha
+              size    = (Get-Item $daemon).Length
+              version = $daemonVersion
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $dist 'sarkari-manifest.json') -Encoding UTF8
+          Write-Host "manifest written for $($env:BUILD_ID)"
+
+      # The FACT: this commit's build, under this commit's name. It never
+      # moves, so an agent that pushed commit 1234 can always ask for it.
+      - name: Publish the commit's own release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-${{ github.sha }}
+          name: ci-${{ github.sha }}
+          prerelease: true
+          files: |
+            dist/t9-editor-lit.exe
+            dist/t9cloud.exe
+            dist/sarkari-manifest.json
+
+      # The POINTER: where "the newest build" lives. It moves, and it is
+      # what a deploy uses when it has not been told which commit it wants.
+      - name: Update the rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-latest
+          name: ci-latest
+          prerelease: true
+          files: |
+            dist/t9-editor-lit.exe
+            dist/t9cloud.exe
+            dist/sarkari-manifest.json
+
+      - name: Upload the artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarkari-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30

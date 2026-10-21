@@ -117,6 +117,10 @@ param(
     [string]$CiRelease = 'ci-latest',
     [string]$CiRepo = '',
     [string]$CiBaseUrl = '',
+    # The commit whose artifact to install. Empty means the commit this
+    # working tree is on. With several agents pushing, naming the commit is
+    # what stops an agent being handed somebody else's build.
+    [string]$ExpectCommit = '',
     [switch]$SkipPin,
     [switch]$Launch,
     [switch]$Interactive,

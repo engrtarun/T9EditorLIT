@@ -37,7 +37,11 @@ param(
     # A full download base, instead of the GitHub release URL. It points the
     # deploy at a self-hosted mirror, and it is what lets the download path
     # be tested against a local server.
-    [string]$CiBaseUrl = ''
+    [string]$CiBaseUrl = '',
+    # The commit whose artifact this deploy should install. Empty means the
+    # commit this working tree is standing on, which is what an agent wants
+    # in every ordinary case.
+    [string]$ExpectCommit = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,6 +66,9 @@ $GoRoot = Join-Path $WorkspaceRoot 'go'
 # what is actually on disk before the ledger is told 'shipped' - the check
 # that two runs in a row were missing.
 $script:IntendedDaemonVersion = $null
+# The commit whose CI artifact this work order installs. Set from the
+# parameter, and read by Execute-SmartCiBuild.
+$script:ExpectCommit = $ExpectCommit
 
 # The same lock the classic deploy path uses. Two agents building and
 # installing at the same time is how a half-written executable ends up in
@@ -492,8 +499,64 @@ function Execute-SmartCiBuild([string]$BuildId) {
     # manifest is the contract, exactly as the local build's manifest is.
     Write-Host "==> [Kaam Stage 3/6] Smart Build Pipeline Trigger ($BuildId, from CI)" -ForegroundColor Cyan
     $ciRoot = Join-Path $WorkspaceRoot '.t9\ci'
-    $artifact = Get-SarkariCiArtifact -Repo $CiRepo -Release $CiRelease `
-        -DestinationRoot $ciRoot -WorkspaceRoot $WorkspaceRoot -BaseUrl $CiBaseUrl
+
+    # Which commit's build is this deploy installing? By default, the one
+    # this working tree is standing on.
+    #
+    # This matters as soon as there is more than one agent. The rolling
+    # release moves every time anyone pushes, so an agent that pushed at
+    # 10:00 and deploys at 10:10 would be handed the build of whatever
+    # somebody else pushed at 10:05 - and the record would say it shipped
+    # their work. So the deploy waits for ITS OWN commit's artifact. The
+    # rolling release is still used, but only when it holds exactly that
+    # commit.
+    $wanted = $script:ExpectCommit
+    if (-not $wanted) {
+        $wanted = (& git -C $WorkspaceRoot rev-parse HEAD 2>$null | Select-Object -First 1)
+    }
+    $wanted = ([string]$wanted).Trim()
+    if ($wanted) {
+        $wantedShort = $wanted.Substring(0, [Math]::Min(7, $wanted.Length))
+        Write-Host "    the artifact of commit $wantedShort is the one this deploy will install" -ForegroundColor DarkGray
+    } else {
+        $wantedShort = ''
+    }
+
+    $artifact = $null
+    $deadline = (Get-Date).AddMinutes(12)
+    while ($true) {
+        if ($wanted) {
+            $artifact = Get-SarkariCiArtifact -Repo $CiRepo -Release $CiRelease `
+                -DestinationRoot $ciRoot -WorkspaceRoot $WorkspaceRoot -BaseUrl $CiBaseUrl `
+                -Commit $wanted -AllowMissing
+        } else {
+            $artifact = Get-SarkariCiArtifact -Repo $CiRepo -Release $CiRelease `
+                -DestinationRoot $ciRoot -WorkspaceRoot $WorkspaceRoot -BaseUrl $CiBaseUrl `
+                -AllowMissing
+        }
+        if ($artifact) { break }
+
+        # The rolling release may already hold this commit, if the
+        # per-commit tag was not published for some reason.
+        if ($wanted) {
+            $rolling = Get-SarkariCiArtifact -Repo $CiRepo -Release 'ci-latest' `
+                -DestinationRoot $ciRoot -WorkspaceRoot $WorkspaceRoot -BaseUrl $CiBaseUrl `
+                -AllowMissing
+            if ($rolling -and $rolling.GitCommit -and $rolling.GitCommit.StartsWith($wantedShort)) {
+                $artifact = $rolling
+                break
+            }
+        }
+
+        if ((Get-Date) -gt $deadline) {
+            if ($wanted) {
+                throw "CI has not published the artifact for commit $wantedShort yet - push your work, wait for the run to finish, and deploy again. The artifact workflow queues instead of cancelling, so it will arrive."
+            }
+            throw "CI has not published a 'ci-latest' artifact yet - push your work and wait for the run to finish, then deploy again."
+        }
+        Write-Host '    CI has not published that build yet - waiting (this is normal right after a push)' -ForegroundColor DarkGray
+        Start-Sleep -Seconds 20
+    }
 
     # The local manifest and the CI manifest are given the same shape here, so
     # the install, the marker and the doctor do not need to know where the
@@ -611,8 +674,11 @@ function Execute-SarkariKaam {
         [int]$Priority = 50,
         [switch]$Emergency,
         [switch]$Launch,
-        [switch]$Ci
+        [switch]$Ci,
+        [string]$ExpectCommit = ''
     )
+
+    if ($ExpectCommit) { $script:ExpectCommit = $ExpectCommit }
 
     if ($AgentProfile) {
         $script:AgentProfile = $AgentProfile

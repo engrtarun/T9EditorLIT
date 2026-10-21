@@ -359,185 +359,19 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # ── The artifact the sarkari deploy installs ──────────────────────────
-  # The deploy pipeline used to compile here, on the i3 that runs the app.
-  # That build takes twelve minutes, it dies in the linker when memory runs
-  # out (rustc exits 0xffffffff), and it holds the build lock every other
-  # agent is waiting for. So the compile moved to this runner: GitHub's
-  # Windows box has 7 GB of RAM and a CPU of its own, and the machine that
-  # runs the app now only verifies a hash and installs.
+  # The artifact the sarkari deploy installs has its OWN workflow now:
+  # .github\workflows\sarkari-artifact.yml.
   #
-  # What comes out is deliberately the same shape the local build produced,
-  # because deploy.ps1 installs out of a manifest either way:
+  # It could not stay here. This workflow cancels a running build when a
+  # newer push arrives, which is right for the fast lanes - stale feedback
+  # is worth throwing away - and exactly wrong for the artifact. Six of
+  # the fifteen runs today ended cancelled, and with ten agents pushing
+  # that is nine of ten runs cancelled: nine agents with no artifact, and
+  # the rolling release still holding the last completed build.
   #
-  #   sarkari-manifest.json  buildId, hashes, versions, the CI run URL
-  #   t9-editor-lit.exe      the app, byte for byte what build.ps1 leaves
-  #   t9cloud.exe            the daemon, stamped with the Go source hash
-  #
-  # The daemon's version is a hash of the Go sources, and it is computed by
-  # Clipchamp_Bunny\tools\go-build-id.ps1 - the same file sarkariKaam.ps1
-  # dot-sources. Two copies of that algorithm would drift, and a perfectly
-  # good CI daemon would then look stale to the deploy.
-  sarkari-artifact:
-    name: Sarkari artifact (app + daemon)
-    runs-on: windows-latest
-    needs: [changes, frontend, rust, go]
-    if: >-
-      always() &&
-      !cancelled() &&
-      github.event_name != 'pull_request' &&
-      needs.frontend.result != 'failure' &&
-      needs.rust.result != 'failure' &&
-      needs.go.result != 'failure' &&
-      (needs.changes.outputs.frontend == 'true' ||
-       needs.changes.outputs.rust == 'true' ||
-       needs.changes.outputs.go == 'true' ||
-       needs.changes.outputs.ci == 'true')
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            Clipchamp_Bunny/package-lock.json
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: Clipchamp_Bunny/src-tauri
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go/go.mod
-          cache: true
-          cache-dependency-path: go/go.sum
-
-      - name: Install dependencies
-        run: |
-          npm ci
-          Push-Location Clipchamp_Bunny
-          npm ci
-          Pop-Location
-
-      # One identity, computed once, used by everything below. The Go id is
-      # the hash of the Go sources, and deploy.ps1 refuses to call a work
-      # order shipped unless the installed daemon carries this exact value.
-      - name: Work out the identity
-        id: ident
-        shell: pwsh
-        env:
-          # The Go sources live at the repository root. The script would
-          # otherwise guess from its own folder and find nothing - the
-          # default it guesses is Clipchamp_Bunny\go, which is not a thing.
-          T9_GO_ROOT: go
-        run: |
-          $goId = & pwsh -NoProfile -File Clipchamp_Bunny/tools/go-build-id.ps1
-          if (-not $goId) { throw 'could not compute the Go source id' }
-          $short = $env:GITHUB_SHA.Substring(0, 7)
-          "go_id=$goId" >> $env:GITHUB_OUTPUT
-          "build_id=ci-$short" >> $env:GITHUB_OUTPUT
-
-      - name: Build the app
-        shell: pwsh
-        env:
-          T9_BUILD_ID: ${{ steps.ident.outputs.build_id }}
-        working-directory: Clipchamp_Bunny
-        run: npx tauri build --no-bundle
-
-      - name: Build the Go daemon
-        shell: pwsh
-        env:
-          GO_ID: ${{ steps.ident.outputs.go_id }}
-        working-directory: go
-        run: |
-          New-Item -ItemType Directory -Force -Path ../dist | Out-Null
-          go build -trimpath -ldflags "-s -w -X github.com/engrtarun/T9EditorLIT/go/internal/api.Version=$env:GO_ID" -o ../dist/t9cloud.exe ./cmd/t9cloud
-
-      - name: Collect the artifacts
-        shell: pwsh
-        run: |
-          $root = $env:GITHUB_WORKSPACE
-          $dist = Join-Path $root 'dist'
-          New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          $exe = Join-Path $root 'Clipchamp_Bunny\src-tauri\target\release\t9-editor-lit.exe'
-          if (-not (Test-Path $exe)) { throw "the build did not produce $exe" }
-          Copy-Item $exe $dist -Force
-
-      # The manifest is the contract. deploy.ps1 refuses to install an
-      # executable whose SHA-256 is not the one written here, and it warns
-      # when the commit it names is not the commit you are standing on.
-      - name: Write the manifest
-        shell: pwsh
-        env:
-          BUILD_ID: ${{ steps.ident.outputs.build_id }}
-          GO_ID: ${{ steps.ident.outputs.go_id }}
-        run: |
-          $root = $env:GITHUB_WORKSPACE
-          $dist = Join-Path $root 'dist'
-          $exe = Join-Path $dist 't9-editor-lit.exe'
-          $daemon = Join-Path $dist 't9cloud.exe'
-          $appSha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          $daemonSha = (Get-FileHash $daemon -Algorithm SHA256).Hash.ToLowerInvariant()
-          $daemonVersion = ((& $daemon -version) | Out-String).Trim() -split '\s+' | Select-Object -Last 1
-          if ($daemonVersion -ne $env:GO_ID) {
-            throw "the built daemon reports '$daemonVersion', expected '$($env:GO_ID)'"
-          }
-          $manifest = [ordered]@{
-            schema     = 1
-            kind       = 'sarkari-ci-artifact'
-            buildId    = $env:BUILD_ID
-            builtAt    = (Get-Date).ToUniversalTime().ToString('o')
-            gitCommit  = $env:GITHUB_SHA
-            gitShort   = $env:GITHUB_SHA.Substring(0, 7)
-            gitBranch  = $env:GITHUB_REF_NAME
-            ciRunId    = $env:GITHUB_RUN_ID
-            ciRunUrl   = "$($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID)"
-            goSourceId = $env:GO_ID
-            app        = [ordered]@{
-              asset = 't9-editor-lit.exe'
-              sha256 = $appSha
-              size  = (Get-Item $exe).Length
-            }
-            daemon     = [ordered]@{
-              asset   = 't9cloud.exe'
-              sha256  = $daemonSha
-              size    = (Get-Item $daemon).Length
-              version = $daemonVersion
-            }
-          }
-          $manifest | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $dist 'sarkari-manifest.json') -Encoding UTF8
-          Write-Host "manifest written for $($env:BUILD_ID)"
-
-      # A rolling release, so deploy.ps1 -Ci has one stable URL to fetch and
-      # no GitHub CLI on the machine. The assets are replaced on every green
-      # run; a failed run leaves the previous good ones in place.
-      - name: Publish the rolling release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ci-latest
-          name: ci-latest
-          prerelease: true
-          files: |
-            dist/t9-editor-lit.exe
-            dist/t9cloud.exe
-            dist/sarkari-manifest.json
-
-      - name: Upload the artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sarkari-${{ github.sha }}
-          path: dist/
-          if-no-files-found: error
-          retention-days: 30
+  # The artifact workflow queues instead of cancelling, and it publishes
+  # each commit under its own tag as well as the rolling one, so a deploy
+  # can ask for the build of the commit it actually pushed.
 
   # ── The one check to look at ───────────────────────────────────────────
   # Every lane above is path-filtered, so on any given push some are skipped.

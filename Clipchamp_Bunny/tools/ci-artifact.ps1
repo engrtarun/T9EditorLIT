@@ -54,13 +54,23 @@ function Get-SarkariCiArtifact {
         path can be exercised against a local server instead of a real
         release - an unproven download path is exactly how a broken one
         reaches production. It also points at a self-hosted mirror.
+    .PARAMETER Commit
+        The commit whose artifact is wanted. The release tag becomes
+        `ci-<short sha>`, and the manifest's own commit is checked against
+        it - a release published under a commit's name must BE that
+        commit's build.
+    .PARAMETER AllowMissing
+        Return $null instead of throwing when the release does not exist.
+        The caller uses it to wait for CI rather than to fail.
     #>
     param(
         [string]$Repo = '',
         [string]$Release = 'ci-latest',
         [Parameter(Mandatory)][string]$DestinationRoot,
         [string]$WorkspaceRoot = '',
-        [string]$BaseUrl = ''
+        [string]$BaseUrl = '',
+        [string]$Commit = '',
+        [switch]$AllowMissing
     )
 
     if (-not $Repo -and $WorkspaceRoot) {
@@ -71,7 +81,17 @@ function Get-SarkariCiArtifact {
     }
     if (-not $Repo) { throw '-Ci needs a GitHub repository; pass -CiRepo owner/name' }
 
-    $base = if ($BaseUrl) { $BaseUrl.TrimEnd('/') } else { "https://github.com/$Repo/releases/download/$Release" }
+    # A commit's own artifact lives under its own name. The rolling release
+    # is a pointer that moves - with several agents pushing, it moves a lot,
+    # and an agent that pushed commit 1234 must not be handed commit 1235's
+    # build just because it was published a minute earlier.
+    $tag = $Release
+    if ($Commit) {
+        $short = $Commit
+        if ($short.Length -gt 7) { $short = $short.Substring(0, 7) }
+        $tag = "ci-$short"
+    }
+    $base = if ($BaseUrl) { "$($BaseUrl.TrimEnd('/'))/$tag" } else { "https://github.com/$Repo/releases/download/$tag" }
     $headers = @{ 'User-Agent' = 'T9EditorLIT-deploy' }
     # The repository is public, so the assets download without a token. A
     # private repository needs one, and it is optional here on purpose: a
@@ -86,12 +106,25 @@ function Get-SarkariCiArtifact {
     try {
         Invoke-WebRequest -Uri "$base/$manifestName" -OutFile $probe -Headers $headers -UseBasicParsing
     } catch {
-        throw "could not download the CI manifest from $base/$manifestName - $($_.Exception.Message). Has CI published a '$Release' release yet?"
+        if ($AllowMissing) { return $null }
+        throw "could not download the CI manifest from $base/$manifestName - $($_.Exception.Message). Has CI published a '$tag' release yet?"
     }
 
     $manifest = $null
     try { $manifest = (Get-Content -LiteralPath $probe -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { $manifest = $null }
-    if (-not $manifest) { throw "the CI manifest could not be read: $probe" }
+    if (-not $manifest) {
+        if ($AllowMissing) { return $null }
+        throw "the CI manifest could not be read: $probe"
+    }
+
+    # The release is named after a commit, so the artifact under that name
+    # must be that commit's build. A mismatch means the release is stale or
+    # was replaced, and installing it would put somebody else's work on the
+    # user's desktop while claiming to be this agent's.
+    $publishedCommit = [string](Get-SarkariCiProp $manifest 'gitCommit')
+    if ($Commit -and $publishedCommit -and -not $publishedCommit.StartsWith($Commit.Substring(0, [Math]::Min(7, $Commit.Length)))) {
+        throw "the release '$tag' holds the build of commit $publishedCommit, not $Commit - refusing to install it"
+    }
 
     $buildId = [string](Get-SarkariCiProp $manifest 'buildId')
     if (-not $buildId) { throw "the CI manifest has no buildId: $probe" }

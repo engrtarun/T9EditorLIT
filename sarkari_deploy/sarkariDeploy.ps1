@@ -53,7 +53,8 @@ param(
     [switch]$Ci = $false,
     [string]$CiRelease = 'ci-latest',
     [string]$CiRepo = '',
-    [string]$CiBaseUrl = ''
+    [string]$CiBaseUrl = '',
+    [string]$ExpectCommit = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -261,10 +262,10 @@ try {
     . (Join-Path $SarkariDir 'sarkariKaam.ps1') `
         -AgentProfile $agentProfile -Scope $form.Scope -InstallDir $InstallDir `
         -Priority $form.Priority -Emergency:$form.Emergency -Launch:$Launch `
-        -Ci:$Ci -CiRelease $CiRelease -CiRepo $CiRepo -CiBaseUrl $CiBaseUrl
+        -Ci:$Ci -CiRelease $CiRelease -CiRepo $CiRepo -CiBaseUrl $CiBaseUrl -ExpectCommit $ExpectCommit
     $kaamResult = Execute-SarkariKaam -AgentProfile $agentProfile -Scope $form.Scope `
         -InstallDir $InstallDir -Priority $form.Priority -Emergency:$form.Emergency -Launch:$Launch `
-        -Ci:$Ci
+        -Ci:$Ci -ExpectCommit $ExpectCommit
 
     # Stop 4-minute monitor
     Stop-SarkariPulseMonitor -MonitorHandle $pulseHandle
