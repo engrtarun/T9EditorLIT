@@ -62,7 +62,22 @@ function Get-GoSourceBuildId {
 # The dot-source guard keeps this from running when deploy.ps1 loads the file.
 if ($MyInvocation.InvocationName -ne '.') {
     $root = $env:T9_GO_ROOT
-    if (-not $root) { $root = Join-Path (Split-Path -Parent $PSScriptRoot) 'go' }
+    if (-not $root) {
+        # This file lives in Clipchamp_Bunny\tools, so one level up is
+        # Clipchamp_Bunny - which has no Go folder in it. The Go sources are
+        # at the repository root, two levels up. Look in both places and take
+        # the one that exists, instead of the one that is assumed: a wrong
+        # guess here does not fail loudly, it hashes nothing and CI then
+        # stamps an empty version into the daemon.
+        $here = Split-Path -Parent $PSScriptRoot
+        foreach ($candidate in @((Join-Path $here 'go'), (Join-Path (Split-Path -Parent $here) 'go'))) {
+            if (Test-Path -LiteralPath $candidate) { $root = $candidate; break }
+        }
+    }
+    if (-not $root) {
+        Write-Error 'the Go sources could not be found - set T9_GO_ROOT to the go folder'
+        exit 1
+    }
     $resolved = Resolve-Path -LiteralPath $root -ErrorAction SilentlyContinue
     if (-not $resolved) {
         Write-Error "go root not found: $root"

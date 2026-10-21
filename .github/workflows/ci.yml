@@ -379,9 +379,9 @@ jobs:
   #   t9cloud.exe            the daemon, stamped with the Go source hash
   #
   # The daemon's version is a hash of the Go sources, and it is computed by
-  # tools/go-build-id.ps1 - the same file deploy.ps1 dot-sources. Two copies
-  # of that algorithm would drift, and a perfectly good CI daemon would
-  # then look stale to the deploy.
+  # Clipchamp_Bunny\tools\go-build-id.ps1 - the same file sarkariKaam.ps1
+  # dot-sources. Two copies of that algorithm would drift, and a perfectly
+  # good CI daemon would then look stale to the deploy.
   sarkari-artifact:
     name: Sarkari artifact (app + daemon)
     runs-on: windows-latest
@@ -438,8 +438,13 @@ jobs:
       - name: Work out the identity
         id: ident
         shell: pwsh
+        env:
+          # The Go sources live at the repository root. The script would
+          # otherwise guess from its own folder and find nothing - the
+          # default it guesses is Clipchamp_Bunny\go, which is not a thing.
+          T9_GO_ROOT: go
         run: |
-          $goId = & pwsh -NoProfile -File tools/go-build-id.ps1
+          $goId = & pwsh -NoProfile -File Clipchamp_Bunny/tools/go-build-id.ps1
           if (-not $goId) { throw 'could not compute the Go source id' }
           $short = $env:GITHUB_SHA.Substring(0, 7)
           "go_id=$goId" >> $env:GITHUB_OUTPUT

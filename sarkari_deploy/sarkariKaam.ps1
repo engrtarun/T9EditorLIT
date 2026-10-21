@@ -746,13 +746,13 @@ function Execute-SarkariKaam {
     }
 
     try {
-        # -Ci takes the binary CI already built. Everything after this point
-        # is the same pipeline a local build goes through.
-        if ($Ci) {
-            $buildOutput = Execute-SmartCiBuild -BuildId $buildId
-        } else {
-            $buildOutput = Execute-SmartBuild -BuildId $buildId
-        }
+        # There is no local build any more. The compile happens in CI, on
+        # GitHub's runner, and this machine only verifies a hash and
+        # installs. That is not a style choice: a release build here took six
+        # to twelve minutes, held the build lock that every other agent was
+        # waiting behind, and died in the linker for want of memory. It was
+        # the reason five agents could not work at once.
+        $buildOutput = Execute-SmartCiBuild -BuildId $buildId
         $installOutput = Invoke-SarkariInstall -BuildOutput $buildOutput
         $daemonOutput = Install-SarkariDaemon -BuildOutput $buildOutput
     } catch {

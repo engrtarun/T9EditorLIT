@@ -351,3 +351,90 @@ identity:
 
 `deploy.ps1` without `-Ci` still compiles locally. It is slower and it can
 still OOM on this machine, but it is the fallback, not the main path.
+
+---
+
+## 11. The Rust compile does not happen on this machine
+
+**This is a hard rule, and it is enforced by the machine, not by good
+intentions.**
+
+### The rule
+
+> **No agent runs a Rust compile on this box.**
+> `cargo build`, `cargo test`, `cargo clippy`, `cargo bench`, `tauri build` -
+> all of them are refused. The compile happens in CI, on GitHub's runner.
+
+### Why it is a rule and not a preference
+
+This is an 8 GB i3 with roughly **1 GB of free RAM**. A Tauri release build
+here:
+
+- takes **6-12 minutes** (often twice, because the first attempt dies),
+- holds the **build lock** that every other agent is waiting behind,
+- and ends in **`rustc exited 0xffffffff`** - the linker killed for want of
+  memory.
+
+It is the single biggest reason agents stall each other in this repository.
+Five agents working at once is not possible while one of them is compiling.
+
+### How it is enforced
+
+`%USERPROFILE%\.cargo-shim\cargo.cmd` sits ahead of the real cargo in the
+PATH, so **every** process - every agent session, every shell - meets it
+before cargo does. It refuses the compiling subcommands and prints this:
+
+```
+  RUST COMPILE IS NOT ALLOWED ON THIS MACHINE
+```
+
+and it lets the cheap ones through:
+
+| Command                                           | Allowed here? | Why                                               |
+| ------------------------------------------------- | ------------- | ------------------------------------------------- |
+| `cargo check`                                     | **yes**       | type-checks without linking - the fast local gate |
+| `cargo fmt`                                       | **yes**       | formatting                                        |
+| `cargo metadata`, `cargo tree`, `cargo --version` | **yes**       | inspection                                        |
+| `cargo build`                                     | **no**        | 6-12 min, OOM-prone, holds the lock               |
+| `cargo test`                                      | **no**        | compiles test binaries                            |
+| `cargo clippy`                                    | **no**        | compiles                                          |
+| `cargo bench`                                     | **no**        | compiles                                          |
+| `tauri build`, `npm run tauri build`              | **no**        | they call cargo                                   |
+
+### The escape hatch
+
+`T9_ALLOW_LOCAL_RUST=1` lets **one** command through. It exists so that
+being deliberately slow is a decision somebody makes on purpose, with the
+cost written down - not an accident that happens in a hurry.
+
+```
+T9_ALLOW_LOCAL_RUST=1 cargo build --release
+```
+
+### What to do instead
+
+```powershell
+# 1. the fast local gate - type-checks, does not link
+npm run verify:fast
+
+# 2. hand the compile to CI
+git commit -am "..." ; git push
+
+# 3. install what CI built
+pwsh -File tools\deploy.ps1 -Ci -Agent "<you>" -Model "<provider/model>" `
+     -Task "..." -Why "..." -Scope app
+```
+
+CI publishes a rolling `ci-latest` release with the app, the daemon and a
+SHA-256 manifest. The deploy downloads it, checks the hash, and installs -
+**without compiling anything here**. A full deploy takes **under a minute**,
+and while it runs, the lane is free for the next agent.
+
+### Why the local build path was deleted
+
+It was not removed to be tidy. `deploy.ps1` used to carry a **second copy**
+of the whole deploy pipeline - 1556 lines that compiled the release here.
+Two copies of one pipeline is how the Go daemon went missing for three
+deploys in a row: the live path never had a daemon build in it, and the copy
+nobody ran was the one that did. The classic pipeline is gone; the compile
+lives in CI, where it belongs.
