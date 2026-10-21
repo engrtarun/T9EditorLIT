@@ -89,6 +89,13 @@ jobs:
           npm ci
           Pop-Location
 
+      # Types before the build. `vite build` does not type-check - it
+      # transpiles and hopes - so a type error would sail through the
+      # frontend build and land in the artifact. The deploy checks this
+      # locally too, but a red CI run is a better place to find out.
+      - name: Type-check
+        run: npm run check
+
       # tauri::generate_context!() reads frontendDist out of
       # tauri.conf.json and panics when the path is not there. The root app
       # is a SvelteKit app whose adapter-static output lands in ../build, and
@@ -195,29 +202,55 @@ jobs:
 
       # The FACT: this commit's build, under this commit's name. It never
       # moves, so an agent that pushed commit 1234 can always ask for it.
+      #
+      # The gh CLI is used rather than an action because it is idempotent:
+      # create, and if the release is already there, upload with --clobber
+      # instead. An action that only creates fails with "already_exists" the
+      # second time the same commit is built, and a failed publish means an
+      # agent waiting for that artifact waits for something that will never
+      # arrive.
       - name: Publish the commit's own release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ci-${{ github.sha }}
-          name: ci-${{ github.sha }}
-          prerelease: true
-          files: |
-            dist/t9-editor-lit.exe
-            dist/t9cloud.exe
-            dist/sarkari-manifest.json
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          $tag = "ci-$($env:GITHUB_SHA.Substring(0, 7))"
+          gh release create $tag --title $tag --prerelease `
+            --notes "Build of commit $($env:GITHUB_SHA)" (Join-Path $root 'dist\*') 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release upload $tag --clobber (Join-Path $root 'dist\*')
+            if ($LASTEXITCODE -ne 0) { throw "could not publish the release $tag" }
+          }
+          Write-Host "published $tag"
 
       # The POINTER: where "the newest build" lives. It moves, and it is
-      # what a deploy uses when it has not been told which commit it wants.
+      # what a human looks at.
+      #
+      # It is only updated by a run whose commit is STILL the tip. Ten
+      # builds run in parallel and finish in whatever order they finish - so
+      # without this check, an older build that finished late would put an
+      # OLD binary in the pointer, which is the exact bug the per-commit
+      # releases exist to prevent.
       - name: Update the rolling release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ci-latest
-          name: ci-latest
-          prerelease: true
-          files: |
-            dist/t9-editor-lit.exe
-            dist/t9cloud.exe
-            dist/sarkari-manifest.json
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          $head = (git ls-remote origin refs/heads/main).Split("`t")[0]
+          if ($head -ne $env:GITHUB_SHA) {
+            Write-Host "HEAD has moved on to $($head.Substring(0, 7)) - leaving ci-latest to the run that owns it"
+            exit 0
+          }
+          $tag = 'ci-latest'
+          gh release create $tag --title $tag --prerelease `
+            --notes "The newest build." (Join-Path $root 'dist\*') 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release upload $tag --clobber (Join-Path $root 'dist\*')
+            if ($LASTEXITCODE -ne 0) { throw 'could not update the rolling release' }
+          }
+          Write-Host 'updated ci-latest'
 
       - name: Upload the artifact
         uses: actions/upload-artifact@v4

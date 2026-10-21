@@ -24,8 +24,19 @@ name: CI
 # ─────────────────────────────────────────────────────────────────────────
 
 on:
-  push:
-    branches: [main]
+  # This workflow is the MERGE GATE - it runs for pull requests, and only
+  # there.
+  #
+  # It used to run on every push to main as well, and that cost more than
+  # the feedback was worth. Every push opened up to nine jobs: the change
+  # detector, four lanes, a three-way cross-compile matrix, a release build
+  # and the gate. Ten agents pushing means ninety concurrent jobs, and
+  # GitHub's free tier allows twenty - so eighty of them sat in a queue
+  # that was not the queue anybody was looking at.
+  #
+  # The artifact now has its own workflow with one job per push, and that
+  # is the one the deploy waits for. This one runs where a human is about
+  # to merge, which is the only time a blocking gate is worth its minutes.
   pull_request:
     branches: [main]
   workflow_dispatch:
