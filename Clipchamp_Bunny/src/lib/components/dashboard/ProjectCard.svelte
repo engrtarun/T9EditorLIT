@@ -150,7 +150,7 @@
             if (e.key === 'Escape') onrenamecancel();
           }}
           onclick={(e) => e.stopPropagation()}
-          class="w-full rounded border border-nc-gold bg-nc-bg px-1.5 py-0.5 text-[13px] text-nc-txt outline-none"
+          class="w-full rounded border border-nc-brand bg-nc-bg px-1.5 py-0.5 text-[13px] text-nc-txt outline-none"
         />
       {:else}
         <div class="truncate text-[13px] font-medium text-nc-txt" title={p.name}>

@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -34,10 +34,12 @@ pub fn run(program: &str, args: &[&str]) -> Result<RunOutput, String> {
     // no real workload — they would only add noise to the child metrics.
     let trivial = is_trivial_probe(args);
     let started = Instant::now();
-    let output = Command::new(program)
+    let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| {
             if !trivial {
                 crate::stats::log_child(program, started.elapsed().as_millis() as i64, -1);
@@ -45,14 +47,56 @@ pub fn run(program: &str, args: &[&str]) -> Result<RunOutput, String> {
             format!("failed to spawn `{program}`: {e}")
         })?;
 
-    let status = output.status.code().unwrap_or(-1);
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut s) = stdout_pipe {
+            let _ = std::io::Read::read_to_end(&mut s, &mut buf);
+        }
+        buf
+    });
+
+    let stderr_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let stderr_tail_writer = Arc::clone(&stderr_tail);
+    let stderr_thread = std::thread::spawn(move || {
+        if let Some(s) = stderr_pipe {
+            for line in BufReader::new(s).lines().map_while(Result::ok) {
+                let mut buf = match stderr_tail_writer.lock() {
+                    Ok(b) => b,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                append_bounded(&mut buf, &line);
+            }
+        }
+    });
+
+    let status = match child.wait() {
+        Ok(s) => s.code().unwrap_or(-1),
+        Err(e) => {
+            if !trivial {
+                crate::stats::log_child(program, started.elapsed().as_millis() as i64, -1);
+            }
+            return Err(format!("failed to wait for `{program}`: {e}"));
+        }
+    };
+
+    let stdout_bytes = stdout_thread.join().unwrap_or_default();
+    let _ = stderr_thread.join();
+
+    let stderr_string = match Arc::try_unwrap(stderr_tail) {
+        Ok(mutex) => mutex.into_inner().unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+
     if !trivial {
         crate::stats::log_child(program, started.elapsed().as_millis() as i64, status);
     }
     Ok(RunOutput {
         status,
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+        stderr: stderr_string,
     })
 }
 
@@ -88,17 +132,38 @@ pub fn ffprobe_json(path: &Path) -> Result<String, String> {
     Ok(out.stdout)
 }
 
+/// The `ffmpeg -encoders` listing, fetched once for the process lifetime.
+///
+/// `ffmpeg_has_encoder` used to start a fresh `ffmpeg` child process on every
+/// call. `HardwareSupport::detect()` calls it three times and `export.rs`
+/// calls it again while choosing an encoder chain, so picking an encoder cost
+/// five process spawns on a machine that is short of both CPU and memory.
+///
+/// The listing is a property of the FFmpeg binary on disk, so it cannot change
+/// while the process runs and there is nothing to refresh - the same reason
+/// `TESTED` below caches its results. A failed probe is cached too: FFmpeg
+/// being absent is a fact about the machine, not a transient error, and
+/// re-probing for a binary that is not there helps nobody.
+static ENCODERS: OnceLock<Option<String>> = OnceLock::new();
+
+fn encoders_listing() -> Option<&'static str> {
+    ENCODERS
+        .get_or_init(|| match run("ffmpeg", &["-hide_banner", "-encoders"]) {
+            Ok(out) => Some(out.stdout),
+            Err(_) => None,
+        })
+        .as_deref()
+}
+
 /// True when the local FFmpeg build exposes the named encoder.
 /// Used to decide between QuickSync hardware encode and CPU encode.
 pub fn ffmpeg_has_encoder(name: &str) -> bool {
-    match run("ffmpeg", &["-hide_banner", "-encoders"]) {
-        Ok(out) => {
-            let needle = format!(" {name} ");
-            // Encoder lines look like: " V....D h264_qsv    libx264 ...".
-            out.stdout.lines().any(|line| line.contains(&needle))
-        }
-        Err(_) => false,
-    }
+    let Some(listing) = encoders_listing() else {
+        return false;
+    };
+    let needle = format!(" {name} ");
+    // Encoder lines look like: " V....D h264_qsv    libx264 ...".
+    listing.lines().any(|line| line.contains(&needle))
 }
 
 /// Snapshot of the hardware encoders this machine can actually use.

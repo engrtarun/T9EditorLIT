@@ -1,4 +1,4 @@
-//! Nanami Cut — Rust core.
+//! T9 Editor LIT — Rust core.
 //!
 //! The **media engine is shared** with the T9EditorLIT crate: every module is
 //! included by path, so there is exactly one implementation of the FFmpeg,
@@ -514,6 +514,15 @@ fn purge_trash(db_path: String, source_path: String) -> Result<(), String> {
     transcript::purge_trash(&conn, &source_path)
 }
 
+/// Drop every binned project older than `days` (the user's retention window).
+///
+/// `days <= 0` means "never auto-delete". Returns how many rows were removed.
+#[tauri::command]
+fn purge_expired_trash(db_path: String, days: i64) -> Result<u64, String> {
+    let conn = transcript::open_db(Path::new(&db_path))?;
+    transcript::purge_expired_trash(&conn, days)
+}
+
 /* ------------------------------------------------------------------ poster */
 
 /// One poster frame for a dashboard card.
@@ -618,6 +627,88 @@ fn extract_poster_sync(
         height: (w * 9 / 16).max(2),
         cached: false,
     })
+}
+
+/* ------------------------------------------------------- custom thumbnail */
+
+/// Copy a hand-picked picture into the app's own cache and say where it went.
+///
+/// The picture is **never read into memory**: the copy is done by the OS,
+/// byte for byte, and the app only ever holds the path. That is what keeps
+/// this command cheap on an 8 GB machine - a 4 K PNG would be megabytes in
+/// the heap if the app read it, and nothing here does.
+///
+/// The result is a stable file in `<app_data>/cache/thumbs/custom/`, named
+/// after the source it belongs to, so picking a new picture *replaces* the
+/// old poster instead of piling up copies - and a library that pointed at
+/// the user's Desktop would break the moment they moved the file.
+#[tauri::command]
+async fn import_thumbnail(
+    app: tauri::AppHandle,
+    source_path: String,
+    image_path: String,
+) -> Result<String, String> {
+    let root = cache_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = PathBuf::from(&image_path);
+        if !source.is_file() {
+            return Err(format!("picture not found: {image_path}"));
+        }
+        let dir = cache::dir(&root, "thumbs/custom")?;
+        let key = cache::hash_hex(&[source_path.as_bytes()]);
+        let ext = source
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .filter(|e| matches!(e.as_str(), "jpg" | "jpeg" | "png" | "webp"))
+            .unwrap_or_else(|| "jpg".to_string());
+        let out = dir.join(format!("{key}.{ext}"));
+        // The copy itself is the OS's work; we only hand it two paths.
+        std::fs::copy(&source, &out)
+            .map_err(|e| format!("could not copy the picture: {e}"))?;
+        Ok(out.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The picture the user chose for this source, if there is one.
+///
+/// The dashboard asks for it on every load, so a poster the user chose is
+/// still there after a restart. It is a directory read - no image is decoded.
+#[tauri::command]
+fn custom_thumbnail(app: tauri::AppHandle, source_path: String) -> Option<String> {
+    let root = cache_root(&app).ok()?;
+    let dir = root.join("thumbs").join("custom");
+    let key = cache::hash_hex(&[source_path.as_bytes()]);
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.file_stem().and_then(|s| s.to_str()) == Some(key.as_str()) {
+            return Some(path.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// Forget the picture the user chose for this source.
+///
+/// The file itself is deleted - the app's cache is its own, and a poster
+/// nobody asked for any more is just a stale copy of the user's picture.
+#[tauri::command]
+fn clear_custom_thumbnail(app: tauri::AppHandle, source_path: String) -> Result<(), String> {
+    let root = cache_root(&app)?;
+    let dir = root.join("thumbs").join("custom");
+    let key = cache::hash_hex(&[source_path.as_bytes()]);
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        if path.file_stem().and_then(|s| s.to_str()) == Some(key.as_str()) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
 }
 
 /// Polish render: background music with optional sidechain ducking and text overlay.
@@ -899,6 +990,11 @@ pub struct InstalledBuild {
     /// ISO-8601 timestamp of the build that sits in the install folder.
     pub built_at: String,
     /// The version string of that build.
+    ///
+    /// `default` matters: the Sarkari deploy marker did not carry `version`,
+    /// and a marker that fails to parse would make the Update button
+    /// silently never appear.
+    #[serde(default)]
     pub version: String,
     /// The id of the build in the marker (written by deploy.ps1).
     ///
@@ -1201,7 +1297,11 @@ pub fn run() {    tauri::Builder::default()
             restore_project,
             load_trash,
             purge_trash,
+            purge_expired_trash,
             extract_poster,
+            import_thumbnail,
+            custom_thumbnail,
+            clear_custom_thumbnail,
             start_export,
             cancel_export,
             plan_export,

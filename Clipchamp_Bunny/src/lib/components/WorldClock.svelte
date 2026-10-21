@@ -159,7 +159,7 @@
             onclick={() => apply(city)}
             disabled={busy !== null}
             class="ml-auto shrink-0 rounded border border-nc-line px-1.5 py-0.5 text-[10px] text-nc-mut
-                   transition-colors duration-150 hover:border-nc-gold/50 hover:text-nc-gold
+                   transition-colors duration-150 hover:border-nc-brand/50 hover:text-nc-brand
                    disabled:opacity-40"
             title="Set the machine's clock to {city.label}'s time"
           >

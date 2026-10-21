@@ -3,8 +3,8 @@ export type FocusArea = 'rail' | 'panel' | 'timeline' | 'stage' | 'header' | 'no
 
 /** Default geometry — double-click on a separator snaps back to these. */
 const MEDIA_W_DEFAULT = 248;
-/** 95 fixed chrome (border + 3px resize strip + tool row + minimap + ruler + T lane)
-    + 96 lanes (video 52 + audio 44) — i.e. today's look, plus the drag strip. */
+/** 65 fixed chrome (border + 3px resize strip + tool row + minimap + ruler)
+    + 126 lanes (video 68 + audio 58 at the default height). */
 const TIMELINE_H_DEFAULT = 191;
 
 class LayoutStore {
@@ -27,6 +27,8 @@ class LayoutStore {
   focus = $state<FocusArea>('none');
   /** `Ctrl + /` shortcut sheet. */
   helpOpen = $state(false);
+  /** The settings dialog (gear icon). */
+  settingsOpen = $state(false);
 
   setTranscriptWidth(px: number) {
     this.transcriptWidth = Math.max(240, Math.min(560, Math.round(px)));
@@ -38,8 +40,8 @@ class LayoutStore {
   }
 
   setTimelineHeight(px: number) {
-    // 91 = tool row 30 + minimap 7 + ruler 24 + T lane 30 — the lanes need
-    // room for video 52 + audio 44 below that, so never go under ~190.
+    // 65 = tool row 30 + minimap 7 + ruler 24 + borders/resize strip — the
+    // video/audio lanes need room below that, so never go under ~150.
     this.timelineHeight = Math.max(150, Math.min(560, Math.round(px)));
     this.persist();
   }

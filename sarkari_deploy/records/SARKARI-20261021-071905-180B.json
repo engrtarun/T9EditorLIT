@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-071905-180B",
+  "agent": "opencode",
+  "modelName": "opencode/beam-free",
+  "kabStartTime": "2026-10-21 07:19:05",
+  "kabStartTimeIso": "2026-10-21T01:49:05.1655548Z",
+  "finishTime": "2026-10-21 07:19:05",
+  "finishTimeIso": "2026-10-21T01:49:05.7248710Z",
+  "kyoReason": "Continuous codebase enhancement and stabilization",
+  "task": "Autonomous agent update & optimization",
+  "andazaEtaMinutes": 15,
+  "sarkariSanctionMinutes": 35,
+  "asliTimeMinutes": 0.0,
+  "outcome": "FAILED",
+  "error": "Cannot process command because of one or more missing mandatory parameters: AgentProfile.",
+  "buildId": null,
+  "installDetails": null
+}

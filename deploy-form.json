@@ -1,0 +1,15 @@
+﻿{
+  "model": "opencode/beam-free",
+  "zeroRamCertified": true,
+  "agent": "opencode",
+  "task": "Stream FFmpeg run() stdout and bound stderr to reduce memory",
+  "isBreakingChange": false,
+  "modulesAffected": "src-tauri/src/ffmpeg.rs; src-tauri/src/audio.rs",
+  "why": "Chatty FFmpeg probes can inflate heap on 8GB target machine; bounded stderr tail keeps RAM flat",
+  "priority": 50,
+  "testingDone": "cargo test --lib passed 66 tests; cargo check passed",
+  "etaMinutes": 20,
+  "scope": "app",
+  "rootCause": "ffmpeg run() used Command.output() buffering full stdout and stderr",
+  "noPythonCertified": true
+}

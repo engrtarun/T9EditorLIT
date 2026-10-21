@@ -13,6 +13,9 @@
    *   4. `requestAnimationFrame` loop only while the video plays; on pause /
    *      ended the loop stops (CPU drops to zero) and the last frame stays.
    *   5. `prefers-reduced-motion: reduce` disables the effect entirely.
+   *   6. Before the first video frame is decodable (a paused project, a cold
+   *      `preload`), the cached poster is sampled instead — the glow is never
+   *      an empty black box while the player is waiting.
    *
    * Zero-RAM design (repo directive): the only buffer is one 48x27 * 4 bytes
    * ≈ 5 KB canvas. No frame queue, no ImageData, no read-back, no images —
@@ -20,7 +23,8 @@
    * moving average), which is why colour transitions glide instead of
    * snapping between samples.
    */
-  let { video }: { video: HTMLVideoElement | null } = $props();
+  let { video, poster = null }: { video: HTMLVideoElement | null; poster?: string | null } =
+    $props();
 
   // 16:9 sample buffer. Tiny on purpose — dominant colours only (~5 KB RAM).
   const W = 48;
@@ -30,9 +34,13 @@
 
   let canvas: HTMLCanvasElement | null = $state(null);
 
-  // Soft atmospheric bloom: saturated, smooth gaussian blur, radial falloff feathering into darkness
+  // Soft atmospheric bloom. `screen` is the important bit: black pixels add
+  // nothing to the page, so only the video's actual colours glow — the canvas
+  // never paints a dark rectangle over the stage.
   const style =
-    'opacity:.8;filter:blur(64px) saturate(1.45) brightness(1.05);-webkit-mask-image:radial-gradient(ellipse at center,#000 45%,transparent 85%);mask-image:radial-gradient(ellipse at center,#000 45%,transparent 85%)';
+    'opacity:.85;mix-blend-mode:screen;filter:blur(56px) saturate(1.6) brightness(1.15);' +
+    '-webkit-mask-image:radial-gradient(ellipse at center,#000 58%,rgba(0,0,0,.55) 82%,transparent 100%);' +
+    'mask-image:radial-gradient(ellipse at center,#000 58%,rgba(0,0,0,.55) 82%,transparent 100%)';
 
   $effect(() => {
     const v = video;
@@ -53,6 +61,32 @@
     let last = -Infinity;
     let running = false;
     let primed = false; // first frame lands at full strength, no ramp
+    let videoPainted = false; // once true, the poster seed must never win
+    let disposed = false; // a late poster decode must not paint a new project
+
+    /**
+     * Show the cached still until the decoder gives us a real frame.
+     *
+     * Opening a project leaves the video paused at `readyState < 2` for a
+     * moment. Without this the glow would sit black exactly while the user is
+     * looking at the new screen — the one moment the effect is supposed to
+     * make the app feel warm and instant.
+     */
+    const seedPoster = () => {
+      if (!poster || videoPainted) return;
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => {
+        if (disposed || videoPainted) return;
+        try {
+          ctx.globalAlpha = 1;
+          ctx.drawImage(img, 0, 0, W, H);
+        } catch {
+          /* poster could not be decoded — the first video frame still will */
+        }
+      };
+      img.src = poster;
+    };
 
     const paint = () => {
       const vw = v.videoWidth;
@@ -89,6 +123,7 @@
       }
       try {
         ctx.drawImage(v, sx, sy, sw, sh, 0, 0, W, H);
+        videoPainted = true;
       } catch {
         /* frame not decodable this tick — harmless, next tick retries */
       }
@@ -129,10 +164,13 @@
     v.addEventListener('seeked', onFrame);
 
     // A clip edit re-points `src` on the same element — repaint once when
-    // the new source is already buffered.
+    // the new source is already buffered. Otherwise the cached poster holds
+    // the glow until the live frame decodes.
     if (v.readyState >= 2) onFrame();
+    seedPoster();
 
     return () => {
+      disposed = true;
       stop();
       v.removeEventListener('play', onPlay);
       v.removeEventListener('pause', onPark);
@@ -149,6 +187,6 @@
   width={W}
   height={H}
   aria-hidden="true"
-  class="pointer-events-none absolute inset-0 -z-10 h-full w-full"
+  class="pointer-events-none absolute inset-0 h-full w-full"
   {style}
 ></canvas>

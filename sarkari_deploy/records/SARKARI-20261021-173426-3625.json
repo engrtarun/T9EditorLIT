@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-173426-3625",
+  "agent": "mimo-v2.6-flash",
+  "modelName": "opencode/mimo-v2.6-flash-free",
+  "kabStartTime": "2026-10-21 17:34:26",
+  "kabStartTimeIso": "2026-10-21T12:04:26.3389044Z",
+  "finishTime": "2026-10-21 17:50:38",
+  "finishTimeIso": "2026-10-21T12:20:38.2592262Z",
+  "kyoReason": "13 documented keys were dead and the biggest RAM spike came from parallel FFmpeg decode on an 8GB i3",
+  "task": "Wire dead keyboard shortcuts, paint-first Home to editor load, zero-RAM splash, timeline canvas overlay, sequential FFmpeg extractions, RAM meter cadence",
+  "andazaEtaMinutes": 20,
+  "sarkariSanctionMinutes": 40,
+  "asliTimeMinutes": 16.2,
+  "outcome": "FAILED",
+  "error": "The property 'Count' cannot be found on this object. Verify that the property exists.",
+  "buildId": null,
+  "installDetails": null
+}

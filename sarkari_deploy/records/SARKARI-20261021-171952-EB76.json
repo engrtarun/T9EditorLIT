@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-171952-EB76",
+  "agent": "opencode",
+  "modelName": "opencode/deepseek-v4.1-flash-free",
+  "kabStartTime": "2026-10-21 17:19:52",
+  "kabStartTimeIso": "2026-10-21T11:49:52.3501017Z",
+  "finishTime": "2026-10-21 17:20:31",
+  "finishTimeIso": "2026-10-21T11:50:31.1331731Z",
+  "kyoReason": "text clips were half-finished and unusable on the timeline, so the app now ships no dead text controls and the timeline is documented end-to-end",
+  "task": "remove the timeline text lane and ship the timeline UI/UX notebook",
+  "andazaEtaMinutes": 15,
+  "sarkariSanctionMinutes": 35,
+  "asliTimeMinutes": 0.6,
+  "outcome": "FAILED",
+  "error": "Rust cargo check failed. Fix compilation errors before building.",
+  "buildId": null,
+  "installDetails": null
+}

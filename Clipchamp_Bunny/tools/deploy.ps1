@@ -93,6 +93,22 @@ param(
     [int]$Priority = 50,
     [switch]$Emergency,
     [switch]$SkipBuild,
+    # -Ci takes the executable from CI instead of compiling it here.
+    #
+    # The reason is not fashion. This machine is an i3 with 8 GB of RAM that
+    # is already ~96% used, and a Tauri release build on it dies in the
+    # linker (rustc exits 0xffffffff) or takes twelve minutes while holding
+    # the build lock that every other agent is waiting for. GitHub's Windows
+    # runner has 7 GB and its own CPU, so the compile happens there and this
+    # machine only verifies hashes and installs - which is the difference
+    # between a twelve-minute build and a one-minute install.
+    #
+    # The contract does not change: same ledger, same build lock, same canary,
+    # same marker, same doctor. Only the compiler moves.
+    [switch]$Ci,
+    [string]$CiRelease = 'ci-latest',
+    [string]$CiRepo = '',
+    [string]$CiBaseUrl = '',
     [switch]$SkipPin,
     [switch]$Launch,
     [switch]$Interactive,
@@ -104,7 +120,14 @@ param(
     [switch]$Doctor,
     [switch]$Status,
     [switch]$Json,
-    [switch]$Force
+    [switch]$Force,
+    # Declared here even though the Sarkari engine owns them. PowerShell
+    # binds -File arguments against THIS param block before line 143 runs, so
+    # without these two the documented `pwsh -File tools\deploy.ps1 -Check`
+    # died with "A parameter cannot be found" and never reached the engine.
+    # -Legacy also makes the opt-out below reachable instead of dead code.
+    [switch]$Check,
+    [switch]$Legacy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -123,6 +146,12 @@ $LedgerScript = Join-Path $PSScriptRoot 'deploy-ledger.mjs'
 $BuildScript = Join-Path $PSScriptRoot 'build.ps1'
 $PinScript = Join-Path $PSScriptRoot 'pin-taskbar.ps1'
 $GoRoot = Join-Path $RepoRoot 'go'
+
+# The daemon's version id is a hash of the Go sources, and it has to be
+# computed identically here and in CI - otherwise a daemon built by CI looks
+# like a different daemon to the check below, and the deploy refuses to call
+# itself shipped. One implementation, two callers: this file and the workflow.
+. (Join-Path $PSScriptRoot 'go-build-id.ps1')
 $DefaultBuildDir = Join-Path $AppDir 'src-tauri\target'
 
 if ($env:LOCALAPPDATA) {
@@ -138,10 +167,24 @@ $LedgerDb = if ($env:T9_LEDGER_DB) { [IO.Path]::GetFullPath($env:T9_LEDGER_DB) }
 $env:T9_LEDGER_DB = $LedgerDb
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
+# -------------------------------------------------------- sarkari bridge
+$SarkariDeploy = Join-Path $RepoRoot 'sarkari_deploy\sarkariDeploy.ps1'
+if ((-not $PSBoundParameters.ContainsKey('Legacy')) -and (Test-Path $SarkariDeploy)) {
+    & pwsh -NoProfile -ExecutionPolicy Bypass -File $SarkariDeploy @PSBoundParameters
+    exit $LASTEXITCODE
+}
+
 $script:WorkId = $null
 $script:WorkToken = $null
 $script:RunId = $null
 $script:Finished = $false
+# The daemon version this work order INTENDED to install. It is set when the
+# daemon is chosen (a CI artifact, or a local build) and checked at the finish
+# gate, so "shipped" can never be reported for a daemon that was not
+# installed. Before this existed, two runs in a row reported SHIPPED with
+# t9cloud.exe untouched, because nothing compared the two.
+$script:IntendedDaemonVersion = $null
+$script:CiArtifact = $null
 $script:ExitCode = 0
 $script:HeartbeatProcess = $null
 $script:DeployLock = $null
@@ -219,6 +262,12 @@ function Get-Sha256([string]$Path) {
     if (-not $Path -or -not (Test-Path $Path)) { return $null }
     return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
+
+# The CI artifact downloader lives in tools/ci-artifact.ps1 and is shared with
+# sarkari_deploy\sarkariKaam.ps1, which is the path the deploy actually runs. Two
+# copies of the download-and-verify rule would drift, and the drift would look
+# like a corrupt download.
+. (Join-Path $PSScriptRoot 'ci-artifact.ps1')
 
 function Invoke-Ledger {
     param([Parameter(Mandatory)][string[]]$Arguments)
@@ -403,21 +452,11 @@ function Wait-FileLock([string]$Path, [int]$TimeoutSeconds = 1200) {
 }
 
 function Get-GoBuildId {
+    # The algorithm itself lives in tools/go-build-id.ps1 so that CI computes
+    # the very same id. A second copy of it here would be one more thing to
+    # keep in step, and "kept in step" is exactly what it would not be.
     if (-not (Test-Path $GoRoot)) { return $null }
-    $files = @(
-        Get-ChildItem $GoRoot -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -eq '.go' -or $_.Name -eq 'go.mod' -or $_.Name -eq 'go.sum' } |
-            Sort-Object FullName
-    )
-    if ($files.Count -eq 0) { return $null }
-    $builder = [System.Text.StringBuilder]::new()
-    foreach ($file in $files) {
-        $relative = $file.FullName.Substring($GoRoot.Length).Replace('\', '/')
-        [void]$builder.Append($relative).Append(':').Append((Get-Sha256 $file.FullName)).Append("`n")
-    }
-    $bytes = [Text.Encoding]::UTF8.GetBytes($builder.ToString())
-    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
-    return "go-$($hash.Substring(0, 16))"
+    return Get-GoSourceBuildId -Root $GoRoot
 }
 
 function Resolve-BuildManifest([string]$Explicit, [string]$BuildId) {
@@ -609,7 +648,19 @@ function Install-App {
         throw "installed app hash mismatch: $liveSha != $Sha256"
     }
     if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $StageExe) { Remove-Item $StageExe -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $StageExe) {
+        # A staged binary that survives a live install is a **downgrade trap**:
+        # the app decides to show its Update button purely from the existence
+        # of this file (see `installed_build` in src-tauri/src/lib.rs), and the
+        # click would then install an OLDER build than the live one. Removing
+        # it silently let that happen - the file stayed behind, the button
+        # appeared, and the "update" rolled the app backwards. Fail loudly
+        # instead: a leftover file is a problem worth stopping for.
+        Remove-Item $StageExe -Force -ErrorAction SilentlyContinue
+        if (Test-Path $StageExe) {
+            throw "a stale staged build is still at $StageExe - remove it, or the Update button would install an older binary"
+        }
+    }
     return [pscustomobject]@{
         Mode      = 'installed'
         LiveSha   = $liveSha
@@ -813,8 +864,21 @@ function Show-Doctor {
     }
 
     if ($stageSha) {
-        Write-Warn "staged app update present: $StageExe"
-        Write-Dim "sha256: $stageSha (the app should show Update within 5 s)"
+        # The app shows its Update button purely because this file exists, so a
+        # staged binary that is OLDER than the live one is a trap: the click
+        # installs an older build. The live install path removes the file, but
+        # a deploy that staged earlier and was never applied can leave one
+        # behind - the doctor is where that gets caught.
+        $stagedAge = (Get-Item $StageExe).LastWriteTime
+        $liveAge = if (Test-Path $InstallExe) { (Get-Item $InstallExe).LastWriteTime } else { [datetime]::MinValue }
+        if ($liveAge -gt $stagedAge) {
+            Write-Bad "staged app update is OLDER than the live app ($stagedAge < $liveAge) - the Update button would install an older binary"
+            Write-Dim 'remove it with: Remove-Item -Force "' + $StageExe + '"'
+            $ok = $false
+        } else {
+            Write-Warn "staged app update present: $StageExe"
+            Write-Dim "sha256: $stageSha (the app should show Update within 5 s)"
+        }
     } else {
         Write-Ok 'no staged app update'
     }
@@ -904,6 +968,8 @@ function Print-Form {
     Write-Host '  -EtaMinutes  honest estimate for build+install+verify' -ForegroundColor Gray
     Write-Host '  -Scope       app | go | both | docs (default app)' -ForegroundColor Gray
     Write-Host '  -Priority    0..100 (default 50; >60 needs -Emergency)' -ForegroundColor Gray
+    Write-Host '  -Ci          take the executable from CI instead of compiling here' -ForegroundColor Gray
+    Write-Host '  -CiRelease   the CI release to install (default ci-latest)' -ForegroundColor Gray
     Write-Host ''
     Write-Host 'Example:' -ForegroundColor Yellow
     Write-Host '  pwsh -File tools\deploy.ps1 `' -ForegroundColor DarkGray
@@ -990,6 +1056,21 @@ $Model = $Model.Trim()
 $Task = ($Task -replace '\s+', ' ').Trim()
 $Why = ($Why -replace '\s+', ' ').Trim()
 $Scope = if ($Scope) { $Scope.ToLowerInvariant() } else { 'app' }
+
+# The ledger's schema caps `task` at 200 characters. An agent writing a
+# natural-language task crosses that limit without meaning to, and the
+# consequence is silent: deploy-ledger rejects the submit, no work order is
+# issued, and the build then runs with no lease at all - which breaks the one
+# rule this pipeline exists to keep, that the ledger is the truth. It happened
+# on a real deploy that still reported SHIPPED afterwards. Clamp it here, while
+# the value is still just text, so a work order always gets created. The full
+# sentence cannot survive the cap, so say that out loud rather than quietly
+# losing the tail of it.
+if ($Task.Length -gt 200) {
+    $Task = $Task.Substring(0, 197) + '...'
+    Write-Warn 'Task was longer than the ledger allows (200 chars) and has been truncated; -Why carries the rest'
+}
+if ($Why.Length -gt 2000) { $Why = $Why.Substring(0, 1997) + '...' }
 
 $missing = @()
 if ($Agent.Length -lt 2) { $missing += 'Agent (2+ characters)' }
@@ -1144,7 +1225,35 @@ try {
     }
 
     # --------------------------------------------------------------- build
-    if ($SkipBuild) {
+    if ($Ci) {
+        # The compile happened on GitHub's runner; this machine only fetches
+        # the result and checks it. Everything after this point is the same
+        # pipeline a local build goes through - same ledger, same install, same
+        # canary - so switching compilers changes the cost, not the contract.
+        Write-Step 'Taking the executable from CI (-Ci)'
+        $ciDir = Join-Path $BuildDir 'ci'
+        $script:CiArtifact = Get-SarkariCiArtifact -Repo $CiRepo -Release $CiRelease -DestinationRoot $ciDir -WorkspaceRoot $RepoRoot -BaseUrl $CiBaseUrl
+        $buildId = $script:CiArtifact.BuildId
+        $builtExe = $script:CiArtifact.ExePath
+        $builtSha = $script:CiArtifact.ExeSha
+        $builtAt = ConvertTo-IsoText (Get-Prop $script:CiArtifact.Manifest 'builtAt')
+        $manifestPath = $script:CiArtifact.ManifestPath
+        $manifest = $script:CiArtifact.Manifest
+        if ($script:CiArtifact.RunUrl) { Write-Ok "CI run: $($script:CiArtifact.RunUrl)" }
+
+        # Say it out loud, because this is the one way a -Ci deploy can be
+        # mistaken for something it is not: the installed binary is built from
+        # a COMMIT. If the working tree has moved on, the binary does not
+        # contain the local changes, and the record must not pretend it does.
+        $ciCommit = $script:CiArtifact.GitCommit
+        if ($ciCommit -and $gitCommit -and $ciCommit -ne $gitCommit) {
+            Write-Warn "the CI build is from commit $ciCommit but HEAD is $gitCommit - the binary does not contain your uncommitted work"
+        }
+        if ($gitDirty) {
+            Write-Warn "the working tree is dirty - the CI binary was built from a commit, so local edits are NOT in it"
+        }
+        Write-Ok "using CI build $buildId"
+    } elseif ($SkipBuild) {
         Write-Step 'Reusing the newest verified build (-SkipBuild)'
         $manifestPath = Resolve-BuildManifest -Explicit $BuildManifest -BuildId ''
         if (-not $manifestPath) {
@@ -1219,7 +1328,23 @@ try {
     $daemonRequired = $Scope -in @('go', 'both')
     $goCommand = Get-Command go -ErrorAction SilentlyContinue
 
-    if ($goBuildId -and $goCommand) {
+    # A CI build brings its own daemon, stamped with the same source hash the
+    # local path would have produced. Using it is the whole point of -Ci: the
+    # compile happened on GitHub's runner, not on the machine that keeps
+    # running out of memory. The version check still runs, so a CI daemon
+    # built from different Go sources can never be installed by accident.
+    if ($script:CiArtifact -and $script:CiArtifact.DaemonPath) {
+        $daemonSource = $script:CiArtifact.DaemonPath
+        $daemonSha = $script:CiArtifact.DaemonSha
+        $daemonVersion = $script:CiArtifact.DaemonVersion
+        if (-not $daemonVersion) { $daemonVersion = Get-DaemonVersion $daemonSource }
+        $script:IntendedDaemonVersion = $daemonVersion
+        Write-Ok "daemon taken from CI ($daemonVersion)"
+    } elseif ($goBuildId -and $goCommand) {
+        # The local path intends to install exactly the daemon the Go sources
+        # hash to. Record the INTENTION, not whatever happens to be on disk:
+        # if the Go half could not be built, the finish gate has to notice.
+        $script:IntendedDaemonVersion = $goBuildId
         $repoDaemonVersion = Get-DaemonVersion $repoDaemon
         $needsGoBuild = -not (Test-Path $repoDaemon) -or $repoDaemonVersion -ne $goBuildId
         if ($needsGoBuild) {
@@ -1254,6 +1379,7 @@ try {
             Write-Ok "daemon is already built ($daemonVersion)"
         }
     } elseif (Test-Path (Join-Path $InstallDir $DaemonName)) {
+        $script:IntendedDaemonVersion = $goBuildId
         $daemonSource = Join-Path $InstallDir $DaemonName
         $daemonSha = Get-Sha256 $daemonSource
         $daemonVersion = Get-DaemonVersion $daemonSource
@@ -1269,6 +1395,35 @@ try {
         -AppRunning $appState.Running -Required $daemonRequired
     if ($daemonState.Pending) {
         Write-Warn "daemon update is staged; the app's Update click will swap it"
+    }
+
+    # A live install leaves an earlier staged binary behind, and the app keys
+    # the Update button off that FILE's existence (updateReady), not off the
+    # marker. So a stale t9-editor-lit.new.exe from a previous run makes the
+    # button offer an older build: clicking it would roll the user backwards.
+    # This happened - run7 installed live while run6's staged copy sat there.
+    # Clear the staged copies once the live install has been hash-verified.
+    if (-not $appState.Running) {
+        foreach ($stale in @($StageExe, $StageDaemon)) {
+            if ($stale -and (Test-Path -LiteralPath $stale)) {
+                try {
+                    Remove-Item -LiteralPath $stale -Force
+                    Write-Ok "cleared the stale staged binary $(Split-Path -Leaf $stale) - a live install superseded it"
+                } catch {
+                    Write-Warn "could not remove the stale staged binary $stale; the Update button may offer an older build"
+                }
+            }
+        }
+    }
+
+    # Scope go|both is a promise about the daemon. If the daemon that is going
+    # out is not the one the Go sources hash to, this deploy did not do what
+    # the work order says it did, and reporting SHIPPED would make the record
+    # false. Fail here instead: refusing to record a lie is not the same as
+    # stalling a build, and other agents keep their own queue position.
+    if ($daemonRequired -and ((-not $daemonVersion) -or ($goBuildId -and $daemonVersion -ne $goBuildId))) {
+        $have = if ($daemonVersion) { $daemonVersion } else { 'nothing at all' }
+        throw "scope '$Scope' promises the t9cloud daemon, but the daemon in use is '$have' while the Go sources hash to '$goBuildId' - the Go changes were NOT deployed"
     }
 
     # ----------------------------------------------------------- install app
@@ -1440,6 +1595,43 @@ try {
     }
 
     # ------------------------------------------------------------- finish
+    # The honesty gate lives HERE, and deliberately not in the daemon block:
+    # two runs in a row (run7 scope=both, run9 scope=go) never reached that
+    # block at all, so a check placed there could not fire - and both orders
+    # reported SHIPPED while t9cloud.exe stayed exactly as it was. Every
+    # successful deploy passes this point, so this is the one place where a
+    # work order that promised the daemon can be stopped from lying.
+    #
+    # It refuses rather than warns. "shipped" is the only word the ledger
+    # offers for success, and a shipped order that did not ship the thing its
+    # task names is worse than a failed one: the next reader trusts it.
+    if ($Scope -in @('go', 'both')) {
+        # Compare the INSTALLED daemon against the daemon this work order
+        # intended to install - not against the local source hash, which is a
+        # different question when the build came from CI.
+        $intended = $script:IntendedDaemonVersion
+        $liveDaemon = Join-Path $InstallDir $DaemonName
+        $liveVer = $null
+        if (Test-Path -LiteralPath $liveDaemon) {
+            try { $liveVer = Get-DaemonVersion $liveDaemon } catch { $liveVer = $null }
+        }
+        if (-not $intended) {
+            throw "scope '$Scope' promises the t9cloud daemon, but no daemon was ever chosen for this work order, so there is nothing to claim as shipped. Refusing to record this as shipped."
+        }
+        if (-not $liveVer -or $liveVer -ne $intended) {
+            throw "scope '$Scope' promises the t9cloud daemon, but the installed daemon is '$liveVer' while this work order intended '$intended'. The Go changes were NOT deployed, so this is not shipped."
+        }
+        # The intended version and the local sources can still differ: that
+        # is what uncommitted Go edits look like. The daemon that shipped is
+        # the right one; the local edits are simply not inside it, and the
+        # operator deserves to hear that rather than discover it later.
+        $localId = $null
+        try { $localId = Get-GoBuildId } catch { $localId = $null }
+        if ($localId -and $localId -ne $intended) {
+            Write-Warn "the installed daemon is '$intended' but the local Go sources hash to '$localId' - uncommitted Go changes are NOT in the installed daemon"
+        }
+    }
+
     Stop-Heartbeat
     $finishArgs = @(
         'finish', '--json',

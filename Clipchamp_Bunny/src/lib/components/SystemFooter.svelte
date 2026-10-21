@@ -103,7 +103,7 @@
   /** The bar colour follows the usual traffic-light rule. */
   function tone(pct: number): string {
     if (pct > 90) return 'bg-nc-red';
-    if (pct > 75) return 'bg-nc-gold';
+    if (pct > 75) return 'bg-nc-brand';
     return 'bg-nc-green';
   }
 
@@ -114,7 +114,7 @@
    */
   function batteryTone(pct: number): string {
     if (pct <= 15) return 'bg-nc-red';
-    if (pct <= 40) return 'bg-nc-gold';
+    if (pct <= 40) return 'bg-nc-brand';
     return 'bg-nc-green';
   }
 </script>
@@ -306,7 +306,7 @@
           height="10"
           viewBox="0 0 24 24"
           fill="currentColor"
-          class="text-nc-gold"
+          class="text-nc-brand"
           aria-label="Charging"
         >
           <path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12z" />

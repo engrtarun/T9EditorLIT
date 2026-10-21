@@ -106,6 +106,22 @@ New-Item -ItemType Directory -Force -Path $Target | Out-Null
 
 $lock = $null
 if (-not $SkipLock) {
+    # The lock file itself cannot be read while another build holds it
+    # (FileShare.None), so the holder announces itself through a sidecar.
+    # Without this, a waiting agent only sees "still waiting (840 s)" and has
+    # no idea whether the machine is building or wedged - which is exactly
+    # how a stuck build looks like an infinite wait.
+    $LockMeta = "$LockFile.holder"
+    function Read-LockHolder([string]$Path) {
+        try {
+            if (-not (Test-Path -LiteralPath $Path)) { return $null }
+            $txt = [System.IO.File]::ReadAllText($Path)
+            if ([string]::IsNullOrWhiteSpace($txt)) { return $null }
+            return ($txt | ConvertFrom-Json)
+        } catch {
+            return $null
+        }
+    }
     Write-Host '==> Waiting for the build lock' -ForegroundColor Cyan
     $waited = 0
     while ($true) {
@@ -124,11 +140,34 @@ if (-not $SkipLock) {
                 throw 'gave up waiting for the build lock after 60 minutes'
             }
             if ($waited % 30 -eq 0) {
-                Write-Host "    ...still waiting ($waited s)" -ForegroundColor DarkGray
+                $holder = Read-LockHolder $LockMeta
+                if ($holder -and $holder.agent) {
+                    $heldFor = 0
+                    if ($holder.startedAt) {
+                        try { $heldFor = [int]((Get-Date).ToUniversalTime() - [datetime]$holder.startedAt).TotalSeconds } catch { $heldFor = 0 }
+                    }
+                    Write-Host "    ...still waiting ($waited s) - held by $($holder.agent)" -ForegroundColor DarkGray
+                    if ($holder.buildId) { Write-Host "      holder build: $($holder.buildId) (running ${heldFor}s)" -ForegroundColor DarkGray }
+                } else {
+                    Write-Host "    ...still waiting ($waited s)" -ForegroundColor DarkGray
+                }
             }
             Start-Sleep -Seconds 2
             $waited += 2
         }
+    }
+    # Announce ourselves for the next agent that has to wait.
+    try {
+        $holderInfo = [pscustomobject]@{
+            agent     = $(if ($Agent) { $Agent } else { 'unknown' })
+            model     = $Model
+            buildId   = $BuildId
+            pid       = $PID
+            startedAt = (Get-Date).ToUniversalTime().ToString('o')
+        } | ConvertTo-Json -Compress
+        [System.IO.File]::WriteAllText($LockMeta, $holderInfo)
+    } catch {
+        # A missing sidecar only costs the next waiter its diagnosis.
     }
     if ($waited -gt 0) {
         Write-Host "    [ok] got the lock after $waited s" -ForegroundColor Green
@@ -159,8 +198,20 @@ try {
     # fingerprint plus a deleted `out/` means no rerun - the link then dies with
     # `LNK1181: cannot open input file '...\out\resource.lib'`. Removing the
     # folder (including `output`/`root-output`) makes cargo rerun the script.
+    #
+    # The **fingerprint has to go as well**. Deleting only the output folder
+    # leaves cargo with a fingerprint that says "the build script already ran"
+    # and an OUT_DIR that no longer exists. Cargo then skips the script, the
+    # library compile has no OUT_DIR, and the build dies with
+    # `error: OUT_DIR env var is not set, do you have a build script?` - the
+    # exact failure that killed several deploys in a row. Removing both makes
+    # cargo re-run the build script from scratch: a real OUT_DIR, a refreshed
+    # asset list, no missing-file link.
     $buildDir = Join-Path $Target 'release\build'
     Get-ChildItem $buildDir -Directory -Filter 't9-editor-lit-*' -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    $fingerprintDir = Join-Path $Target 'release\.fingerprint'
+    Get-ChildItem $fingerprintDir -Directory -Filter 't9-editor-lit-*' -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host '    [ok] cleared the cached asset list' -ForegroundColor DarkGray
 
@@ -271,5 +322,13 @@ try {
     if ($lock) {
         $lock.Close()
         $lock = $null
+    }
+    # Drop the announcement we wrote above. It is only defined when the lock
+    # was actually taken, so the guard must match - StrictMode rejects a read
+    # of a variable that was never assigned.
+    if ((-not $SkipLock) -and $LockMeta) {
+        try {
+            if (Test-Path -LiteralPath $LockMeta) { Remove-Item -LiteralPath $LockMeta -Force -ErrorAction SilentlyContinue }
+        } catch { }
     }
 }

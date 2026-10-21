@@ -80,7 +80,7 @@ CUT mode me 90% kaam hota hai.
 
 - Left box → video preview. Transcript line click = preview usi second pe jump.
 - Right box → transcript, timestamps, ✓ / ✕ per line, virtual scrollbar.
-- Bottom → audio waves + FPS thumbnail timeline + text lane.
+- Bottom → audio waves + FPS thumbnail timeline (no text lane).
 
 ---
 
@@ -326,7 +326,6 @@ The bottom block is the **final video**, not the source:
 | ---- | ------ | ---------- |
 | **Source minimap** | 7px | the whole original, red where it was cut |
 | **Ruler** | 24px | edit time (0:00 = start of the final video) |
-| **T** | 30px | text overlays |
 | **Video** | 52px | **draggable clips**, real filmstrip inside, gold border |
 | **Audio** | 44px | the waveform of each kept segment, traffic-light coloured |
 
@@ -455,4 +454,4 @@ which is why the launcher prefers the release build.
 - [x] App renamed to **T9 Editor LIT**; `Launch-T9EditorLIT.bat` / `.ps1`
 - [ ] Real Whisper/Gemini transcript (t9cloud `/v1/transcribe`) — scaled mock abhi
 - [ ] Telegram vault file download into the media library
-- [ ] Text / zoom overlays — deferred, not part of the two jobs
+- [x] Text / zoom overlays - removed for now; the timeline has no text lane

@@ -1,0 +1,48 @@
+{
+  "WorkId": "TELEMETRY-20261021-182222",
+  "Timestamp": "2026-10-21 18:22:22",
+  "TimestampIso": "2026-10-21T12:52:22.9865535Z",
+  "BatteryCharge": 94,
+  "BatteryStatus": "Connected to AC (Charging / Full)",
+  "FreeRamMb": 856.0,
+  "TotalRamMb": 7846.0,
+  "RamUsedPercent": 89.1,
+  "Top6Processes": [
+    {
+      "Rank": 1,
+      "Process": "opencode-cli",
+      "Id": 10964,
+      "RamMb": 572.0
+    },
+    {
+      "Rank": 2,
+      "Process": "OpenCode",
+      "Id": 18012,
+      "RamMb": 467.8
+    },
+    {
+      "Rank": 3,
+      "Process": "rustc",
+      "Id": 6388,
+      "RamMb": 419.3
+    },
+    {
+      "Rank": 4,
+      "Process": "MsMpEng",
+      "Id": 4004,
+      "RamMb": 249.2
+    },
+    {
+      "Rank": 5,
+      "Process": "OpenCode",
+      "Id": 18228,
+      "RamMb": 180.7
+    },
+    {
+      "Rank": 6,
+      "Process": "OpenCode",
+      "Id": 18380,
+      "RamMb": 145.2
+    }
+  ]
+}

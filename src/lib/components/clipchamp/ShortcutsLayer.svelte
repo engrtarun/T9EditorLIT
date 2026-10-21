@@ -19,9 +19,16 @@
   }
 
   // `Alt + H` — Clipchamp's "Go to help button". Here it opens the cheat
-  // sheet, which is the only help surface this app has.
+  // sheet, which is the only help surface this app has. `Ctrl + /` is the
+  // same action on its own binding — it was listed in BINDINGS (and therefore
+  // in the sheet's own header) without ever being registered, so the flagship
+  // key did nothing. Registered here, next to `help`, on both screens.
   $effect(() => {
-    return shortcuts.bind("help", () => shortcuts.toggleSheet(), "always");
+    const un = [
+      shortcuts.bind("help", () => shortcuts.toggleSheet(), "always"),
+      shortcuts.bind("shortcuts", () => shortcuts.toggleSheet(), "always"),
+    ];
+    return () => un.forEach((fn) => fn());
   });
 
   /**

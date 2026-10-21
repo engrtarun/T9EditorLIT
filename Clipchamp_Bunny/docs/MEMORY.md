@@ -446,6 +446,22 @@ to 90 s wait karta hai, phir **bina job kill kiye** fail karta hai.
 ho jata hai.** Usse batana: "desktop pe dekhne ke liye `tools\deploy.ps1`
 chalao" — bas. Status chat me nahi, `deploy.ps1 -Status` me dekho.
 
+**Sarkari engine** (`sarkari_deploy/`) wahi darwaza hai, tez version:
+
+- `-Check` → 10-second type check (TS + Svelte + Rust), koi build nahi
+- 4-minute live pulse, canary smoke test, `.prev.exe` se auto-rollback
+- **Queue wahi SQLite ledger hai** (`sarkariLedger.ps1`): `request` → `claim`
+  → `heartbeat` → `finish`. Sarkari ka apna JSON record sirf report hai,
+  queue nahi. Isiliye `deploy.ps1 -Status` dono engines ko dikhata hai
+- **Deploy lock** (`%LOCALAPPDATA%\T9EditorLIT\deploy\deploy.lock`) dono ke
+  beech hai — do agents ek saath build/install kabhi nahi karte
+- **Har work order ka apna target folder** (`.t9\targets\<workId>`) — do
+  builds ek hi `target/` me likhte to cargo lock pe atak-te aur 8 GB machine
+  pe linker OOM hota
+- Doosre agent ka order kabhi expire mat karo: `tools\deploy-ledger-reclaim.mjs`
+  25-minute floor rakhta hai (queued TTL 15 m + 10 m margin). Galat hua to
+  `tools\deploy-ledger-restore.mjs restore --id WO-...`
+
 **t9cloud** (cloud AI ke liye):
 ```powershell
 cd C:\Users\pocot\Music\T9EditorLIT
@@ -626,8 +642,11 @@ git push   # ← NEVER. Sirf user karta hai.
 - Export rail me nahi, preview bar me
 - Right panel 340px transcript (Clipchamp ka 48px CC rail)
 - Left panel "My media" 248px
-- **T9 LIT blue** accent `#4D8DFF` (Clipchamp purple / purani Nanami gold ki jagah) — cut/keep ke liye. Tokens ke naam `nc-*` hain, values branding board se (`T9 Editor LIT Branding Board.png`)
+- **T9 LIT blue** accent `#4D8DFF` (Clipchamp purple / purani Nanami gold ki jagah) — cut/keep ke liye. Token ka naam `nc-brand` hai (`nc-gold` bas alias), values branding board se (`T9 Editor LIT Branding Board.png`)
 - App icons branding board se generate hue (`npx tauri icon tools/branding/app-icon.png`), src-tauri/icons/ me
+- **Brand mark traced hai, hand-drawn nahi** — `tools/branding/trace-mark.mjs` board ke original pixels se `src/lib/components/dashboard/BrandMark.svelte` banata hai. Board ke apne rule: "Use original, high-quality assets". Script apna hi quality gate chalaata hai (trace vs source ka interior pixel match 100% hona zaroori) — agar trace bigad to script fail hota hai
+- Wordmark font `Agency FB` (`--font-brand`) — board ke wide/squarish techno face ka closest Windows face, koi font file ship nahi karni parti
+- App ka version number `tauri.conf.json` se aata hai (`getVersion()`), hardcode nahi — warna UI jhooth bolta hai
 - `X` = cut (Clipchamp me `X` = move item) → hamare `Shift+X`+arrow = move
 - `↑/↓` = line nav (Clipchamp me timeline scroll)
 - 3-second silence rule Clipchamp ka hi hai

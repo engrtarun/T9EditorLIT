@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "challanId": "CHALLAN-20261021-073050-5778",
+  "workId": "REJECT-20261021-073050",
+  "agent": "Antigravity-Agent",
+  "issuedAt": "2026-10-21 07:30:50",
+  "issuedAtIso": "2026-10-21T02:00:50.3464609Z",
+  "violation": "FALSE_SCOPE_MISMATCH",
+  "points": 40,
+  "status": "ACTIVE_PENALTY",
+  "description": "Task description is too vague (min 8 chars required).; Kyo/Reason is too casual (min 15 chars required). Explain impact!",
+  "courtVerdict": "Pending Review / Awaiting Vakil Safai"
+}

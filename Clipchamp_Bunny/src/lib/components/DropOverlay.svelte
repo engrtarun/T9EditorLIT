@@ -121,7 +121,7 @@
   >
     <div
       class="nc-tie-edge flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed px-12 py-10 text-center transition-colors
-             {over ? 'border-nc-gold bg-nc-gold/10' : 'border-nc-line-2 bg-nc-panel'}"
+             {over ? 'border-nc-brand bg-nc-brand/10' : 'border-nc-line-2 bg-nc-panel'}"
     >
       <svg
         width="44"
@@ -130,7 +130,7 @@
         fill="none"
         stroke="currentColor"
         stroke-width="1.3"
-        class="text-nc-gold"
+        class="text-nc-brand"
       >
         <path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 20h16" />
       </svg>

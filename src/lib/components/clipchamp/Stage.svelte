@@ -45,6 +45,10 @@
   /** Live position, shared by the in-canvas bar and the overlay. */
   let currentSecs = $state(0);
 
+  /** Targets for the two "go to" keys that belong to this screen. */
+  let sizeBtn: HTMLButtonElement | null = $state(null);
+  let stageEl: HTMLElement | null = $state(null);
+
   const captionText = $derived.by(() => {
     if (!captionsOn) return null;
     const line = transcript.lines.find(
@@ -123,6 +127,9 @@
       shortcuts.bind("captions", () => (captionsOn = !captionsOn)),
       shortcuts.bind("fullscreen", () => (fullscreen = !fullscreen)),
       shortcuts.bind("export", () => handleExport()),
+      // "Go to" keys: focus moves, like Clipchamp's own Alt+1…5 family.
+      shortcuts.bind("aspectRatio", () => sizeBtn?.focus()),
+      shortcuts.bind("navStage", () => stageEl?.focus()),
     ];
     return () => un.forEach((fn) => fn());
   });
@@ -153,7 +160,7 @@
   ] as const;
 </script>
 
-<section class="flex min-h-0 flex-1 flex-col" aria-label="Stage">
+<section bind:this={stageEl} class="flex min-h-0 flex-1 flex-col" aria-label="Stage" tabindex="-1">
   <!-- Toolbar row -->
   <div class="flex h-12 shrink-0 items-center gap-2 px-3">
     <button
@@ -210,6 +217,7 @@
     >
       <button
         type="button"
+        bind:this={sizeBtn}
         class="flex items-center gap-1.5 rounded px-2.5 py-1 text-[12.5px] font-semibold
           text-cc-text hover:bg-cc-tint"
         title="Change aspect ratio Alt + R"
@@ -343,7 +351,18 @@
         ? 'fixed inset-0 z-[98] pb-16'
         : 'aspect-video max-h-full w-full max-w-[900px] rounded-sm'}"
     >
-      {#if !project.hasMedia}
+      {#if project.loading}
+        <!-- Opened from Home: the shell paints immediately and says what the
+             background probe is doing, rather than freezing on Home until
+             ffprobe answers. -->
+        <div class="flex flex-col items-center gap-2 p-6 text-center">
+          <h2 class="text-[15px] font-semibold text-white/90">Reading video info…</h2>
+          <p class="max-w-sm text-[12.5px] leading-relaxed text-white/55">
+            ffprobe is walking the file in the background — the editor is already usable, and
+            nothing is buffered into memory.
+          </p>
+        </div>
+      {:else if !project.hasMedia}
         <div class="flex flex-col items-center gap-2 p-6 text-center">
           <h2 class="text-[15px] font-semibold text-white/90">Load a source video to begin</h2>
           <p class="max-w-sm text-[12.5px] leading-relaxed text-white/55">

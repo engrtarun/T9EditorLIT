@@ -60,11 +60,15 @@
   {:else if name === 'eyeOff'}
     <path d="M3 3l18 18" /><path d="M10.6 6.2A11 11 0 0 1 12 6c6.5 0 10 6 10 6a17 17 0 0 1-3 3.6" />
     <path d="M6.6 6.6C3.7 8.4 2 12 2 12s3.5 6 10 6a11 11 0 0 0 5.4-1.4" />
-  {:else if name === 'text'}
-    <path d="M5 5h14M12 5v14M8 19h8" />
   {:else if name === 'film'}
     <rect x="3" y="4" width="18" height="16" rx="2" /><path
       d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"
     />
+  {:else if name === 'image'}
+    <rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9.5" r="1.5" /><path
+      d="M21 16l-5-5-9 9"
+    />
+  {:else if name === 'close'}
+    <path d="M6 6l12 12M18 6L6 18" />
   {/if}
 </svg>

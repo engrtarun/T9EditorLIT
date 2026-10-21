@@ -60,11 +60,15 @@
     menu.show(
       [
         { id: 'hi', label: 'Hinglish (default)' },
-        { id: 'en', label: 'English' }
+        { id: 'en', label: 'English' },
+        { id: 'settings', label: 'Settings…', icon: 'key' }
       ],
       Math.round(r.right - 168),
       Math.round(r.bottom + 6),
-      (id) => greeting.setLang(id === 'en' ? 'en' : 'hi')
+      (id) => {
+        if (id === 'settings') layout.settingsOpen = true;
+        else greeting.setLang(id === 'en' ? 'en' : 'hi');
+      }
     );
   }
 </script>
@@ -151,8 +155,10 @@
 
   <!-- settings -->
   <button
+    onclick={() => (layout.settingsOpen = true)}
     class="grid h-8 w-8 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
     title="Settings"
+    aria-label="Settings"
   >
     <svg
       width="16"

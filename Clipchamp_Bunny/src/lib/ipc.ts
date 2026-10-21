@@ -79,6 +79,56 @@ export async function pickVideos(): Promise<string[]> {
   return typeof picked === 'string' ? [picked] : [];
 }
 
+/**
+ * Open the native file picker for a **picture** — the poster a user wants to
+ * put on a library entry.
+ *
+ * The browser has no dialog plugin, so browser mode returns `null` and the
+ * caller keeps the frame the app picked itself.
+ */
+export async function pickImage(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const picked = await open({
+    multiple: false,
+    directory: false,
+    filters: [
+      { name: 'Image', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'] },
+      { name: 'All files', extensions: ['*'] }
+    ]
+  });
+  return typeof picked === 'string' ? picked : null;
+}
+
+/**
+ * Pick a picture, in the browser too.
+ *
+ * The desktop has the native dialog; the browser gets a hidden file input.
+ * The browser result is an **object URL**: the picture is streamed by the
+ * webview from the blob, so it never lands in the app's heap, and it lives
+ * for the session only (there is no app cache to put it in).
+ */
+export function pickImageFile(): Promise<string | null> {
+  if (isTauri()) return pickImage();
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    const done = (value: string | null) => {
+      input.remove();
+      resolve(value);
+    };
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (!file) return done(null);
+      done(URL.createObjectURL(file));
+    });
+    input.addEventListener('cancel', () => done(null));
+    input.click();
+  });
+}
+
 /** Is `yt-dlp` available for link imports? */
 export function checkYtDlp(): Promise<boolean> {
   return invoke<boolean>('check_yt_dlp');
@@ -304,6 +354,16 @@ export function purgeTrash(dbPath: string, sourcePath: string): Promise<void> {
   return invoke('purge_trash', { dbPath, sourcePath });
 }
 
+/**
+ * Drop every binned project older than the retention window.
+ *
+ * `days <= 0` means "never auto-delete". Returns the number of rows removed.
+ * The video files are never touched — only the app's records.
+ */
+export function purgeExpiredTrash(dbPath: string, days: number): Promise<number> {
+  return invoke<number>('purge_expired_trash', { dbPath, days });
+}
+
 /* ------------------------------------------------------------------ poster */
 
 /** One poster frame for a dashboard card. */
@@ -326,6 +386,41 @@ export interface RustPoster {
  */
 export function extractPoster(path: string, atSecs?: number, width?: number): Promise<RustPoster> {
   return invoke<RustPoster>('extract_poster', { path, atSecs, width });
+}
+
+/**
+ * Copy a hand-picked picture into the app's cache and return where it landed.
+ *
+ * The picture is **not** read into memory: the copy is done by the OS, byte
+ * for byte, and the app only ever holds the path. The result is a stable file
+ * in `<app_data>/cache/thumbs/custom/`, named after the source it belongs to,
+ * so re-uploading replaces the old poster instead of piling up copies - and a
+ * library that pointed at the user's own Desktop would break the moment they
+ * moved the file.
+ */
+export function importThumbnail(sourcePath: string, imagePath: string): Promise<string> {
+  return invoke<string>('import_thumbnail', { sourcePath, imagePath });
+}
+
+/**
+ * The picture the user chose for this source, if there is one.
+ *
+ * The dashboard asks for it on every load, so a poster the user picked is
+ * still there after a restart. It is a directory read - no image is decoded.
+ */
+export function customThumbnail(sourcePath: string): Promise<string | null> {
+  return invoke<string | null>('custom_thumbnail', { sourcePath });
+}
+
+/**
+ * Forget the picture the user chose for this source.
+ *
+ * The cached copy is deleted, not just unlinked: the app's cache is its own,
+ * and a poster nobody asked for any more is a stale copy of the user's
+ * picture sitting on their disk.
+ */
+export function clearCustomThumbnail(sourcePath: string): Promise<void> {
+  return invoke<void>('clear_custom_thumbnail', { sourcePath });
 }
 
 /* ------------------------------------------------------------------ system */

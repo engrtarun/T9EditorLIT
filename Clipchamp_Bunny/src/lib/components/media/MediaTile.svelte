@@ -2,6 +2,7 @@
   import type { MediaEntry } from '../../stores/media.svelte';
   import ContextMenu from '../ContextMenu.svelte';
   import type { MenuItem } from '../../types';
+  import { assetUrl } from '../../ipc';
 
   /**
    * Clipchamp's media tile, 1:1 with the `asset` DOM:
@@ -58,7 +59,21 @@
     style="border-radius:var(--nc-radius, 4px)"
   >
     <!-- video-preview -->
-    {#if entry.asset.url}
+    {#if entry.customThumb}
+      <!--
+        A picture the user chose. It is streamed by the webview from the
+        app's own cache copy - the file is never read into the heap, and the
+        original may be moved or deleted without breaking the tile.
+      -->
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <img
+        src={assetUrl(entry.customThumb)}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        class="h-full w-full object-cover"
+      />
+    {:else if entry.asset.url}
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
         src={entry.asset.url}
@@ -101,7 +116,7 @@
     <!-- add-asset-button (bottom-right, on hover) -->
     <button
       onclick={() => onadd(entry.asset.id)}
-      class="absolute right-1 bottom-1 grid h-6 w-6 place-items-center rounded bg-black/70 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-nc-gold hover:text-nc-bg"
+      class="absolute right-1 bottom-1 grid h-6 w-6 place-items-center rounded bg-black/70 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-nc-brand hover:text-nc-bg"
       title="Add to timeline"
       aria-label="Add {entry.asset.name} to timeline"
     >
@@ -145,7 +160,7 @@
           if (e.key === 'Enter') commitRename();
           if (e.key === 'Escape') draft = entry.asset.name;
         }}
-        class="min-w-0 flex-1 rounded border border-nc-gold bg-nc-bg px-1 text-[10px] leading-4 text-nc-txt outline-none"
+        class="min-w-0 flex-1 rounded border border-nc-brand bg-nc-bg px-1 text-[10px] leading-4 text-nc-txt outline-none"
       />
     {:else}
       <span

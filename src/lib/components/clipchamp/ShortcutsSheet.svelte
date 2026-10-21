@@ -17,7 +17,7 @@
     aspectRatio: "Go to aspect ratio selector",
     help: "Go to help button",
     split: "Split at playhead",
-    delete: "Delete selection",
+    delete: "Cut line under playhead",
     copy: "Copy",
     paste: "Paste",
     duplicate: "Duplicate",
@@ -25,6 +25,8 @@
     group: "Group selected items",
     ungroup: "Ungroup selected items",
     deselect: "Deselect / close",
+    cutLine: "Cut line under playhead",
+    keepLine: "Keep line under playhead",
     playPause: "Play or pause",
     seekStart: "Seek to start",
     seekEnd: "Seek to end",
@@ -59,7 +61,9 @@
    *
    * Content comes straight from `BINDINGS` in the shortcuts store, so this
    * component cannot list a shortcut the app does not honour, and a new
-   * binding appears here without touching this file.
+   * binding appears here without touching this file. Keys whose feature is
+   * still missing carry `planned: true` in that table and render dimmed with
+   * a tag — the sheet stays a truthful statement of what is pressable.
    *
    * Modal behaviour: Escape closes, clicking the scrim closes, and Tab is
    * trapped inside so focus cannot wander off behind the overlay.
@@ -122,7 +126,8 @@
       <div class="flex flex-col gap-0.5">
         <h2 class="text-[15px] font-semibold text-cc-text">Keyboard shortcuts</h2>
         <p class="text-[11.5px] text-cc-text-3">
-          {shortcuts.count} shortcuts — the same keys Clipchamp uses
+          {shortcuts.readyCount} keys active — the same keys Clipchamp uses{#if shortcuts.plannedCount > 0},
+            {shortcuts.plannedCount} marked planned{/if}
         </p>
       </div>
       <button
@@ -161,8 +166,23 @@
               <li
                 class="flex items-center justify-between gap-3 rounded px-2 py-1.5
                   hover:bg-cc-tint/50"
+                class:opacity-65={item.planned}
               >
-                <span class="text-[12.5px] text-cc-text-2">{labelFor(item.id)}</span>
+                <span class="flex min-w-0 items-center gap-1.5 text-[12.5px] text-cc-text-2">
+                  <span class="truncate">{labelFor(item.id)}</span>
+                  <!-- Listed for Clipchamp parity but not wired yet: dimmed and
+                       tagged rather than silently shown as working. -->
+                  {#if item.planned}
+                    <span
+                      class="mono shrink-0 rounded border border-cc-line bg-cc-sunken px-1
+                        py-px text-[8.5px] uppercase tracking-wide text-cc-text-4"
+                      title="Listed for Clipchamp parity — needs the multi-clip selection
+                        model this app does not have yet"
+                    >
+                      planned
+                    </span>
+                  {/if}
+                </span>
                 <!-- One chip per key: Clipchamp renders the accelerator as
                      separate key caps rather than a run of text. -->
                 <span class="flex shrink-0 items-center gap-1">

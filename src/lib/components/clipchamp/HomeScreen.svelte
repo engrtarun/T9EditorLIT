@@ -8,7 +8,7 @@
    */
   import { cc } from "../../stores/cc.svelte";
   import { project } from "../../stores/project.svelte";
-  import { defaultDbPath, loadProjects, saveProject, updateProjectOpened } from "../../ipc";
+  import { defaultDbPath, loadProjects, probeMedia, updateProjectOpened } from "../../ipc";
   import type { Project } from "../../types";
 
   const QUICK = [
@@ -41,20 +41,54 @@
     }
   }
 
-  async function openProject(p: Project) {
-    await project.load(p.sourcePath);
-    const dbPath = await defaultDbPath();
-    const now = Date.now();
-    await saveProject(
-      dbPath,
-      p.id,
-      p.name,
-      p.sourcePath,
-      project.info?.durationSecs ?? p.durationSecs,
-      now,
-    );
-    await updateProjectOpened(dbPath, p.sourcePath, now);
+  /**
+   * Open a Recent-project tile — paint first, I/O second.
+   *
+   * The editor shell draws from empty state (stage placeholder, timeline
+   * placeholder, `--:--` duration), so nothing in it needs ffprobe or SQLite
+   * before the first frame moves. This used to `await` the probe plus two
+   * writes *before* swapping the view: four sequential IPC round trips with
+   * the screen frozen, which is exactly the "app is loading" feeling the Home
+   * → editor hop had.
+   *
+   * `project.load` already upserts the Recent row with the probe's duration
+   * (its id is the source path), so the second `saveProject` here was pure
+   * duplication. `updateProjectOpened` stays: it matches on `sourcePath`, so
+   * rows written under a legacy id still get their "opened" stamp.
+   */
+  function openProject(p: Project): void {
     cc.openEditor();
+    void (async () => {
+      await project.load(p.sourcePath);
+      try {
+        const dbPath = await defaultDbPath();
+        await updateProjectOpened(dbPath, p.sourcePath, Date.now());
+      } catch {
+        // A stale "last opened" stamp is not worth interrupting the edit for.
+      }
+    })();
+  }
+
+  /**
+   * Warm the probe while the pointer is still travelling to the tile.
+   *
+   * `probe_media` caches in SQLite by path + size + mtime, so this is a no-op
+   * on every later hover and on the click itself; all it buys is that a
+   * first-ever open does not pay for ffprobe's seek over a 5 GB file while the
+   * user is already looking at the editor. One child process at most, no
+   * buffer in the heap (AGENTS.md §1).
+   */
+  const warmed = new Set<string>();
+
+  function prefetch(p: Project): void {
+    if (warmed.has(p.sourcePath)) return;
+    warmed.add(p.sourcePath);
+    void probeMedia(p.sourcePath).catch(() => {
+      // The click path reports probe failures on the store; a speculative
+      // warm-up has nowhere to say anything, so it stays silent and lets the
+      // next hover (or the click) try again.
+      warmed.delete(p.sourcePath);
+    });
   }
 
   $effect(() => {
@@ -258,7 +292,13 @@
         {:else}
           <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
             {#each projects as p (p.id)}
-              <button type="button" class="group text-left" onclick={() => openProject(p)}>
+              <button
+                type="button"
+                class="group text-left"
+                onpointerenter={() => prefetch(p)}
+                onfocus={() => prefetch(p)}
+                onclick={() => openProject(p)}
+              >
                 <div
                   class="aspect-video w-full rounded-lg border border-cc-line bg-cc-tint
                   transition group-hover:border-cc-purple"

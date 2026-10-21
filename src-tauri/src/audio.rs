@@ -179,9 +179,11 @@ pub fn detect_silence(
 
     // `-map 0:a:0` decodes only the first audio track and `-f null -` discards
     // the output, so this is a fast pass, not a render.
-    let out = crate::ffmpeg::run(
-        "ffmpeg",
-        &[
+    //
+    // silencedetect reports every marker on stderr, so this pass needs the full
+    // stderr (not the bounded tail ffmpeg::run keeps) -- run the child directly.
+    let output = Command::new("ffmpeg")
+        .args([
             "-hide_banner",
             "-nostdin",
             "-i",
@@ -193,13 +195,15 @@ pub fn detect_silence(
             "-f",
             "null",
             "-",
-        ],
-    )?;
+        ])
+        .output()
+        .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
 
     // FFmpeg reports silence on stderr; a non-zero status here (e.g. no audio
     // stream) yields no markers, which we surface as an empty result.
     let total = probe_duration(source).unwrap_or(0.0);
-    Ok(parse_silence_markers(&out.stderr, total))
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(parse_silence_markers(&stderr, total))
 }
 
 /// Parse `silence_start` / `silence_end` markers emitted by `silencedetect`.

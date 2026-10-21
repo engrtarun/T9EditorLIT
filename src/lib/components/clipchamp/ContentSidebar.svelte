@@ -7,7 +7,9 @@
    * Mode-Based Panel Isolation, applied one level down — the media browser
    * and the text library never cost RAM together (AGENTS.md §1).
    */
+  import { tick } from "svelte";
   import { cc } from "../../stores/cc.svelte";
+  import { shortcuts } from "../../stores/shortcuts.svelte";
   import LibraryPanel from "./LibraryPanel.svelte";
   import MediaPanel from "./MediaPanel.svelte";
   import RecordPanel from "./RecordPanel.svelte";
@@ -25,6 +27,18 @@
     vault: "Cloud vault",
     settings: "Settings",
   };
+
+  /** `Alt + 2` — Clipchamp's "Go to sidebar": focus the panel, not a tab. */
+  let sidebarEl: HTMLElement | null = $state(null);
+
+  $effect(() => {
+    return shortcuts.bind("navSidebar", async () => {
+      // Collapsed means "not there"; the key opens it first, then focuses.
+      if (!cc.sidebarOpen) cc.sidebarOpen = true;
+      await tick();
+      sidebarEl?.focus();
+    });
+  });
 
   // Drag the right edge to resize — Clipchamp's "Resize panel" separator.
   function startResize(event: PointerEvent) {
@@ -44,9 +58,11 @@
 
 {#if cc.sidebarOpen}
   <section
+    bind:this={sidebarEl}
     class="relative flex shrink-0 flex-col border-r border-cc-line bg-cc-surface"
     style="width: {cc.sidebarWidth}px"
     aria-label="Content sidebar"
+    tabindex="-1"
   >
     <div class="flex h-11 shrink-0 items-center justify-between px-3">
       <span class="text-[13.5px] font-semibold text-cc-text">{TITLES[cc.railTab]}</span>

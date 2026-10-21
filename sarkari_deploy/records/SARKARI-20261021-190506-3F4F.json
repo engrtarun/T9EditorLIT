@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-190506-3F4F",
+  "agent": "mimo-v2.6-flash",
+  "modelName": "opencode/mimo-v2.6-flash-free",
+  "kabStartTime": "2026-10-21 19:05:06",
+  "kabStartTimeIso": "2026-10-21T13:35:06.8951449Z",
+  "finishTime": "2026-10-21 19:43:09",
+  "finishTimeIso": "2026-10-21T14:13:09.5579606Z",
+  "kyoReason": "every deploy in the ledger died the same way - expired or heartbeat-stale - and the sanction gate rejected any agent whose turn had not come, so nothing shipped",
+  "task": "Fix the sarkari deploy pipeline end to end: reclaim expired queued orders, tolerate ledger failures, clamp lease minutes, identify build-lock holder, stop lock state aborting other agents",
+  "andazaEtaMinutes": 25,
+  "sarkariSanctionMinutes": 45,
+  "asliTimeMinutes": 38.0,
+  "outcome": "STAGED",
+  "error": null,
+  "buildId": "app-sarkari-20261021-190506-3f4f",
+  "installDetails": {
+    "InstallMode": "staged",
+    "LiveExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.exe",
+    "LiveSha": "4c4c688e1c25b2202d3194fafaf91f4364c9da0d742a7e9f81baaaa376bed738",
+    "StageExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.new.exe",
+    "StageSha": "8679f3b61865d716f0e213c7fe2c545b66f49f43e1ee5dd08e69fb757beb3fab",
+    "PrevExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.prev.exe",
+    "MarkerFile": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\build.json"
+  }
+}

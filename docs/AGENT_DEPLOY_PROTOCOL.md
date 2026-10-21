@@ -35,10 +35,35 @@ Entry points:
 | Entry point                               | Use                                 |
 | ----------------------------------------- | ----------------------------------- |
 | `Deploy-T9EditorLIT.bat` (repo root)      | Double-click form, or pass switches |
+| `Sarkari-Deploy.bat` (repo root)          | The fast-lane engine (see below)    |
 | `Clipchamp_Bunny\tools\deploy.bat`        | Same, from the app folder           |
 | `Clipchamp_Bunny\tools\deploy.ps1`        | The actual gate; agents call this   |
 | `Clipchamp_Bunny\tools\deploy-status.bat` | Queue + recent work orders          |
 | `Clipchamp_Bunny\tools\deploy-doctor.bat` | Read-only installed-state check     |
+
+### 1a. The Sarkari fast lane (same door, faster)
+
+`deploy.ps1` and `Deploy-T9EditorLIT.bat` are wired to the **Sarkari High-Speed
+Engine** in `sarkari_deploy/`. It is the same door, not a second one:
+
+| Switch      | What it does                                                                                                      |
+| ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| `-Check`    | **10-second fast check**: TypeScript + Svelte + Rust types. No build, no install. Use it before you burn a build. |
+| `-Fast`     | Autonomous deploy with non-interactive defaults.                                                                  |
+| `-Doctor`   | Installed-state check (exe, `.prev.exe` rollback shield, staged update, daemon health).                           |
+| `-Status`   | Recent Sarkari orders.                                                                                            |
+| `-Rollback` | Restore the previous stable build from `.prev.exe` by hand.                                                       |
+
+Two things the Sarkari engine does **not** change:
+
+1. **The queue is still the SQLite ledger.** The engine queues and claims the
+   work order there (`sarkari_deploy/sarkariLedger.ps1`), so
+   `deploy.ps1 -Status` still shows who is deploying right now and whose turn
+   it is. A Sarkari deploy that did not reach the ledger would be a deploy
+   nobody can wait for.
+2. **The outcome is still `shipped` / `failed` / `cancelled`.** A failed deploy
+   closes its queue slot too, so the next agent is not left waiting on a lease
+   nobody will release.
 
 `tools\build.ps1` exists, but it is a **build**, not a deploy. A build alone
 does not reach the taskbar app and does not create a work order. Use it only
@@ -334,19 +359,25 @@ staged update it adds `appliedAtUnix`; `mode` is then `installed` and
 
 ## 7. Troubleshooting
 
-| Symptom                                       | What to do                                                                    |
-| --------------------------------------------- | ----------------------------------------------------------------------------- |
-| `the ledger did not return a work id`         | Run `deploy.ps1 -Status`; check Node 22.5+ and `node:sqlite`                  |
-| `queue is busy` / `-NoWait`                   | Re-run without `-NoWait`, or wait; check the active order in status           |
-| `work order ... is expired`                   | The previous agent died; create a new request                                 |
-| `the manifest points at a missing executable` | The build folder was cleaned; run without `-SkipBuild`                        |
-| `the build is from commit ..., HEAD is ...`   | Rebuild, or use `-Force` only if you truly mean the older binary              |
-| `installed app hash mismatch`                 | Run `-Doctor`; do not hand-copy exes                                          |
-| `daemon did not answer /healthz`              | Check `logs\t9cloud.err.log`, `.env`, port 7878                               |
-| `daemon still has N jobs in flight`           | Wait for the queue; deploy refuses to kill work                               |
-| Update button not visible                     | App must be running **and** `t9-editor-lit.new.exe` must exist; run `-Doctor` |
-| `non-installed app instance`                  | Close the repo `target\release` app; use the taskbar app                      |
-| Stale taskbar shortcut                        | `pwsh -File tools\pin-taskbar.ps1` (deploy already runs it)                   |
+| Symptom                                                   | What to do                                                                                                                                                                                                                   |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `the ledger did not return a work id`                     | Run `deploy.ps1 -Status`; check Node 22.5+ and `node:sqlite`                                                                                                                                                                 |
+| `queue is busy` / `-NoWait`                               | Re-run without `-NoWait`, or wait; check the active order in status                                                                                                                                                          |
+| `work order ... is expired`                               | The previous agent died; create a new request                                                                                                                                                                                |
+| `the manifest points at a missing executable`             | The build folder was cleaned; run without `-SkipBuild`                                                                                                                                                                       |
+| `the build is from commit ..., HEAD is ...`               | Rebuild, or use `-Force` only if you truly mean the older binary                                                                                                                                                             |
+| `installed app hash mismatch`                             | Run `-Doctor`; do not hand-copy exes                                                                                                                                                                                         |
+| `daemon did not answer /healthz`                          | Check `logs\t9cloud.err.log`, `.env`, port 7878                                                                                                                                                                              |
+| `daemon still has N jobs in flight`                       | Wait for the queue; deploy refuses to kill work                                                                                                                                                                              |
+| Update button not visible                                 | App must be running **and** `t9-editor-lit.new.exe` must exist; run `-Doctor`                                                                                                                                                |
+| `non-installed app instance`                              | Close the repo `target\release` app; use the taskbar app                                                                                                                                                                     |
+| Stale taskbar shortcut                                    | `pwsh -File tools\pin-taskbar.ps1` (deploy already runs it)                                                                                                                                                                  |
+| A queued order nobody ever claimed                        | `node tools\deploy-ledger-reclaim.mjs reclaim-stale` (15-minute floor)                                                                                                                                                       |
+| An order that was expired by mistake                      | `node tools\deploy-ledger-restore.mjs restore --id WO-...`                                                                                                                                                                   |
+| An order stuck `active` after its agent died              | `node tools\deploy-ledger-restore.mjs release --id WO-...`                                                                                                                                                                   |
+| `OUT_DIR env var is not set, do you have a build script?` | The package build folder was deleted without its fingerprint. `build.ps1` now removes both; if you hit this by hand, delete `src-tauri\target\release\.fingerprint\t9-editor-lit-*` too                                      |
+| `Blocking waiting for file lock on build directory`       | Another build owns the shared target folder. **Do not run `cargo` by hand** — it bypasses the lock and the two builds delete each other's build folder. Use `tools\build.ps1`, or set `T9_TARGET_DIR` for an isolated folder |
+| `link.exe` failed with `0xffffffff` / `LNK1181`           | Not enough free RAM for the link step (~1 GB). Close other apps, then re-run; the build script already retries                                                                                                               |
 
 Diagnostics to attach to a bug report:
 
@@ -379,6 +410,22 @@ Get-Content (Join-Path $env:LOCALAPPDATA 'T9EditorLIT\deploy\logs\t9cloud.err.lo
 9. **Python is banned.** Use PowerShell, Node `node:sqlite`, Rust, or Go.
 10. **Do not edit `ledger.db` by hand.** Use the CLI in
     `tools\deploy-ledger.mjs`; it enforces tokens and state transitions.
+11. **Never expire another agent's order.** A queued order with no run looks
+    abandoned, but the agent that owns it may still be in its fast-check
+    before it claims the slot. `tools\deploy-ledger-reclaim.mjs` refuses to
+    touch anything younger than the queue's own TTL, for exactly this
+    reason. If you expired an order by mistake, put it back with
+    `tools\deploy-ledger-restore.mjs restore --id WO-...`.
+12. **A dead order blocks the queue.** The claim only hands the slot to the
+    order that is _first_ in line, so an order whose agent died stays at
+    the front and nobody behind it can deploy. There are two shapes of it:
+    - still `queued` → the ledger's queued TTL (15 minutes) expires it, and
+      `tools\deploy-ledger-reclaim.mjs reclaim-stale` can clear it sooner;
+    - already `active` with a lease nobody will release → release it with
+      `tools\deploy-ledger-restore.mjs release --id WO-...`.
+
+    If a deploy seems stuck with nobody active, check the head of the
+    queue first: `deploy.ps1 -Status` shows the position.
 
 ### Agent checklist
 
@@ -392,6 +439,51 @@ Get-Content (Join-Path $env:LOCALAPPDATA 'T9EditorLIT\deploy\logs\t9cloud.err.lo
 [ ] If staged, I told the user to click Update.
 [ ] I ran deploy.ps1 -Doctor and it passes.
 ```
+
+### What to tell the owner while you are waiting
+
+The owner asked for a time and a reason, not "it is running in the
+background". A chat message with no work order id in it is not a status -
+it is a guess. The ledger already knows all of it, so read it and report it.
+
+**When you are queued** (somebody else is deploying):
+
+```text
+Malik, mera deploy abhi queued hai, active nahi.
+
+- Work order: WO-...
+- Position: 4/4 (3 ahead)
+- My agent/model: opencode / opencode/deepseek-v4.1-flash-free
+- Task: ...
+- Scope: both
+- My ETA (build+install+verify): 12 min
+- Estimated wait before my turn: ~34 min
+  (3 ahead ke ETAs ka sum + active ka remaining)
+- Ledger status: `deploy.ps1 -Status` (WO id upar hai)
+
+Ye wait kam bhi ho sakta hai agar koi ahead wala jaldi finish ho.
+Jab mera turn aayega, ledger "active" dikhayega aur main exact start
+time bataunga.
+```
+
+**When you are active**:
+
+```text
+Malik, mera deploy abhi ACTIVE hai.
+
+- Work order: WO-...   Run: RUN-...
+- Agent/model: opencode / opencode/deepseek-v4.1-flash-free
+- Task: ...   Scope: both
+- ETA (maine darj kiya): 12 min
+- Started at: 18:12:03
+- Lease (deploy.ps1 allocated max wait): ~32 min
+- Heartbeat: live (long build alive)
+- Verify: `deploy.ps1 -Status` (WO id upar hai)
+```
+
+What is **not** acceptable: "background me chal raha hai", "baad me bata
+dunga", or a wait estimate with no work order id next to it. The order id
+is what makes the claim checkable.
 
 ---
 

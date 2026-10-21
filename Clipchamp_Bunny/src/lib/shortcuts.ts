@@ -46,7 +46,7 @@ export const SHORTCUT_GROUPS: Array<{ title: string; rows: ShortcutRow[] }> = [
       {
         keys: 'Shift + X then ←  /  →',
         action: 'Move the current line earlier / later',
-        note: 'Clipchamp uses plain X + arrow; ours uses X for instant cut'
+        note: 'Plain X + arrow works too; X alone cuts instantly'
       },
       { keys: 'Z then ←  /  →', action: 'Trim the start of the current line' },
       { keys: 'C then ←  /  →', action: 'Trim the end of the current line' },
@@ -84,12 +84,12 @@ export const SHORTCUT_GROUPS: Array<{ title: string; rows: ShortcutRow[] }> = [
       {
         keys: '↑  /  ↓',
         action: 'Jump to the previous / next line and move the preview with it',
-        note: 'Clipchamp scrolls the timeline here'
+        note: 'The timeline scrolls here'
       },
       {
         keys: 'J  /  L',
         action: 'Seek back / forward 5 seconds',
-        note: 'Clipchamp uses ← / → for the seeker'
+        note: '← / → move the seeker'
       }
     ]
   }

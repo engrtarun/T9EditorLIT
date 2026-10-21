@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-200914-253C",
+  "agent": "mimo-v2.6-flash",
+  "modelName": "opencode/mimo-v2.6-flash-free",
+  "kabStartTime": "2026-10-21 20:09:14",
+  "kabStartTimeIso": "2026-10-21T14:39:14.4967467Z",
+  "finishTime": "2026-10-21 20:24:32",
+  "finishTimeIso": "2026-10-21T14:54:32.9099651Z",
+  "kyoReason": "user asked to pick the best of the five open decisions and deploy the other agents' work; every claim was checked against the code first, and proposal 4 was left for revision instead of sharing one SQLite connection across 13 call sites",
+  "task": "Apply beam-free proposals 1, 2, 3 and 5: bound the Go job store to 64 retained jobs, give the queue a context that Close cancels, demote per-poll job logging to Debug, and cache the ffmpeg -encoders listing in a OnceLock",
+  "andazaEtaMinutes": 35,
+  "sarkariSanctionMinutes": 55,
+  "asliTimeMinutes": 15.3,
+  "outcome": "SHIPPED",
+  "error": null,
+  "buildId": "app-sarkari-20261021-200914-253c",
+  "installDetails": {
+    "InstallMode": "live",
+    "LiveExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.exe",
+    "LiveSha": "e038d8a71ad4a81b0069e93f376a556f14a32462810c151224779600a5e2cffd",
+    "StageExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.new.exe",
+    "StageSha": "4b661d31d45accb68a41cdead46ff2385afd348868c8e99d5eb6f33f4d588789",
+    "PrevExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.prev.exe",
+    "MarkerFile": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\build.json"
+  }
+}

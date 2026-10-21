@@ -120,7 +120,7 @@
 
   <button
     onclick={() => mode.set('export')}
-    class="flex items-center gap-1.5 rounded-lg bg-nc-gold px-3.5 py-1.5 text-[13px] font-bold text-nc-bg hover:brightness-110"
+    class="flex items-center gap-1.5 rounded-lg bg-nc-brand px-3.5 py-1.5 text-[13px] font-bold text-nc-bg hover:brightness-110"
     title="Export"
   >
     <svg

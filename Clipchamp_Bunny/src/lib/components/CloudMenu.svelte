@@ -69,7 +69,7 @@
 
   const statusDot: Record<string, string> = {
     connected: 'bg-nc-green',
-    pending: 'bg-nc-gold animate-pulse',
+    pending: 'bg-nc-brand animate-pulse',
     disconnected: 'bg-nc-mut-2'
   };
 
@@ -183,7 +183,7 @@
           />
         </svg>
       </div>
-      <p class="text-sm font-bold text-nc-gold">Telegram · QR scan</p>
+      <p class="text-sm font-bold text-nc-brand">Telegram · QR scan</p>
       <p class="mt-1.5 text-[11px] leading-relaxed text-nc-mut">
         Telegram app → Settings → Devices → Link Desktop. QR code t9cloud se aayega.
       </p>
@@ -199,7 +199,7 @@
             qrOpen = false;
             cloud.connect('telegram');
           }}
-          class="flex-1 rounded-lg bg-nc-gold py-1.5 text-xs font-bold text-nc-bg hover:brightness-110"
+          class="flex-1 rounded-lg bg-nc-brand py-1.5 text-xs font-bold text-nc-bg hover:brightness-110"
         >
           Connect
         </button>

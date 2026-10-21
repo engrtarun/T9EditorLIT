@@ -5,7 +5,7 @@
     info: 'border-nc-line-2 bg-nc-panel-2 text-nc-txt',
     cut: 'border-nc-red/50 bg-nc-red/12 text-nc-red',
     keep: 'border-nc-green/50 bg-nc-green/12 text-nc-green',
-    split: 'border-nc-gold/50 bg-nc-gold/12 text-nc-gold',
+    split: 'border-nc-brand/50 bg-nc-brand/12 text-nc-brand',
     warn: 'border-nc-red/50 bg-nc-panel-2 text-nc-txt'
   };
 </script>

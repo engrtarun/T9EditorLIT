@@ -14,7 +14,13 @@ import (
 // forever would grow without bound — exactly the leak this project exists to
 // avoid. The oldest job is dropped past this limit; the desktop app persists
 // what it cares about into SQLite as soon as it fetches a result.
-const maxRetainedJobs = 256
+//
+// 256 was the wrong number for this machine: a 2-hour job's transcript is a
+// slice of segments, and 256 of them were being held resident while the box
+// runs at ~1 GB free. The UI shows recent work, not an archive — 64 covers a
+// long session (an hour of imports is a handful of jobs) and bounds the
+// resident cost to a quarter of what it was.
+const maxRetainedJobs = 64
 
 // jobStore is a concurrency-safe map of job state.
 //

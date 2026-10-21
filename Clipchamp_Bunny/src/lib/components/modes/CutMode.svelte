@@ -43,7 +43,7 @@
       aria-label="Resize panel"
       title="Drag to resize"
       onpointerdown={startResize}
-      class="w-[3px] shrink-0 cursor-col-resize bg-nc-line transition-colors hover:bg-nc-gold/60"
+      class="w-[3px] shrink-0 cursor-col-resize bg-nc-line transition-colors hover:bg-nc-brand/60"
     ></div>
 
     <!-- Right box -->

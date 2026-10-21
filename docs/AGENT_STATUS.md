@@ -86,7 +86,7 @@ the clock — every number real, one Rust call per second.
 **Contracts exposed:**
 
 - Rust: `system_snapshot() -> SystemSnapshot { ram: { appMb, totalMb, usedMb, usedPercent },
-  drive: { mount, totalBytes, freeBytes }, appStorageBytes, net: { downBps, upBps, interface } }`,
+drive: { mount, totalBytes, freeBytes }, appStorageBytes, net: { downBps, upBps, interface } }`,
   `set_system_clock(timeZone?, utcIso) -> String` (admin-only on Windows; the
   real error comes back)
 - TS: `systemSnapshot()`, `setSystemClock(tz, iso)`, store `meters`

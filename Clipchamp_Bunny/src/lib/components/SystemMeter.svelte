@@ -110,7 +110,7 @@
 <!-- ============ top-bar chip ============ -->
 <button
   onclick={() => (open = !open)}
-  class="mr-1 flex items-center gap-2 rounded-lg border border-nc-line bg-nc-panel-2 px-2.5 py-1 text-[11px] transition-colors hover:border-nc-gold/40"
+  class="mr-1 flex items-center gap-2 rounded-lg border border-nc-line bg-nc-panel-2 px-2.5 py-1 text-[11px] transition-colors hover:border-nc-brand/40"
   title="RAM · this app · network — click for full PC details"
 >
   <!-- RAM -->
@@ -119,7 +119,7 @@
     <span class="relative h-1.5 w-12 overflow-hidden rounded-full bg-nc-line">
       <span
         class="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500
-               {ramPct > 85 ? 'bg-nc-red' : ramPct > 70 ? 'bg-nc-gold' : 'bg-nc-green'}"
+               {ramPct > 85 ? 'bg-nc-red' : ramPct > 70 ? 'bg-nc-brand' : 'bg-nc-green'}"
         style="width:{ramBar}%"
       ></span>
     </span>
@@ -134,9 +134,9 @@
   <span class="h-3.5 w-px bg-nc-line"></span>
 
   <!-- this app -->
-  <span class="flex items-center gap-1 font-mono" title="What Nanami Cut is costing right now">
-    <span class="h-2 w-1.5 rounded-sm bg-nc-gold"></span>
-    <span class="text-nc-gold">{stats?.appMb ?? 0}</span>
+  <span class="flex items-center gap-1 font-mono" title="What T9 Editor LIT is costing right now">
+    <span class="h-2 w-1.5 rounded-sm bg-nc-brand"></span>
+    <span class="text-nc-brand">{stats?.appMb ?? 0}</span>
     <span class="text-nc-mut-2">MB</span>
   </span>
 
@@ -174,8 +174,8 @@
   >
     <div class="mb-3 flex items-center gap-2">
       <span
-        class="grid h-6 w-6 place-items-center rounded-md bg-gradient-to-br from-nc-gold to-nc-gold-dim text-[12px] font-black text-nc-bg"
-        >7</span
+        class="grid h-6 w-6 place-items-center rounded-md bg-gradient-to-br from-nc-brand to-nc-brand-dim text-[12px] font-black text-nc-bg"
+        >⌘</span
       >
       <h3 class="text-[12px] font-bold tracking-wider">PC DETAILS</h3>
       <div class="flex-1"></div>
@@ -234,7 +234,7 @@
             <span class="relative h-1.5 flex-1 overflow-hidden rounded-full bg-nc-line">
               <span
                 class="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500
-                       {ramPct > 85 ? 'bg-nc-red' : ramPct > 70 ? 'bg-nc-gold' : 'bg-nc-green'}"
+                       {ramPct > 85 ? 'bg-nc-red' : ramPct > 70 ? 'bg-nc-brand' : 'bg-nc-green'}"
                 style="width:{ramBar}%"
               ></span>
             </span>
@@ -261,7 +261,7 @@
             {speed
               ? `↓ ${speed.megabytesPerSec.toFixed(2)} MB/s · ${speed.mbps.toFixed(0)} Mbps`
               : '—'}
-            <button onclick={measure} class="ml-1 text-[10px] text-nc-gold hover:underline"
+            <button onclick={measure} class="ml-1 text-[10px] text-nc-brand hover:underline"
               >retest</button
             >
           </dd>
@@ -279,7 +279,7 @@
                            {d.usedPercent > 90
                       ? 'bg-nc-red'
                       : d.usedPercent > 75
-                        ? 'bg-nc-gold'
+                        ? 'bg-nc-brand'
                         : 'bg-nc-green'}"
                     style="width:{Math.min(100, d.usedPercent)}%"
                   ></span>

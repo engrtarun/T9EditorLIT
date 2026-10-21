@@ -1,9 +1,8 @@
-﻿import type {
+import type {
   KeepState,
   LineFlag,
   MediaAsset,
   SilenceRange,
-  TextClip,
   ThumbnailStrip,
   TimelineClip,
   TranscriptLine,
@@ -58,14 +57,13 @@ import type { RustProject } from '../ipc';
  */
 interface Snapshot {
   lines: TranscriptLine[];
-  texts: TextClip[];
   segmentOrder: string[];
   splitMarks: number[];
   mutedSegments: string[];
   hiddenTracks: TrackId[];
 }
 
-export type TrackId = 'text' | 'video' | 'audio';
+export type TrackId = 'video' | 'audio';
 
 /**
  * Splitting produces `ln-012-1a` / `ln-012-1b`; undo must still find the parent.
@@ -113,16 +111,6 @@ class ProjectStore {
   media = $state<MediaAsset | null>(null);
   lines = $state<TranscriptLine[]>([]);
   clips = $state<TimelineClip[]>([]);
-  /**
-   * Text overlays for the timeline's T lane.
-   *
-   * Empty on purpose: these were three hardcoded prototype captions ("Vite
-   * kya hai?" and friends) that showed up over **every** video, real or not.
-   * The lane stays in the UI, ready for real captions.
-   */
-  texts = $state<TextClip[]>([]);
-  /** Selected text clip on the T lane (separate from transcript selection). */
-  selectedTextId = $state<string | null>(null);
   /** Clip ids whose audio is muted (Clipchamp's speaker button on the clip). */
   mutedSegments = $state<string[]>([]);
   /** Whole tracks hidden by the eye/Hide control. */
@@ -204,18 +192,43 @@ class ProjectStore {
     }
   }
 
-  private async loadBaked() {
+  /**
+   * Load the baked demo media - the browser's stand-in for the engine.
+   *
+   * Public because the dashboard needs it too: in the browser a card click
+   * has to open *something*, and the Rust engine that would probe a real
+   * file is not there.
+   */
+  async loadBaked() {
     this.resetEditState();
-    const [media, waveform, thumbnails] = await Promise.all([
+    const [baked, waveform, thumbnails] = await Promise.all([
       loadMediaInfo(),
       loadWaveform(),
       loadThumbnails()
     ]);
-    this.media = media;
-    this.name = media.name.replace(/\.[^.]+$/, '');
+    this.media = baked;
+    this.name = baked.name.replace(/\.[^.]+$/, '');
     this.waveform = waveform;
     this.thumbnails = thumbnails;
-    this.lines = scaleLines(MOCK_LINES, media.durationSecs);
+    this.lines = scaleLines(MOCK_LINES, baked.durationSecs);
+    // The library shows the media this project is made of. The desktop does
+    // this in `loadFromBackend`; without it the browser's "My media" panel
+    // was empty while the timeline showed the very same recording.
+    if (!media.byPath(baked.url)) {
+      const entry = media.addPath(baked.url, baked.name, baked.sizeBytes);
+      media.probed(entry.asset.id, {
+        durationSecs: baked.durationSecs,
+        width: baked.width,
+        height: baked.height,
+        fps: baked.fps,
+        sizeBytes: baked.sizeBytes,
+        videoCodec: baked.videoCodec,
+        audioCodec: baked.audioCodec,
+        sampleRate: baked.sampleRate,
+        channels: baked.channels
+      });
+      media.markInUse(entry.asset.id);
+    }
     this.restoreUiState();
     this.ready = true;
   }
@@ -533,9 +546,9 @@ class ProjectStore {
   private autosave: ReturnType<typeof setTimeout> | null = null;
 
   /**
-   * Text clips, clip mutes, track hides and the user's segment order are UI
-   * state, not transcript rows. They live in localStorage (small, synchronous,
-   * no extra SQLite schema): the transcript itself stays in SQLite on disk.
+   * Clip mutes, track hides and the user's segment order are UI state, not
+   * transcript rows. They live in localStorage (small, synchronous, no extra
+   * SQLite schema): the transcript itself stays in SQLite on disk.
    */
   private uiStateKey(): string | null {
     const id = this.sourcePath ?? this.media?.name;
@@ -547,7 +560,6 @@ class ProjectStore {
     if (!key) return;
     try {
       const payload = {
-        texts: this.texts,
         segmentOrder: this.segmentOrder,
         splitMarks: this.splitMarks,
         mutedSegments: this.mutedSegments,
@@ -566,32 +578,11 @@ class ProjectStore {
       const raw = localStorage.getItem(key);
       if (!raw) return;
       const data = JSON.parse(raw) as {
-        texts?: TextClip[];
         segmentOrder?: string[];
         splitMarks?: number[];
         mutedSegments?: string[];
         hiddenTracks?: TrackId[];
       };
-      if (Array.isArray(data.texts)) {
-        this.texts = data.texts
-          .filter(
-            (t) =>
-              t &&
-              typeof t.id === 'string' &&
-              typeof t.text === 'string' &&
-              typeof t.startSec === 'number' &&
-              typeof t.endSec === 'number' &&
-              t.endSec > t.startSec
-          )
-          .map((t) => ({
-            id: t.id,
-            text: t.text,
-            startSec: t.startSec,
-            endSec: t.endSec,
-            kind: t.kind === 'title' || t.kind === 'code-zoom' ? t.kind : 'heading',
-            hidden: t.hidden === true
-          }));
-      }
       if (Array.isArray(data.segmentOrder)) {
         this.segmentOrder = data.segmentOrder.filter((x) => typeof x === 'string');
       }
@@ -605,7 +596,7 @@ class ProjectStore {
       }
       if (Array.isArray(data.hiddenTracks)) {
         this.hiddenTracks = data.hiddenTracks.filter(
-          (x): x is TrackId => x === 'text' || x === 'video' || x === 'audio'
+          (x): x is TrackId => x === 'video' || x === 'audio'
         );
       }
     } catch {
@@ -613,15 +604,13 @@ class ProjectStore {
     }
   }
 
-  /** Switching files must not leak the previous project's text or order. */
+  /** Switching files must not leak the previous project's order or mutes. */
   private resetEditState() {
     this.lines = [];
-    this.texts = [];
     this.waveform = null;
     this.thumbnails = null;
     this.cursor = 0;
     this.selectedIds = [];
-    this.selectedTextId = null;
     this.clipboard = null;
     this.segmentOrder = [];
     this.splitMarks = [];
@@ -848,7 +837,6 @@ class ProjectStore {
     // proxies, and every field we keep here is a primitive or an array.
     return {
       lines: this.lines.map((l) => ({ ...l })),
-      texts: this.texts.map((t) => ({ ...t })),
       segmentOrder: [...this.segmentOrder],
       splitMarks: [...this.splitMarks],
       mutedSegments: [...this.mutedSegments],
@@ -858,14 +846,12 @@ class ProjectStore {
 
   private apply(snap: Snapshot) {
     this.lines = snap.lines.map((l) => ({ ...l }));
-    this.texts = snap.texts.map((t) => ({ ...t }));
     this.segmentOrder = [...snap.segmentOrder];
     this.splitMarks = [...snap.splitMarks];
     this.mutedSegments = [...snap.mutedSegments];
     this.hiddenTracks = [...snap.hiddenTracks];
     this.cursor = Math.max(0, Math.min(this.lines.length - 1, this.cursor));
     this.selectedIds = [];
-    this.selectedTextId = null;
     this.scheduleAutosave();
   }
 
@@ -917,7 +903,6 @@ class ProjectStore {
   isSelected = (id: string) => this.selectedIds.includes(id);
 
   toggleSelect(id: string) {
-    this.selectedTextId = null;
     this.selectedIds = this.isSelected(id)
       ? this.selectedIds.filter((x) => x !== id)
       : [...this.selectedIds, id];
@@ -925,7 +910,6 @@ class ProjectStore {
 
   /** Replace or extend the transcript/clip selection in one go. */
   selectMany(ids: string[], additive = false) {
-    this.selectedTextId = null;
     const next = additive ? [...this.selectedIds] : [];
     const seen = new Set(next);
     for (const id of ids) {
@@ -939,7 +923,6 @@ class ProjectStore {
 
   /** Ctrl-click: each line in `ids` flips, so a whole clip toggles together. */
   toggleMany(ids: string[]) {
-    this.selectedTextId = null;
     const set = new Set(this.selectedIds);
     const allSelected = ids.every((id) => set.has(id));
     for (const id of ids) {
@@ -949,23 +932,12 @@ class ProjectStore {
     this.selectedIds = [...set];
   }
 
-  selectText(id: string | null) {
-    this.selectedTextId = id;
-    if (id) this.selectedIds = [];
-  }
-
-  clearTextSelection() {
-    this.selectedTextId = null;
-  }
-
   selectAll() {
-    this.selectedTextId = null;
     this.selectedIds = this.lines.map((l) => l.id);
   }
 
   deselectAll() {
     this.selectedIds = [];
-    this.selectedTextId = null;
   }
 
   /** The lines a destructive command should act on: the selection, else the cursor line. */
@@ -983,7 +955,6 @@ class ProjectStore {
     const ids = new Set(targets.map((t) => t.id));
     this.lines = this.lines.map((l) => (ids.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l));
     this.selectedIds = [];
-    this.selectedTextId = null;
   }
 
   /* ------------------------------------------------------------ clipboard */
@@ -1068,7 +1039,6 @@ class ProjectStore {
       lineIds.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l
     );
     this.selectedIds = [];
-    this.selectedTextId = null;
     this.segmentOrder = this.segmentOrder.filter((id) => !wanted.has(id));
     this.mutedSegments = this.mutedSegments.filter((id) => !wanted.has(id));
     return targets.length;
@@ -1136,78 +1106,6 @@ class ProjectStore {
     }
     this.lines = this.lines.map((l) => (updates.has(l.id) ? { ...l, ...updates.get(l.id) } : l));
     return true;
-  }
-
-  /* ------------------------------------------------------------- text lane */
-  private clampText(startSec: number, endSec: number): [number, number] {
-    const total = Math.max(0.3, this.editDuration);
-    let s = Math.max(0, Math.min(total - 0.3, startSec));
-    let e = Math.max(s + 0.3, Math.min(total, endSec));
-    if (e - s < 0.3) e = Math.min(total, s + 0.3);
-    s = Math.max(0, Math.min(s, e - 0.3));
-    return [s, e];
-  }
-
-  addText(
-    text: string,
-    startSec: number,
-    endSec: number,
-    kind: TextClip['kind'] = 'heading'
-  ): TextClip | null {
-    const clean = text.trim();
-    if (!clean) return null;
-    const [s, e] = this.clampText(startSec, endSec);
-    this.commit();
-    const clip: TextClip = {
-      id: `txt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      startSec: s,
-      endSec: e,
-      text: clean,
-      kind
-    };
-    this.texts = [...this.texts, clip];
-    this.selectedTextId = clip.id;
-    this.selectedIds = [];
-    return clip;
-  }
-
-  updateText(
-    id: string,
-    patch: Partial<Pick<TextClip, 'text' | 'kind' | 'startSec' | 'endSec' | 'hidden'>>
-  ) {
-    const cur = this.texts.find((t) => t.id === id);
-    if (!cur) return;
-    const next: TextClip = { ...cur, ...patch };
-    if (patch.startSec !== undefined || patch.endSec !== undefined) {
-      [next.startSec, next.endSec] = this.clampText(next.startSec, next.endSec);
-    }
-    if (!next.text.trim()) return;
-    next.text = next.text.trim();
-    this.commit();
-    this.texts = this.texts.map((t) => (t.id === id ? next : t));
-  }
-
-  moveText(id: string, startSec: number, endSec: number) {
-    const cur = this.texts.find((t) => t.id === id);
-    if (!cur) return;
-    const [s, e] = this.clampText(startSec, endSec);
-    if (Math.abs(s - cur.startSec) < 0.01 && Math.abs(e - cur.endSec) < 0.01) return;
-    this.commit();
-    this.texts = this.texts.map((t) => (t.id === id ? { ...t, startSec: s, endSec: e } : t));
-  }
-
-  removeText(id: string) {
-    if (!this.texts.some((t) => t.id === id)) return;
-    this.commit();
-    this.texts = this.texts.filter((t) => t.id !== id);
-    if (this.selectedTextId === id) this.selectedTextId = null;
-  }
-
-  toggleTextHidden(id: string) {
-    const cur = this.texts.find((t) => t.id === id);
-    if (!cur) return;
-    this.commit();
-    this.texts = this.texts.map((t) => (t.id === id ? { ...t, hidden: !t.hidden } : t));
   }
 
   /** Clipchamp: X + â† / â†’  (move the item earlier / later). */

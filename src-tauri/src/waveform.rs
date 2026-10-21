@@ -202,7 +202,11 @@ fn samples_per_bar(duration_secs: f64, bars: usize) -> u64 {
 /// Spawn ffmpeg, fold its PCM stdout into peaks, kill it at the deadline.
 fn stream_peaks(source: &Path, bars: usize, samples_per_bar: u64) -> Result<Vec<f32>, String> {
     let mut child = Command::new("ffmpeg")
-        .args(["-v", "error", "-i"])
+        .args(["-v", "error"])
+        // Same reasoning as thumbnail.rs: the decode threads own their own
+        // contexts and frame buffers, so capping them caps the spike. Audio
+        // barely parallelises anyway — this costs nothing in time.
+        .args(["-threads", "2", "-i"])
         .arg(source)
         .args(["-ac", "1", "-ar"])
         .arg(SAMPLE_RATE.to_string())

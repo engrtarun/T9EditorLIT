@@ -15,6 +15,13 @@ build/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/.tmp/
+# Per-work-order build folders. One per agent, so two builds never write to
+# the same files (see the deploy lock in tools/build.ps1).
+.t9/
+# Local scratch: diagnostics an agent wrote for itself, and the empty
+# executables a deploy test leaves behind. Neither belongs in the history.
+.t9deploy/
+test_sarkari_sandbox/
 
 # ---------- Rust ----------
 **/*.rs.bk

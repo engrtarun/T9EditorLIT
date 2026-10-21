@@ -1,0 +1,48 @@
+{
+  "WorkId": "TELEMETRY-20261021-062417",
+  "Timestamp": "2026-10-21 06:24:17",
+  "TimestampIso": "2026-10-21T00:54:17.5555089Z",
+  "BatteryCharge": 92,
+  "BatteryStatus": "Connected to AC (Charging / Full)",
+  "FreeRamMb": 277.0,
+  "TotalRamMb": 7846.0,
+  "RamUsedPercent": 96.5,
+  "Top6Processes": [
+    {
+      "Rank": 1,
+      "Process": "kilo",
+      "Id": 7052,
+      "RamMb": 733.0
+    },
+    {
+      "Rank": 2,
+      "Process": "Antigravity IDE",
+      "Id": 11648,
+      "RamMb": 345.5
+    },
+    {
+      "Rank": 3,
+      "Process": "MsMpEng",
+      "Id": 4004,
+      "RamMb": 311.4
+    },
+    {
+      "Rank": 4,
+      "Process": "Antigravity IDE",
+      "Id": 20188,
+      "RamMb": 253.5
+    },
+    {
+      "Rank": 5,
+      "Process": "Antigravity IDE",
+      "Id": 18008,
+      "RamMb": 213.8
+    },
+    {
+      "Rank": 6,
+      "Process": "Antigravity IDE",
+      "Id": 2904,
+      "RamMb": 198.9
+    }
+  ]
+}

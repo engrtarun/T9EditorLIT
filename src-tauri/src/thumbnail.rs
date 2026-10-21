@@ -95,7 +95,15 @@ pub fn extract(
     let pattern = dir.join("thumb_%05d.jpg");
     let vf = format!("fps={fps},scale={width}:-2");
     let status = Command::new("ffmpeg")
-        .args(["-y", "-hide_banner", "-nostats", "-loglevel", "error", "-i"])
+        .args(["-y", "-hide_banner", "-nostats", "-loglevel", "error"])
+        // Frame-threaded decode is where FFmpeg's RAM lives: every thread owns
+        // its own decoder context plus one or two reference frames, and on a
+        // 4K source each of those frames is megabytes. Letting it default to
+        // one thread per logical CPU is the difference between "tens of MB" and
+        // "a spike you can watch climb in the RAM meter" on an 8 GB box — and
+        // two i3 threads still finish a 1 fps strip long before the user scrolls
+        // to it. Placed before `-i` so it binds the DECODER, not the muxer.
+        .args(["-threads", "2", "-i"])
         .arg(source)
         .args(["-vf", &vf, "-q:v", JPEG_QUALITY, "-f", "image2"])
         .arg(&pattern)
@@ -132,6 +140,41 @@ pub fn extract(
         height,
         dir: dir.to_string_lossy().into_owned(),
     })
+}
+
+/// Picture formats the app is willing to show as a poster.
+const IMAGE_EXTENSIONS: [&str; 6] = ["jpg", "jpeg", "png", "webp", "bmp", "gif"];
+
+/// Copy a hand-picked picture into the app's cache and return where it landed.
+///
+/// The picture is **never read into memory**: `fs::copy` hands the job to the
+/// OS, byte for byte, and this process only ever holds the path. The file is
+/// named after the source it belongs to, so uploading a new poster replaces
+/// the old one instead of piling up copies — and a library that pointed at
+/// the user's own Desktop would break the moment they moved the file.
+pub fn import_custom(source: &str, image: &Path, root: &Path) -> Result<String, String> {
+    if !image.is_file() {
+        return Err(format!("picture not found: {}", image.display()));
+    }
+    let ext = image
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        return Err(format!("that is not a picture the app can show: .{ext}"));
+    }
+
+    let dir = root.join("thumbs").join("custom");
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+
+    // One file per source: re-uploading replaces the poster in place.
+    let key = cache::hash_hex(&[source.as_bytes()]);
+    let dest = dir.join(format!("{key}.{ext}"));
+    fs::copy(image, &dest)
+        .map_err(|e| format!("could not copy {} to {}: {e}", image.display(), dest.display()))?;
+    Ok(dest.to_string_lossy().into_owned())
 }
 
 /// Height after `scale=<width>:-2`: proportional, then rounded down to even

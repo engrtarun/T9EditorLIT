@@ -21,6 +21,14 @@ export interface MediaEntry {
   /** Set once the asset is the current project source. */
   inUse: boolean;
   durationLabel: string;
+  /**
+   * A poster the user chose by hand, as an absolute path on disk.
+   *
+   * `null` means "let the app pick a frame". The file lives in the app's own
+   * cache folder, so the library still holds **paths, never bytes** - the
+   * image is streamed by the webview through the asset protocol.
+   */
+  customThumb: string | null;
 }
 
 class MediaStore {
@@ -47,7 +55,8 @@ class MediaStore {
       phase: 'loading',
       progress: 0,
       inUse: false,
-      durationLabel: '…'
+      durationLabel: '…',
+      customThumb: null
     };
     this.entries = [...this.entries, entry];
     return entry;
@@ -74,7 +83,8 @@ class MediaStore {
       phase: 'loading',
       progress: 0,
       inUse: false,
-      durationLabel: '…'
+      durationLabel: '…',
+      customThumb: null
     };
     this.entries = [...this.entries, entry];
     this.simulate(entry.asset.id);
@@ -101,7 +111,8 @@ class MediaStore {
       phase: 'ready',
       progress: 1,
       inUse: false,
-      durationLabel: '4:34'
+      durationLabel: '4:34',
+      customThumb: null
     };
     this.entries = [...this.entries, entry];
     return entry;
@@ -125,6 +136,27 @@ class MediaStore {
       }
     };
     setTimeout(tick, 200);
+  }
+
+  /**
+   * Register a file that is already known - the project's own source.
+   *
+   * Unlike `add` and `addMock` there is no import pipeline to fake: the file
+   * has been probed already, so the entry is ready the moment it appears.
+   */
+  adopt(asset: MediaAsset, path: string | null): MediaEntry {
+    const secs = Math.max(0, Math.floor(asset.durationSecs));
+    const entry: MediaEntry = {
+      asset,
+      path,
+      phase: 'ready',
+      progress: 1,
+      inUse: true,
+      durationLabel: `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`,
+      customThumb: null
+    };
+    this.entries = [...this.entries, entry];
+    return entry;
   }
 
   /** Update an entry after the real engine has probed it. */
@@ -152,6 +184,17 @@ class MediaStore {
 
   remove(id: string) {
     this.entries = this.entries.filter((e) => e.asset.id !== id);
+  }
+
+  /**
+   * Attach (or clear) a hand-picked poster for one entry.
+   *
+   * The path is the file **in the app's cache folder**, not the picture the
+   * user picked from their disk: the original may be moved or deleted, and a
+   * library that points at random user files breaks the moment they do.
+   */
+  setCustomThumb(id: string, path: string | null) {
+    this.entries = this.entries.map((e) => (e.asset.id === id ? { ...e, customThumb: path } : e));
   }
 
   get(id: string) {

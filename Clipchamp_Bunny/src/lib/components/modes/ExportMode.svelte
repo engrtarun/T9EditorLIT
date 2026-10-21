@@ -66,7 +66,7 @@
   );
 
   function defaultOutputName() {
-    const base = (project.name || 'nanami-cut').replace(/[^\w\- ]+/g, '');
+    const base = (project.name || 't9-editor-lit').replace(/[^\w\- ]+/g, '');
     return `${base} (cut).mp4`;
   }
 
@@ -150,9 +150,9 @@
           <p class="text-[10px] tracking-widest text-nc-mut">RAW</p>
           <p class="mt-1 font-mono text-xl text-nc-mut-2">{fmtHuman(project.durationSec)}</p>
         </div>
-        <div class="rounded-xl border border-nc-gold/40 bg-nc-gold/5 p-4">
-          <p class="text-[10px] tracking-widest text-nc-gold">FINAL</p>
-          <p class="mt-1 font-mono text-xl text-nc-gold">{fmtHuman(project.keptSec)}</p>
+        <div class="rounded-xl border border-nc-brand/40 bg-nc-brand/5 p-4">
+          <p class="text-[10px] tracking-widest text-nc-brand">FINAL</p>
+          <p class="mt-1 font-mono text-xl text-nc-brand">{fmtHuman(project.keptSec)}</p>
         </div>
         <div class="rounded-xl border border-nc-red/40 bg-nc-red/5 p-4">
           <p class="text-[10px] tracking-widest text-nc-red">KACHRA CUT 🔥</p>
@@ -169,14 +169,14 @@
               onclick={() => (engine = e.id)}
               class="flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors
                      {engine === e.id
-                ? 'border-nc-gold bg-nc-gold/5'
+                ? 'border-nc-brand bg-nc-brand/5'
                 : 'border-nc-line bg-nc-panel hover:border-nc-line-2'}"
             >
               <span
                 class="grid h-4 w-4 shrink-0 place-items-center rounded-full border
-                       {engine === e.id ? 'border-nc-gold' : 'border-nc-line-2'}"
+                       {engine === e.id ? 'border-nc-brand' : 'border-nc-line-2'}"
               >
-                {#if engine === e.id}<span class="h-2 w-2 rounded-full bg-nc-gold"></span>{/if}
+                {#if engine === e.id}<span class="h-2 w-2 rounded-full bg-nc-brand"></span>{/if}
               </span>
               <span class="min-w-0">
                 <span class="block text-xs font-semibold">{e.label}</span>
@@ -194,7 +194,7 @@
                 onclick={() => (quality = q)}
                 class="rounded-md px-2.5 py-1 text-[11px] capitalize transition-colors
                        {quality === q
-                  ? 'bg-nc-gold text-nc-bg'
+                  ? 'bg-nc-brand text-nc-bg'
                   : 'bg-nc-panel-2 text-nc-mut hover:text-nc-txt'}"
               >
                 {q}
@@ -214,11 +214,11 @@
           <input
             bind:value={output}
             placeholder={defaultOutputName()}
-            class="min-w-0 flex-1 rounded-lg border border-nc-line bg-nc-panel px-3 py-2 font-mono text-[11px] outline-none focus:border-nc-gold/50"
+            class="min-w-0 flex-1 rounded-lg border border-nc-line bg-nc-panel px-3 py-2 font-mono text-[11px] outline-none focus:border-nc-brand/50"
           />
           <button
             onclick={chooseOutput}
-            class="rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-2 text-[11px] hover:border-nc-gold/50"
+            class="rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-2 text-[11px] hover:border-nc-brand/50"
           >
             Choose…
           </button>
@@ -227,15 +227,15 @@
 
       <!-- action -->
       {#if running}
-        <div class="space-y-2 rounded-xl border border-nc-gold/40 bg-nc-gold/5 p-4">
+        <div class="space-y-2 rounded-xl border border-nc-brand/40 bg-nc-brand/5 p-4">
           <div class="flex items-center gap-2 text-[11px]">
-            <span class="text-nc-gold">{stage.toUpperCase() || 'WORKING'}</span>
+            <span class="text-nc-brand">{stage.toUpperCase() || 'WORKING'}</span>
             <span class="min-w-0 flex-1 truncate text-nc-mut">{message}</span>
             <span class="font-mono text-nc-txt">{percent.toFixed(0)}%</span>
           </div>
           <div class="h-2 overflow-hidden rounded-full bg-nc-panel-2">
             <div
-              class="h-full rounded-full bg-gradient-to-r from-nc-gold to-nc-green transition-[width] duration-200"
+              class="h-full rounded-full bg-gradient-to-r from-nc-brand to-nc-green transition-[width] duration-200"
               style="width:{percent}%"
             ></div>
           </div>
@@ -250,15 +250,15 @@
         <button
           onclick={run}
           disabled={!segments.length || !project.sourcePath}
-          class="w-full rounded-xl bg-nc-gold py-3.5 text-sm font-bold text-nc-bg transition hover:brightness-110 disabled:opacity-40"
+          class="w-full rounded-xl bg-nc-brand py-3.5 text-sm font-bold text-nc-bg transition hover:brightness-110 disabled:opacity-40"
         >
           ▶ EXPORT FINAL VIDEO
         </button>
       {/if}
 
       {#if result}
-        <div class="nc-tie-edge rounded-xl border border-nc-gold/40 bg-nc-gold/5 p-5 text-center">
-          <p class="text-base font-bold text-nc-gold">Kaam khatam. Ab aaram karo.</p>
+        <div class="nc-tie-edge rounded-xl border border-nc-brand/40 bg-nc-brand/5 p-5 text-center">
+          <p class="text-base font-bold text-nc-brand">Kaam khatam. Ab aaram karo.</p>
           <p class="mt-1 text-xs text-nc-mut">
             {result.pieceCount} piece{result.pieceCount === 1 ? '' : 's'} · {fmtSize(
               result.sizeBytes
@@ -272,7 +272,7 @@
             </ul>
           {/if}
           <p class="mt-3 text-[10px] text-nc-mut-2">
-            7:3 ratio. Ek strike me kaam khatam. — Nanami
+            7:3 ratio. Ek strike me kaam khatam. — T9 Editor LIT
           </p>
         </div>
       {/if}

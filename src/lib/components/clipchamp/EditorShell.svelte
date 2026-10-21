@@ -25,6 +25,14 @@
   import ExportMode from "../modes/ExportMode.svelte";
   import { mode } from "../../stores/mode.svelte";
   import { cc } from "../../stores/cc.svelte";
+  import { shortcuts } from "../../stores/shortcuts.svelte";
+
+  /** `Alt + 5` — Clipchamp's "Go to property panel": focus the right panel. */
+  let panelEl: HTMLElement | null = $state(null);
+
+  $effect(() => {
+    return shortcuts.bind("navPanel", () => panelEl?.focus());
+  });
 
   // Drag the panel's left edge to resize it (the "splitter" handle).
   function startPanelResize(event: PointerEvent) {
@@ -58,10 +66,12 @@
 
     <!-- Right: the resident editing mode (transcript | music & text | export). -->
     <aside
+      bind:this={panelEl}
       class="relative flex shrink-0 flex-col overflow-hidden border-l border-cc-line
         bg-cc-surface"
       style="width: {cc.panelWidth}px"
       aria-label="Editing panel"
+      tabindex="-1"
     >
       <!-- Drag handle on the panel's left edge. -->
       <div

@@ -83,10 +83,13 @@
 </script>
 
 {#if hovering}
-  <!-- Scrim: covers everything so the drop lands on the window, not a panel. -->
+  <!-- Scrim: covers everything so the drop lands on the window, not a panel.
+       Solid-ish rather than blurred: `backdrop-filter` on a full-window layer
+       forces WebView2 to re-render everything behind it on every frame while
+       the pointer moves — the expensive kind of pretty on integrated graphics.
+       85% reads the same as the old 70% + 2px blur for a fraction of the cost. -->
   <div
-    class="pointer-events-none fixed inset-0 z-[90] flex items-center justify-center
-      bg-cc-bg/70 backdrop-blur-[2px]"
+    class="pointer-events-none fixed inset-0 z-[90] flex items-center justify-center bg-cc-bg/85"
     role="presentation"
   >
     <div

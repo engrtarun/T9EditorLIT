@@ -8,21 +8,23 @@
   import { clamp, fmtShort, fmtTime, niceStep } from '../../utils';
   import ContextMenu from '../ContextMenu.svelte';
   import MenuIcon from '../MenuIcon.svelte';
-  import type { MenuItem, TextClip } from '../../types';
+  import type { MenuItem } from '../../types';
 
-  /* Clipchamp timeline metrics (measured on the OBS capture + DOM extract):
-     tool row 30px · source minimap 7px · ruler 24px · T lane 30px
+  /* Timeline metrics (measured on the Clipchamp OBS capture + DOM extract):
+     tool row 30px · source minimap 7px · ruler 24px
      video lane 52px · audio lane 44px
 
      The block is drag-resizable from its top edge: everything above the two
-     media lanes is fixed at these Clipchamp metrics, and `layout.timelineHeight`
+     media lanes is fixed at these metrics, and `layout.timelineHeight`
      (the whole section, borders included) hands the leftover to the video/audio
-     lanes in Clipchamp's 52:44 ratio. Default 191px = exactly today's height. */
+     lanes in Clipchamp's 52:44 ratio.
+
+     There is **no text lane**: text overlays are not part of the app right
+     now, so the user cannot create, move or trim text on the timeline. */
   const MINIMAP_H = 7;
   const RULER_H = 24;
-  const TEXT_H = 30;
-  /* border-t 1 + resize strip 3 + tool row 30 + minimap 7 + ruler 24 + T lane 30 */
-  const FIXED_H = 95;
+  /* border-t 1 + resize strip 3 + tool row 30 + minimap 7 + ruler 24 */
+  const FIXED_H = 65;
   const LANES_H = $derived(Math.max(55, layout.timelineHeight - FIXED_H));
   const VIDEO_H = $derived(Math.round((LANES_H * 52) / 96));
   const AUDIO_H = $derived(LANES_H - VIDEO_H);
@@ -36,7 +38,7 @@
   let scrollLeft = $state(0);
   let busy = $state(false);
 
-  /* ---- clip / text drag state ---- */
+  /* ---- clip drag state ---- */
   let dragId: string | null = $state(null);
   let dragDx = $state(0);
   let lastClickedSegId: string | null = $state(null);
@@ -52,29 +54,13 @@
   }
   let trim = $state<ClipTrim | null>(null);
 
-  let textDrag = $state<{ id: string; dx: number } | null>(null);
-  let textTrim = $state<{ id: string; edge: TrimEdge; targetSec: number } | null>(null);
-
-  /* ---- context menu + text editor ---- */
+  /* ---- context menu ---- */
   interface CtxState {
     x: number;
     y: number;
-    segId: string | null;
-    textId: string | null;
+    segId: string;
   }
   let ctx = $state<CtxState | null>(null);
-
-  let textOpen = $state(false);
-  let textEditId = $state<string | null>(null);
-  let textDraft = $state('');
-  let textKind = $state<TextClip['kind']>('heading');
-  let textDuration = $state(3);
-  let textStart = $state(0);
-  let textDraftEl: HTMLTextAreaElement | null = $state(null);
-
-  $effect(() => {
-    if (textOpen && textDraftEl) textDraftEl.focus();
-  });
 
   const zoom = $derived(player.zoom);
   /** The timeline is the EDIT timeline: the final video, gapless. */
@@ -337,21 +323,6 @@
     }
   }
 
-  /**
-   * **Cut at the playhead** — the gesture from the top: drop the playhead
-   * inside a line and cut there. The line is split at that point and the head
-   * is dropped, so the transcript shows the two halves and the timeline shows
-   * the gap.
-   */
-  function cutHere() {
-    if (project.cutAtPlayhead(player.currentTime)) {
-      player.seek(project.snapTime(player.currentTime));
-      toast.push('cut', `✂ Cut here · ${fmtTime(player.currentTime)}`);
-    } else {
-      toast.push('warn', 'Yahan playhead line ke andar nahi hai');
-    }
-  }
-
   /** Clipchamp's "AI suggestions" — auto-cut the long silences. */
   async function autoCut() {
     if (busy) return;
@@ -507,132 +478,12 @@
     window.addEventListener('pointerup', up);
   }
 
-  /* ------------------------------------------------------------------ text */
-  function openTextEditor(id: string | null = null) {
-    if (id) {
-      const t = project.texts.find((x) => x.id === id);
-      if (!t) return;
-      project.selectText(id);
-      textEditId = id;
-      textDraft = t.text;
-      textKind = t.kind;
-      textDuration = Math.max(0.3, t.endSec - t.startSec);
-      textStart = t.startSec;
-    } else {
-      const total = Math.max(0.3, editDur);
-      const start = clamp(project.editTimeAt(player.currentTime) ?? 0, 0, total - 0.3);
-      textEditId = null;
-      textDraft = '';
-      textKind = 'heading';
-      textDuration = Math.min(3, Math.max(0.5, total - start));
-      textStart = start;
-    }
-    textOpen = true;
-  }
-
-  function closeTextEditor() {
-    textOpen = false;
-  }
-
-  function saveText() {
-    const text = textDraft.trim();
-    if (!text) {
-      toast.push('warn', 'Text khali hai — kuch likho');
-      return;
-    }
-    const duration = clamp(Number(textDuration) || 3, 0.3, Math.max(0.3, editDur));
-    if (textEditId) {
-      project.updateText(textEditId, {
-        text,
-        kind: textKind,
-        startSec: textStart,
-        endSec: textStart + duration
-      });
-      toast.push('info', 'Text updated');
-    } else {
-      const clip = project.addText(text, textStart, textStart + duration, textKind);
-      if (clip) toast.push('info', 'Text added');
-    }
-    textOpen = false;
-  }
-
-  function onTextDown(e: PointerEvent, t: TextClip) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation();
-    project.selectText(t.id);
-    lastClickedSegId = null;
-    if (e.shiftKey || e.ctrlKey || e.metaKey) return;
-
-    const startX = e.clientX;
-    let moved = false;
-    let dx = 0;
-    const move = (ev: PointerEvent) => {
-      dx = ev.clientX - startX;
-      if (!moved && Math.abs(dx) < 4) return;
-      moved = true;
-      textDrag = { id: t.id, dx };
-    };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      const d = textDrag;
-      textDrag = null;
-      if (!moved) {
-        const source = project.sourceAt(t.startSec);
-        if (source != null) player.seek(source);
-        return;
-      }
-      if (!d) return;
-      const delta = d.dx / zoom;
-      project.moveText(t.id, t.startSec + delta, t.endSec + delta);
-      toast.push('info', 'Text moved');
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  }
-
-  function onTextTrimDown(e: PointerEvent, t: TextClip, edge: TrimEdge) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation();
-    project.selectText(t.id);
-
-    const startX = e.clientX;
-    const origin = edge === 'start' ? t.startSec : t.endSec;
-    const lo = edge === 'start' ? 0 : t.startSec + 0.3;
-    const hi = edge === 'start' ? t.endSec - 0.3 : editDur;
-    let target = origin;
-    const move = (ev: PointerEvent) => {
-      target = clamp(origin + (ev.clientX - startX) / zoom, lo, hi);
-      textTrim = { id: t.id, edge, targetSec: target };
-    };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      const tr = textTrim;
-      textTrim = null;
-      if (!tr || Math.abs(tr.targetSec - origin) < 0.02) return;
-      project.updateText(t.id, edge === 'start' ? { startSec: target } : { endSec: target });
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  }
-
   /* ------------------------------------------------------------ context menu */
   function openClipMenu(e: MouseEvent, seg: (typeof segments)[number]) {
     e.preventDefault();
     e.stopPropagation();
     selectSegment(seg, e);
-    ctx = { x: e.clientX, y: e.clientY, segId: seg.id, textId: null };
-  }
-
-  function openTextMenu(e: MouseEvent, t: TextClip) {
-    e.preventDefault();
-    e.stopPropagation();
-    project.selectText(t.id);
-    lastClickedSegId = null;
-    ctx = { x: e.clientX, y: e.clientY, segId: null, textId: t.id };
+    ctx = { x: e.clientX, y: e.clientY, segId: seg.id };
   }
 
   const clipMenuItems = $derived.by((): MenuItem[] => {
@@ -657,38 +508,10 @@
     ];
   });
 
-  const textMenuItems = $derived.by((): MenuItem[] => {
-    const c = ctx;
-    const t = c?.textId ? project.texts.find((x) => x.id === c.textId) : null;
-    if (!t) return [];
-    return [
-      { id: 'edit', label: 'Edit text', icon: 'rename' },
-      {
-        id: 'hide',
-        label: t.hidden ? 'Show text' : 'Hide text',
-        icon: t.hidden ? 'eye' : 'eyeOff'
-      },
-      { id: 'div-1', label: '', divider: true },
-      { id: 'delete', label: 'Delete text', icon: 'trash', danger: true }
-    ];
-  });
-
-  const menuItems = $derived(ctx?.textId ? textMenuItems : clipMenuItems);
-
   function onMenuChoose(id: string) {
     const c = ctx;
     ctx = null;
     if (!c) return;
-
-    if (c.textId) {
-      if (id === 'edit') openTextEditor(c.textId);
-      else if (id === 'hide') project.toggleTextHidden(c.textId);
-      else if (id === 'delete') {
-        project.removeText(c.textId);
-        toast.push('cut', '✕ Text clip deleted');
-      }
-      return;
-    }
 
     const seg = c.segId ? segments.find((s) => s.id === c.segId) : null;
     if (!seg) return;
@@ -753,7 +576,7 @@
       title="Drag to resize — double-click to reset"
       onpointerdown={startHeightResize}
       ondblclick={() => layout.resetTimelineHeight()}
-      class="h-[3px] shrink-0 cursor-row-resize bg-nc-line transition-colors hover:bg-nc-gold/60"
+      class="h-[3px] shrink-0 cursor-row-resize bg-nc-line transition-colors hover:bg-nc-brand/60"
     ></div>
   {/if}
   <!-- TOOL ROW: tools left, transport centred, legend + track eyes right. -->
@@ -763,7 +586,7 @@
         onclick={autoCut}
         disabled={busy}
         class="grid h-7 w-7 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt disabled:opacity-40"
-        title="AI suggestions — auto-cut silences longer than 3 s (Clipchamp)"
+        title="AI suggestions — auto-cut silences longer than 3 s"
       >
         <svg
           width="15"
@@ -780,7 +603,7 @@
       <button
         onclick={doSplit}
         class="grid h-7 w-7 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-        title="Split at playhead (S / Ctrl+B)"
+        title="Split at playhead (S)"
       >
         <svg
           width="15"
@@ -801,7 +624,7 @@
         }}
         class="grid h-7 w-7 place-items-center rounded-md transition-colors
                {project.snap
-          ? 'text-nc-gold hover:bg-nc-panel-2'
+          ? 'text-nc-brand hover:bg-nc-panel-2'
           : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
         title="Snap to line boundaries"
       >
@@ -815,14 +638,6 @@
         >
           <path d="M6 3v7a6 6 0 0 0 12 0V3M6 3H3M18 3h3M9 21h6" />
         </svg>
-      </button>
-      <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
-      <button
-        onclick={() => openTextEditor()}
-        class="grid h-7 w-7 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-        title="Add text at playhead"
-      >
-        <MenuIcon name="text" size={15} />
       </button>
     </div>
 
@@ -896,7 +711,7 @@
 
     <div class="ml-auto flex items-center gap-1.5">
       <span class="flex items-center gap-1 text-[9px] text-nc-mut">
-        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-gold"></i>keep
+        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-brand"></i>keep
       </span>
       <span class="flex items-center gap-1 text-[9px] text-nc-mut">
         <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-red"></i>fumble
@@ -905,17 +720,6 @@
         <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-mut-2"></i>khamoshi
       </span>
       <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
-      <button
-        onclick={() => project.toggleTrackHidden('text')}
-        class="flex h-6 items-center gap-1 rounded px-1.5 text-[9px] transition-colors
-               {project.isTrackHidden('text')
-          ? 'bg-nc-red/15 text-nc-red'
-          : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
-        title={project.isTrackHidden('text') ? 'Show text track' : 'Hide text track'}
-      >
-        <MenuIcon name={project.isTrackHidden('text') ? 'eyeOff' : 'eye'} size={12} />
-        T
-      </button>
       <button
         onclick={() => project.toggleTrackHidden('video')}
         class="flex h-6 items-center gap-1 rounded px-1.5 text-[9px] transition-colors
@@ -980,115 +784,6 @@
           {/each}
         </div>
 
-        <!-- T lane -->
-        <div
-          {...aria}
-          class="relative cursor-pointer border-b border-nc-line/60 bg-nc-panel
-                 {project.isTrackHidden('text') ? 'opacity-60' : ''}"
-          style="height:{TEXT_H}px"
-          onclick={onLaneClick}
-          onkeydown={laneKeys}
-        >
-          <span
-            class="pointer-events-none absolute left-1 top-1/2 z-10 -translate-y-1/2 font-serif text-[13px] text-nc-mut"
-            >T</span
-          >
-          {#if project.texts.length === 0}
-            <button
-              onclick={(e) => {
-                e.stopPropagation();
-                openTextEditor();
-              }}
-              class="absolute left-7 top-1/2 z-10 flex -translate-y-1/2 items-center gap-1 rounded border border-dashed border-nc-line-2 px-2 py-0.5 text-[10px] text-nc-mut hover:border-nc-gold/60 hover:text-nc-gold"
-              title="Add a text overlay at the playhead"
-            >
-              <MenuIcon name="plus" size={11} /> Add text
-            </button>
-          {/if}
-          {#each project.texts as t (t.id)}
-            {@const isSel = project.selectedTextId === t.id}
-            {@const tr = textTrim?.id === t.id ? textTrim : null}
-            {@const startSec = tr?.edge === 'start' ? tr.targetSec : t.startSec}
-            {@const endSec = tr?.edge === 'end' ? tr.targetSec : t.endSec}
-            {@const dx = textDrag?.id === t.id ? textDrag.dx : 0}
-            <div
-              onpointerdown={(e) => onTextDown(e, t)}
-              ondblclick={(e) => {
-                e.stopPropagation();
-                openTextEditor(t.id);
-              }}
-              oncontextmenu={(e) => openTextMenu(e, t)}
-              onclick={(e) => e.stopPropagation()}
-              onkeydown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  project.selectText(t.id);
-                  openTextEditor(t.id);
-                }
-              }}
-              role="button"
-              tabindex="0"
-              aria-pressed={isSel}
-              aria-label="Text clip: {t.text}"
-              class="group absolute top-0.5 bottom-0.5 cursor-grab overflow-hidden rounded-[4px] border px-1.5 text-[10px] leading-[20px] transition-colors active:cursor-grabbing
-                     {isSel
-                ? 'border-nc-gold bg-nc-gold/20 text-nc-gold'
-                : 'border-nc-gold/40 bg-nc-gold/10 text-nc-gold/90 hover:border-nc-gold/70'}
-                     {t.hidden ? 'line-through opacity-45' : ''}"
-              style="left:{startSec * zoom + dx}px;width:{Math.max(
-                18,
-                (endSec - startSec) * zoom
-              )}px"
-              title="{t.kind}: {t.text}"
-            >
-              <span class="pointer-events-none block truncate">{t.text}</span>
-              {#if t.hidden}
-                <span
-                  class="pointer-events-none absolute top-0 right-0 bottom-0 grid w-4 place-items-center bg-black/30"
-                >
-                  <MenuIcon name="eyeOff" size={9} />
-                </span>
-              {/if}
-              <div
-                onpointerdown={(e) => onTextTrimDown(e, t, 'start')}
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="Trim text start"
-                class="absolute inset-y-0 left-0 z-10 w-[6px] cursor-ew-resize opacity-0 group-hover:opacity-100 {isSel
-                  ? 'opacity-100'
-                  : ''}"
-                title="Trim text start"
-              >
-                <span class="absolute inset-y-1 left-0 w-[2px] rounded bg-nc-gold"></span>
-              </div>
-              <div
-                onpointerdown={(e) => onTextTrimDown(e, t, 'end')}
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="Trim text end"
-                class="absolute inset-y-0 right-0 z-10 w-[6px] cursor-ew-resize opacity-0 group-hover:opacity-100 {isSel
-                  ? 'opacity-100'
-                  : ''}"
-                title="Trim text end"
-              >
-                <span class="absolute inset-y-1 right-0 w-[2px] rounded bg-nc-gold"></span>
-              </div>
-              {#if tr}
-                <span
-                  class="pointer-events-none absolute -top-4 left-0 rounded bg-black/85 px-1 py-0.5 font-mono text-[9px] text-white"
-                  >{fmtShort(tr.targetSec)}</span
-                >
-              {/if}
-            </div>
-          {/each}
-          {#if project.isTrackHidden('text')}
-            <span
-              class="pointer-events-none absolute top-1 right-1 rounded bg-nc-red/80 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-white"
-              >TEXT HIDDEN</span
-            >
-          {/if}
-        </div>
-
         <!-- VIDEO lane · draggable clips on the edit timeline -->
         <div
           bind:this={laneEl}
@@ -1130,12 +825,12 @@
                 aria-label="Clip {fmtShort(s.startSec)} to {fmtShort(s.endSec)} — drag to reorder"
                 class="group absolute top-0 bottom-0 cursor-grab overflow-hidden rounded-[4px] border-2 transition-all active:cursor-grabbing
                        {dragId === s.id
-                  ? 'z-20 border-nc-gold shadow-lg shadow-nc-gold/20'
+                  ? 'z-20 border-nc-brand shadow-lg shadow-nc-brand/20'
                   : sel === 'all'
-                    ? 'border-nc-gold ring-1 ring-nc-gold/40'
+                    ? 'border-nc-brand ring-1 ring-nc-brand/40'
                     : sel === 'some'
-                      ? 'border-dashed border-nc-gold/80'
-                      : 'border-white/15 hover:border-nc-gold/70'}"
+                      ? 'border-dashed border-nc-brand/80'
+                      : 'border-white/15 hover:border-nc-brand/70'}"
                 style="left:{left}px;width:{width}px"
               >
                 <!-- scrims so the filename and duration stay readable over any frame -->
@@ -1186,7 +881,7 @@
                   title="Trim clip start"
                 >
                   <span
-                    class="absolute inset-y-1 left-0 w-[2px] rounded bg-nc-gold shadow-[0_0_4px_rgba(0,0,0,.8)]"
+                    class="absolute inset-y-1 left-0 w-[2px] rounded bg-nc-brand shadow-[0_0_4px_rgba(0,0,0,.8)]"
                   ></span>
                 </div>
                 <div
@@ -1201,7 +896,7 @@
                   title="Trim clip end"
                 >
                   <span
-                    class="absolute inset-y-1 right-0 w-[2px] rounded bg-nc-gold shadow-[0_0_4px_rgba(0,0,0,.8)]"
+                    class="absolute inset-y-1 right-0 w-[2px] rounded bg-nc-brand shadow-[0_0_4px_rgba(0,0,0,.8)]"
                   ></span>
                 </div>
                 {#if tr}
@@ -1233,7 +928,7 @@
                       e.stopPropagation();
                       project.undo();
                     }}
-                    class="rounded border border-nc-line-2 px-2 py-0.5 text-[10px] text-nc-txt hover:border-nc-gold/60 hover:text-nc-gold"
+                    class="rounded border border-nc-line-2 px-2 py-0.5 text-[10px] text-nc-txt hover:border-nc-brand/60 hover:text-nc-brand"
                     >Undo</button
                   >
                 {/if}
@@ -1377,104 +1072,11 @@
 
   {#if ctx}
     <ContextMenu
-      items={menuItems}
+      items={clipMenuItems}
       x={ctx.x}
       y={ctx.y}
       onchoose={onMenuChoose}
       onclose={() => (ctx = null)}
     />
-  {/if}
-
-  {#if textOpen}
-    <div
-      class="fixed inset-0 z-[400] grid place-items-center bg-black/60 p-4"
-      role="dialog"
-      tabindex="-1"
-      aria-modal="true"
-      aria-label={textEditId ? 'Edit text clip' : 'Add text clip'}
-      onclick={(e) => {
-        if (e.target === e.currentTarget) closeTextEditor();
-      }}
-      onkeydown={(e) => {
-        e.stopPropagation();
-        if (e.key === 'Escape') closeTextEditor();
-        else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-          e.preventDefault();
-          saveText();
-        }
-      }}
-    >
-      <div
-        class="w-full max-w-[420px] rounded-lg border border-nc-line-2 bg-nc-panel p-4 shadow-2xl"
-      >
-        <div class="mb-3 flex items-start justify-between gap-3">
-          <div>
-            <h2 class="text-sm font-semibold text-nc-txt">
-              {textEditId ? 'Edit text' : 'Add text'}
-            </h2>
-            <p class="mt-0.5 text-[10px] text-nc-mut">
-              Edit timeline · starts at {fmtShort(textStart)}
-            </p>
-          </div>
-          <button
-            onclick={closeTextEditor}
-            class="grid h-6 w-6 place-items-center rounded text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-            title="Close"
-          >
-            ✕
-          </button>
-        </div>
-
-        <label class="block text-[10px] font-medium tracking-wider text-nc-mut" for="t9-text-draft"
-          >TEXT</label
-        >
-        <textarea
-          id="t9-text-draft"
-          bind:this={textDraftEl}
-          bind:value={textDraft}
-          rows="4"
-          placeholder="Yahan text likho…"
-          class="mt-1 w-full resize-y rounded border border-nc-line-2 bg-nc-bg px-2 py-1.5 text-xs text-nc-txt outline-none focus:border-nc-gold/70"
-        ></textarea>
-
-        <div class="mt-3 grid grid-cols-2 gap-3">
-          <label class="block">
-            <span class="text-[10px] font-medium tracking-wider text-nc-mut">STYLE</span>
-            <select
-              bind:value={textKind}
-              class="mt-1 w-full rounded border border-nc-line-2 bg-nc-bg px-2 py-1.5 text-xs text-nc-txt outline-none focus:border-nc-gold/70"
-            >
-              <option value="heading">Heading</option>
-              <option value="title">Title</option>
-              <option value="code-zoom">Code zoom</option>
-            </select>
-          </label>
-          <label class="block">
-            <span class="text-[10px] font-medium tracking-wider text-nc-mut">DURATION (S)</span>
-            <input
-              type="number"
-              min="0.5"
-              step="0.5"
-              bind:value={textDuration}
-              class="mt-1 w-full rounded border border-nc-line-2 bg-nc-bg px-2 py-1.5 text-xs text-nc-txt outline-none focus:border-nc-gold/70"
-            />
-          </label>
-        </div>
-
-        <div class="mt-4 flex items-center justify-end gap-2">
-          <span class="mr-auto text-[9px] text-nc-mut-2">Ctrl+Enter to save</span>
-          <button
-            onclick={closeTextEditor}
-            class="rounded border border-nc-line-2 px-2.5 py-1 text-[11px] text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-            >Cancel</button
-          >
-          <button
-            onclick={saveText}
-            class="rounded bg-nc-gold px-2.5 py-1 text-[11px] font-semibold text-black hover:bg-nc-gold/90"
-            >{textEditId ? 'Save text' : 'Add text'}</button
-          >
-        </div>
-      </div>
-    </div>
   {/if}
 </section>

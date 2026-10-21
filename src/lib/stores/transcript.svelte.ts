@@ -18,6 +18,23 @@ import {
 import { transcribeSource } from "../transcription";
 import type { TranscriptLine } from "../types";
 
+/**
+ * Cap on undo/redo depth.
+ *
+ * Each entry is three numbers, but the stacks grow once per keep/cut and a
+ * long session runs into thousands of toggles — and both are `$state` arrays,
+ * so every push copies and re-proxies the whole list. A couple of hundred
+ * steps is far beyond what anyone reaches for "revert the last ruling", and
+ * the bound makes the cost flat instead of session-length.
+ */
+const HISTORY_LIMIT = 200;
+
+type UndoEntry = { index: number; previous: boolean; next: boolean };
+
+function capHistory(stack: UndoEntry[]): UndoEntry[] {
+  return stack.length > HISTORY_LIMIT ? stack.slice(stack.length - HISTORY_LIMIT) : stack;
+}
+
 class TranscriptStore {
   dbPath = $state<string | null>(null);
   sourcePath = $state<string | null>(null);
@@ -31,8 +48,8 @@ class TranscriptStore {
   progressTotal = $state(0);
   error = $state<string | null>(null);
 
-  undoStack = $state<{ index: number; previous: boolean; next: boolean }[]>([]);
-  redoStack = $state<{ index: number; previous: boolean; next: boolean }[]>([]);
+  undoStack = $state<UndoEntry[]>([]);
+  redoStack = $state<UndoEntry[]>([]);
 
   get canUndo(): boolean {
     return this.undoStack.length > 0;
@@ -46,18 +63,20 @@ class TranscriptStore {
     return this.lines.length > 0;
   }
 
-  get cutCount(): number {
-    return this.lines.filter((l) => !l.keep).length;
-  }
+  /**
+   * The four tallies are `$derived`, not getters.
+   *
+   * As getters each render of the cut panel (and the timeline legend, and the
+   * export summary) filtered the whole transcript again — O(n) per render,
+   * thousands of times per second of playback. Derived, they recompute exactly
+   * when `lines` changes and stay put otherwise.
+   */
+  cutCount = $derived.by(() => this.lines.filter((l) => !l.keep).length);
 
-  get keptCount(): number {
-    return this.lines.filter((l) => l.keep).length;
-  }
+  keptCount = $derived.by(() => this.lines.filter((l) => l.keep).length);
 
   /** Lines autocorrect actually changed. */
-  get fixedCount(): number {
-    return this.lines.filter((l) => l.originalText).length;
-  }
+  fixedCount = $derived.by(() => this.lines.filter((l) => l.originalText).length);
 
   /**
    * Lines the analyser flagged that are still marked keep.
@@ -66,9 +85,7 @@ class TranscriptStore {
    * ruled on it yet. They render amber so they stand out from both a settled
    * keep and a settled cut.
    */
-  get reviewCount(): number {
-    return this.lines.filter((l) => l.keep && l.flag !== "none").length;
-  }
+  reviewCount = $derived.by(() => this.lines.filter((l) => l.keep && l.flag !== "none").length);
 
   /** Resolve the default db path once. */
   async ensureDbPath(): Promise<string> {
@@ -192,7 +209,7 @@ class TranscriptStore {
     const next = !line.keep;
     // Optimistic update; SQLite is the source of truth on reload.
     this.lines[index] = { ...line, keep: next };
-    this.undoStack = [...this.undoStack, { index, previous: line.keep, next }];
+    this.undoStack = capHistory([...this.undoStack, { index, previous: line.keep, next }]);
     this.redoStack = [];
     try {
       const db = await this.ensureDbPath();
@@ -224,7 +241,7 @@ class TranscriptStore {
     if (!line || !this.sourcePath) return;
     this.undoStack = this.undoStack.slice(0, -1);
     this.lines[entry.index] = { ...line, keep: entry.previous };
-    this.redoStack = [...this.redoStack, entry];
+    this.redoStack = capHistory([...this.redoStack, entry]);
     try {
       const db = await this.ensureDbPath();
       await setTranscriptKeep(db, this.sourcePath, line.id, entry.previous);
@@ -243,7 +260,7 @@ class TranscriptStore {
     if (!line || !this.sourcePath) return;
     this.redoStack = this.redoStack.slice(0, -1);
     this.lines[entry.index] = { ...line, keep: entry.next };
-    this.undoStack = [...this.undoStack, entry];
+    this.undoStack = capHistory([...this.undoStack, entry]);
     try {
       const db = await this.ensureDbPath();
       await setTranscriptKeep(db, this.sourcePath, line.id, entry.next);

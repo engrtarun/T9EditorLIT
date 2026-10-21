@@ -86,14 +86,6 @@
   /** The first filmstrip frame doubles as the poster, so the canvas is never black. */
   const poster = $derived(project.thumbnails ? thumbUrl(project.thumbnails, 0) : undefined);
 
-  /** Edit-timeline position — text clips are stored on the edit axis. */
-  const editPos = $derived(project.editTimeAt(player.currentTime));
-
-  const activeTexts = $derived.by(() => {
-    if (project.isTrackHidden('text') || editPos == null) return [];
-    return project.texts.filter((t) => !t.hidden && editPos >= t.startSec && editPos < t.endSec);
-  });
-
   const currentSegment = $derived(
     project.segments.find(
       (s) => player.currentTime >= s.startSec && player.currentTime < s.endSec
@@ -118,21 +110,27 @@
   bind:this={stage}
   data-focus="stage"
   tabindex="-1"
-  class="relative grid min-h-0 flex-1 place-items-center overflow-hidden bg-nc-bg p-4 outline-none"
+  class="relative isolate grid min-h-0 flex-1 place-items-center overflow-hidden bg-nc-bg p-4 outline-none"
 >
   {#if project.media}
     <!-- YouTube-style Ambient Mode glow: strictly BEHIND the 16:9 player,
-         blooming outward from behind the player edges. Zero-RAM canvas (5 KB). -->
+         blooming outward from behind the player edges into the stage. The
+         `isolate` above keeps `mix-blend-mode: screen` inside this stage —
+         the glow can never tint the media or transcript panels. -->
     <div
-      class="pointer-events-none absolute aspect-video max-h-full w-full max-w-[min(100%,calc((100vh-330px)*16/9))] scale-110 -z-0"
+      class="pointer-events-none absolute inset-0 z-0 grid place-items-center"
       aria-hidden="true"
     >
-      <AmbientGlow video={videoEl} />
+      <div
+        class="aspect-video max-h-full w-full max-w-[min(100%,calc((100vh-330px)*16/9))] scale-[1.18]"
+      >
+        <AmbientGlow video={videoEl} {poster} />
+      </div>
     </div>
 
     <!-- 16:9 frame that fits the stage, sitting in front of the ambient glow -->
     <div
-      class="relative z-10 aspect-video max-h-full w-full max-w-[min(100%,calc((100vh-330px)*16/9))] overflow-hidden rounded bg-black shadow-2xl"
+      class="relative z-10 aspect-video max-h-full w-full max-w-[min(100%,calc((100vh-330px)*16/9))] overflow-hidden rounded bg-black shadow-lg ring-1 ring-white/5"
     >
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
@@ -147,27 +145,6 @@
         onpause={onPause}
         onclick={() => player.toggle()}
       ></video>
-
-      <!-- Text lane overlays. Times are edit-axis seconds, so reordering and
-           trimming the transcript moves the captions with the picture. -->
-      {#if activeTexts.length}
-        <div
-          class="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col items-center gap-2 p-6 text-center"
-        >
-          {#each activeTexts as t (t.id)}
-            <div
-              class="max-w-[90%] whitespace-pre-wrap break-words
-                     {t.kind === 'title'
-                ? 'text-4xl font-black uppercase leading-tight tracking-tight text-white drop-shadow-[0_2px_8px_rgba(0,0,0,.9)]'
-                : t.kind === 'code-zoom'
-                  ? 'rounded border border-nc-gold/40 bg-black/85 px-3 py-2 font-mono text-lg text-nc-gold shadow-xl'
-                  : 'rounded bg-black/65 px-3 py-1.5 text-2xl font-bold text-white shadow-lg backdrop-blur-sm'}"
-            >
-              {t.text}
-            </div>
-          {/each}
-        </div>
-      {/if}
 
       {#if curLine?.keep === 'cut'}
         <div
@@ -227,7 +204,7 @@
           fill="none"
           stroke="currentColor"
           stroke-width="1.4"
-          class="text-nc-gold"
+          class="text-nc-brand"
         >
           <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
         </svg>
@@ -239,7 +216,7 @@
         <p class="text-sm font-semibold">Overtime nahi karna hai.</p>
         <p class="mt-2 text-xs leading-relaxed text-nc-mut">
           Koi video nahi khuli. Apni video load karne ke liye
-          <b class="text-nc-gold">Media</b> mode pe jao.
+          <b class="text-nc-brand">Media</b> mode pe jao.
         </p>
       {/if}
     </div>

@@ -410,36 +410,67 @@ function touchSession(db, { sessionId, agent, model, worktree }, now, increment 
 
 /* ------------------------------------------------------------------ reaping */
 
-function reapLocked(db, now) {
+function reapLocked(db, now, maxHeartbeatAgeMs = null, keepAliveId = null) {
   const expired = [];
-  const active = db
-    .prepare(
-      "SELECT * FROM work_orders WHERE status = 'active' AND lease_until_ms IS NOT NULL AND lease_until_ms < ?"
-    )
-    .all(now);
+  const active = maxHeartbeatAgeMs
+    ? db
+        .prepare(
+          `SELECT * FROM work_orders WHERE status = 'active' AND (
+             (lease_until_ms IS NOT NULL AND lease_until_ms < ?)
+             OR (COALESCE(heartbeat_ms, started_ms, enqueued_ms) < ?)
+           )`
+        )
+        .all(now, now - maxHeartbeatAgeMs)
+    : db
+        .prepare(
+          "SELECT * FROM work_orders WHERE status = 'active' AND lease_until_ms IS NOT NULL AND lease_until_ms < ?"
+        )
+        .all(now);
+
+  const seen = new Set();
   for (const row of active) {
+    if (keepAliveId && row.id === keepAliveId) continue;
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+
+    const lastSeen = row.heartbeat_ms ?? row.started_ms ?? row.enqueued_ms ?? now;
+    const staleHeartbeat = maxHeartbeatAgeMs != null && lastSeen < now - maxHeartbeatAgeMs;
+    const reason = staleHeartbeat ? 'heartbeat_stale' : 'lease_expired';
+    const errorText = staleHeartbeat
+      ? 'heartbeat stale - the agent stopped'
+      : 'lease expired - the agent stopped sending heartbeats';
+
     db.prepare(
       `UPDATE work_orders SET status = 'expired', outcome = 'expired', finished_ms = ?,
-         error = COALESCE(error, 'lease expired - the agent stopped sending heartbeats') WHERE id = ?`
-    ).run(now, row.id);
-    closeOpenRun(db, row.id, 'expired', now, 'lease expired');
+         error = COALESCE(error, ?) WHERE id = ?`
+    ).run(now, errorText, row.id);
+    closeOpenRun(db, row.id, 'expired', now, reason);
     insertEvent(
       db,
       {
         workId: row.id,
         level: 'warn',
         phase: 'reaper',
-        message: `lease expired after ${minutes(now - (row.heartbeat_ms ?? now))}m without a heartbeat`
+        message: staleHeartbeat
+          ? `heartbeat stale after ${minutes(now - lastSeen)}m - the agent stopped`
+          : `lease expired after ${minutes(now - lastSeen)}m without a heartbeat`
       },
       now
     );
-    expired.push({ id: row.id, reason: 'lease_expired', status: 'expired' });
+    expired.push({ id: row.id, reason, status: 'expired' });
   }
 
   const stale = db
     .prepare("SELECT * FROM work_orders WHERE status = 'queued' AND heartbeat_ms < ?")
     .all(now - QUEUE_TTL_MS);
   for (const row of stale) {
+    // `keepAliveId` is the order that asked for this reap (see claimWork).
+    // A claim refreshes the heartbeat on success, so *its own* order must
+    // never be reaped here: the reaper used to expire the caller's order
+    // first, `rowById` then read `expired`, and the claim threw - which
+    // rolled the transaction back and left a queued row that no claim could
+    // ever take again. That is the doom loop that killed every deploy.
+    if (keepAliveId && row.id === keepAliveId) continue;
     db.prepare(
       `UPDATE work_orders SET status = 'expired', outcome = 'expired', finished_ms = ?,
          error = COALESCE(error, 'queued too long without a claim - the agent vanished') WHERE id = ?`
@@ -459,8 +490,8 @@ function reapLocked(db, now) {
   return expired;
 }
 
-export function reap(db, now = Date.now()) {
-  return transaction(db, () => reapLocked(db, now));
+export function reap(db, now = Date.now(), maxHeartbeatAgeMs = null) {
+  return transaction(db, () => reapLocked(db, now, maxHeartbeatAgeMs));
 }
 
 /* ---------------------------------------------------------------- requests */
@@ -573,11 +604,42 @@ export function claimWork(db, input, now = Date.now()) {
   const leaseMinutes = integer(input.leaseMinutes, 'leaseMinutes', 5, 240, DEFAULT_LEASE_MINUTES);
 
   return transaction(db, () => {
-    const expired = reapLocked(db, now);
+    const expired = reapLocked(db, now, null, workId);
     const row = rowById(db, workId);
     if (!row) throw new LedgerError(`unknown work order ${workId}`, 3);
     if (row.token_hash !== sha256(token))
       throw new LedgerError('work-order token does not match', 3);
+
+    if (row.status === 'expired') {
+      // The queue expired this order while its agent was still waiting
+      // (a slow/queued claim, a stalled machine, a long build lock). The
+      // agent is alive and holding the token, so resurrect the order
+      // instead of failing the deploy: the token proves ownership, and
+      // leaving it `expired` meant every later claim threw forever.
+      db.prepare(
+        `UPDATE work_orders SET status = 'queued', outcome = NULL, finished_ms = NULL,
+           error = NULL, heartbeat_ms = ?, enqueued_ms = ?, lease_until_ms = NULL WHERE id = ?`
+      ).run(now, now, workId);
+      insertEvent(
+        db,
+        {
+          workId,
+          level: 'warn',
+          phase: 'claim',
+          message: `requeued by its owner after the queue expired it (agent still alive)`
+        },
+        now
+      );
+      // `row` was read before the update; refresh the fields the code below
+      // branches on, otherwise the caller still sees `expired` and throws.
+      row.status = 'queued';
+      row.outcome = null;
+      row.finished_ms = null;
+      row.error = null;
+      row.heartbeat_ms = now;
+      row.enqueued_ms = now;
+      row.lease_until_ms = null;
+    }
 
     if (row.status === 'active') {
       db.prepare(`UPDATE work_orders SET heartbeat_ms = ?, lease_until_ms = ? WHERE id = ?`).run(
@@ -782,7 +844,12 @@ export function finishWork(db, input, now = Date.now()) {
 
     const allowed =
       row.status === 'active' ||
-      (row.status === 'queued' && ['cancelled', 'failed'].includes(outcome));
+      (row.status === 'queued' && ['cancelled', 'failed'].includes(outcome)) ||
+      // An expired order is already terminal, but "the agent vanished" is a
+      // guess made by the reaper, not the truth. The owner knows the truth
+      // and finishes right after, so let the real outcome replace the guess
+      // instead of throwing a second error at an agent that just succeeded.
+      row.status === 'expired';
     if (!allowed) {
       throw new LedgerError(
         `work order ${workId} is ${row.status}; cannot finish as ${outcome}`,
@@ -1340,8 +1407,9 @@ async function main(argv) {
     }
 
     if (command === 'recover') {
-      assertKnown(flags, [], command);
-      const expired = reap(db, now);
+      assertKnown(flags, ['max-heartbeat-age'], command);
+      const maxHeartbeatAge = flagInt(flags, 'max-heartbeat-age', 0);
+      const expired = reap(db, now, maxHeartbeatAge > 0 ? maxHeartbeatAge * 60000 : null);
       if (flags.json) console.log(JSON.stringify({ ok: true, expired }, null, 2));
       else {
         console.log(`recovered ${expired.length} stale work order(s)`);
@@ -1403,7 +1471,7 @@ T9 deploy ledger - one SQLite queue for every desktop deploy.
                                 [--mode installed|staged] [--build-id ID]
                                 [--evidence FILE] [--error TEXT] [--json]
   node deploy-ledger.mjs status  [--limit N] [--json]
-  node deploy-ledger.mjs recover [--json]
+  node deploy-ledger.mjs recover [--max-heartbeat-age MINUTES] [--json]
   node deploy-ledger.mjs event   --message TEXT [--id WO] [--phase TEXT] [--level info|warn|error]
   node deploy-ledger.mjs session-end --session ID
   node deploy-ledger.mjs path
@@ -1418,6 +1486,8 @@ Queue rules:
   - priority above 60 requires --emergency
   - a queued order without a heartbeat for 15 minutes expires
   - an active order whose lease expires is marked expired and the queue moves on
+  - recover --max-heartbeat-age N can also expire an active order whose
+    heartbeat is older than N minutes (operator recovery for a crashed agent)
 `);
 }
 

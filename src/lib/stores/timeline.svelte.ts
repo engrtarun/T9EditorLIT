@@ -24,6 +24,20 @@ const THUMB_WIDTH = 160;
  */
 const PATH_SEP = navigator.userAgent.toLowerCase().includes("windows") ? "\\" : "/";
 
+/**
+ * One awaited job, reported as settled rather than thrown.
+ *
+ * Keeps the "one failure must not hide the other" behaviour of
+ * `Promise.allSettled` now that the two extractions run one after the other.
+ */
+async function settle<T>(job: () => Promise<T>): Promise<PromiseSettledResult<T>> {
+  try {
+    return { status: "fulfilled", value: await job() };
+  } catch (reason) {
+    return { status: "rejected", reason };
+  }
+}
+
 class TimelineStore {
   waveform = $state<WaveformData | null>(null);
   thumbs = $state<ThumbnailStrip | null>(null);
@@ -70,16 +84,31 @@ class TimelineStore {
     this.loading = true;
 
     try {
-      // cacheDir resolves once and feeds both extractions in parallel.
+      // cacheDir resolves once and feeds both extractions.
       const cacheDirPromise = defaultCacheDir();
-      // The two jobs are independent: a silent source has no waveform but
-      // still deserves a thumbnail strip, so one failure must not hide both.
-      const [waveRes, thumbsRes] = await Promise.allSettled([
-        cacheDirPromise.then((dir) => extractWaveform(sourcePath, dir, WAVEFORM_BARS)),
-        cacheDirPromise.then((dir) => extractThumbnails(sourcePath, dir, THUMB_FPS, THUMB_WIDTH)),
-      ]);
+      const dir = await cacheDirPromise;
+
+      // Run SEQUENTIALLY, not via Promise.allSettled.
+      //
+      // The two jobs are independent, but both decode the same source: side by
+      // side that is two FFmpeg children holding read buffers and thread pools
+      // at once on a machine with 8 GB total (≈80% already spent), and two i3
+      // decoders contending for one disk — which made this the largest RAM
+      // spike in the app *and* the slowest path, since neither job finished
+      // sooner for being parallel.
+      //
+      // Waveform first on purpose: it is the cheaper job (audio only), so the
+      // timeline gets its bar quickly while the thumbnail strip — the long
+      // video decode — keeps building behind it. Both placeholders are already
+      // drawn independently, so one finishing does not hide the other.
+      const waveRes = await settle(() => extractWaveform(sourcePath, dir, WAVEFORM_BARS));
       // A different source may have been picked while FFmpeg was running.
       if (this.sourcePath !== sourcePath) return;
+      const thumbsRes = await settle(() =>
+        extractThumbnails(sourcePath, dir, THUMB_FPS, THUMB_WIDTH),
+      );
+      if (this.sourcePath !== sourcePath) return;
+
       if (waveRes.status === "fulfilled") this.waveform = waveRes.value;
       if (thumbsRes.status === "fulfilled") this.thumbs = thumbsRes.value;
 

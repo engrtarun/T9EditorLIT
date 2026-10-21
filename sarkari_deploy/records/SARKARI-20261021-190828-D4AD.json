@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-190828-D4AD",
+  "agent": "opencode",
+  "modelName": "opencode/deepseek-v4.1-flash-free",
+  "kabStartTime": "2026-10-21 19:08:28",
+  "kabStartTimeIso": "2026-10-21T13:38:28.8194974Z",
+  "finishTime": "2026-10-21 19:29:56",
+  "finishTimeIso": "2026-10-21T13:59:56.3579065Z",
+  "kyoReason": "text clips were half-finished and unusable on the timeline, so the app now ships no dead text controls and the timeline is documented end-to-end",
+  "task": "remove the timeline text lane and ship the timeline UI/UX notebook",
+  "andazaEtaMinutes": 15,
+  "sarkariSanctionMinutes": 35,
+  "asliTimeMinutes": 21.5,
+  "outcome": "SHIPPED",
+  "error": null,
+  "buildId": "app-sarkari-20261021-190828-d4ad",
+  "installDetails": {
+    "InstallMode": "live",
+    "LiveExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.exe",
+    "LiveSha": "4c4c688e1c25b2202d3194fafaf91f4364c9da0d742a7e9f81baaaa376bed738",
+    "StageExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.new.exe",
+    "StageSha": null,
+    "PrevExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.prev.exe",
+    "MarkerFile": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\build.json"
+  }
+}

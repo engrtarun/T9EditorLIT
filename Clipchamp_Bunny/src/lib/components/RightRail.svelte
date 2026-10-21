@@ -22,7 +22,7 @@
       fill="none"
       stroke="currentColor"
       stroke-width="1.6"
-      class={project.showTranscript ? 'text-nc-gold' : ''}
+      class={project.showTranscript ? 'text-nc-brand' : ''}
     >
       <rect x="3" y="5" width="18" height="14" rx="2" /><path d="M8 11h2M8 14h6M14 11h2" />
     </svg>

@@ -95,6 +95,9 @@
   let trackEl = $state<HTMLDivElement | null>(null);
   let waveBox = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLCanvasElement | null>(null);
+  /** Cut/keep bands: one canvas over the strip, never one node per line. */
+  let stripBox = $state<HTMLDivElement | null>(null);
+  let overlay = $state<HTMLCanvasElement | null>(null);
 
   // Redraw the waveform whenever the peaks or the box size change.
   $effect(() => {
@@ -124,6 +127,57 @@
     };
 
     draw();
+    const ro = new ResizeObserver(draw);
+    ro.observe(box);
+    return () => ro.disconnect();
+  });
+
+  /**
+   * Cut/keep bands over the thumbnail strip, drawn on ONE canvas.
+   *
+   * This used to be one absolutely positioned `<div>` per transcript line with
+   * inline colours. A two-hour tutorial is a few thousand lines, so that was a
+   * few thousand resident nodes with their own layout state — and every
+   * keep/cut toggle re-rendered all of them, which is exactly the stall this
+   * app cannot afford on an 8 GB / i3 box. A canvas repaint is a few KB, does
+   * no layout at all, and draws at device resolution the same way the waveform
+   * beside it does.
+   */
+  $effect(() => {
+    const box = stripBox;
+    const el = overlay;
+    const lines = transcript.lines;
+    const total = duration;
+    if (!box || !el || lines.length === 0 || total <= 0) return;
+
+    const draw = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const w = box.clientWidth;
+      const h = box.clientHeight;
+      if (w === 0 || h === 0) return;
+      el.width = Math.round(w * dpr);
+      el.height = Math.round(h * dpr);
+      const ctx = el.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, el.width, el.height);
+
+      const edge = Math.max(1, dpr);
+      for (const line of lines) {
+        const left = (line.startSecs / total) * el.width;
+        const width = Math.max(edge, ((line.endSecs - line.startSecs) / total) * el.width);
+        // Same four rgba values the old DOM version used, so every theme and
+        // the keep/cut legend keep reading identically.
+        ctx.fillStyle = line.keep ? "rgba(52,199,89,0.16)" : "rgba(255,69,58,0.30)";
+        ctx.fillRect(left, 0, width, el.height);
+        ctx.fillStyle = line.keep ? "rgba(52,199,89,0.35)" : "rgba(255,69,58,0.5)";
+        ctx.fillRect(left, 0, edge, el.height);
+        ctx.fillRect(left + width - edge, 0, edge, el.height);
+      }
+    };
+
+    draw();
+    // Zoom resizes the track (and therefore the strip), which is why this is
+    // observer-driven rather than keyed on `zoom` alone.
     const ro = new ResizeObserver(draw);
     ro.observe(box);
     return () => ro.disconnect();
@@ -376,7 +430,8 @@
           >
             <!-- Thumbnail strip: 1 fps cache, decimated for the DOM. -->
             <div
-              class="h-16 shrink-0 overflow-hidden rounded-md border border-cc-line-soft
+              bind:this={stripBox}
+              class="relative h-16 shrink-0 overflow-hidden rounded-md border border-cc-line-soft
               bg-cc-surface"
             >
               {#if timeline.hasThumbs}
@@ -386,12 +441,22 @@
                       src={timeline.thumbUrl(i) ?? undefined}
                       alt=""
                       loading="lazy"
+                      decoding="async"
                       draggable="false"
                       class="h-full shrink-0 object-cover"
                       style={`width: ${framePct}%`}
                     />
                   {/each}
                 </div>
+                <!-- Cut/keep overlay. One canvas instead of one node per
+                     transcript line — see the draw effect above. -->
+                {#if transcript.hasTranscript && duration > 0}
+                  <canvas
+                    bind:this={overlay}
+                    class="pointer-events-none absolute inset-0 block h-full w-full"
+                    aria-hidden="true"
+                  ></canvas>
+                {/if}
               {:else if timeline.loading}
                 <div class="flex h-full items-center justify-center">
                   <span class="mono text-[10.5px] text-cc-text-4">building thumbnail strip…</span>
@@ -426,24 +491,13 @@
               {/if}
             </div>
 
-            <!-- Cut / keep overlay over the thumbnail strip, from the transcript. -->
-            {#if transcript.hasTranscript && duration > 0}
-              <div class="pointer-events-none absolute inset-x-0 top-0 h-16">
-                {#each transcript.lines as line (line.id)}
-                  {@const left = (line.startSecs / duration) * 100}
-                  {@const width = Math.max(
-                    0.15,
-                    ((line.endSecs - line.startSecs) / duration) * 100,
-                  )}
-                  <div
-                    class="absolute top-0 bottom-0 border-x"
-                    style={`left:{left}%; width:{width}%; background:${
-                      line.keep ? "rgba(52,199,89,0.16)" : "rgba(255,69,58,0.30)"
-                    }; border-color:${line.keep ? "rgba(52,199,89,0.35)" : "rgba(255,69,58,0.5)"}`}
-                  ></div>
-                {/each}
-              </div>
-            {/if}
+            <!-- Cut / keep bands used to live here as one <div> per transcript
+                 line; they are drawn on a canvas inside the thumbnail strip
+                 above instead (see the draw effect in <script>). That swap
+                 also fixed the old block: its `style` template literal wrote
+                 `left:{left}%` verbatim into the CSS — no Svelte interpolation
+                 happens inside a template literal — so every band collapsed to
+                 the same place instead of spanning its own time range. -->
 
             <!-- Playhead -->
             {#if duration > 0}

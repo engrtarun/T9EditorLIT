@@ -57,12 +57,7 @@
   function onKey(e: KeyboardEvent) {
     // System shortcuts & screenshot keys must never be captured or blocked:
     // PrintScreen, Snapshot, F1-F12, and any Meta / Windows key chord (e.g. Win+Shift+S).
-    if (
-      e.key === 'PrintScreen' ||
-      e.key === 'Snapshot' ||
-      e.metaKey ||
-      e.key.startsWith('F')
-    ) {
+    if (e.key === 'PrintScreen' || e.key === 'Snapshot' || e.metaKey || e.key.startsWith('F')) {
       return;
     }
 
@@ -205,11 +200,6 @@
       return;
     }
     if (hit('delete', e)) {
-      if (project.selectedTextId) {
-        project.removeText(project.selectedTextId);
-        toast.push('cut', '✕ Text clip deleted');
-        return;
-      }
       const n = project.targets().length;
       project.cutTargets();
       project.step(1);

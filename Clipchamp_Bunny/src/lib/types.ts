@@ -1,4 +1,4 @@
-/** Core domain types for Nanami Cut. Mirrors what the Rust side will return later. */
+/** Core domain types for T9 Editor LIT. Mirrors what the Rust side will return later. */
 
 /** The four zero-RAM modes. Only one is ever mounted at a time. */
 export type Mode = 'ingest' | 'cut' | 'polish' | 'export';
@@ -185,23 +185,11 @@ export interface TimelineClip {
   label: string;
 }
 
-/** Text / zoom overlay on the text lane (Apna College style). */
-export interface TextClip {
-  id: string;
-  startSec: number;
-  endSec: number;
-  text: string;
-  kind: 'title' | 'heading' | 'code-zoom';
-  /** Eye toggle on the T track — hidden text stays in the lane but not on the canvas. */
-  hidden?: boolean;
-}
-
 export interface ProjectState {
   name: string;
   media: MediaAsset | null;
   lines: TranscriptLine[];
   clips: TimelineClip[];
-  texts: TextClip[];
   waveform: WaveformData | null;
 }
 
@@ -225,8 +213,9 @@ export type MenuIcon =
   | 'volumeOff'
   | 'eye'
   | 'eyeOff'
-  | 'text'
-  | 'film';
+  | 'film'
+  | 'image'
+  | 'close';
 
 /** One row in a popover menu. `divider: true` renders a separator instead of an item. */
 export interface MenuItem {

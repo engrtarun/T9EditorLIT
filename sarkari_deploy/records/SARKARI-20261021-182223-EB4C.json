@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-182223-EB4C",
+  "agent": "opencode",
+  "modelName": "opencode/deepseek-v4.1-flash-free",
+  "kabStartTime": "2026-10-21 18:22:23",
+  "kabStartTimeIso": "2026-10-21T12:52:23.7550797Z",
+  "finishTime": "2026-10-21 18:57:32",
+  "finishTimeIso": "2026-10-21T13:27:32.6424464Z",
+  "kyoReason": "text clips were half-finished and unusable on the timeline, so the app now ships no dead text controls and the timeline is documented end-to-end",
+  "task": "remove the timeline text lane and ship the timeline UI/UX notebook",
+  "andazaEtaMinutes": 15,
+  "sarkariSanctionMinutes": 35,
+  "asliTimeMinutes": 35.1,
+  "outcome": "FAILED",
+  "error": "Shared ledger claim failed for WO-20261021T125256-849e25; refusing to build without an active lease.",
+  "buildId": null,
+  "installDetails": null
+}

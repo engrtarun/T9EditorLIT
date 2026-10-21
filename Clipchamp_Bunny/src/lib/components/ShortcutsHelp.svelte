@@ -49,13 +49,13 @@
     >
       <div class="mb-4 flex items-center gap-3">
         <span
-          class="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-nc-gold to-nc-gold-dim text-[12px] font-black text-nc-bg"
-          >7</span
+          class="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-nc-brand to-nc-brand-dim text-[12px] font-black text-nc-bg"
+          >⌘</span
         >
         <div>
           <h2 class="text-base font-bold">Keyboard shortcuts</h2>
           <p class="text-[11px] text-nc-mut">
-            Microsoft's official Clipchamp list · {project.lines.length} lines · {mode.current} mode
+            T9 Editor LIT keymap · {project.lines.length} lines · {mode.current} mode
           </p>
         </div>
         <div class="flex-1"></div>
@@ -64,14 +64,14 @@
           <button
             onclick={() => (tab = 'list')}
             class="rounded-md px-3 py-1 text-[11px] font-medium transition-colors
-                   {tab === 'list' ? 'bg-nc-gold text-nc-bg' : 'text-nc-mut hover:text-nc-txt'}"
+                   {tab === 'list' ? 'bg-nc-brand text-nc-bg' : 'text-nc-mut hover:text-nc-txt'}"
           >
             All keys
           </button>
           <button
             onclick={() => (tab = 'custom')}
             class="rounded-md px-3 py-1 text-[11px] font-medium transition-colors
-                   {tab === 'custom' ? 'bg-nc-gold text-nc-bg' : 'text-nc-mut hover:text-nc-txt'}"
+                   {tab === 'custom' ? 'bg-nc-brand text-nc-bg' : 'text-nc-mut hover:text-nc-txt'}"
           >
             Customize
           </button>
@@ -89,7 +89,7 @@
         <div class="grid gap-5 sm:grid-cols-2">
           {#each SHORTCUT_GROUPS as g (g.title)}
             <section>
-              <h3 class="mb-2 text-[10px] font-bold tracking-widest text-nc-gold">{g.title}</h3>
+              <h3 class="mb-2 text-[10px] font-bold tracking-widest text-nc-brand">{g.title}</h3>
               <ul class="space-y-1">
                 {#each g.rows as r (r.keys + r.action)}
                   <li class="flex items-start gap-2 text-[11px]">
@@ -123,8 +123,8 @@
                 onclick={() => (capturing = a)}
                 class="shrink-0 rounded border px-2 py-0.5 font-mono text-[10px] transition-colors
                        {capturing === a
-                  ? 'border-nc-gold bg-nc-gold/15 text-nc-gold'
-                  : 'border-nc-line-2 bg-nc-panel-2 text-nc-txt hover:border-nc-gold/50'}"
+                  ? 'border-nc-brand bg-nc-brand/15 text-nc-brand'
+                  : 'border-nc-line-2 bg-nc-panel-2 text-nc-txt hover:border-nc-brand/50'}"
               >
                 {capturing === a ? 'press a key…' : keys.label(a)}
               </button>

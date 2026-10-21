@@ -16,9 +16,110 @@
       paints, so switching from a light theme never flashes dark.
     -->
     <script src="%sveltekit.assets%/theme-init.js"></script>
+    <!--
+      Branded boot splash — paints with the very first frame, before any JS.
+
+      It lives here rather than in the app because the window's first paint is
+      the only moment there is nothing to show: no component, no bundle, just a
+      blank WebView2. Everything below is plain CSS:
+
+        • no script, no rAF loop, no image, no webfont, no <video> — the
+          animation runs on the compositor thread, so it costs ~0 heap and ~0
+          main-thread time (AGENTS.md §1, the "0 RAM" mission);
+        • `Canvas` / `CanvasText` follow the `color-scheme` meta that
+          theme-init.js already corrects before first paint, so the splash
+          matches a light or dark theme without knowing about it;
+        • `pointer-events: none` means that even if it somehow outlived its
+          job it could never swallow a click.
+
+      Removed by src/routes/+layout.svelte on mount (remove() frees the nodes
+      as well as hiding them). The 180 ms fade is the only thing it waits for.
+    -->
+    <style>
+      #t9-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        pointer-events: none;
+        background: #121219;
+        background: Canvas;
+        color: #ececf2;
+        color: CanvasText;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        transition: opacity 180ms ease;
+      }
+      #t9-splash[data-leaving="1"] {
+        opacity: 0;
+      }
+      #t9-splash .t9-mark {
+        animation: t9-mark-in 900ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+      }
+      #t9-splash .t9-word {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+      #t9-splash .t9-track {
+        width: 108px;
+        height: 3px;
+        overflow: hidden;
+        border-radius: 3px;
+        background: rgb(124 92 255 / 18%);
+      }
+      #t9-splash .t9-track i {
+        display: block;
+        width: 42%;
+        height: 100%;
+        border-radius: 3px;
+        background: #7c5cff;
+        animation: t9-sweep 1100ms cubic-bezier(0.65, 0, 0.35, 1) infinite;
+      }
+      @keyframes t9-mark-in {
+        from {
+          opacity: 0;
+          transform: translateY(6px) scale(0.94);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes t9-sweep {
+        from {
+          transform: translateX(-130%);
+        }
+        to {
+          transform: translateX(340%);
+        }
+      }
+      /* One transform/opacity animation already; honour the OS setting by
+         parking even that when motion is reduced. */
+      @media (prefers-reduced-motion: reduce) {
+        #t9-splash .t9-mark,
+        #t9-splash .t9-track i {
+          animation: none;
+        }
+      }
+    </style>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">
+    <div id="t9-splash" aria-hidden="true" role="presentation">
+      <!-- The stacked-plates mark from CcTopBar, so the splash and the running
+           app are one brand rather than two drawings of it. -->
+      <svg class="t9-mark" width="34" height="34" viewBox="0 0 20 20">
+        <path d="M3 6.2 12 3.4v3.4L3 9.6z" fill="#7c5cff" />
+        <path d="M3 10.4 12 7.6v3.4L3 13.8z" fill="#8f77ff" />
+        <path d="M13.2 8.7 17.6 7.3v3.4l-4.4 1.4z" fill="#b9a8ff" />
+      </svg>
+      <span class="t9-word">T9EditorLIT</span>
+      <span class="t9-track"><i></i></span>
+    </div>
     <div style="display: contents">%sveltekit.body%</div>
   </body>
 </html>

@@ -321,3 +321,93 @@ export const MOCK_LINES: TranscriptLine[] = ROWS.map((row, i) => ({
 }));
 
 export const MOCK_DURATION_SEC = 274;
+
+/**
+ * Dummy projects for the browser dev mode.
+ *
+ * The desktop always shows the *real* project list out of SQLite - there is
+ * never a fake row there. The browser has no SQLite, so the dashboard falls
+ * back to these: enough cards to see how the grid behaves with a full set,
+ * with the sizes, durations and ages spread out the way a real list has
+ * them.
+ *
+ * `thumbIndex` picks a frame out of the baked filmstrip, so each card shows
+ * a different real still instead of the same picture six times.
+ */
+export interface DummyProject {
+  id: string;
+  name: string;
+  durationSecs: number;
+  sizeBytes: number;
+  /** How long ago it was opened, in seconds. */
+  openedAgoSecs: number;
+  /** Which baked filmstrip frame to use as the poster. */
+  thumbIndex: number;
+}
+
+export const DUMMY_PROJECTS: DummyProject[] = [
+  {
+    id: 'dummy-1',
+    name: '2026-10-13 07-02-55',
+    durationSecs: 197,
+    sizeBytes: 29_511_040,
+    openedAgoSecs: 120,
+    thumbIndex: 4
+  },
+  {
+    id: 'dummy-2',
+    name: 'tarunwebt',
+    durationSecs: 274,
+    sizeBytes: 5_452_800,
+    openedAgoSecs: 3_600,
+    thumbIndex: 37
+  },
+  {
+    id: 'dummy-3',
+    name: 'JavaScript Lecture 06',
+    durationSecs: 1_115,
+    sizeBytes: 48_234_496,
+    openedAgoSecs: 86_400,
+    thumbIndex: 88
+  },
+  {
+    id: 'dummy-4',
+    name: 'Clipchamp OBS Record',
+    durationSecs: 197,
+    sizeBytes: 25_985_461,
+    openedAgoSecs: 172_800,
+    thumbIndex: 121
+  },
+  {
+    id: 'dummy-5',
+    name: 'Travel B-roll',
+    durationSecs: 497,
+    sizeBytes: 19_595_264,
+    openedAgoSecs: 259_200,
+    thumbIndex: 150
+  },
+  {
+    id: 'dummy-6',
+    name: 'Vlog Edit 01',
+    durationSecs: 863,
+    sizeBytes: 44_957_696,
+    openedAgoSecs: 432_000,
+    thumbIndex: 172
+  },
+  {
+    id: 'dummy-7',
+    name: 'Untitled Project',
+    durationSecs: 32,
+    sizeBytes: 5_456_896,
+    openedAgoSecs: 345_600,
+    thumbIndex: 2
+  },
+  {
+    id: 'dummy-8',
+    name: 'Product X',
+    durationSecs: 265,
+    sizeBytes: 9_633_792,
+    openedAgoSecs: 604_800,
+    thumbIndex: 60
+  }
+];

@@ -667,6 +667,25 @@ pub fn purge_trash(conn: &Connection, source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Drop every binned project whose retention window has passed.
+///
+/// The retention is user-settable and defaults to 12 days; `days <= 0` means
+/// "never auto-delete" and removes nothing. Like [`purge_trash`], this only
+/// touches the app's row — the user's video file is never removed.
+///
+/// Returns the number of rows removed, so the UI can tell the user what
+/// happened instead of silently shrinking the list.
+pub fn purge_expired_trash(conn: &Connection, days: i64) -> Result<u64, String> {
+    if days <= 0 {
+        return Ok(0);
+    }
+    let cutoff = now_unix() - days * 86_400;
+    let removed = conn
+        .execute("DELETE FROM trash WHERE deleted_at < ?1", params![cutoff])
+        .map_err(|e| format!("could not purge expired trash: {e}"))?;
+    Ok(removed as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

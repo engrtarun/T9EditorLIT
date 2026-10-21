@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-071719-DAA0",
+  "agent": "Antigravity-Agent",
+  "modelName": "Gemini 3.8 Flash (High)",
+  "kabStartTime": "2026-10-21 07:17:19",
+  "kabStartTimeIso": "2026-10-21T01:47:19.4520445Z",
+  "finishTime": "2026-10-21 07:17:20",
+  "finishTimeIso": "2026-10-21T01:47:20.3114655Z",
+  "kyoReason": "Continuous codebase enhancement and stabilization",
+  "task": "Autonomous agent update & optimization",
+  "andazaEtaMinutes": 15,
+  "sarkariSanctionMinutes": 35,
+  "asliTimeMinutes": 0.0,
+  "outcome": "FAILED",
+  "error": "Cannot process command because of one or more missing mandatory parameters: AgentProfile.",
+  "buildId": null,
+  "installDetails": null
+}

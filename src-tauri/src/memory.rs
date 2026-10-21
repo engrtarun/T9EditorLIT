@@ -52,12 +52,12 @@ impl MemoryProbe {
         self.sys.refresh_memory();
         self.sample_count = self.sample_count.wrapping_add(1);
 
-        // Every 8 samples (~12 s), or when the known tree is empty, do a full scan
-        // to discover any newly spawned child processes (e.g. WebView2 renderers).
-        // On intermediate samples, refresh ONLY the processes in our app's tree.
-        // This avoids iterating through 250+ foreign OS processes every 1.5s,
-        // reducing sample time from ~50ms down to <0.2ms under memory pressure.
-        if self.known_tree.is_empty() || self.sample_count % 8 == 0 {
+        // Discover newly spawned children (WebView2 renderers appear in bursts)
+        // with a full scan; on every other sample refresh ONLY the processes in
+        // our app's tree. Walking 250+ foreign OS processes is the expensive
+        // part — ~50 ms of CPU on an i3 plus a realloc of sysinfo's process
+        // table — so the cadence below is warm, then steady.
+        if self.known_tree.is_empty() || self.scan_due() {
             self.sys.refresh_processes(ProcessesToUpdate::All, true);
             self.update_app_tree();
         } else {
@@ -84,6 +84,29 @@ impl MemoryProbe {
             available_mb: available / BYTES_PER_MB,
             app_mb,
             used_percent,
+        }
+    }
+
+    /// Whether this sample should walk the whole process table.
+    ///
+    /// Children arrive in bursts — WebView2 spawns renderers over the first few
+    /// seconds, and again when a dialog opens — so the first samples scan often
+    /// and then the cadence backs off to about once a minute.
+    ///
+    /// The back-off is the point: `refresh_processes(All)` walks 250+ foreign
+    /// processes, which is ~50 ms of CPU on an i3 plus a reallocation of
+    /// sysinfo's process table. At one hit every 8 samples (12 s) that was a
+    /// hitch the user could feel while dragging a timeline, for no new
+    /// information most of the time.
+    fn scan_due(&self) -> bool {
+        const WARMUP_SAMPLES: u32 = 16; // first ~24 s of the app's life
+        const WARMUP_EVERY: u32 = 4; // …then a full scan every ~6 s
+        const STEADY_EVERY: u32 = 40; // …and every ~60 s once settled
+
+        if self.sample_count <= WARMUP_SAMPLES {
+            self.sample_count % WARMUP_EVERY == 0
+        } else {
+            self.sample_count % STEADY_EVERY == 0
         }
     }
 

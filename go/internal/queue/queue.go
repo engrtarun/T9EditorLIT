@@ -86,6 +86,19 @@ type Queue struct {
 	quit chan struct{}
 	wg   sync.WaitGroup
 
+	// ctx is the queue's lifetime, not any single job's: it is cancelled by
+	// Close so in-flight work stops instead of pinning the daemon open.
+	//
+	// safeRun used to hand every task a fresh context.Background(), which
+	// meant Close could only stop *queued* work. An in-flight Groq/Gemini or
+	// Telegram call kept running, main's `defer q.Close()` blocked on
+	// q.wg.Wait(), and a shutdown waited out the full cloud call - minutes,
+	// not seconds, on a job the user has already abandoned by closing the app.
+	// A Task.Run already declares `func(ctx context.Context) error`; it just
+	// was never given one worth cancelling.
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	closeOnce sync.Once
 
 	// onDone is guarded because the HTTP layer attaches its callback AFTER
@@ -119,6 +132,7 @@ func New(opts Options) *Queue {
 		quit:   make(chan struct{}),
 		onDone: opts.OnDone, // wired here; SetOnDone may replace it later
 	}
+	q.ctx, q.cancel = context.WithCancel(context.Background())
 
 	for i := 0; i < opts.Workers; i++ {
 		q.wg.Add(1)
@@ -224,6 +238,10 @@ func (q *Queue) run(it *item) {
 }
 
 // safeRun invokes the task and converts a panic into an error.
+//
+// The context is the queue's, so Close reaches in-flight work: a provider
+// call that honours ctx returns as soon as the daemon starts shutting down
+// instead of holding q.wg.Wait() open for the rest of the call.
 func (q *Queue) safeRun(t Task) (err error, panicked bool) {
 	defer func() {
 		if rv := recover(); rv != nil {
@@ -233,7 +251,7 @@ func (q *Queue) safeRun(t Task) (err error, panicked bool) {
 		}
 	}()
 
-	return t.Run(context.Background()), false
+	return t.Run(q.ctx), false
 }
 
 // backoff returns the delay before the next attempt, doubling each time and
@@ -271,9 +289,19 @@ func (q *Queue) Stats() (depth, capacity, workers, inFlight, completed, failed i
 }
 
 // Close stops the workers. Queued-but-unstarted tasks are abandoned.
+//
+// Cancel first, then wait: without the cancel, wg.Wait() waits for every
+// in-flight provider call to run to completion, and a `t9cloud` in the middle
+// of a long transcription would keep the process alive for minutes after the
+// user asked it to quit. Tasks that honour the context return immediately;
+// ones that do not were never going to stop anyway, so they do not make this
+// worse.
 func (q *Queue) Close() {
 	q.closeOnce.Do(func() {
 		close(q.quit)
+		if q.cancel != nil {
+			q.cancel()
+		}
 		q.wg.Wait()
 	})
 }

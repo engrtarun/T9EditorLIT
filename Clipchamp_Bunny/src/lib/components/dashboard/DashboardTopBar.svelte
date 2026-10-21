@@ -82,8 +82,8 @@
   <!-- brand -->
   <div class="flex shrink-0 items-center gap-2">
     <BrandMark size={28} />
-    <span class="text-[15px] font-semibold tracking-tight">
-      T9 Editor <span class="text-nc-gold">LIT</span>
+    <span class="font-brand text-[16px] leading-none tracking-[0.02em]">
+      T9 Editor <span class="text-nc-brand">LIT</span>
     </span>
   </div>
 
@@ -110,7 +110,7 @@
         aria-label="Search your projects"
         class="h-9 w-full rounded-lg border border-nc-line bg-nc-bg pr-3 pl-9 text-[13px] text-nc-txt
                transition-colors duration-150 outline-none placeholder:text-nc-mut-2
-               focus:border-nc-gold/70"
+               focus:border-nc-brand/70"
       />
     </label>
   </div>
@@ -137,7 +137,7 @@
   <!-- avatar = language switch (English / Hinglish) -->
   <button
     onclick={openLanguage}
-    class="ml-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-nc-gold text-[10px] font-bold text-white transition-[filter] duration-150 hover:brightness-110"
+    class="ml-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-nc-brand text-[10px] font-bold text-white transition-[filter] duration-150 hover:brightness-110"
     title="Language · {greeting.lang === 'en' ? 'English' : 'Hinglish'}"
     aria-label="Choose language"
     aria-haspopup="menu"

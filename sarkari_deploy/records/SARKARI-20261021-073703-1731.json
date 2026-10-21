@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-073703-1731",
+  "agent": "opencode",
+  "modelName": "opencode/deepseek-v4.1-flash-free",
+  "kabStartTime": "2026-10-21 07:37:03",
+  "kabStartTimeIso": "2026-10-21T02:07:03.2284646Z",
+  "finishTime": "2026-10-21 07:37:16",
+  "finishTimeIso": "2026-10-21T02:07:16.8871921Z",
+  "kyoReason": "text clips were half-finished and unusable on the timeline, so the app now ships no dead text controls and the timeline is documented end-to-end",
+  "task": "remove the timeline text lane and ship the timeline UI/UX notebook",
+  "andazaEtaMinutes": 15,
+  "sarkariSanctionMinutes": 35,
+  "asliTimeMinutes": 0.2,
+  "outcome": "FAILED",
+  "error": "Frontend TypeScript check failed. Fix type errors before building.",
+  "buildId": null,
+  "installDetails": null
+}

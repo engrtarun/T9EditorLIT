@@ -5,6 +5,12 @@
  * 1.5s and gets one. A push channel would mean Rust holding a subscription list
  * and the frontend holding an event handler — more resident memory to achieve
  * the same result.
+ *
+ * Polling also stops while the document is hidden (window minimised or fully
+ * covered): the meter is not on screen, so the timer is pure wake-up cost — a
+ * Rust process enumeration, a JSON serialisation and a Svelte state write that
+ * nobody can see. `visibilitychange` re-arms it and takes one fresh reading
+ * immediately, so returning to the window never shows a stale figure.
  */
 
 import { errorMessage, getMemoryStats } from "../ipc";
@@ -29,11 +35,31 @@ class MemoryStore {
 
   start(): void {
     if (this.#timer !== null) return;
+    document.addEventListener("visibilitychange", this.#onVisibility);
+    this.#arm();
     void this.refresh();
-    this.#timer = setInterval(() => void this.refresh(), POLL_INTERVAL_MS);
   }
 
   stop(): void {
+    document.removeEventListener("visibilitychange", this.#onVisibility);
+    this.#disarm();
+  }
+
+  #onVisibility = (): void => {
+    if (document.visibilityState === "hidden") {
+      this.#disarm();
+      return;
+    }
+    this.#arm();
+    void this.refresh();
+  };
+
+  #arm(): void {
+    if (this.#timer !== null) return;
+    this.#timer = setInterval(() => void this.refresh(), POLL_INTERVAL_MS);
+  }
+
+  #disarm(): void {
     if (this.#timer === null) return;
     clearInterval(this.#timer);
     this.#timer = null;

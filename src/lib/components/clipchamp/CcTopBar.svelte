@@ -129,6 +129,21 @@
     cc.openEditor();
   }
 
+  /**
+   * `Alt + N` — Clipchamp's "Go to project name". Opens the title menu and
+   * drops straight into the rename field, which is the same place the menu's
+   * own Rename row lands. Editor variant only: the home top bar carries the
+   * template search instead of a project title.
+   */
+  $effect(() => {
+    if (variant !== "editor") return;
+    return shortcuts.bind("projectName", () => {
+      toggle("title");
+      // `toggle` closes an already-open menu; only descend when it opened.
+      if (open === "title") void startRename();
+    });
+  });
+
   // ── Cloud ───────────────────────────────────────────────────────────────
   let vaultState = $state<{ label: string; ok: boolean } | null>(null);
 

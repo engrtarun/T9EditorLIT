@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-204324-E317",
+  "agent": "opencode",
+  "modelName": "opencode/deepseek-v4.1-flash-free",
+  "kabStartTime": "2026-10-21 20:43:24",
+  "kabStartTimeIso": "2026-10-21T15:13:24.6355639Z",
+  "finishTime": "2026-10-21 21:02:21",
+  "finishTimeIso": "2026-10-21T15:32:21.9746970Z",
+  "kyoReason": "the dashboard's plain loading text makes the first paint feel slow, and the ambient glow was invisible because the mask and stacking hid it; the skeleton now gives instant layout feedback at zero RAM cost and the glow seeds from the cached poster before the first video frame",
+  "task": "replace dashboard loading text with a reusable brand skeleton and fix the video preview ambient glow",
+  "andazaEtaMinutes": 20,
+  "sarkariSanctionMinutes": 40,
+  "asliTimeMinutes": 19.0,
+  "outcome": "STAGED",
+  "error": null,
+  "buildId": "app-sarkari-20261021-204324-e317",
+  "installDetails": {
+    "InstallMode": "staged",
+    "LiveExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.exe",
+    "LiveSha": "e038d8a71ad4a81b0069e93f376a556f14a32462810c151224779600a5e2cffd",
+    "StageExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.new.exe",
+    "StageSha": "3cf71569de001e3baad5ae663051aff71561ed637e47ba61140d783f7422ed1f",
+    "PrevExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.prev.exe",
+    "MarkerFile": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\build.json"
+  }
+}

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/engrtarun/T9EditorLIT/go/internal/cloud"
@@ -119,6 +120,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(rec, http.StatusInternalServerError, map[string]string{
 				"error": "internal error",
 			})
+		}
+		// Job polls are expected traffic, not events: pipeline.ts's waitJob()
+		// asks for `GET /v1/jobs/{id}` every 900 ms for as long as a
+		// transcription runs — up to 600 times per job. Logging those at Info
+		// turned every import into a wall of request lines, each one a disk
+		// write on a machine that is already short of headroom, and it buried
+		// the warnings an operator actually needs. Polls go to Debug; a
+		// request that changes something stays visible.
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
+			s.deps.Log.Debug("request",
+				"method", r.Method, "path", r.URL.Path,
+				"status", rec.status, "dur_ms", time.Since(start).Milliseconds())
+			return
 		}
 		s.deps.Log.Info("request",
 			"method", r.Method, "path", r.URL.Path,

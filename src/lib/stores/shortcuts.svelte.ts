@@ -15,7 +15,12 @@
  * alive for the whole shell and, more importantly, keeps the "who handles S"
  * question out of the component tree: when several modes are mounted the
  * registry decides, and unmounting unregisters.
+ *
+ * Scope (`editor` vs `always`) is checked by `handle()` — a binding that says
+ * it belongs to the editor cannot fire while the Home screen is up.
  */
+
+import { cc } from "./cc.svelte";
 
 export type ShortcutScope =
   /** Only relevant once a project is open (play, split, zoom…). */
@@ -34,6 +39,16 @@ export interface ShortcutDef {
   shift?: boolean;
   alt?: boolean;
   scope?: ShortcutScope;
+  /**
+   * Listed for Clipchamp parity but **not wired**: the feature underneath it
+   * (multi-clip selection, which copy / paste / group need) does not exist in
+   * a transcript-first, single-source timeline yet.
+   *
+   * The cheat sheet marks these rows instead of pretending they work — the
+   * whole point of one table is that a documented key either behaves or admits
+   * it does not. Set when the selection model lands.
+   */
+  planned?: boolean;
 }
 
 export interface ShortcutGroup {
@@ -75,13 +90,16 @@ export const BINDINGS: ShortcutGroup[] = [
     title: "Timeline editing",
     items: [
       def("split", "S", ["s"]),
+      // Delete/Backspace cut the transcript segment under the playhead — the
+      // transcript is this app's selection model, so that is what "delete the
+      // selected item" means here.
       def("delete", "Delete", ["delete", "backspace"]),
-      def("copy", "Ctrl + C", ["c"], { ctrl: true }),
-      def("paste", "Ctrl + V", ["v"], { ctrl: true }),
-      def("duplicate", "Ctrl + D", ["d"], { ctrl: true }),
-      def("selectAll", "Ctrl + A", ["a"], { ctrl: true }),
-      def("group", "Ctrl + G", ["g"], { ctrl: true }),
-      def("ungroup", "Ctrl + Shift + G", ["g"], { ctrl: true, shift: true }),
+      def("copy", "Ctrl + C", ["c"], { ctrl: true, planned: true }),
+      def("paste", "Ctrl + V", ["v"], { ctrl: true, planned: true }),
+      def("duplicate", "Ctrl + D", ["d"], { ctrl: true, planned: true }),
+      def("selectAll", "Ctrl + A", ["a"], { ctrl: true, planned: true }),
+      def("group", "Ctrl + G", ["g"], { ctrl: true, planned: true }),
+      def("ungroup", "Ctrl + Shift + G", ["g"], { ctrl: true, shift: true, planned: true }),
       def("deselect", "Esc", ["escape"], { scope: "always" }),
     ],
   },
@@ -126,6 +144,14 @@ export const BINDINGS: ShortcutGroup[] = [
       def("modeExport", "Ctrl + 3", ["3"], { ctrl: true }),
     ],
   },
+  {
+    // T9's transcript ruling keys. They used to live in a private `keydown`
+    // listener inside CutMode, which broke the "one dispatcher" rule — the
+    // registry owns them now, so they survive mode isolation and the sheet
+    // documents them.
+    title: "Transcript (T9)",
+    items: [def("cutLine", "X", ["x"]), def("keepLine", "V", ["v"])],
+  },
 ];
 
 /** Flat list for the matcher. */
@@ -158,6 +184,13 @@ class ShortcutStore {
   sheetOpen = $state(false);
   /** Total documented shortcuts, shown in the sheet header. */
   readonly count = ALL.length;
+  /** Of those, how many are wired up rather than merely listed. */
+  readonly plannedCount = ALL.filter((s) => s.planned === true).length;
+
+  /** Documented and actually pressable. */
+  get readyCount(): number {
+    return this.count - this.plannedCount;
+  }
 
   #handlers = new Map<string, ShortcutHandler>();
   #scope = new Map<string, ShortcutScope>();
@@ -208,8 +241,7 @@ class ShortcutStore {
 
     // Escape and Ctrl + / still fire while typing: you must be able to close a
     // dialog or undo an accidental focus without leaving the field first.
-    const alwaysReachable =
-      event.key === "Escape" || (event.ctrlKey && event.key === "/");
+    const alwaysReachable = event.key === "Escape" || (event.ctrlKey && event.key === "/");
 
     if (typing && !alwaysReachable) return;
 
@@ -217,6 +249,10 @@ class ShortcutStore {
       if (!matches(event, s)) continue;
       const handler = this.#handlers.get(s.id);
       if (!handler) continue;
+      // Scope is enforced, not decoration: an `editor` binding belongs to the
+      // screen that registers it, so it must not fire while Home is up (which
+      // can happen the moment a panel outlives a `{#key}` swap).
+      if (this.#scope.get(s.id) === "editor" && cc.view !== "editor") continue;
       event.preventDefault();
       handler(event);
       return;

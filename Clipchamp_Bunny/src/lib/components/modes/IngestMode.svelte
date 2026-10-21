@@ -193,7 +193,7 @@
           tabindex="0"
           aria-label="Drop a video file here, or press Enter to continue"
           class="nc-tie-edge flex flex-col items-center gap-2 rounded-2xl border-2 border-dashed px-8 py-7 text-center transition-colors
-                 {dragging ? 'border-nc-gold bg-nc-gold/5' : 'border-nc-line-2 bg-nc-panel'}"
+                 {dragging ? 'border-nc-brand bg-nc-brand/5' : 'border-nc-line-2 bg-nc-panel'}"
         >
           <svg
             width="34"
@@ -202,7 +202,7 @@
             fill="none"
             stroke="currentColor"
             stroke-width="1.3"
-            class="text-nc-gold"
+            class="text-nc-brand"
           >
             <path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 20h16" />
           </svg>
@@ -212,7 +212,7 @@
           </p>
           <button
             onclick={openDemo}
-            class="text-[11px] text-nc-mut underline underline-offset-2 hover:text-nc-gold"
+            class="text-[11px] text-nc-mut underline underline-offset-2 hover:text-nc-brand"
           >
             …ya demo recording kholo
           </button>
@@ -221,7 +221,7 @@
         <!-- DEAD AIR workbench -->
         <section class="rounded-xl border border-nc-line bg-nc-panel p-4">
           <div class="mb-3 flex items-center gap-2">
-            <h3 class="text-[10px] font-bold tracking-widest text-nc-gold">DEAD AIR</h3>
+            <h3 class="text-[10px] font-bold tracking-widest text-nc-brand">DEAD AIR</h3>
             <span class="text-[10px] text-nc-mut-2"> FFmpeg silencedetect · −30 dB RMS </span>
             <div class="flex-1"></div>
             {#if scanned}
@@ -240,21 +240,21 @@
               max="10"
               step="0.5"
               bind:value={minSecs}
-              class="flex-1 accent-nc-gold"
+              class="flex-1 accent-nc-brand"
             />
             <span class="w-10 text-right font-mono text-[12px] text-nc-txt"
               >{minSecs.toFixed(1)}s</span
             >
           </div>
           <p class="mt-1 text-[10px] text-nc-mut-2">
-            Clipchamp ka AI auto-cut 3 second se lambi khamoshi hatata hai — wahi default.
+            AI auto-cut 3 second se lambi khamoshi hatata hai — wahi default.
           </p>
 
           <div class="mt-3 flex gap-2">
             <button
               onclick={findSilences}
               disabled={scanning || !isTauri()}
-              class="flex-1 rounded-lg border border-nc-line bg-nc-panel-2 py-2 text-xs font-medium hover:border-nc-gold/50 disabled:opacity-40"
+              class="flex-1 rounded-lg border border-nc-line bg-nc-panel-2 py-2 text-xs font-medium hover:border-nc-brand/50 disabled:opacity-40"
               title={isTauri() ? '' : 'Desktop app me chalta hai (FFmpeg engine)'}
             >
               {scanning ? 'Scanning…' : 'Find silences'}
@@ -290,26 +290,26 @@
             <h3 class="text-[10px] font-bold tracking-widest text-nc-mut">TRANSCRIPT PIPELINE</h3>
             <div class="flex-1"></div>
             {#if isTauri()}
-              <span class="font-mono text-[11px] text-nc-gold">
+              <span class="font-mono text-[11px] text-nc-brand">
                 {project.pipeline ? (project.pipeline.fraction * 100).toFixed(0) : '0'}%
               </span>
             {:else}
-              <span class="font-mono text-[11px] text-nc-gold">{progress.toFixed(0)}%</span>
+              <span class="font-mono text-[11px] text-nc-brand">{progress.toFixed(0)}%</span>
             {/if}
           </div>
 
           <!-- the real cloud pipeline, running once per imported source -->
           {#if project.pipeline}
-            <div class="mb-4 rounded-lg border border-nc-gold/40 bg-nc-gold/5 p-3">
+            <div class="mb-4 rounded-lg border border-nc-brand/40 bg-nc-brand/5 p-3">
               <div class="mb-1.5 flex items-center gap-2 text-[11px]">
-                <span class="text-nc-gold">{project.pipeline.stage}</span>
+                <span class="text-nc-brand">{project.pipeline.stage}</span>
                 <span class="ml-auto font-mono text-nc-mut">
                   {(project.pipeline.fraction * 100).toFixed(0)}%
                 </span>
               </div>
               <div class="h-1.5 overflow-hidden rounded-full bg-nc-panel-2">
                 <div
-                  class="h-full rounded-full bg-gradient-to-r from-nc-gold to-nc-green transition-[width] duration-300"
+                  class="h-full rounded-full bg-gradient-to-r from-nc-brand to-nc-green transition-[width] duration-300"
                   style="width:{project.pipeline.fraction * 100}%"
                 ></div>
               </div>
@@ -329,7 +329,7 @@
           {#if !isTauri()}
             <div class="mb-4 h-1.5 overflow-hidden rounded-full bg-nc-panel-2">
               <div
-                class="h-full rounded-full bg-gradient-to-r from-nc-gold to-nc-gold-dim transition-[width] duration-200"
+                class="h-full rounded-full bg-gradient-to-r from-nc-brand to-nc-brand-dim transition-[width] duration-200"
                 style="width:{progress}%"
               ></div>
             </div>
@@ -342,7 +342,7 @@
                            {state === 'done'
                       ? 'border-nc-green bg-nc-green/15 text-nc-green'
                       : state === 'active'
-                        ? 'border-nc-gold bg-nc-gold/15 text-nc-gold'
+                        ? 'border-nc-brand bg-nc-brand/15 text-nc-brand'
                         : 'border-nc-line-2 text-nc-mut-2'}"
                   >
                     {state === 'done' ? '✓' : i + 1}
@@ -356,7 +356,7 @@
 
           <button
             onclick={() => mode.set('cut')}
-            class="mt-4 w-full rounded-lg bg-nc-gold py-2.5 text-sm font-bold text-nc-bg hover:brightness-110"
+            class="mt-4 w-full rounded-lg bg-nc-brand py-2.5 text-sm font-bold text-nc-bg hover:brightness-110"
           >
             Transcript padho aur cut karo →
           </button>

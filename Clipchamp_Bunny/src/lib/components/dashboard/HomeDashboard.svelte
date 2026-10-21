@@ -26,15 +26,21 @@
   import { menu } from '../../stores/menu.svelte';
   import DashboardTopBar from './DashboardTopBar.svelte';
   import ProjectCard from './ProjectCard.svelte';
+  import Skeleton from '../Skeleton.svelte';
+  import SkeletonBlock from '../SkeletonBlock.svelte';
   import SystemFooter from '../SystemFooter.svelte';
   import {
     assetUrl,
+    clearCustomThumbnail,
+    customThumbnail,
     defaultDbPath,
     demoSourcePath,
     extractPoster,
+    importThumbnail,
     isTauri,
     loadProjects,
     loadTrash,
+    pickImageFile,
     pickVideos,
     probeMedia,
     purgeTrash,
@@ -45,7 +51,8 @@
     updateProjectOpened
   } from '../../ipc';
   import type { RustProject, RustTrashItem } from '../../ipc';
-  import { loadMediaInfo } from '../../media';
+  import { loadMediaInfo, loadThumbnails } from '../../media';
+  import { DUMMY_PROJECTS } from '../../mock';
   import {
     ago,
     fmtBytes,
@@ -71,7 +78,7 @@
   let sort = $state<SortKey>('recent');
   let view = $state<'grid' | 'list'>('grid');
   /** The project whose name is being edited inline. */
-  let renamingPath = $state<string | null>(null);
+  let renamingId = $state<string | null>(null);
   let renameDraft = $state('');
 
   const SECTIONS = [
@@ -108,12 +115,13 @@
       sizeBytes: 0,
       posterUrl: null,
       previewUrl: null,
+      customThumb: null,
       opening: false
     };
   }
 
-  function patch(path: string, fn: (c: Card) => Card) {
-    cards = cards.map((c) => (c.project.sourcePath === path ? fn(c) : c));
+  function patch(id: string, fn: (c: Card) => Card) {
+    cards = cards.map((c) => (c.project.id === id ? fn(c) : c));
   }
 
   async function load() {
@@ -138,54 +146,74 @@
     if (isTauri()) return [];
     const baked = await loadMediaInfo().catch(() => null);
     if (!baked) return [];
-    return [
-      {
-        project: {
-          id: 'baked',
-          name: baked.name.replace(/\.[^.]+$/, ''),
-          sourcePath: baked.url,
-          durationSecs: baked.durationSecs,
-          lastOpened: Math.floor(Date.now() / 1000)
-        },
-        sizeBytes: baked.sizeBytes,
-        posterUrl: null,
-        previewUrl: null,
-        opening: false
-      }
-    ];
+    const thumbs = await loadThumbnails().catch(() => null);
+    const now = Math.floor(Date.now() / 1000);
+    // A whole grid of dummy projects, so the layout can be judged with the
+    // screen full instead of with one lonely card. Every card points at the
+    // baked recording, and takes a different frame of it as its poster.
+    return DUMMY_PROJECTS.map((d) => ({
+      project: {
+        id: d.id,
+        name: d.name,
+        // The path is the card's identity here - the list is keyed by it and
+        // the rename / trash actions address it. All the dummy cards point at
+        // the same baked recording, so the path needs the fragment to keep
+        // them apart; the fragment is ignored when the file is fetched.
+        sourcePath: `${baked.url}#${d.id}`,
+        durationSecs: d.durationSecs,
+        lastOpened: now - d.openedAgoSecs
+      },
+      sizeBytes: d.sizeBytes,
+      posterUrl: thumbs
+        ? `/assets/thumbs/thumb_${String(d.thumbIndex).padStart(5, '0')}.jpg`
+        : null,
+      previewUrl: null,
+      customThumb: null,
+      opening: false
+    }));
   }
 
   /**
-   * The slow part — sizes, then poster frames.
+   * The slow part — posters first, then sizes.
+   *
+   * Posters win the race on purpose: they are what the eye sees. A cached
+   * still is just a file existence check; an uncached one costs one FFmpeg
+   * child. Either way they run **one at a time** — the dashboard is already
+   * on screen, and a queue of eight parallel decoders would be exactly the
+   * kind of CPU burn this app is built to avoid.
    *
    * Sizes come from the SQLite ffprobe cache, so the second visit is free.
-   * Poster frames need one FFmpeg child per project, and they run **one at a
-   * time**: the dashboard is already on screen, and a queue of eight parallel
-   * decoders would be exactly the kind of CPU burn this app is built to avoid.
-   *
    * A card that cannot get a still falls back to streaming the file itself —
    * a real frame, never a blank box.
    */
   async function hydrate(list: RustProject[]) {
     for (const p of list) {
       try {
-        const info = await probeMedia(p.sourcePath);
-        patch(p.sourcePath, (c) => ({ ...c, sizeBytes: info.sizeBytes }));
+        // A picture the user chose beats a frame the app picked, so the
+        // custom one is looked for first. It is a directory read - the image
+        // is never decoded, only its path is kept.
+        const custom = await customThumbnail(p.sourcePath);
+        if (custom) {
+          patch(p.id, (c) => ({ ...c, customThumb: custom, posterUrl: assetUrl(custom) }));
+          continue;
+        }
+        const poster = await extractPoster(p.sourcePath);
+        patch(p.id, (c) => ({ ...c, posterUrl: assetUrl(poster.path) }));
       } catch {
-        /* the file has moved or is gone — the card keeps what it knows */
+        // No still — stream the video instead of showing an empty tile.
+        patch(p.id, (c) => ({ ...c, previewUrl: assetUrl(p.sourcePath) }));
       }
+      // Give the UI a frame between ffmpeg children.
+      await new Promise((r) => setTimeout(r, 0));
     }
 
     for (const p of list) {
       try {
-        const poster = await extractPoster(p.sourcePath);
-        patch(p.sourcePath, (c) => ({ ...c, posterUrl: assetUrl(poster.path) }));
+        const info = await probeMedia(p.sourcePath);
+        patch(p.id, (c) => ({ ...c, sizeBytes: info.sizeBytes }));
       } catch {
-        // No still — stream the video instead of showing an empty tile.
-        patch(p.sourcePath, (c) => ({ ...c, previewUrl: assetUrl(p.sourcePath) }));
+        /* the file has moved or is gone — the card keeps what it knows */
       }
-      // Give the UI a frame between frames.
-      await new Promise((r) => setTimeout(r, 0));
     }
   }
 
@@ -223,16 +251,23 @@
   /** Open a project in the editor. The editor takes over immediately. */
   function openProject(c: Card) {
     if (c.opening) return;
-    patch(c.project.sourcePath, (x) => ({ ...x, opening: true }));
+    patch(c.project.id, (x) => ({ ...x, opening: true }));
     app.openEditor();
     mode.set('cut');
-    void project
-      .loadFromBackend(c.project.sourcePath)
-      .then(() => updateProjectOpened(dbPath, c.project.sourcePath, Math.floor(Date.now() / 1000)))
+    // In the browser there is no Rust engine to probe the file, so the
+    // baked recording stands in - same as the editor's own browser path.
+    const opened = isTauri()
+      ? project
+          .loadFromBackend(c.project.sourcePath)
+          .then(() =>
+            updateProjectOpened(dbPath, c.project.sourcePath, Math.floor(Date.now() / 1000))
+          )
+      : project.loadBaked();
+    void opened
       .catch((e) =>
         toast.push('warn', `Project khul nahi paya: ${e instanceof Error ? e.message : e}`)
       )
-      .finally(() => patch(c.project.sourcePath, (x) => ({ ...x, opening: false })));
+      .finally(() => patch(c.project.id, (x) => ({ ...x, opening: false })));
   }
 
   /** A blank project: the editor's Media mode, ready for a new import. */
@@ -284,22 +319,70 @@
     const items: MenuItem[] = [
       { id: 'open', label: 'Open', icon: 'spark' },
       { id: 'rename', label: 'Rename', icon: 'rename' },
+      { id: 'thumb', label: c.customThumb ? 'Change thumbnail' : 'Set thumbnail', icon: 'image' },
       { id: 'locate', label: 'Open file location', icon: 'folder' },
       { id: 'copy', label: 'Copy path', icon: 'copy' },
       { id: 'div', label: '', divider: true },
       { id: 'trash', label: 'Move to trash', icon: 'trash', danger: true }
     ];
+    if (c.customThumb) {
+      items.splice(5, 0, { id: 'unthumb', label: 'Remove thumbnail', icon: 'close' });
+    }
     menu.show(items, Math.round(r.left - 120), Math.round(r.bottom + 4), (id) =>
       pickCardAction(id, c)
     );
+  }
+
+  /**
+   * Put a picture of the user's own on a project card.
+   *
+   * The picture is copied into the app's cache by the OS - byte for byte, so
+   * it is never read into memory - and the card only ever holds the path.
+   * In the browser there is no app cache, so the picked file is streamed
+   * from a blob for the session.
+   */
+  async function setCardThumbnail(c: Card) {
+    const picked = await pickImageFile();
+    if (!picked) return;
+    try {
+      if (isTauri()) {
+        const stored = await importThumbnail(c.project.sourcePath, picked);
+        patch(c.project.id, (x) => ({ ...x, customThumb: stored, posterUrl: assetUrl(stored) }));
+        toast.push('info', 'Thumbnail lag gaya');
+      } else {
+        patch(c.project.id, (x) => ({ ...x, customThumb: picked, posterUrl: picked }));
+        toast.push('info', 'Thumbnail lag gaya (browser mode - is session me hi rahega)');
+      }
+    } catch (e) {
+      toast.push('warn', `Thumbnail nahi laga: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  async function removeCardThumbnail(c: Card) {
+    if (!isTauri()) {
+      patch(c.project.id, (x) => ({ ...x, customThumb: null }));
+      toast.push('info', 'Thumbnail hata diya');
+      return;
+    }
+    try {
+      await clearCustomThumbnail(c.project.sourcePath);
+      patch(c.project.id, (x) => ({ ...x, customThumb: null }));
+      toast.push('info', 'Thumbnail hata diya');
+    } catch (e) {
+      toast.push('warn', `Thumbnail nahi hata: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   async function pickCardAction(id: string, c: Card) {
     if (id === 'open') {
       openProject(c);
     } else if (id === 'rename') {
-      renamingPath = c.project.sourcePath;
+      renamingId = c.project.id;
       renameDraft = c.project.name;
+    } else if (id === 'thumb') {
+      await setCardThumbnail(c);
+    } else if (id === 'unthumb') {
+      await removeCardThumbnail(c);
     } else if (id === 'locate') {
       const ok = await revealPath(c.project.sourcePath);
       toast.push(
@@ -321,22 +404,22 @@
   }
 
   async function commitRename() {
-    const path = renamingPath;
-    renamingPath = null;
-    if (!path) return;
+    const id = renamingId;
+    renamingId = null;
+    if (!id) return;
     const name = renameDraft.trim();
-    const card = cards.find((c) => c.project.sourcePath === path);
+    const card = cards.find((c) => c.project.id === id);
     if (!card || !name || name === card.project.name) return;
     try {
       await saveProject(
         dbPath,
         card.project.id,
         name,
-        path,
+        card.project.sourcePath,
         card.project.durationSecs,
         card.project.lastOpened
       );
-      patch(path, (c) => ({ ...c, project: { ...c.project, name } }));
+      patch(id, (c) => ({ ...c, project: { ...c.project, name } }));
     } catch (e) {
       toast.push('warn', `Rename nahi hua: ${e instanceof Error ? e.message : e}`);
     }
@@ -349,7 +432,7 @@
    * real frame and never buffers the file, so the card is never a blank box.
    */
   function posterFailed(c: Card) {
-    patch(c.project.sourcePath, (x) => ({
+    patch(c.project.id, (x) => ({
       ...x,
       posterUrl: null,
       previewUrl: x.previewUrl ?? assetUrl(x.project.sourcePath)
@@ -426,7 +509,7 @@
           class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13.5px]
                  transition-colors duration-150
                  {app.section === s.id
-            ? 'bg-nc-gold/12 font-medium text-nc-txt'
+            ? 'bg-nc-brand/12 font-medium text-nc-txt'
             : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
         >
           <svg
@@ -439,7 +522,7 @@
             stroke-linejoin="round"
             aria-hidden="true"
             class="shrink-0 transition-colors duration-150 {app.section === s.id
-              ? 'text-nc-gold'
+              ? 'text-nc-brand'
               : 'text-nc-mut-2'}"
           >
             <path d={s.icon} />
@@ -454,8 +537,8 @@
       {/each}
 
       <div class="mt-auto flex items-center gap-2 px-3 py-2">
-        <span class="text-[12px] font-bold text-nc-gold">LIT</span>
-        <span class="text-[11px] text-nc-mut-2">v1.0.0</span>
+        <span class="font-brand text-[13px] leading-none tracking-[0.04em] text-nc-brand">LIT</span>
+        <span class="text-[11px] text-nc-mut-2">v{app.version}</span>
       </div>
     </nav>
 
@@ -478,7 +561,7 @@
 
             <!-- ------------------------------------------------ the CTAs -->
             <div
-              class="t9-fade-in mt-5 flex max-w-[760px] flex-col overflow-hidden rounded-xl bg-nc-gold sm:flex-row"
+              class="t9-fade-in mt-5 flex max-w-[760px] flex-col overflow-hidden rounded-xl bg-nc-brand sm:flex-row"
               style="animation-delay:140ms"
             >
               <button
@@ -595,7 +678,7 @@
                       <button
                         onclick={() => restore(item)}
                         class="rounded-lg border border-nc-line px-3 py-1.5 text-[12px] text-nc-txt
-                               transition-colors duration-150 hover:border-nc-gold/50 hover:text-nc-gold"
+                               transition-colors duration-150 hover:border-nc-brand/50 hover:text-nc-brand"
                       >
                         Restore
                       </button>
@@ -663,7 +746,7 @@
                       onclick={() => (view = 'grid')}
                       class="grid h-8 w-9 place-items-center transition-colors duration-150
                              {view === 'grid'
-                        ? 'bg-nc-gold/15 text-nc-gold'
+                        ? 'bg-nc-brand/15 text-nc-brand'
                         : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
                       aria-label="Grid view"
                       aria-pressed={view === 'grid'}
@@ -694,7 +777,7 @@
                       onclick={() => (view = 'list')}
                       class="grid h-8 w-9 place-items-center border-l border-nc-line transition-colors duration-150
                              {view === 'list'
-                        ? 'bg-nc-gold/15 text-nc-gold'
+                        ? 'bg-nc-brand/15 text-nc-brand'
                         : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
                       aria-label="List view"
                       aria-pressed={view === 'list'}
@@ -720,14 +803,48 @@
               </div>
 
               {#if loading}
-                <!-- a small, honest spinner — the list really is on its way -->
-                <div class="flex items-center justify-center py-16">
-                  <span
-                    class="t9-spin h-5 w-5 rounded-full border-2 border-nc-line border-t-nc-gold motion-reduce:hidden"
-                  ></span>
-                  <span class="ml-2.5 text-[12px] text-nc-mut motion-reduce:hidden">loading…</span>
-                  <span class="text-[12px] text-nc-mut motion-reduce:inline">loading…</span>
-                </div>
+                <!--
+                  Skeleton first, data second.
+
+                  The layout the user is about to get is already on screen, so
+                  the database query feels like the last 40 ms of a finish
+                  instead of a blank wait. `<Skeleton>` owns the single
+                  composited sweep; these blocks only reserve the real shape.
+                -->
+                <Skeleton label="Projects load ho rahe hain…">
+                  {#if view === 'grid'}
+                    <ul
+                      class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+                      aria-hidden="true"
+                    >
+                      {#each Array(8) as _, i}
+                        <li class="t9-card-in" style="--i:{Math.min(i, 8)}">
+                          <SkeletonBlock
+                            class="aspect-video w-full rounded-lg border border-nc-line"
+                          />
+                          <SkeletonBlock shape="line" class="mt-2.5 w-[58%]" />
+                          <SkeletonBlock shape="line" class="mt-1.5 h-2.5 w-[38%] opacity-70" />
+                        </li>
+                      {/each}
+                    </ul>
+                  {:else}
+                    <ul
+                      class="divide-y divide-nc-line overflow-hidden rounded-xl border border-nc-line bg-nc-panel"
+                      aria-hidden="true"
+                    >
+                      {#each Array(6) as _, i}
+                        <li class="flex items-center gap-3 px-3 py-2">
+                          <SkeletonBlock class="h-10 w-16 shrink-0 rounded border border-nc-line" />
+                          <div class="min-w-0 flex-1">
+                            <SkeletonBlock shape="line" class="w-[38%]" />
+                            <SkeletonBlock shape="line" class="mt-1.5 h-2.5 w-[24%] opacity-70" />
+                          </div>
+                          <SkeletonBlock shape="line" class="h-2.5 w-8 opacity-70" />
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </Skeleton>
               {:else if visible.length === 0}
                 <div
                   class="grid place-items-center rounded-xl border-2 border-dashed border-nc-line px-6 py-14 text-center"
@@ -758,7 +875,7 @@
                       <div class="mt-4 flex items-center justify-center gap-3">
                         <button
                           onclick={importMedia}
-                          class="rounded-lg bg-nc-gold px-4 py-2 text-[12.5px] font-semibold text-nc-bg
+                          class="rounded-lg bg-nc-brand px-4 py-2 text-[12.5px] font-semibold text-nc-bg
                                  transition-[filter] duration-150 hover:brightness-110"
                         >
                           Import media
@@ -778,16 +895,16 @@
                 </div>
               {:else if view === 'grid'}
                 <ul class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {#each visible as c, i (c.project.sourcePath)}
+                  {#each visible as c, i (c.project.id)}
                     <ProjectCard
                       card={c}
                       index={i}
-                      renaming={renamingPath === c.project.sourcePath}
+                      renaming={renamingId === c.project.id}
                       onopen={() => openProject(c)}
                       onmenu={(e) => openCardMenu(c, e)}
                       onrenamechange={(v) => (renameDraft = v)}
                       onrenamecommit={() => void commitRename()}
-                      onrenamecancel={() => (renamingPath = null)}
+                      onrenamecancel={() => (renamingId = null)}
                       onpostererror={() => posterFailed(c)}
                     />
                   {/each}
@@ -796,7 +913,7 @@
                 <ul
                   class="divide-y divide-nc-line overflow-hidden rounded-xl border border-nc-line bg-nc-panel"
                 >
-                  {#each visible as c, i (c.project.sourcePath)}
+                  {#each visible as c, i (c.project.id)}
                     <li
                       class="t9-card-in flex items-center gap-3 px-3 py-2 transition-colors duration-150 hover:bg-nc-panel-2"
                       style="--i:{Math.min(i, 8)}"

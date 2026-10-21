@@ -9,6 +9,7 @@
   import { project } from "../../stores/project.svelte";
   import { transcript } from "../../stores/transcript.svelte";
   import { player } from "../../stores/player.svelte";
+  import { shortcuts } from "../../stores/shortcuts.svelte";
 
   const ROW_HEIGHT = 64;
   const OVERSCAN = 10;
@@ -55,27 +56,38 @@
     }
   });
 
-  // X cuts / V keeps the transcript line under the playhead — the same
-  // actions the per-row keep/cut buttons perform, just keyboard-driven.
+  /**
+   * X cuts / V keeps the transcript line under the playhead — the same
+   * actions the per-row keep/cut buttons perform, just keyboard-driven.
+   * `Delete` / `Backspace` cut it too: with no multi-clip selection model,
+   * the line under the playhead *is* the selection.
+   *
+   * These used to be a private `window` listener here, which broke the shell's
+   * "one `keydown` dispatcher" rule and died with the `{#key}` that unmounts
+   * this panel. The registry keeps them alive for exactly as long as Cut mode
+   * is resident, which is the correct lifetime — and `BINDINGS` then lists
+   * them in the cheat sheet for free.
+   */
+  function lineUnderPlayhead(): number {
+    const t = player.currentTime;
+    return transcript.lines.findIndex((l) => t >= l.startSecs && t < l.endSecs);
+  }
+
   $effect(() => {
-    function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === "PrintScreen" || e.key === "Snapshot") return;
-      const t = player.currentTime;
-      const i = transcript.lines.findIndex((l) => t >= l.startSecs && t < l.endSecs);
-      if (i < 0) return;
-      if (e.key === "x" || e.key === "X") {
-        e.preventDefault();
-        void transcript.cut(i);
-      } else if (e.key === "v" || e.key === "V") {
-        e.preventDefault();
-        void transcript.keep(i);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const cut = () => {
+      const i = lineUnderPlayhead();
+      if (i >= 0) void transcript.cut(i);
+    };
+    const keep = () => {
+      const i = lineUnderPlayhead();
+      if (i >= 0) void transcript.keep(i);
+    };
+    const un = [
+      shortcuts.bind("cutLine", cut),
+      shortcuts.bind("delete", cut),
+      shortcuts.bind("keepLine", keep),
+    ];
+    return () => un.forEach((fn) => fn());
   });
 
   function formatTime(secs: number): string {

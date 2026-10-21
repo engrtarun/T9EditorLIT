@@ -186,6 +186,27 @@ async fn extract_thumbnails(
         .map_err(|e| e.to_string())?
 }
 
+/// Attach a hand-picked picture as the poster of a library entry.
+///
+/// The picture is copied into `<app_data>/cache/thumbs/custom/` and the new
+/// path comes back. The bytes never enter this process's heap, and the
+/// library keeps pointing at a file inside the app's own cache — so moving
+/// or deleting the user's original cannot break the poster.
+#[tauri::command]
+async fn import_thumbnail(
+    app: tauri::AppHandle,
+    source_path: String,
+    image_path: String,
+) -> Result<String, String> {
+    let image = PathBuf::from(image_path);
+    let root = cache_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        thumbnail::import_custom(&source_path, &image, &root)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Waveform peaks for the timeline, cached as JSON on disk keyed by source
 /// mtime. Streams FFmpeg through a fixed 32 KB buffer — a 5 GB source never
 /// lands in this process's heap.
@@ -360,6 +381,7 @@ pub fn run() {
             default_chunk_dir,
             default_cache_dir,
             extract_thumbnails,
+            import_thumbnail,
             load_transcript,
             save_transcript,
             set_transcript_keep,

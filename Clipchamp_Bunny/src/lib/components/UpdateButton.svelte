@@ -83,7 +83,7 @@
   <button
     onclick={restartIntoNewBuild}
     disabled={applying}
-    class="group mr-1 flex shrink-0 items-center rounded-md border border-nc-line bg-nc-panel-2 px-2 py-[3px] text-[11px] leading-4 font-medium text-nc-mut transition-colors hover:border-nc-gold/50 hover:text-nc-gold disabled:opacity-50"
+    class="group mr-1 flex shrink-0 items-center rounded-md border border-nc-line bg-nc-panel-2 px-2 py-[3px] text-[11px] leading-4 font-medium text-nc-mut transition-colors hover:border-nc-brand/50 hover:text-nc-brand disabled:opacity-50"
     title={stagedBuild
       ? `Build ${stagedBuild} is staged. Click to restart into it.`
       : 'A newer build is staged. Click to restart into it.'}
@@ -97,7 +97,7 @@
         stroke-linejoin="round"
       />
     </svg>
-    <span class="ms-1.5 me-px transition-colors duration-150 group-hover:text-nc-gold">
+    <span class="ms-1.5 me-px transition-colors duration-150 group-hover:text-nc-brand">
       {applying ? 'Restarting...' : 'Update'}
     </span>
   </button>

@@ -3,6 +3,8 @@ import { mount } from 'svelte';
 import App from './App.svelte';
 import { layout } from './lib/stores/layout.svelte';
 import { cloud } from './lib/stores/cloud.svelte';
+import { app } from './lib/stores/app.svelte';
+import { isTauri } from './lib/ipc';
 
 const target = document.getElementById('app');
 if (!target) throw new Error('#app mount point missing');
@@ -18,6 +20,19 @@ if (!target) throw new Error('#app mount point missing');
 // The provider dots come from the daemon's real health report, not from a
 // fake "connect" button.
 void cloud.sync();
+
+// The version the user sees has to be the version that is actually running,
+// so read it from the binary instead of writing it into the source.
+if (isTauri()) {
+  void import('@tauri-apps/api/app')
+    .then((api) => api.getVersion())
+    .then((v) => {
+      app.version = v;
+    })
+    .catch(() => {
+      /* the fallback in the store stays */
+    });
+}
 
 // `?help=1` opens the shortcut sheet straight away — handy for a shareable link.
 if (new URLSearchParams(location.search).has('help')) layout.helpOpen = true;

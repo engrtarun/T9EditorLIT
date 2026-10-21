@@ -137,10 +137,17 @@ if (!fs.existsSync(dest)) {
   console.log('Â· copied video');
 }
 
+// The URL is the *public* path of the file that was just written, derived
+// from the destination rather than written by hand. A hand-written path
+// drifted once (`/media/...` while the file lived in `/assets/...`) and the
+// video quietly 404'd in browser dev mode - nothing failed, the preview
+// stage was just empty.
+const publicUrl = '/' + path.relative(path.join(ROOT, 'public'), dest).split(path.sep).join('/');
+
 const media = {
   id: 'obs-clipchamp',
-  name: 'clipchamp_OBSrecord.mp4',
-  url: '/media/clipchamp_OBSrecord.mp4',
+  name: path.basename(dest),
+  url: publicUrl,
   durationSecs,
   width: v.width,
   height: v.height,

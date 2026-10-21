@@ -41,7 +41,7 @@
         fill="none"
         stroke="currentColor"
         stroke-width="1.6"
-        class={mode.current === it.id ? 'text-nc-gold' : ''}
+        class={mode.current === it.id ? 'text-nc-brand' : ''}
       >
         <path d={it.icon} />
       </svg>

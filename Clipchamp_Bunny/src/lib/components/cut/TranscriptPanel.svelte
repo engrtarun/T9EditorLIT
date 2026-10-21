@@ -63,7 +63,6 @@
   };
 
   function jump(line: TranscriptLine) {
-    project.clearTextSelection();
     project.cursor = project.lines.findIndex((l) => l.id === line.id);
     player.seek(line.startSec);
   }
@@ -112,7 +111,7 @@
       >✕ {project.cutCount}</span
     >
     {#if project.selectedIds.length}
-      <span class="rounded bg-nc-gold/15 px-1.5 py-0.5 font-mono text-[10px] text-nc-gold"
+      <span class="rounded bg-nc-brand/15 px-1.5 py-0.5 font-mono text-[10px] text-nc-brand"
         >{project.selectedIds.length} selected</span
       >
     {/if}
@@ -124,7 +123,7 @@
         onclick={() => (filter = f.id)}
         class="rounded px-2 py-0.5 text-[10px] font-medium
                {filter === f.id
-          ? 'bg-nc-gold text-nc-bg'
+          ? 'bg-nc-brand text-nc-bg'
           : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
       >
         {f.label}
@@ -149,11 +148,11 @@
       <div
         style="height:{ROW_H}px"
         class="group relative flex items-center gap-2 border-b border-nc-line/60 px-2 transition-colors
-               {isCursor ? 'bg-nc-gold/8' : 'hover:bg-nc-panel-2'}
-               {project.isSelected(line.id) ? 'bg-nc-gold/12' : ''}"
+               {isCursor ? 'bg-nc-brand/8' : 'hover:bg-nc-panel-2'}
+               {project.isSelected(line.id) ? 'bg-nc-brand/12' : ''}"
       >
         {#if isCursor}
-          <span class="absolute inset-y-0 left-0 w-[3px] bg-nc-gold"></span>
+          <span class="absolute inset-y-0 left-0 w-[3px] bg-nc-brand"></span>
         {/if}
 
         <button

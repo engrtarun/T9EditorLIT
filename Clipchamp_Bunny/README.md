@@ -92,7 +92,7 @@ Export preview-bar ke purple button se (Clipchamp jaisa).
 | **Cut dashboard** | video preview · transcript ✓/✕ (virtual scroll) · editable timeline |
 | **Phantom Cut** | cut ranges preview me skip ho jaate hain — video kabhi re-encode nahi hota |
 | **Traffic-light waveform** | gold = keep · red = fumble/galat · grey = khamoshi |
-| **Edit timeline** | source minimap · ruler · T · draggable video clips · audio — drag karo, transcript live reorder hota hai |
+| **Edit timeline** | source minimap · ruler · draggable video clips · audio — drag karo, transcript live reorder hota hai (text lane abhi nahi hai) |
 | **Dead air workbench** | threshold slider (default 3 s, Clipchamp ka rule) · silence list · cut-all |
 | **Honesty meter** | RAM used/total · this app's MB · real network speed (Mbps) · click → full PC + storage panel |
 | **Full Clipchamp shortcut set** | `Ctrl+/` opens the in-app sheet |

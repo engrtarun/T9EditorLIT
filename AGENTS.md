@@ -98,15 +98,15 @@ form fields, queue rules, exit codes aur troubleshooting:
 
 Har deploy pehle **SQLite ledger** me ek work order banata hai:
 
-| Field | Switch | Kya |
-| ----- | ------ | --- |
-| Agent | `-Agent` | kaun deploy kar raha hai |
-| Model | `-Model` | exact `provider/model` id |
-| Task | `-Task` | kya change ho raha hai |
-| Why | `-Why` | kyun zaroori hai |
-| ETA | `-EtaMinutes` | build + install + verify ka honest estimate |
-| Scope | `-Scope` | `app` · `go` · `both` · `docs` |
-| Priority | `-Priority` | 0–100 (default 50; >60 ke liye `-Emergency`) |
+| Field    | Switch        | Kya                                          |
+| -------- | ------------- | -------------------------------------------- |
+| Agent    | `-Agent`      | kaun deploy kar raha hai                     |
+| Model    | `-Model`      | exact `provider/model` id                    |
+| Task     | `-Task`       | kya change ho raha hai                       |
+| Why      | `-Why`        | kyun zaroori hai                             |
+| ETA      | `-EtaMinutes` | build + install + verify ka honest estimate  |
+| Scope    | `-Scope`      | `app` · `go` · `both` · `docs`               |
+| Priority | `-Priority`   | 0–100 (default 50; >60 ke liye `-Emergency`) |
 
 ```powershell
 cd Clipchamp_Bunny
@@ -119,15 +119,15 @@ Ya repo root se double-click: `Deploy-T9EditorLIT.bat`.
 
 Ye script khud ye sab karti hai:
 
-| Step | Kya |
-| ---- | --- |
-| ledger | work order + fair queue (one active, FIFO, priority aging) |
-| build | `build.ps1` → frontend + `npx tauri build --no-bundle`, SHA-256 manifest |
-| daemon | `go/` sources naye hon to rebuild + restart/stage `t9cloud` |
-| install | `%LOCALAPPDATA%\Programs\T9EditorLIT\` — app + daemon + `.env` |
-| stage | app chal raha ho to `t9-editor-lit.new.exe` / `t9cloud.new.exe` |
-| verify | hashes, `build.json`, `/healthz`, no repo-exe instances |
-| pin | Start menu shortcut + AppUserModelID + taskbar pin |
+| Step    | Kya                                                                      |
+| ------- | ------------------------------------------------------------------------ |
+| ledger  | work order + fair queue (one active, FIFO, priority aging)               |
+| build   | `build.ps1` → frontend + `npx tauri build --no-bundle`, SHA-256 manifest |
+| daemon  | `go/` sources naye hon to rebuild + restart/stage `t9cloud`              |
+| install | `%LOCALAPPDATA%\Programs\T9EditorLIT\` — app + daemon + `.env`           |
+| stage   | app chal raha ho to `t9-editor-lit.new.exe` / `t9cloud.new.exe`          |
+| verify  | hashes, `build.json`, `/healthz`, no repo-exe instances                  |
+| pin     | Start menu shortcut + AppUserModelID + taskbar pin                       |
 
 **Running app me update:** app chal raha ho to naya build stage hota hai aur
 top bar me chhota **"Update"** button aata hai (sirf staged exe hone par).
@@ -143,3 +143,211 @@ App band ho to build seedha install hota hai; button ki zaroorat nahi.
 > rebuild aur install `deploy.ps1` khud kar deta hai. Tumhe alag se
 > `go build` ya `t9cloud` restart nahi karna. Bas `-Scope go` (ya `both`)
 > ke saath deploy chalao.
+
+> **Sarkari Deploy & Fast-Lane Accelerator:**
+> Ab `deploy.ps1` aur `Deploy-T9EditorLIT.bat` automatically naye **Sarkari High-Speed Engine (`sarkari_deploy/`)** se wired hain:
+>
+> - **10-Second Fast-Check:** `pwsh -File tools\deploy.ps1 -Check` (TypeScript + Svelte + Rust syntax check in seconds).
+> - **Live 4-Min Pulse:** Execution ke dauran har 4 minute me live progress pulse report aati hai.
+> - **Canary Auto-Rollback:** Binary startup par panic kare toh 2 second me `.prev.exe` restore ho jata hai.
+
+---
+
+## 7. Branding — the board is the source of truth
+
+**Source of truth:** `Clipchamp_Bunny/T9 Editor LIT Branding Board.png`
+(colour palette, primary logo, app icon, and the DO / DON'T rules).
+
+| Rule                                           | Why                                                                                                                                                                                                                                                                                       |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The brand mark is **traced**, never hand-drawn | The board's logo is a _sculpted_ mark. `tools/branding/trace-mark.mjs` reads the original pixels and writes `src/lib/components/dashboard/BrandMark.svelte`. The script's own quality gate (the trace must match the source artwork pixel for pixel) fails the build if the trace drifts. |
+| **Never hand-edit** `BrandMark.svelte`         | It is generated. Re-run `node tools/branding/trace-mark.mjs` instead.                                                                                                                                                                                                                     |
+| Colours come from the board                    | `#4D8DFF` primary blue, `#F5F7FA` text, `#15171B` background. The token is `nc-brand`; `nc-gold` is only a legacy alias.                                                                                                                                                                  |
+| Icons come from the board                      | `npx tauri icon tools/branding/app-icon.png` regenerates the whole set.                                                                                                                                                                                                                   |
+| No other product's name in the UI              | "Nanami Cut" and "Clipchamp" are gone from anything the user can see. Clipchamp may be mentioned in _code comments_ that explain where a measurement came from.                                                                                                                           |
+| The version number is read, not written        | `tauri.conf.json` is the only place the version lives; the UI asks the binary.                                                                                                                                                                                                            |
+| No fake "7" or letter stand-ins for the logo   | The mark is the mark, in every surface.                                                                                                                                                                                                                                                   |
+
+---
+
+## 8. The dev server (localhost) is a shared tool — do not break it
+
+The UI is edited on **localhost:5174** (`cd Clipchamp_Bunny; npm run dev`).
+The user opens it in a browser with Inspect Element, changes the UI there, and
+the desktop app is the _shipped_ copy of the same frontend.
+
+**The dummy data is a shared fixture. Do not break it.**
+
+| Fixture                                                | What it is                             | Rule                                                                                                                                    |
+| ------------------------------------------------------ | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `public/assets/clipchamp_OBSrecord.mp4`                | the real OBS recording the demo uses   | never delete or move it                                                                                                                 |
+| `public/assets/media.json`                             | its probe result                       | `url` must be the file's **real** public path (`/assets/...`) - a hand-written path 404'd once and the preview stage was silently empty |
+| `public/assets/waveform.json`, `public/assets/thumbs/` | the real waveform and filmstrip        | regenerate with `node tools\generate-media.mjs`, never by hand                                                                          |
+| `src/lib/mock.ts`                                      | the mock transcript + `DUMMY_PROJECTS` | the browser has no SQLite, so these are what the dashboard shows                                                                        |
+
+**What the browser mode gives you:** the dashboard with a full grid of dummy
+projects (real baked frames as posters), and the editor with the real video,
+the real waveform, the real filmstrip and a mock transcript scaled to the real
+duration. Enough to change any UI with Inspect Element.
+
+**Do not:**
+
+- **Do not leave the dev server broken.** A blank page on localhost is the
+  single most common way an agent "finishes" without the change ever being
+  seen. If you edited a `.svelte` file, reload and confirm the page still
+  renders.
+- **Do not fight another agent over the same file.** Two edits to one
+  component merge badly: a stray `</div>` in `HomeDashboard.svelte` blanked the
+  whole page. After any edit to a file another agent is also touching, run
+  `npm run check` **and** load the page.
+- **Do not watch the Rust build folder.** `vite.config.ts` ignores
+  `src-tauri/target`; a build holds `.build-lock` open, the watcher could not
+  read it, and chokidar took the whole dev server down. That happened while
+  another agent was building.
+- **Do not delete `public/assets/` to "clean up"** - it is the demo media.
+
+**A change on localhost is not shipped.** The dev server serves `src/`; the
+desktop app runs the frontend **baked into the executable** by
+`npx tauri build`. Only a deploy moves a UI change to the user's desktop.
+
+---
+
+## 9. How a deploy proves it reached the app (and not just localhost)
+
+The two are never confused, and the ledger records which one happened:
+
+```text
+src/ ──npm run build──> dist/ ──tauri build──> t9-editor-lit.exe  (dist baked in)
+                                                         │
+                    SHA-256 manifest ◀──────────────────┘
+                         │
+              install to %LOCALAPPDATA%\Programs\T9EditorLIT\
+                         │
+                    build.json marker  (buildId + appSha256)
+                         │
+              the running app reads it AND compares with the build id
+              compiled into its own binary
+```
+
+| Check             | Where                                            | What it proves                                                                                                                                                     |
+| ----------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The manifest      | `deploy\builds\<buildId>.json`                   | the exact exe that was built, with its SHA-256                                                                                                                     |
+| The install       | `deploy.ps1` / `sarkariKaam.ps1`                 | the installed file's SHA-256 equals the manifest's                                                                                                                 |
+| The marker        | `%LOCALAPPDATA%\Programs\T9EditorLIT\build.json` | which build is installed, and its hash                                                                                                                             |
+| The running app   | `installed_build()` (Rust)                       | the app reports the **compiled-in** build id (`build.rs` bakes `T9_BUILD_ID` in) next to the marker's - if they differ, the running app is not the installed build |
+| The Update button | `updateReady`                                    | true only when `t9-editor-lit.new.exe` exists, so the button means "a newer build is staged", not "the marker changed"                                             |
+| After the click   | `normalize_installed_marker()`                   | the app rewrites `mode: staged` to `mode: installed`, so the marker never lies about what is running                                                               |
+| Doctor            | `deploy.ps1 -Doctor`                             | exe present, hash == marker hash, marker build == manifest build, no foreign (repo) app instance, daemon `/healthz` version                                        |
+
+**Staged vs live:** if the app was running during the deploy, the new binary is
+staged as `t9-editor-lit.new.exe` and the ledger records `mode: staged`. The
+user has to click **Update** for it to become live. Say so - a staged deploy
+is not on the desktop yet.
+
+**Localhost is never part of this.** `npm run dev` is a development server;
+it is not evidence of anything shipping. The evidence is the marker, the
+hashes and the doctor.
+
+---
+
+## 10. Five to seven agents at once — local verifies, remote compiles
+
+### 10.1 The rule
+
+> **Your machine verifies. GitHub compiles.**
+
+`cargo build --release` on the i3 is the single biggest reason agents stall
+each other:
+
+|                                      | Before                                       | After                                      |
+| ------------------------------------ | -------------------------------------------- | ------------------------------------------ |
+| Where the Rust release build happens | on the i3 that runs the app                  | on GitHub's Windows runner (7 GB, own CPU) |
+| How long it takes                    | 6-12 minutes, often twice                    | ~1 minute of install                       |
+| What it does to other agents         | holds the build lock the whole time          | nothing - it never reaches their machine   |
+| How it ends                          | `rustc` exits `0xffffffff` when RAM runs out | green or red, off-machine                  |
+| Go daemon                            | built locally too                            | built in the same CI job                   |
+
+The build lock still exists, and it still matters - it serialises the
+_install_, so two agents can never write the executable at the same time.
+What moved is the compile.
+
+### 10.2 What an agent runs
+
+```powershell
+# LOCAL - cheap, no linker, never OOMs. This is your gate.
+npm run verify:fast
+
+# REMOTE - the compile, on GitHub, in parallel with other agents.
+git add -A; git commit -m "..."; git push
+
+# LOCAL - install what CI built, instead of compiling here.
+pwsh -File tools\deploy.ps1 -Ci -Agent "<you>" -Model "<provider/model>" -Task "..." -Why "..." -Scope app
+```
+
+`deploy.ps1 -Ci` downloads the artifact from the rolling `ci-latest`
+release, checks its SHA-256 against CI's own manifest, and then goes through
+the **same** pipeline a local build does: ledger work order, build lock,
+canary, marker, doctor. Only the compiler moved; the contract did not.
+
+`-Ci` tells you when the binary is not what you think it is:
+
+- the CI build is from a different commit than your HEAD
+- your working tree is dirty (CI builds from a commit, so local edits are
+  **not** in the binary)
+
+Both are warnings, not failures - but read them. A `-Ci` deploy installs a
+**commit**, not your working tree.
+
+### 10.3 Working with other agents
+
+The repository has one working tree, and 5-7 agents editing it at once is
+how two edits land in one component and blank the page.
+
+| Rule                                                                                          | Why                                                                                                                     |
+| --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| **One file, one agent.** If someone else is in a file, do not edit it.                        | Two edits to one `.svelte` merge badly. A stray `</div>` in `HomeDashboard.svelte` blanked the whole page.              |
+| **Own your lane.** Split by area (dashboard / editor / daemon / pipeline), not by file count. | Ownership that follows a feature survives a change better than ownership that follows a directory listing.              |
+| **Use a worktree** for anything bigger than a fix.                                            | `opencode worktree_create <name>` gives you a tree of your own. No collisions, and the merge is a normal git operation. |
+| **Commit before you deploy.**                                                                 | CI builds from a commit. An uncommitted change is not in any artifact, ever.                                            |
+| **Never touch the shared fixtures** (§8).                                                     | `public/assets/*` and `src/lib/mock.ts` are the demo. Breaking them breaks every other agent's preview too.             |
+| **Do not run `cargo build` locally.**                                                         | You will OOM and you will hold the lock. `cargo check` is enough to know your code compiles.                            |
+
+### 10.3.1 The target folder is a lock too
+
+Even `cargo check` serialises on the shared
+`Clipchamp_Bunny/src-tauri/target` folder - cargo locks it, so two agents
+checking at the same time take turns. That is worth it: a private target
+folder means re-checking every dependency, which is minutes instead of
+seconds.
+
+So the rule is: **the shared tree is for one agent at a time**, and real
+parallelism comes from **worktrees**, each of which gets its own target
+folder. That is the difference between "five agents taking turns" and "five
+agents working".
+
+A `-Ci` deploy still runs the local fast lane (`cargo check`), because the
+machine verifies before it installs. That check is seconds to a minute and it
+is worth it - but it is also the one local step where two agents can still
+collide.
+
+### 10.4 The contract does not move
+
+Everything in §9 still holds for a CI build, because CI stamps the same
+identity:
+
+- `T9_BUILD_ID` is compiled into the binary by `build.rs`, and CI sets it
+  to the same `buildId` the manifest carries - so the marker and the
+  compiled-in id agree and `installed_build()` is honest.
+- The manifest carries the SHA-256 of both binaries. `deploy.ps1` refuses
+  to install a binary whose hash is not the one CI published.
+- The Go daemon's version is a hash of the Go sources, computed by
+  `tools/go-build-id.ps1`. `deploy.ps1` dot-sources that same file, so CI
+  and the deploy cannot disagree about what "the current daemon" is. A
+  `go`/`both` work order refuses to be recorded as shipped unless the
+  installed daemon carries the version that work order intended to install.
+- Canary, staged vs live, the Update button, `-Doctor`: all unchanged.
+
+### 10.5 If CI is down
+
+`deploy.ps1` without `-Ci` still compiles locally. It is slower and it can
+still OOM on this machine, but it is the fallback, not the main path.

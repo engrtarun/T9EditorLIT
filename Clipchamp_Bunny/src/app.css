@@ -3,9 +3,10 @@
    Source of truth: Clipchamp_Bunny/T9 Editor LIT Branding Board.png
    Tailwind 4 @theme  ->  utilities like bg-nc-panel become
    available automatically.
-   Token names stay nc-* (legacy) so no component needs editing;
-   only the VALUES below follow the branding board:
+   The values follow the branding board:
      Primary Blue #4D8DFF · Text/Light #F5F7FA · Background #15171B
+   The board calls that blue "Primary Blue", so the accent token is
+   `nc-brand`. The old `nc-gold` name is kept as an alias below.
    ========================================================= */
 
 @import 'tailwindcss';
@@ -17,8 +18,8 @@
   --color-nc-line: #2b3040;
   --color-nc-line-2: #3a4152;
 
-  --color-nc-gold: #4d8dff;
-  --color-nc-gold-dim: #2f5fc0;
+  --color-nc-brand: #4d8dff;
+  --color-nc-brand-dim: #2f5fc0;
   --color-nc-red: #e5484d;
   --color-nc-green: #3dd68c;
 
@@ -28,6 +29,20 @@
 
   --font-sans: 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif;
   --font-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+
+  /* The wordmark face. The brand board sets "T9 Editor" in a wide, squarish
+     techno face with flat terminals; Agency FB is the closest face Windows
+     ships, so the wordmark matches the board without shipping a font file
+     (no download, no extra RAM, no licence question). */
+  --font-brand: 'Agency FB', 'Bahnschrift', 'Segoe UI', system-ui, sans-serif;
+}
+
+/* The old name for the brand blue. Kept so nothing breaks, but new code
+   should use `nc-brand`: the board calls this colour "Primary Blue", and a
+   token that lies about its colour is how branding drifts. */
+@theme {
+  --color-nc-gold: #4d8dff;
+  --color-nc-gold-dim: #2f5fc0;
 }
 
 @layer base {
@@ -65,9 +80,9 @@
     background: transparent;
   }
 
-  /* Gold focus ring — accessibility, keep it visible */
+  /* Brand blue focus ring - accessibility, keep it visible */
   :focus-visible {
-    outline: 2px solid var(--color-nc-gold);
+    outline: 2px solid var(--color-nc-brand);
     outline-offset: 1px;
   }
 
@@ -109,7 +124,7 @@
 }
 
 @layer components {
-  /* Gold & black polka-dot accent — Nanami's tie, used on the active rail */
+  /* Brand blue polka-dot accent, used on the drop zones. */
   .nc-tie-edge {
     position: relative;
   }
@@ -119,7 +134,7 @@
     inset: 0;
     pointer-events: none;
     border-radius: inherit;
-    background-image: radial-gradient(var(--color-nc-gold) 1px, transparent 1px);
+    background-image: radial-gradient(var(--color-nc-brand) 1px, transparent 1px);
     background-size: 8px 8px;
     opacity: 0.14;
     mask-image: linear-gradient(to bottom, #000, transparent 70%);
@@ -214,6 +229,82 @@
 
 .t9-spin {
   animation: t9-spin 700ms linear infinite;
+}
+
+/* =========================================================
+   SKELETON / LOADING PLACEHOLDER — reusable across the app.
+
+   Use <Skeleton label="…"> for the container and <SkeletonBlock> for each
+   placeholder shape. The sweep is ONE composited pseudo-element per
+   container, not one animation per block: transform only, no layout, no
+   background-position repaint. Brand blue tints both the base and the sheen,
+   so every screen that loads feels like T9 Editor LIT.
+
+   The 1150 ms loop is deliberate: research on animation speed puts the
+   perceived-wait minimum at moderate speed (fast loops read as frantic,
+   slow loops read as stuck). Reduced-motion removes the sweep entirely and
+   leaves a calm static placeholder.
+   ========================================================= */
+:root {
+  --t9-skeleton-base: color-mix(in oklab, var(--color-nc-panel-2) 94%, var(--color-nc-brand) 6%);
+  --t9-skeleton-sheen: color-mix(in oklab, var(--color-nc-brand) 18%, transparent);
+  --t9-skeleton-speed: 1150ms;
+}
+
+@keyframes t9-skeleton-sweep {
+  from {
+    transform: translate3d(-115%, 0, 0);
+  }
+  to {
+    transform: translate3d(115%, 0, 0);
+  }
+}
+
+@layer components {
+  .t9-skeleton {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+  }
+
+  .t9-skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: linear-gradient(
+      100deg,
+      transparent 24%,
+      var(--t9-skeleton-sheen) 46%,
+      color-mix(in oklab, var(--t9-skeleton-sheen) 70%, white) 50%,
+      var(--t9-skeleton-sheen) 54%,
+      transparent 76%
+    );
+    animation: t9-skeleton-sweep var(--t9-skeleton-speed) cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    will-change: transform;
+  }
+
+  .t9-skeleton-block {
+    background: var(--t9-skeleton-base);
+    border-radius: 6px;
+  }
+
+  .t9-skeleton-line {
+    height: 0.625rem;
+    border-radius: 999px;
+  }
+
+  .t9-skeleton-circle {
+    border-radius: 999px;
+    aspect-ratio: 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .t9-skeleton::after {
+      content: none;
+    }
+  }
 }
 
 /**

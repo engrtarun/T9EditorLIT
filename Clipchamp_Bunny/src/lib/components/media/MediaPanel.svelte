@@ -3,7 +3,15 @@
   import { project } from '../../stores/project.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { toast } from '../../stores/toast.svelte';
-  import { checkYtDlp, downloadFromUrl, isTauri, pickVideos } from '../../ipc';
+  import {
+    checkYtDlp,
+    downloadFromUrl,
+    isTauri,
+    pickVideos,
+    pickImageFile,
+    importThumbnail,
+    assetUrl
+  } from '../../ipc';
   import { menu } from '../../stores/menu.svelte';
   import type { MenuItem } from '../../types';
   import { fmtSize } from '../../utils';
@@ -45,6 +53,7 @@
 
   const FILE_ITEMS: MenuItem[] = [
     { id: 'rename', label: 'Rename', icon: 'rename' },
+    { id: 'thumb', label: 'Upload thumbnail', icon: 'image' },
     { id: 'locate', label: 'Open file location', icon: 'folder' },
     { id: 'div', label: '', divider: true },
     { id: 'remove', label: 'Remove from library', icon: 'trash', danger: true }
@@ -123,11 +132,45 @@
     if (choice === 'rename') {
       draft = e.asset.name;
       renamingId = id;
+    } else if (choice === 'thumb') {
+      void uploadThumbnail(id);
     } else if (choice === 'locate') {
       if (e.path) toast.push('info', e.path);
       else toast.push('warn', 'Browser mode me path nahi hota');
     } else if (choice === 'remove') {
       media.remove(id);
+    }
+  }
+
+  /**
+   * Put a hand-picked picture on a library entry.
+   *
+   * The picture is copied into the app's own cache by Rust - the library keeps
+   * a path, never bytes, and the original file can be moved or deleted without
+   * breaking the poster. Browser mode has no file dialog, so there the frame
+   * the app picked itself simply stays.
+   */
+  async function uploadThumbnail(id: string) {
+    const e = media.get(id);
+    if (!e) return;
+    const picked = await pickImageFile();
+    if (!picked) return;
+    try {
+      // The entry's own path is the stable key; an entry that came from a
+      // browser drag-and-drop has none, so fall back to its asset id.
+      const key = e.path ?? e.asset.id;
+      if (isTauri()) {
+        const stored = await importThumbnail(key, picked);
+        media.setCustomThumb(id, stored);
+        toast.push('info', 'Thumbnail lag gaya');
+      } else {
+        // The browser has no app cache to copy into, so the picked file is
+        // streamed from a blob for the session.
+        media.setCustomThumb(id, picked);
+        toast.push('info', 'Thumbnail lag gaya (browser mode - is session me hi rahega)');
+      }
+    } catch (err) {
+      toast.push('warn', `Thumbnail nahi laga: ${String(err)}`);
     }
   }
 
@@ -188,7 +231,7 @@
         <button
           onclick={importFromFiles}
           disabled={busy}
-          class="flex flex-1 items-center justify-center gap-1.5 rounded-l-md bg-nc-gold py-1.5 text-[12px] font-semibold text-nc-bg hover:brightness-110 disabled:opacity-50"
+          class="flex flex-1 items-center justify-center gap-1.5 rounded-l-md bg-nc-brand py-1.5 text-[12px] font-semibold text-nc-bg hover:brightness-110 disabled:opacity-50"
         >
           <svg
             width="13"
@@ -205,7 +248,7 @@
         <button
           onclick={openImportMenu}
           disabled={busy}
-          class="grid w-6 place-items-center rounded-r-md bg-nc-gold-dim text-nc-bg hover:brightness-110 disabled:opacity-50"
+          class="grid w-6 place-items-center rounded-r-md bg-nc-brand-dim text-nc-bg hover:brightness-110 disabled:opacity-50"
           title="Import options — file manager / link / Telegram"
         >
           <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
@@ -256,9 +299,19 @@
             >
               <div
                 class="relative aspect-video overflow-hidden rounded-md border bg-nc-bg
-                       {e.inUse ? 'border-nc-gold' : 'border-nc-line'}"
+                       {e.inUse ? 'border-nc-brand' : 'border-nc-line'}"
               >
-                {#if e.asset.url}
+                {#if e.customThumb}
+                  <!-- The picture the user chose - the file lives in the app's
+                       cache and is streamed through the asset protocol, so the
+                       library still holds paths, never bytes. -->
+                  <img
+                    src={assetUrl(e.customThumb)}
+                    alt=""
+                    class="h-full w-full object-cover"
+                    style="opacity:{e.phase === 'loading' ? 0.6 : 1}"
+                  />
+                {:else if e.asset.url}
                   <!-- svelte-ignore a11y_media_has_caption -->
                   <video
                     src={e.asset.url}
@@ -324,7 +377,7 @@
                       if (ev.key === 'Enter') rename(e.asset.id, draft.trim() || e.asset.name);
                       if (ev.key === 'Escape') renamingId = null;
                     }}
-                    class="min-w-0 flex-1 rounded border border-nc-gold bg-nc-bg px-1 text-[10px] leading-4 text-nc-txt outline-none"
+                    class="min-w-0 flex-1 rounded border border-nc-brand bg-nc-bg px-1 text-[10px] leading-4 text-nc-txt outline-none"
                   />
                 {:else}
                   <span
@@ -336,7 +389,7 @@
                 {/if}
                 {#if e.inUse}
                   <span
-                    class="mt-0.5 grid h-3 w-3 shrink-0 place-items-center rounded-full bg-nc-gold/25 text-nc-gold"
+                    class="mt-0.5 grid h-3 w-3 shrink-0 place-items-center rounded-full bg-nc-brand/25 text-nc-brand"
                     title="Current project"
                   >
                     <svg width="8" height="8" viewBox="0 0 12 12" fill="currentColor">
@@ -367,7 +420,7 @@
       title="Drag to resize — double-click to reset"
       onpointerdown={startWidthResize}
       ondblclick={() => layout.resetMediaWidth()}
-      class="absolute inset-y-0 right-0 w-[3px] cursor-col-resize bg-nc-line transition-colors hover:bg-nc-gold/60"
+      class="absolute inset-y-0 right-0 w-[3px] cursor-col-resize bg-nc-line transition-colors hover:bg-nc-brand/60"
     ></div>
   {/if}
 </aside>
@@ -383,8 +436,8 @@
     <div class="w-full max-w-md rounded-xl border border-nc-line-2 bg-nc-panel p-5 shadow-2xl">
       <h3 class="text-sm font-bold">Import from a link</h3>
       <p class="mt-1 text-[11px] leading-relaxed text-nc-mut">
-        YouTube ya koi bhi URL jo <code class="text-nc-gold">yt-dlp</code> samajhta ho. Video seedha disk
-        pe download hoga — app ke memory me nahi aayega.
+        YouTube ya koi bhi URL jo <code class="text-nc-brand">yt-dlp</code> samajhta ho. Video seedha
+        disk pe download hoga — app ke memory me nahi aayega.
       </p>
       <input
         bind:value={linkUrl}
@@ -393,7 +446,7 @@
           if (ev.key === 'Escape') linkOpen = false;
         }}
         placeholder="https://www.youtube.com/watch?v=…"
-        class="mt-3 w-full rounded-lg border border-nc-line bg-nc-bg px-3 py-2 font-mono text-[12px] outline-none focus:border-nc-gold/60"
+        class="mt-3 w-full rounded-lg border border-nc-line bg-nc-bg px-3 py-2 font-mono text-[12px] outline-none focus:border-nc-brand/60"
       />
       <div class="mt-4 flex gap-2">
         <button
@@ -405,7 +458,7 @@
         <button
           onclick={runLinkImport}
           disabled={linkBusy || !linkUrl.trim()}
-          class="flex-1 rounded-lg bg-nc-gold py-2 text-xs font-bold text-nc-bg hover:brightness-110 disabled:opacity-40"
+          class="flex-1 rounded-lg bg-nc-brand py-2 text-xs font-bold text-nc-bg hover:brightness-110 disabled:opacity-40"
         >
           {linkBusy ? 'Downloading…' : 'Download'}
         </button>

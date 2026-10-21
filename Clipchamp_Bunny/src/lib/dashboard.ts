@@ -20,6 +20,14 @@ export interface ProjectCard {
    * card is never blank just because FFmpeg could not make a still.
    */
   previewUrl: string | null;
+  /**
+   * A picture the user chose by hand for this project.
+   *
+   * It is a **path** to the copy in the app's own cache, never the bytes:
+   * the picture can be megabytes, and the original may be moved or deleted
+   * without breaking the card. `null` means "let the app pick a frame".
+   */
+  customThumb: string | null;
   /** True while the project is being opened. */
   opening: boolean;
 }
