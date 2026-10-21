@@ -39,11 +39,15 @@
     menu.show(
       [
         { id: 'hi', label: 'Hinglish (default)' },
-        { id: 'en', label: 'English' }
+        { id: 'en', label: 'English' },
+        { id: 'settings', label: 'Settings…', icon: 'key' }
       ],
       Math.round(r.right - 168),
       Math.round(r.bottom + 6),
-      (id) => greeting.setLang(id === 'en' ? 'en' : 'hi')
+      (id) => {
+        if (id === 'settings') layout.settingsOpen = true;
+        else greeting.setLang(id === 'en' ? 'en' : 'hi');
+      }
     );
   }
 </script>
@@ -123,6 +127,29 @@
 
   <!-- a newer build is waiting: offer the restart -->
   <UpdateButton />
+
+  <!-- settings -->
+  <button
+    onclick={() => (layout.settingsOpen = true)}
+    class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-nc-mut transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
+    title="Settings"
+    aria-label="Settings"
+  >
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.7"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path
+        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 3a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+      />
+    </svg>
+  </button>
 
   <!-- help -->
   <button

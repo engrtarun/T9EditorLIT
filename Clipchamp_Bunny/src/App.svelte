@@ -4,6 +4,7 @@
   import RightRail from './lib/components/RightRail.svelte';
   import DropOverlay from './lib/components/DropOverlay.svelte';
   import ShortcutsHelp from './lib/components/ShortcutsHelp.svelte';
+  import SettingsPanel from './lib/components/SettingsPanel.svelte';
   import Toasts from './lib/components/Toasts.svelte';
   import ContextMenu from './lib/components/ContextMenu.svelte';
   import IngestMode from './lib/components/modes/IngestMode.svelte';
@@ -64,6 +65,12 @@
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     if (layout.helpOpen && e.key !== 'Escape') return;
+    if (layout.settingsOpen && e.key !== 'Escape') return;
+    if (layout.settingsOpen && e.key === 'Escape') {
+      layout.settingsOpen = false;
+      e.preventDefault();
+      return;
+    }
 
     // On the **dashboard** the editor's shortcuts have nothing to act on —
     // only the shortcut sheet still makes sense there.
@@ -330,6 +337,7 @@
 
 <DropOverlay />
 <ShortcutsHelp />
+<SettingsPanel />
 <Toasts />
 
 <!-- The one menu, rendered at the app root so nothing can hide it. -->

@@ -19,6 +19,7 @@
    *      lot off.
    */
   import { app } from '../../stores/app.svelte';
+  import { layout } from '../../stores/layout.svelte';
   import { greeting } from '../../stores/greeting.svelte';
   import { mode } from '../../stores/mode.svelte';
   import { project } from '../../stores/project.svelte';
@@ -53,6 +54,8 @@
   import type { RustProject, RustTrashItem } from '../../ipc';
   import { loadMediaInfo, loadThumbnails } from '../../media';
   import { DUMMY_PROJECTS } from '../../mock';
+  import { purgeExpiredTrash } from '../../ipc';
+  import { settings } from '../../stores/settings.svelte';
   import {
     ago,
     fmtBytes,
@@ -217,8 +220,23 @@
     }
   }
 
+  async function sweepTrash() {
+    if (!dbPath) return;
+    try {
+      const removed = await purgeExpiredTrash(dbPath, settings.trashRetentionDays);
+      if (removed > 0)
+        toast.push(
+          'info',
+          `${removed} purana trash record auto-delete ho gaya — video files safe hain.`
+        );
+    } catch {
+      /* purge is best-effort; never block the bin view */
+    }
+  }
+
   async function loadBin() {
     if (!dbPath) return;
+    await sweepTrash();
     try {
       bin = await loadTrash(dbPath);
     } catch {
@@ -244,6 +262,17 @@
 
   $effect(() => {
     if (app.section === 'trash') void loadBin();
+  });
+
+  // Periodic auto-purge while the dashboard is mounted — the same sweep the app
+  // runs on launch, so items that expire mid-session disappear without a restart.
+  $effect(() => {
+    const iv = setInterval(() => {
+      void sweepTrash().then(() => {
+        if (app.section === 'trash') void loadBin();
+      });
+    }, 60_000);
+    return () => clearInterval(iv);
   });
 
   /* ------------------------------------------------------------ actions */
@@ -608,10 +637,30 @@
 
           <!-- ------------------------------------------------ the project list -->
           {#if app.section === 'trash'}
-            <h1 class="text-[27px] font-bold tracking-tight text-nc-txt">Trash</h1>
-            <p class="mt-1 text-[13px] text-nc-mut">
-              Yahan sirf app ka record rakha hai — video file hamesha disk pe safe rehta hai.
-            </p>
+            <div class="flex flex-wrap items-end justify-between gap-3">
+              <div class="min-w-0">
+                <h1 class="text-[27px] font-bold tracking-tight text-nc-txt">Trash</h1>
+                <p class="mt-1 text-[13px] text-nc-mut">
+                  Yahan sirf app ka record rakha hai — video file hamesha disk pe safe rehta hai.
+                </p>
+              </div>
+              <div
+                class="flex shrink-0 items-center gap-2 rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-1.5 text-[11px] text-nc-mut"
+              >
+                <span>
+                  Auto-delete:
+                  <b class="text-nc-txt">
+                    {settings.trashNever ? 'kabhi nahi' : `${settings.trashRetentionDays} din`}
+                  </b>
+                </span>
+                <button
+                  onclick={() => (layout.settingsOpen = true)}
+                  class="rounded-md border border-nc-line bg-nc-panel px-2 py-0.5 text-[11px] font-medium text-nc-txt transition-colors hover:border-nc-brand/50 hover:text-nc-brand"
+                >
+                  Change
+                </button>
+              </div>
+            </div>
           {:else if app.section === 'videos'}
             <h1 class="text-[27px] font-bold tracking-tight text-nc-txt">Your videos</h1>
             <p class="mt-1 text-[13px] text-nc-mut">Har project jo aapne kabhi khola.</p>
@@ -673,6 +722,11 @@
                         <div class="truncate text-[13px] font-medium text-nc-txt">{item.name}</div>
                         <div class="truncate text-[11px] text-nc-mut-2">
                           Deleted {ago(item.deletedAt)} · {fmtDuration(item.durationSecs)}
+                          {#if !settings.trashNever}
+                            · {settings.daysLeft(item.deletedAt) === 0
+                              ? 'expires today'
+                              : `expires in ${settings.daysLeft(item.deletedAt)} ${settings.daysLeft(item.deletedAt) === 1 ? 'day' : 'days'}`}
+                          {/if}
                         </div>
                       </div>
                       <button

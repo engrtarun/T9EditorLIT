@@ -46,7 +46,10 @@
       return;
     }
     settings.setTrashRetentionDays(n);
-    toast.push('info', n === 0 ? 'Trash kabhi auto-delete nahi hoga.' : `Trash ${n} din baad auto-delete hoga.`);
+    toast.push(
+      'info',
+      n === 0 ? 'Trash kabhi auto-delete nahi hoga.' : `Trash ${n} din baad auto-delete hoga.`
+    );
   }
 
   async function cleanExpired() {
@@ -55,7 +58,11 @@
     try {
       const db = await defaultDbPath();
       const removed = await purgeExpiredTrash(db, settings.trashRetentionDays);
-      if (removed > 0) toast.push('info', `${removed} purana trash record delete ho gaya — video files safe hain.`);
+      if (removed > 0)
+        toast.push(
+          'info',
+          `${removed} purana trash record delete ho gaya — video files safe hain.`
+        );
       else toast.push('info', 'Koi expired trash record nahi mila.');
     } catch (e) {
       toast.push('warn', `Clean nahi hua: ${e instanceof Error ? e.message : e}`);
@@ -76,7 +83,9 @@
     aria-modal="true"
     aria-label="Settings"
   >
-    <div class="max-h-full w-full max-w-lg overflow-auto rounded-2xl border border-nc-line-2 bg-nc-panel p-6 shadow-2xl">
+    <div
+      class="max-h-full w-full max-w-lg overflow-auto rounded-2xl border border-nc-line-2 bg-nc-panel p-6 shadow-2xl"
+    >
       <div class="mb-5 flex items-center gap-3">
         <span
           class="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-nc-brand to-nc-brand-dim text-[12px] font-black text-nc-bg"
@@ -99,13 +108,18 @@
         <div class="flex items-baseline justify-between gap-3">
           <h3 class="text-[10px] font-bold tracking-widest text-nc-brand">TRASH RETENTION</h3>
           <span class="text-[11px] text-nc-mut">
-            {settings.trashNever ? 'Auto-delete: kabhi nahi' : `Auto-delete: ${settings.trashRetentionDays} din`}
+            {settings.trashNever
+              ? 'Auto-delete: kabhi nahi'
+              : `Auto-delete: ${settings.trashRetentionDays} din`}
           </span>
         </div>
 
         <p class="mt-2 text-[11px] leading-relaxed text-nc-mut">
-          Trash ke records {settings.trashNever ? 'hamesha recoverable rahenge' : `${settings.trashRetentionDays} din baad automatically delete ho jayenge`}.
-          <b class="text-nc-txt">Video files disk pe hamesha safe rahengi</b> — sirf app ka record hatta hai.
+          Trash ke records {settings.trashNever
+            ? 'hamesha recoverable rahenge'
+            : `${settings.trashRetentionDays} din baad automatically delete ho jayenge`}.
+          <b class="text-nc-txt">Video files disk pe hamesha safe rahengi</b> — sirf app ka record hatta
+          hai.
         </p>
 
         <div class="mt-3 flex flex-wrap gap-2">
