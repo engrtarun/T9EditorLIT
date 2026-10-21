@@ -85,13 +85,21 @@ function Get-SarkariCiArtifact {
     # is a pointer that moves - with several agents pushing, it moves a lot,
     # and an agent that pushed commit 1234 must not be handed commit 1235's
     # build just because it was published a minute earlier.
-    $tag = $Release
+    #
+    # Both spellings of the tag are tried. The short one is what the current
+    # workflow publishes; the full one is what an older build published, and
+    # a run that is in flight right now must still be findable. A tag format
+    # that changes underneath a waiting agent is exactly the kind of thing
+    # that turns into "it said it shipped and nothing changed".
+    $tags = @()
     if ($Commit) {
         $short = $Commit
         if ($short.Length -gt 7) { $short = $short.Substring(0, 7) }
-        $tag = "ci-$short"
+        $tags = @("ci-$short", "ci-$Commit")
+    } else {
+        $tags = @($Release)
     }
-    $base = if ($BaseUrl) { "$($BaseUrl.TrimEnd('/'))/$tag" } else { "https://github.com/$Repo/releases/download/$tag" }
+
     $headers = @{ 'User-Agent' = 'T9EditorLIT-deploy' }
     # The repository is public, so the assets download without a token. A
     # private repository needs one, and it is optional here on purpose: a
@@ -102,12 +110,22 @@ function Get-SarkariCiArtifact {
     $manifestName = 'sarkari-manifest.json'
     $probe = Join-Path $DestinationRoot $manifestName
 
-    Write-Host "==> Fetching the CI manifest from $base/$manifestName" -ForegroundColor Cyan
-    try {
-        Invoke-WebRequest -Uri "$base/$manifestName" -OutFile $probe -Headers $headers -UseBasicParsing
-    } catch {
+    $base = $null
+    foreach ($tag in $tags) {
+        $candidate = if ($BaseUrl) { "$($BaseUrl.TrimEnd('/'))/$tag" } else { "https://github.com/$Repo/releases/download/$tag" }
+        Write-Host "==> Fetching the CI manifest from $candidate/$manifestName" -ForegroundColor Cyan
+        try {
+            Invoke-WebRequest -Uri "$candidate/$manifestName" -OutFile $probe -Headers $headers -UseBasicParsing
+            $base = $candidate
+            break
+        } catch {
+            if ($AllowMissing) { continue }
+            throw "could not download the CI manifest from $candidate/$manifestName - $($_.Exception.Message). Has CI published a '$tag' release yet?"
+        }
+    }
+    if (-not $base) {
         if ($AllowMissing) { return $null }
-        throw "could not download the CI manifest from $base/$manifestName - $($_.Exception.Message). Has CI published a '$tag' release yet?"
+        throw "could not download the CI manifest for commit $Commit from any of: $($tags -join ', ')"
     }
 
     $manifest = $null
