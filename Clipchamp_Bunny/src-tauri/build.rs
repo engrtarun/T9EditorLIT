@@ -25,6 +25,10 @@ fn main() {
     )
     .expect("write build_id.rs");
     println!("cargo:rerun-if-env-changed=T9_BUILD_ID");
+    // Re-embed the frontend whenever the built assets change. Without this,
+    // cargo's incremental cache can keep serving a stale dist/ and the
+    // desktop app ships an old UI (tauri build ID new, frontend old).
+    println!("cargo:rerun-if-changed=../dist");
 
     tauri_build::build()
 }

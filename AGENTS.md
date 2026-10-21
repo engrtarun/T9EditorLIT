@@ -438,3 +438,53 @@ Two copies of one pipeline is how the Go daemon went missing for three
 deploys in a row: the live path never had a daemon build in it, and the copy
 nobody ran was the one that did. The classic pipeline is gone; the compile
 lives in CI, where it belongs.
+
+---
+
+## 12. GitHub access is already there - use it
+
+Every agent on this machine already has GitHub access. You do not need to
+ask, and you do not need to install anything.
+
+| What                       | Where it comes from                                                                 |
+| -------------------------- | ----------------------------------------------------------------------------------- |
+| `git push`                 | Git Credential Manager, already configured                                          |
+| `GITHUB_TOKEN`, `GH_TOKEN` | the same credential, exported at **User** scope - every new process inherits it     |
+| GitHub MCP server          | `~/.config/opencode/opencode.jsonc`, **global** - every session gets it             |
+| Actions artifact API       | works with the token (without it, the API answers 404 even for a public repository) |
+| `gh` CLI                   | **not installed** - the API and `git` cover everything the pipeline needs           |
+
+### Reading a CI run
+
+```powershell
+$h = @{ 'User-Agent' = 't9'; 'Authorization' = "Bearer $env:GITHUB_TOKEN" }
+$run = (Invoke-RestMethod -Uri 'https://api.github.com/repos/engrtarun/T9EditorLIT/actions/runs?per_page=1' -Headers $h).workflow_runs[0]
+$run.status; $run.conclusion; $run.html_url
+```
+
+### The artifact CI publishes
+
+CI keeps a rolling release called **`ci-latest`** with three assets:
+
+| Asset                   | What it is                                       |
+| ----------------------- | ------------------------------------------------ |
+| `t9-editor-lit.exe`     | the app, built on GitHub's runner                |
+| `t9cloud.exe`           | the daemon, stamped with the Go source hash      |
+| `sarkari-manifest.json` | the SHA-256 of both, the build id and the commit |
+
+`deploy.ps1 -Ci` downloads exactly these, checks the hashes against the
+manifest, and installs. **No token is needed for that** - the release assets
+of a public repository download anonymously.
+
+### The MCP server needs a restart
+
+The MCP server appears in **new** opencode sessions. A session that was
+already running when it was added keeps its old tool list - restart it.
+
+### If you get a 404
+
+| 404 on                            | Means                       | Do this                                      |
+| --------------------------------- | --------------------------- | -------------------------------------------- |
+| `releases/download/ci-latest/...` | CI has not published yet    | push, then wait for the run                  |
+| `actions/artifacts`               | no token in the environment | the token is at User scope; open a new shell |
+| `actions/runs`                    | same                        | same                                         |
