@@ -2,6 +2,7 @@
   import { project } from '../stores/project.svelte';
   import { layout } from '../stores/layout.svelte';
   import { app } from '../stores/app.svelte';
+  import { greeting } from '../stores/greeting.svelte';
   import CloudMenu from './CloudMenu.svelte';
   import SystemMeter from './SystemMeter.svelte';
   import ContextMenu from './ContextMenu.svelte';
@@ -11,6 +12,7 @@
   import { applyStagedUpdate, installedBuild, isTauri, revealSource } from '../ipc';
   import { toast } from '../stores/toast.svelte';
   import UpdateButton from './UpdateButton.svelte';
+  import BrandMark from './dashboard/BrandMark.svelte';
 
   /** Clipchamp's project-name menu (captured in the .ipynb DOM extract). */
   let renaming = $state(false);
@@ -51,6 +53,20 @@
       }
     });
   }
+
+  /** The TD avatar is the language switch: English or Hinglish (default). */
+  function openLanguage(e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    menu.show(
+      [
+        { id: 'hi', label: 'Hinglish (default)' },
+        { id: 'en', label: 'English' }
+      ],
+      Math.round(r.right - 168),
+      Math.round(r.bottom + 6),
+      (id) => greeting.setLang(id === 'en' ? 'en' : 'hi')
+    );
+  }
 </script>
 
 <!-- TOP BAR — structure copied 1:1 from Clipchamp (measured on the OBS capture):
@@ -89,13 +105,12 @@
     </svg>
   </button>
 
-  <!-- brand -->
+  <!-- brand: the traced T9 mark from the brand board, plus the wordmark -->
   <div class="flex items-center gap-1.5 pl-0.5">
-    <span
-      class="grid h-6 w-6 place-items-center rounded-md bg-gradient-to-br from-nc-gold to-nc-gold-dim text-[13px] font-black text-nc-bg"
-      >7</span
-    >
-    <span class="text-[13px] font-semibold tracking-tight">T9 Editor LIT</span>
+    <BrandMark size={22} />
+    <span class="font-brand text-[15px] leading-none tracking-[0.02em]">
+      T9 Editor <span class="text-nc-brand">LIT</span>
+    </span>
   </div>
 
   <!-- project dropdown — Clipchamp's project menu (Rename / Open file location / New video) -->
@@ -107,7 +122,7 @@
         if (e.key === 'Enter') commitRename();
         if (e.key === 'Escape') renaming = false;
       }}
-      class="ml-1 w-[190px] rounded-md border border-nc-gold bg-nc-panel-2 px-2 py-1 text-[13px] outline-none"
+      class="ml-1 w-[190px] rounded-md border border-nc-brand bg-nc-panel-2 px-2 py-1 text-[13px] outline-none"
     />
   {:else}
     <button
@@ -163,10 +178,14 @@
     ?
   </button>
 
-  <!-- avatar -->
-  <div
-    class="ml-0.5 grid h-7 w-7 place-items-center rounded-full border border-nc-line-2 bg-gradient-to-br from-nc-panel-2 to-nc-line text-[10px] font-bold text-nc-mut"
+  <!-- avatar = language switch (English / Hinglish) -->
+  <button
+    onclick={openLanguage}
+    class="ml-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-nc-brand text-[10px] font-bold text-white transition-[filter] duration-150 hover:brightness-110"
+    title="Language · {greeting.lang === 'en' ? 'English' : 'Hinglish'}"
+    aria-label="Choose language"
+    aria-haspopup="menu"
   >
     TD
-  </div>
+  </button>
 </header>
