@@ -569,6 +569,63 @@ Ek failed deploy apna work order **close nahi kar pata** (token ledger me hash h
 - **aage ke liye** — `sarkariKaam.ps1` me ek catch block hai jo failed deploy ka order **foran `failed` close** kar deta hai. Dobara nahi hoga.
 - **is ek purane order ke liye** — `expire-own-order.mjs` us order ka lease past me daalta hai, aur phir **ledger ka apna `recover`** usse expire karta hai. Ad-hoc SQL nahi: ledger ka apna rule ("lease khatam ho gayi") hi chalti hai; sirf lease ko sahi jagah pahunchana mere kaam ka tha. Uske baad `opencode/beam-free` **turant claim** kar gaya — cleanup ka asar turant dikha.
 
+### 8.9 Teen cheezein jo user ke instruction par band hui
+
+**(a) "Koi agent kabhi bhi local system slow na kare."**
+
+Ye prose nahi, **machine enforce** karti hai. `~\.cargo-shim\cargo.cmd` asli
+cargo se pehle PATH me hai, to har naya process - har agent session -
+pehle usi se guzarta hai:
+
+| Command                                                    | Yahan                                             |
+| ---------------------------------------------------------- | ------------------------------------------------- |
+| `cargo check`                                              | allowed (type-check, link nahi karta - fast gate) |
+| `cargo fmt`, `cargo --version`, `cargo metadata`           | allowed                                           |
+| `cargo build`, `cargo test`, `cargo clippy`, `cargo bench` | **REFUSED**                                       |
+| `tauri build`, `npm run tauri build`                       | **REFUSED** (cargo ko bulate hain)                |
+
+Saath me deploy pipeline se local build **code hi hata diya** - ab ek hi
+rasta hai: CI compile karta hai, deploy hash check karke install karta hai.
+Escape hatch `T9_ALLOW_LOCAL_RUST=1` hai, taaki "deliberately slow" ek
+**decide** ho, ek accident nahi.
+
+**(b) "Sabko GitHub ka access do."**
+
+`GITHUB_TOKEN` + `GH_TOKEN` **User scope** par set hain (wahi credential
+jo `git push` use karta hai) - har naye process ko milte hain. GitHub MCP
+server **global** opencode config me (`~/.config/opencode/opencode.jsonc`),
+to har session ko milta hai. Actions artifact API pehle 404 deti thi
+(bina token ke public repo me bhi) - ab chalti hai.
+
+Woh 404 isi se the: token na hone par artifact API 404 deti hai, to agents
+ko lagta tha release hi missing hai.
+
+**(c) "Agent ko time batao."**
+
+Report me ab ek block aata hai - ledger se padha, deploy se nahi:
+
+```
+ABHI BUILD KAR RAHA HAI:
+   opencode/opencode/beam-free
+   "ship trash retention + TD fix + brand to desktop"
+   22:10:05 se  (0 min pehle)
+AAPKA ORDER: KHATAM - SHIPPED
+   WO-20261021T160835-79e4d6
+   21:38:35 par apply hua, 21:38:50 par khatam
+   poora laga: 0.2 min  (aapka andaza tha 10 min)
+```
+
+Jo sawaal pehle jawab hi nahi paata tha - _"dusra agent kab tak karega,
+mera kab shuru hoga, kab khatam hoga"_ - ab report ke upar hai, aur live
+ledger se aata hai, to jhooth nahi bol sakta.
+
+### 8.10 Ek baat jo bachi hai
+
+**Exit code 1** ab bhi aata hai kuch safal deploys par. Ye root-cause
+nahi hua - ledger `shipped` record karta hai, report `SHIPPED` dikhata
+hai, par process ka exit code galat hai (automation ke liye ye
+"successful but failed" lagta hai). Ye aakhri baaki chhota issue hai.
+
 ---
 
 ## 🏛️ USER SANCTION SECTION (For User Only)
