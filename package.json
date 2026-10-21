@@ -1,6 +1,6 @@
 {
   "name": "t9-editor-lit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Zero-RAM, transcript-first video cutter for long-form tech tutorials",
   "type": "module",
   "scripts": {

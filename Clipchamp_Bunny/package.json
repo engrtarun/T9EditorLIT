@@ -1,6 +1,6 @@
 {
   "name": "t9-editor-lit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "T9 Editor LIT — zero-RAM, transcript-first video cutter for long Hinglish tech tutorials",
   "type": "module",
   "private": true,

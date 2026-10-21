@@ -26,6 +26,10 @@ name: Sarkari artifact
 on:
   push:
     branches: [main]
+    # A version tag is a release, not a preview. It gets the real name, it is
+    # not a prerelease, and it is the one a human downloads.
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -209,15 +213,28 @@ jobs:
       # second time the same commit is built, and a failed publish means an
       # agent waiting for that artifact waits for something that will never
       # arrive.
-      - name: Publish the commit's own release
+      - name: Publish the release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $root = $env:GITHUB_WORKSPACE
+          $notes = "Build of commit $($env:GITHUB_SHA)."
+          $isTag = $env:GITHUB_REF -like 'refs/tags/*'
+
+          if ($isTag) {
+            $tag = $env:GITHUB_REF.Replace('refs/tags/', '')
+            gh release create $tag --title $tag --notes $notes (Join-Path $root 'dist\*') 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              gh release upload $tag --clobber (Join-Path $root 'dist\*')
+              if ($LASTEXITCODE -ne 0) { throw "could not publish the release $tag" }
+            }
+            Write-Host "published the release $tag"
+            exit 0
+          }
+
           $tag = "ci-$($env:GITHUB_SHA.Substring(0, 7))"
-          gh release create $tag --title $tag --prerelease `
-            --notes "Build of commit $($env:GITHUB_SHA)" (Join-Path $root 'dist\*') 2>$null
+          gh release create $tag --title $tag --prerelease --notes $notes (Join-Path $root 'dist\*') 2>$null
           if ($LASTEXITCODE -ne 0) {
             gh release upload $tag --clobber (Join-Path $root 'dist\*')
             if ($LASTEXITCODE -ne 0) { throw "could not publish the release $tag" }
@@ -233,6 +250,7 @@ jobs:
       # OLD binary in the pointer, which is the exact bug the per-commit
       # releases exist to prevent.
       - name: Update the rolling release
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

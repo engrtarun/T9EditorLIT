@@ -99,3 +99,8 @@ coverage/
 .kilocode/
 .kilo/
 deepclonewebsite/
+
+# The deploy ledger's own records: one JSON per deploy, plus latest.json
+# which is overwritten every time. This is the runtime's history, not
+# source, and committing it turns every deploy into a commit.
+sarkari_deploy/records/
