@@ -31,9 +31,21 @@ on:
 permissions:
   contents: write
 
-# NOT cancellable. See above.
+# EVERY commit builds at the same time.
+#
+# The group is per commit on purpose. A shared group would make the ten
+# builds take turns - one running, nine waiting - and ten agents would wait
+# an hour for the last one. That is a limit nobody asked for: GitHub will
+# happily run ten of these side by side.
+#
+# The group is also per commit so that nothing can cancel anything else. A
+# build that gets cancelled is a build that never publishes an artifact, and
+# an agent waiting for that artifact waits for something that is never going
+# to arrive. So: no cancelling, no queueing, no shared lane. The only limit
+# left is GitHub's own concurrency budget, and ten agents sit inside it
+# comfortably.
 concurrency:
-  group: sarkari-artifact
+  group: sarkari-artifact-${{ github.sha }}
   cancel-in-progress: false
 
 env:

@@ -34,9 +34,23 @@ permissions:
   contents: read
   pull-requests: read
 
+# Every commit's fast lane runs on its own, in parallel, and none of them
+# can cancel another.
+#
+# The group used to be shared per ref, with cancel-in-progress: true, and
+# that was right for a single developer: stale feedback is worth throwing
+# away. With ten agents it is wrong twice over. It cancelled the run of
+# whoever pushed a moment earlier - six of the fifteen runs today ended
+# cancelled - and it made their feedback wait for a lane that was busy with
+# somebody else's.
+#
+# The group is per commit now, so a run is only ever about its own commit.
+# The cost is a few extra runner minutes on a public repository, where the
+# minutes are free; the benefit is that no agent's work is ever discarded
+# or delayed by another agent's push.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
