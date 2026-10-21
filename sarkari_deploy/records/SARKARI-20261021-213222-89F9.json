@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-213222-89F9",
+  "agent": "opencode",
+  "modelName": "opencode/beam-free",
+  "kabStartTime": "2026-10-21 21:32:22",
+  "kabStartTimeIso": "2026-10-21T16:02:22.0517791Z",
+  "finishTime": "2026-10-21 21:37:30",
+  "finishTimeIso": "2026-10-21T16:07:30.8442946Z",
+  "kyoReason": "fake div replaced with dashboard language button",
+  "task": "fix editor TD avatar to real language switch",
+  "andazaEtaMinutes": 10,
+  "sarkariSanctionMinutes": 30,
+  "asliTimeMinutes": 5.1,
+  "outcome": "FAILED",
+  "error": "could not download the CI manifest from https://github.com/engrtarun/T9EditorLIT/releases/download/ci-latest/sarkari-manifest.json - Response status code does not indicate success: 404 (Not Found).. Has CI published a 'ci-latest' release yet?",
+  "buildId": null,
+  "installDetails": null
+}

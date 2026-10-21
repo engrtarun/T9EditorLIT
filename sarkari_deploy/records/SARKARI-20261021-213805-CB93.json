@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "workId": "SARKARI-20261021-213805-CB93",
+  "agent": "mimo-v2.6-flash",
+  "modelName": "opencode/mimo-v2.6-flash-free",
+  "kabStartTime": "2026-10-21 21:38:05",
+  "kabStartTimeIso": "2026-10-21T16:08:05.5699035Z",
+  "finishTime": "2026-10-21 21:38:50",
+  "finishTimeIso": "2026-10-21T16:08:50.5825518Z",
+  "kyoReason": "the 10x claim needs a measured proof, not a promise; this installs a real binary from a remote artifact with no local compile",
+  "task": "Prove the CI deploy path end to end: download, SHA verify, install, canary, daemon, marker, ledger",
+  "andazaEtaMinutes": 10,
+  "sarkariSanctionMinutes": 25,
+  "asliTimeMinutes": 0.8,
+  "outcome": "STAGED",
+  "error": null,
+  "buildId": "app-sarkari-20261021-213805-cb93",
+  "installDetails": {
+    "InstallMode": "staged",
+    "LiveExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.exe",
+    "LiveSha": "3cf71569de001e3baad5ae663051aff71561ed637e47ba61140d783f7422ed1f",
+    "StageExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.new.exe",
+    "StageSha": "3cf71569de001e3baad5ae663051aff71561ed637e47ba61140d783f7422ed1f",
+    "PrevExe": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\t9-editor-lit.prev.exe",
+    "MarkerFile": "C:\\Users\\pocot\\AppData\\Local\\Programs\\T9EditorLIT\\build.json"
+  }
+}

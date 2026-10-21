@@ -70,6 +70,102 @@ $durationMinutes = [math]::Round(($finishTime - $startTime).TotalMinutes, 1)
 $etaDelta = [math]::Round($durationMinutes - $etaMinutes, 1)
 $deltaSign = if ($etaDelta -gt 0) { "+$etaDelta" } else { "$etaDelta" }
 
+function Write-SarkariOwnerTimeline {
+    <#
+    .SYNOPSIS
+        Tell the owner, in plain words, what is happening right now.
+    .DESCRIPTION
+        The bulletin below is a record: order id, hashes, timings. It answers
+        "what did this deploy do", not "what is happening to me now". The
+        question the owner actually has is the second one: another agent is
+        building, when does MY work start, and when will it be on the
+        desktop. Those three answers belong in the same place as everything
+        else, and they are only knowable from the shared ledger - not from
+        the deploy that is running.
+    #>
+    param(
+        [string]$WorkId = '',
+        [string]$TaskText = '',
+        [int]$EtaMinutes = 0
+    )
+
+    $ledgerScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'Clipchamp_Bunny\tools\deploy-ledger.mjs'
+    if (-not (Test-Path -LiteralPath $ledgerScript)) { return }
+
+    $node = (Get-Command node -ErrorAction SilentlyContinue)
+    if (-not $node) { return }
+
+    $state = $null
+    try {
+        $raw = & $node.Source --no-warnings $ledgerScript status --json 2>$null | Out-String
+        $state = $raw | ConvertFrom-Json
+    } catch {
+        $state = $null
+    }
+    if (-not $state) { return }
+
+    $now = [datetime]::UtcNow
+    $ist = [System.TimeZoneInfo]::FindSystemTimeZoneById('India Standard Time')
+
+    function Format-Ist($utc) {
+        if (-not $utc) { return '-' }
+        $t = if ($utc -is [datetime]) { $utc } else { [datetime]::Parse($utc).ToUniversalTime() }
+        return ([System.TimeZoneInfo]::ConvertTimeFromUtc($t, $ist)).ToString('HH:mm:ss')
+    }
+
+    Write-Host "`n============================================================" -ForegroundColor DarkCyan
+    Write-Host "  ABHI KYA HO RAHA HAI  (aapka kaam kab shuru, kab khatam)" -ForegroundColor DarkCyan
+    Write-Host "============================================================" -ForegroundColor DarkCyan
+
+    $active = $state.active
+    if ($active) {
+        $since = Format-Ist $active.startedAt
+        $mins = [math]::Round(((Get-Date) - [datetime]::Parse($active.startedAt).ToLocalTime()).TotalMinutes, 0)
+        Write-Host "  ABHI BUILD KAR RAHA HAI:" -ForegroundColor Yellow
+        Write-Host ("     {0}/{1}" -f $active.agent, $active.model) -ForegroundColor Gray
+        Write-Host ('     "{0}"' -f $active.task) -ForegroundColor DarkGray
+        Write-Host ("     {0} se  ({1} min pehle)" -f $since, $mins) -ForegroundColor DarkGray
+    } else {
+        Write-Host "  ABHI KOI BUILD NAHI HO RAHA - lane khaali hai." -ForegroundColor Green
+    }
+
+    $mine = $null
+    $ahead = @()
+    foreach ($q in @($state.queue)) {
+        # The ledger's own id is WO-..., while the report knows the work order
+        # as SARKARI-.... The ledger's sessionId is what links them, so that
+        # is what gets matched - the report must not claim a queue position
+        # it cannot actually see.
+        if ($q.id -eq $WorkId -or $q.sessionId -eq $WorkId) { $mine = $q } else { $ahead += $q }
+    }
+
+    if ($mine) {
+        $pos = if ($null -ne $mine.position) { [int]$mine.position } else { ($ahead.Count + 1) }
+        # Everything in front of this order still has to finish, and the one
+        # in the lane has whatever it has left of its own estimate.
+        $waitMin = 0
+        if ($active) { $waitMin += [int]($active.remainingMinutes) }
+        foreach ($a in $ahead) { $waitMin += [int]($a.remainingMinutes) }
+        $startAt = $now.AddSeconds(60 * $waitMin)
+        $doneAt = $startAt.AddSeconds(60 * [Math]::Max(1, $EtaMinutes))
+        Write-Host "  AAPKA ORDER:" -ForegroundColor Cyan
+        Write-Host ("     {0}" -f $mine.id) -ForegroundColor Gray
+        Write-Host ('     "{0}"' -f $mine.task) -ForegroundColor DarkGray
+        Write-Host ("     {0} par apply hua" -f (Format-Ist $mine.enqueuedAt)) -ForegroundColor DarkGray
+        Write-Host ("     queue position {0}" -f $pos) -ForegroundColor DarkGray
+        Write-Host ("     ~{0} me start hoga   ({1} min pehle wala kaam bacha hai)" -f (Format-Ist $startAt), $waitMin) -ForegroundColor Green
+        Write-Host ("     ~{0} IST tak desktop par hoga   (aapka andaza {1} min)" -f (Format-Ist $doneAt), $EtaMinutes) -ForegroundColor Green
+    } elseif ($active -and ($active.id -eq $WorkId -or $active.sessionId -eq $WorkId)) {
+        Write-Host "  AAPKA ORDER:" -ForegroundColor Cyan
+        Write-Host ("     {0}  - ABHI CHAL RAHA HAI" -f $active.id) -ForegroundColor Green
+        Write-Host ('     "{0}"' -f $active.task) -ForegroundColor DarkGray
+        Write-Host ("     {0} se" -f (Format-Ist $active.startedAt)) -ForegroundColor DarkGray
+    } else {
+        Write-Host "  AAPKA ORDER: report ban raha hai." -ForegroundColor Cyan
+    }
+    Write-Host "============================================================" -ForegroundColor DarkCyan
+}
+
 function Format-SarkariOfficialBulletin {
     [CmdletBinding()]
     param()
@@ -142,5 +238,6 @@ function Save-SarkariRecord {
     return $recordFile
 }
 
+Write-SarkariOwnerTimeline -WorkId $workId -TaskText $taskText -EtaMinutes $etaMinutes
 Format-SarkariOfficialBulletin
 $recordPath = Save-SarkariRecord

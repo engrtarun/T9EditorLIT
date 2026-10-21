@@ -158,6 +158,24 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # tauri::generate_context!() reads frontendDist out of
+      # tauri.conf.json and panics when the path is not there. The root app
+      # is a SvelteKit app whose adapter-static output lands in ../build, and
+      # that directory only exists after a frontend build. This lane is the
+      # FAST lane - it deliberately does not build the frontend - so it leaves
+      # a placeholder where the macro will look. The build job builds the
+      # frontend for real, and the artifact job ships a real binary.
+      - name: Make the frontend paths exist for the context macro
+        shell: pwsh
+        run: |
+          foreach ($dir in @('build', 'Clipchamp_Bunny/dist')) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            $index = Join-Path $dir 'index.html'
+            if (-not (Test-Path $index)) {
+              '<!doctype html><title>placeholder</title>' | Set-Content $index
+            }
+          }
+
       - name: Check formatting (Rust)
         working-directory: src-tauri
         run: cargo fmt --all -- --check
@@ -166,6 +184,23 @@ jobs:
         working-directory: src-tauri
         # -D warnings turns CI into a hard gate: a slow or memory-leaky
         # snippet cannot merge quietly.
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The crate that actually ships. It pulls the shared modules in with
+      # #[path], so it covers the root crate's code as well - but it has its
+      # own lib.rs, meters, sysinfo and main, and those were never linted.
+      # Linting only the root crate meant the code that reaches the user's
+      # desktop was the code CI had never looked at.
+      #
+      # It reports, it does not block: this crate has 24 clippy findings
+      # today, and the files they are in belong to work other agents have in
+      # flight. Making it a hard gate now would red every push for a reason
+      # that has nothing to do with the change being pushed. The count is
+      # visible in the log, and the gate gets turned on when the count is
+      # zero.
+      - name: Lint the crate that actually ships (clippy, advisory)
+        working-directory: Clipchamp_Bunny/src-tauri
+        continue-on-error: true
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
