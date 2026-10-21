@@ -619,12 +619,27 @@ Jo sawaal pehle jawab hi nahi paata tha - _"dusra agent kab tak karega,
 mera kab shuru hoga, kab khatam hoga"_ - ab report ke upar hai, aur live
 ledger se aata hai, to jhooth nahi bol sakta.
 
-### 8.10 Ek baat jo bachi hai
+### 8.10 Ek baat jo bachi thi — aur ab nahi bachi
 
-**Exit code 1** ab bhi aata hai kuch safal deploys par. Ye root-cause
-nahi hua - ledger `shipped` record karta hai, report `SHIPPED` dikhata
-hai, par process ka exit code galat hai (automation ke liye ye
-"successful but failed" lagta hai). Ye aakhri baaki chhota issue hai.
+**Exit code 1** safal deploys par aa raha tha. Root cause: **PowerShell exit
+code ko last NATIVE COMMAND ka status deta hai**. Is pipeline me wo ek
+`node`/`git` call hai jiska status deploy se koi lena-dena nahi hai — to
+jo deploy app install kar chuka tha, marker likh chuka tha, aur ledger me
+`shipped` likh chuka tha, wo bhi **exit 1** deta tha.
+
+Teen deploys tak `SHIPPED` report hua aur exit 1 aaya, aur kisi ko pata
+nahi chala ki deploy fail hua ya sirf reporting. Ab successful path par
+**`exit 0`** hai, live test se confirm:
+
+```
+[ok] CI executable verified (26c4288c…)
+[ok] ledger says: shipped
+[7] ASLI TIME LAGA:   0.7 Minutes (-4.3 min vs ETA)
+=== DEPLOY EXIT CODE = 0 ===
+```
+
+Aur usi test me **RAM 2121 MB free (73% used)** — pehle 212 MB (97%) tha.
+Wo farak compile hatane ka hai, report ka nahi.
 
 ---
 
