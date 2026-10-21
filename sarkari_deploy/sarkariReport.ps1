@@ -161,7 +161,22 @@ function Write-SarkariOwnerTimeline {
         Write-Host ('     "{0}"' -f $active.task) -ForegroundColor DarkGray
         Write-Host ("     {0} se" -f (Format-Ist $active.startedAt)) -ForegroundColor DarkGray
     } else {
-        Write-Host "  AAPKA ORDER: report ban raha hai." -ForegroundColor Cyan
+        # The order is neither queued nor active, so it has already finished.
+        # Saying "your order is being reported" would be true but useless;
+        # what the owner wants to know is that it is DONE, and what came of it.
+        $done = @($state.recent) | Where-Object { $_.id -eq $WorkId -or $_.sessionId -eq $WorkId } | Select-Object -First 1
+        if ($done) {
+            Write-Host "  AAPKA ORDER: KHATAM - $('{0}' -f $done.status.ToUpperInvariant())" -ForegroundColor Green
+            Write-Host ("     {0}" -f $done.id) -ForegroundColor Gray
+            Write-Host ('     "{0}"' -f $done.task) -ForegroundColor DarkGray
+            Write-Host ("     {0} par apply hua, {1} par khatam" -f (Format-Ist $done.enqueuedAt), (Format-Ist $done.finishedAt)) -ForegroundColor DarkGray
+            if ($done.finishedAt -and $done.enqueuedAt) {
+                $took = [math]::Round(([datetime]::Parse($done.finishedAt) - [datetime]::Parse($done.enqueuedAt)).TotalMinutes, 1)
+                Write-Host ("     poora laga: {0} min  (aapka andaza tha {1} min)" -f $took, $done.etaMinutes) -ForegroundColor DarkGray
+            }
+        } else {
+            Write-Host "  AAPKA ORDER: report ban raha hai." -ForegroundColor Cyan
+        }
     }
     Write-Host "============================================================" -ForegroundColor DarkCyan
 }
