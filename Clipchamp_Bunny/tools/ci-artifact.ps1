@@ -16,8 +16,7 @@
 # and the file have to agree, or a truncated download or a stale asset gets
 # installed and then reported as shipped.
 
-function Get-SarkariCiProp {
-    # A property getter that returns $null instead of throwing, so a manifest
+function Get-SarkariCiProp {    # A property getter that returns $null instead of throwing, so a manifest
     # that is missing a field produces a clear message rather than a
     # StrictMode error somewhere far away.
     param($Object, [string]$Name)
@@ -167,10 +166,29 @@ function Get-SarkariCiArtifact {
     $daemonVersion = [string](Get-SarkariCiProp $daemon 'version')
     $goSourceId = [string](Get-SarkariCiProp $manifest 'goSourceId')
 
+    # A download is retried once. The per-commit release is immutable, but a
+    # RE-RUN of the same commit replaces its assets with --clobber, and a
+    # download that lands in the middle of that gets a 404 for a file it had
+    # just read. One retry turns that into a second chance instead of a dead
+    # deploy.
+    function Get-RemoteAsset([string]$Uri, [string]$OutFile, [hashtable]$Headers) {
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+            try {
+                Invoke-WebRequest -Uri $Uri -OutFile $OutFile -Headers $Headers -UseBasicParsing
+                return $true
+            } catch {
+                if ($attempt -ge 2) { throw }
+                Write-Host "    (retrying the download: $($_.Exception.Message))" -ForegroundColor DarkGray
+                Start-Sleep -Seconds 3
+            }
+        }
+        return $false
+    }
+
     $exePath = Join-Path $dir $appAsset
     if (-not (Test-Path -LiteralPath $exePath)) {
         Write-Host "==> Downloading $appAsset" -ForegroundColor Cyan
-        Invoke-WebRequest -Uri "$base/$appAsset" -OutFile $exePath -Headers $headers -UseBasicParsing
+        $null = Get-RemoteAsset -Uri "$base/$appAsset" -OutFile $exePath -Headers $headers
     }
     $actual = Get-SarkariCiSha256 $exePath
     if ($actual -ne $appSha) {
@@ -183,7 +201,7 @@ function Get-SarkariCiArtifact {
         $daemonPath = Join-Path $dir $daemonAsset
         if (-not (Test-Path -LiteralPath $daemonPath)) {
             Write-Host "==> Downloading $daemonAsset" -ForegroundColor Cyan
-            Invoke-WebRequest -Uri "$base/$daemonAsset" -OutFile $daemonPath -Headers $headers -UseBasicParsing
+            $null = Get-RemoteAsset -Uri "$base/$daemonAsset" -OutFile $daemonPath -Headers $headers
         }
         $daemonActual = Get-SarkariCiSha256 $daemonPath
         if ($daemonActual -ne $daemonSha) {

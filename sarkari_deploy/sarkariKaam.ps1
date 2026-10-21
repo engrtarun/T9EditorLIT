@@ -536,18 +536,17 @@ function Execute-SmartCiBuild([string]$BuildId) {
         }
         if ($artifact) { break }
 
-        # The rolling release may already hold this commit, if the
-        # per-commit tag was not published for some reason.
-        if ($wanted) {
-            $rolling = Get-SarkariCiArtifact -Repo $CiRepo -Release 'ci-latest' `
-                -DestinationRoot $ciRoot -WorkspaceRoot $WorkspaceRoot -BaseUrl $CiBaseUrl `
-                -AllowMissing
-            if ($rolling -and $rolling.GitCommit -and $rolling.GitCommit.StartsWith($wantedShort)) {
-                $artifact = $rolling
-                break
-            }
-        }
-
+        # There is deliberately NO fallback to the rolling release here.
+        #
+        # The rolling release is a pointer, and pointers move - while the
+        # assets under them are being replaced. A deploy that fetched the
+        # manifest a moment before another agent's build replaced the assets
+        # got a 404 for a file it had just read, and the whole deploy died
+        # on somebody else's publish. It happened, in a real run.
+        #
+        # The per-commit release is a fact: it never moves, so it can be
+        # fetched safely, as many times as it takes. If it is not there yet,
+        # the answer is to wait for it - which is what this loop does.
         if ((Get-Date) -gt $deadline) {
             if ($wanted) {
                 throw "CI has not published the artifact for commit $wantedShort yet - push your work, wait for the run to finish, and deploy again. The artifact workflow queues instead of cancelling, so it will arrive."
