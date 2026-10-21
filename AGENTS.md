@@ -273,6 +273,21 @@ What moved is the compile.
 
 ### 10.2 What an agent runs
 
+**One command does all of it:**
+
+```powershell
+pwsh -File tools\sarkariShip.ps1 `
+    -Agent "opencode/beam-free" -Model "opencode/beam-free" `
+    -Task "add the thumbnail menu action" `
+    -Why "the card menu had no thumbnail action at all" -Scope app
+```
+
+It verifies, commits, rebases, pushes, and deploys - in that order, and it
+passes the commit it pushed to the deploy, so the deploy waits for that
+commit's artifact instead of installing somebody else's build.
+
+**Or the four steps by hand:**
+
 ```powershell
 # LOCAL - cheap, no linker, never OOMs. This is your gate.
 npm run verify:fast
@@ -288,6 +303,12 @@ pwsh -File tools\deploy.ps1 -Ci -Agent "<you>" -Model "<provider/model>" -Task "
 release, checks its SHA-256 against CI's own manifest, and then goes through
 the **same** pipeline a local build does: ledger work order, build lock,
 canary, marker, doctor. Only the compiler moved; the contract did not.
+
+**A note on the shared tree.** `sarkariShip.ps1` commits _everything_ in
+the tree by default, because the tree is shared and a half-commit is not a
+thing git can do. That has always been how this repository behaved - and
+it is how another agent's work ends up in your commit. If you want only
+yours: `-Paths Clipchamp_Bunny/src/lib/components/...`.
 
 ### 10.2.1 If you are one of several agents
 
