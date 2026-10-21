@@ -619,7 +619,56 @@ Jo sawaal pehle jawab hi nahi paata tha - _"dusra agent kab tak karega,
 mera kab shuru hoga, kab khatam hoga"_ - ab report ke upar hai, aur live
 ledger se aata hai, to jhooth nahi bol sakta.
 
-### 8.10 Ek baat jo bachi thi — aur ab nahi bachi
+### 8.10 Das agents ke liye taiyari - jo maine web se verify kiya
+
+User ka sawal: _"kya kaam ke liye system ready hai? kal 10 agents use karenge."_
+
+Seedha jawab tha **"abhi nahi"** — aur do blockers mile jo 10 agents par toot-te:
+
+**1. `cancel-in-progress: true`** — 15 me se 6 runs cancel. 10 agents = 9 ke CI run
+cancel = 9 ke paas koi artifact hi nahi, aur pipeline **green dikhta** jabki 9 log
+binary ka intezaar kar rahe hain.
+
+**2. ek shared `ci-latest` release** — har run usko replace karta tha. 10:00 push
+kiya, 10:05 doosre ne push kiya, 10:10 par deploy ko **doosre ka binary** milta,
+aur ledger likhta "aapka kaam ship hua".
+
+**3. GitHub ka 20-concurrent-job cap** (web se verify kiya) — `ci.yml` har push pe
+9 jobs kholta tha (change-detector + 4 lanes + 3-way cross-compile + build + gate).
+10 agents × 9 = **90 jobs**, cap 20.
+
+### Teenon ka hal
+
+| Problem      | Hal                                                                                                       |
+| ------------ | --------------------------------------------------------------------------------------------------------- |
+| Cancel       | artifact workflow alag, `cancel-in-progress: false`, **group per commit** — koi kisi ko cancel nahi karta |
+| Galat binary | har commit apne naam se publish (`ci-<sha>`), deploy **apna commit** maangta hai aur **wait** karta hai   |
+| 90 jobs      | `ci.yml` ab sirf **PR** par (merge gate), push par sirf artifact (1 job) → 10 agents = 10 jobs ✅         |
+
+### Web search se nikle 3 aur holes
+
+| #   | Hole                                                                                                                             | Hal                                                                         |
+| --- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| 1   | `softprops/action-gh-release` sirf **create** karta hai — dobara chalane par `already_exists` → re-run **publish hi nahi karta** | **`gh` CLI**: create, phir `upload --clobber` — idempotent                  |
+| 2   | 10 parallel builds jo pehle khatam ho, **purana binary** rolling release me daal dete                                            | sirf **tab** `ci-latest` update hota hai jab wo commit **abhi bhi HEAD** ho |
+| 3   | `vite build` **type-check nahi karta** — type error artifact me chala jaata                                                      | artifact workflow me `npm run check`                                        |
+
+Aur ek fragility: tag format change ho to waiting agent ko kuch nahi milta →
+**dono spellings** try hoti hain (`ci-<short7>` aur `ci-<full sha>`).
+
+### Proof
+
+```
+3 × "Sarkari artifact" in_progress ek saath   ← parallel, koi queue nahi
+Sarkari artifact  completed success
+commit-pinned CI test: 3/3 pass
+```
+
+**Haan — ab ready hai.** Bas do cheezein discipline hain, pipeline nahi:
+**jaldi push karo** (CI parallel build karta hai, tum kaam karte raho) aur
+**har agent ka apna worktree** (ek file, ek agent).
+
+### 8.11 Ek baat jo bachi thi - aur ab nahi bachi
 
 **Exit code 1** safal deploys par aa raha tha. Root cause: **PowerShell exit
 code ko last NATIVE COMMAND ka status deta hai**. Is pipeline me wo ek
