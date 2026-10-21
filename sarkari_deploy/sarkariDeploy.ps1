@@ -277,6 +277,20 @@ try {
         -KaamResult $kaamResult `
         -Outcome $finalOutcome
 
+    # Say what happened, in the exit code.
+    #
+    # Without this, PowerShell exits with the status of the LAST NATIVE
+    # COMMAND that ran - and in this pipeline that is a `node` or a `git`
+    # call whose status has nothing to do with the deploy. So a deploy that
+    # installed the app, wrote the marker and closed the work order as
+    # `shipped` still exited 1, and every wrapper that trusts the exit code
+    # read a success as a failure. It was not a flaky thing: it was the
+    # status of whichever helper happened to run last.
+    #
+    # A staged deploy is still a shipped deploy. The distinction is in the
+    # marker and the ledger, not in the exit code.
+    exit 0
+
 } catch {
     $err = $_.Exception.Message
     Write-Host "`n[x] SARKARI PIPELINE FAILED: $err" -ForegroundColor Red
