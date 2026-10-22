@@ -7,7 +7,10 @@ export default defineConfig({
   plugins: [tailwindcss(), svelte(), mp3DevApi()],
   server: {
     port: 5174,
-    strictPort: false,
+    // One dev server only. The predev guard reuses an existing 5174 server;
+    // this makes a direct/racing second Vite fail loudly instead of quietly
+    // moving to 5175 and taking another chunk of RAM.
+    strictPort: true,
     // Tauri dev and the browser preview both hit this server through a proxy
     // on some setups; allow any Host header so the 502 never appears.
     host: true,

@@ -176,6 +176,11 @@ The UI is edited on **localhost:5174** (`cd Clipchamp_Bunny; npm run dev`).
 The user opens it in a browser with Inspect Element, changes the UI there, and
 the desktop app is the _shipped_ copy of the same frontend.
 
+**One dev server.** `npm run dev` has a predev guard: if 5174 is already
+serving, it reuses that server and stays attached instead of starting a second
+Vite. `strictPort` is on, so a direct second Vite fails instead of quietly
+moving to 5175. Do not start a second server or kill the shared one.
+
 **The dummy data is a shared fixture. Do not break it.**
 
 | Fixture                                                | What it is                             | Rule                                                                                                                                    |

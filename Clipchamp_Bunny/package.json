@@ -5,6 +5,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "predev": "node tools/dev-server-guard.mjs",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
