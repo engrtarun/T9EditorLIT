@@ -73,6 +73,27 @@ pub struct ExportOptions {
     /// · `high` (default) · `balanced` · `small`. Stream-copied pieces ignore
     /// this — they keep the source bits verbatim.
     pub quality: String,
+    /// What kind of file comes out: `video` (default) · `gif` · `mp3`.
+    pub format: String,
+    /// The video resolution: `source` (default, no rescale) · `480p` ·
+    /// `720p` · `1080p` · `4k`. Only a smaller frame than the source is ever
+    /// produced — upscaling a 480p recording to 4K would cost a lot of time
+    /// and buy nothing.
+    pub resolution: String,
+    /// MP3 bitrate in kbps: 128 · 192 (default) · 256 · 320.
+    pub bitrate_kbps: u32,
+    /// MP3 sample rate in Hz: 44100 (default) · 48000.
+    pub sample_rate: u32,
+    /// MP3 channel count: 1 (mono) · 2 (stereo, default).
+    pub channels: u8,
+    /// Even out the loudness of an audio export — a phone voiceover and a
+    /// music bed end up at the same level.
+    pub normalize: bool,
+    /// Apply the timeline's cuts. `false` exports the whole recording, which
+    /// is what "give me the song" means.
+    pub apply_cuts: bool,
+    /// ID3 title for an audio export.
+    pub title: Option<String>,
 }
 
 impl Default for ExportOptions {
@@ -81,6 +102,14 @@ impl Default for ExportOptions {
             mode: "hybrid".to_string(),
             align_tolerance_ms: 40.0,
             quality: "high".to_string(),
+            format: "video".to_string(),
+            resolution: "source".to_string(),
+            bitrate_kbps: 192,
+            sample_rate: 44100,
+            channels: 2,
+            normalize: false,
+            apply_cuts: true,
+            title: None,
         }
     }
 }
@@ -135,6 +164,11 @@ pub struct ExportPlan {
     pub estimated_size_bytes: u64,
     /// Quality preset handed to the encoder for re-encoded pieces.
     pub quality: String,
+    /// The resolution that was asked for — `source` when nothing was rescaled.
+    pub resolution: String,
+    /// The FFmpeg scale filter the re-encoded pieces carry, when the export
+    /// was asked for a smaller frame than the source has.
+    pub scale: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -360,8 +394,9 @@ pub fn concat_list_text(paths: &[PathBuf]) -> String {
 }
 
 /// Rough output size: copied duration costs its share of the source, encoded
-/// duration a little less because re-encoding compresses.
-fn estimate_size(info: &MediaInfo, pieces: &[Piece]) -> u64 {
+/// duration a little less because re-encoding compresses. A rescaled export
+/// shrinks further, by the ratio of the two frame areas.
+fn estimate_size(info: &MediaInfo, pieces: &[Piece], scale_factor: f64) -> u64 {
     if info.duration_secs <= 0.0 || info.size_bytes == 0 {
         return 0;
     }
@@ -372,7 +407,7 @@ fn estimate_size(info: &MediaInfo, pieces: &[Piece]) -> u64 {
             let share = per_second * p.duration_secs;
             match p.kind {
                 PieceKind::Copy => share,
-                PieceKind::Encode => share * 0.7,
+                PieceKind::Encode => share * 0.7 * scale_factor,
             }
         })
         .sum();
@@ -550,6 +585,38 @@ pub fn build_plan(
     }
 
     let keyframes = normalise_keyframes(kfs.to_vec(), duration);
+
+    // A different frame size means every piece has to be re-encoded: a
+    // stream-copied piece keeps the source's pixels, and the concat would then
+    // be stitching two different sizes together. Upscaling is never done —
+    // it costs a lot of time and buys nothing.
+    let mut scale: Option<String> = None;
+    let mut scale_factor = 1.0f64;
+    if let Some(target) = target_resolution(&req.options.resolution) {
+        let (w, h) = (info.width.unwrap_or(0), info.height.unwrap_or(0));
+        if w > 0 && h > 0 {
+            let short = w.min(h);
+            if target < short {
+                scale = Some(scale_filter(target, w, h));
+                let was_copy = effective_mode == "copy";
+                effective_mode = "encode".to_string();
+                warnings.push(if was_copy {
+                    format!(
+                        "scaling to {target}p re-encodes every piece — a stream copy cannot be resized"
+                    )
+                } else {
+                    format!("scaling to {target}p — every piece is re-encoded")
+                });
+                let (tw, th) = scaled_size(target, w, h);
+                scale_factor = (tw as f64 * th as f64) / (w as f64 * h as f64);
+            } else if target > short {
+                warnings.push(format!(
+                    "the source is only {short}p — {target}p would only upscale it, so the export keeps the source size"
+                ));
+            }
+        }
+    }
+
     let outcome = plan_pieces(
         &segments,
         &keyframes,
@@ -626,8 +693,10 @@ pub fn build_plan(
         encoder,
         keyframe_count: keyframes.len(),
         audio_copied: audio_copy,
-        estimated_size_bytes: estimate_size(info, &outcome.pieces),
+        estimated_size_bytes: estimate_size(info, &outcome.pieces, scale_factor),
         quality: req.options.quality.clone(),
+        resolution: req.options.resolution.clone(),
+        scale,
         warnings,
         pieces: outcome.pieces,
     })
@@ -640,15 +709,73 @@ impl ExportOptions {
             mode: mode.to_string(),
             align_tolerance_ms: self.align_tolerance_ms,
             quality: self.quality.clone(),
+            format: self.format.clone(),
+            resolution: self.resolution.clone(),
+            bitrate_kbps: self.bitrate_kbps,
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+            normalize: self.normalize,
+            apply_cuts: self.apply_cuts,
+            title: self.title.clone(),
         }
     }
 }
 
 // ───────────────────────────── FFmpeg commands ─────────────────────────────
 
+/// The nominal frame size a resolution name asks for.
+///
+/// `480p` · `720p` · `1080p` · `4k` → the **short** side of the frame, in
+/// pixels. `source` — and anything unknown — asks for no rescale at all.
+pub fn target_resolution(resolution: &str) -> Option<u32> {
+    match resolution {
+        "480p" => Some(480),
+        "720p" => Some(720),
+        "1080p" => Some(1080),
+        "4k" => Some(2160),
+        _ => None,
+    }
+}
+
+/// The scale filter that turns a source frame into the target one.
+///
+/// A landscape source is scaled by its height (`scale=-2:720`), a portrait one
+/// by its width (`scale=720:-2`) — "720p" means the *short* side is 720, which
+/// is what every phone recording and every phone screen expects.
+pub fn scale_filter(target: u32, width: u32, height: u32) -> String {
+    if width >= height {
+        format!("scale=-2:{target}:flags=lanczos")
+    } else {
+        format!("scale={target}:-2:flags=lanczos")
+    }
+}
+
+/// The frame the scale filter produces, for the size estimate.
+pub fn scaled_size(target: u32, width: u32, height: u32) -> (u32, u32) {
+    let even = |v: f64| -> u32 {
+        let r = v.round().max(2.0) as u32;
+        if r % 2 == 0 {
+            r
+        } else {
+            r + 1
+        }
+    };
+    if width >= height {
+        (
+            even(width as f64 * target as f64 / height.max(1) as f64),
+            target,
+        )
+    } else {
+        (
+            target,
+            even(height as f64 * target as f64 / width.max(1) as f64),
+        )
+    }
+}
+
 /// `ffmpeg` wants six-decimal timestamps; anything finer is noise, anything
 /// coarser risks moving a cut.
-fn time_arg(t: f64) -> String {
+pub fn time_arg(t: f64) -> String {
     format!("{t:.6}")
 }
 
@@ -663,6 +790,7 @@ fn piece_args(
     pix_fmt: Option<&str>,
     encoder: Option<&str>,
     quality: &str,
+    scale: Option<&str>,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
@@ -713,6 +841,12 @@ fn piece_args(
             if let Some(fmt) = pix_fmt {
                 args.push("-pix_fmt".into());
                 args.push(fmt.to_string());
+            }
+            // A rescaled export needs every piece at the new size — a stream
+            // copy cannot be resized, so the planner never mixes the two.
+            if let Some(filter) = scale {
+                args.push("-vf".into());
+                args.push(filter.to_string());
             }
         }
     }
@@ -1222,6 +1356,7 @@ fn run_piece(
         info.pix_fmt.as_deref(),
         encoder,
         &plan.quality,
+        plan.scale.as_deref(),
     );
     let piece_dur = piece.duration_secs.max(0.001);
     let mut last_out = 0.0f64;
@@ -1269,6 +1404,14 @@ mod tests {
             mode: mode.to_string(),
             align_tolerance_ms: 40.0,
             quality: "high".to_string(),
+            format: "video".to_string(),
+            resolution: "source".to_string(),
+            bitrate_kbps: 192,
+            sample_rate: 48000,
+            channels: 2,
+            normalize: false,
+            apply_cuts: true,
+            title: None,
         }
     }
 
@@ -1475,6 +1618,7 @@ mod tests {
             Some("yuv420p"),
             Some("h264_qsv"),
             "high",
+            None,
         );
         let joined = args.join(" ");
         assert!(joined.contains("-ss 3.000000"), "{joined}");
@@ -1506,6 +1650,7 @@ mod tests {
             None,
             None,
             "high",
+            None,
         );
         let joined = args.join(" ");
         assert!(joined.contains("-ss 4.000001"), "{joined}");
@@ -1563,7 +1708,8 @@ mod tests {
             },
         ];
         // 5 s copy = 500 B, 1 s encode = 100 B × 0.7 = 70 B.
-        assert_eq!(estimate_size(&info, &pieces), 570);
+        // `scale_factor` 1.0 = no scaling, so the encode keeps full weight.
+        assert_eq!(estimate_size(&info, &pieces, 1.0), 570);
     }
 
     #[test]

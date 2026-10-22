@@ -4,7 +4,9 @@ import App from './App.svelte';
 import { layout } from './lib/stores/layout.svelte';
 import { cloud } from './lib/stores/cloud.svelte';
 import { app } from './lib/stores/app.svelte';
-import { isTauri } from './lib/ipc';
+import { mode } from './lib/stores/mode.svelte';
+import { project } from './lib/stores/project.svelte';
+import { isTauri, logAppEvent, takePendingOpens, onOpenFiles } from './lib/ipc';
 
 const target = document.getElementById('app');
 if (!target) throw new Error('#app mount point missing');
@@ -38,3 +40,37 @@ if (isTauri()) {
 if (new URLSearchParams(location.search).has('help')) layout.helpOpen = true;
 
 export default mount(App, { target });
+
+/**
+ * "Edit with T9 Editor LIT" — the Explorer right-click verb.
+ *
+ * Two ways a file can arrive:
+ *   • this process was **started** with a video path (the verb launched the
+ *     exe) — drained once via `takePendingOpens`;
+ *   • the app was **already running** and a second launch handed the path
+ *     over — the `open-files` event from the single-instance plugin.
+ *
+ * Either way the editor opens straight on the video, and the heavy lifting
+ * stays where it already was: ffprobe metadata comes back as a few hundred
+ * bytes, and the waveform / filmstrip / transcript are streamed in by child
+ * processes while the UI is already usable. Nothing of the file itself ever
+ * enters the webview heap — the `<video>` element streams it from disk.
+ */
+if (isTauri()) {
+  const openPaths = async (paths: string[]) => {
+    const path = paths.find((p) =>
+      /\.(mp4|mkv|mov|avi|webm|m4v|wmv|mpg|mpeg|m2ts|mts|flv|3gp|ts)$/i.test(p)
+    );
+    if (!path) return;
+    app.openEditor();
+    mode.set('cut');
+    try {
+      await project.loadFromBackend(path);
+    } catch (e) {
+      logAppEvent('error', 'openwith', `open failed: ${String(e)}`);
+    }
+  };
+
+  void takePendingOpens().then(openPaths);
+  void onOpenFiles(openPaths);
+}

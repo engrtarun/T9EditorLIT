@@ -37,12 +37,16 @@ mod env;
 mod export;
 #[path = "../../../src-tauri/src/ffmpeg.rs"]
 mod ffmpeg;
+#[path = "../../../src-tauri/src/gif.rs"]
+mod gif;
 #[path = "../../../src-tauri/src/keyframes.rs"]
 mod keyframes;
 #[path = "../../../src-tauri/src/media.rs"]
 mod media;
 #[path = "../../../src-tauri/src/memory.rs"]
 mod memory;
+#[path = "../../../src-tauri/src/mp3.rs"]
+mod mp3;
 #[path = "../../../src-tauri/src/polish.rs"]
 mod polish;
 #[path = "../../../src-tauri/src/stats.rs"]
@@ -57,6 +61,8 @@ mod waveform;
 mod sysinfo_ext;
 
 mod meters;
+
+mod shell_menu;
 
 pub use meters::{
     AppStorageProbe, DriveReading, NetReading, NetworkProbe, RamReading, SystemSnapshot,
@@ -83,6 +89,16 @@ pub use waveform::WaveformData;
 
 type ExportCancel = Mutex<Option<Arc<AtomicBool>>>;
 type Probe = Mutex<memory::MemoryProbe>;
+
+/// Video paths handed to this process on the command line — the "Edit with
+/// T9 Editor LIT" verb's `%1`.
+///
+/// Written once at start-up (or by the single-instance plugin when a second
+/// launch happens) and drained by the frontend via `take_pending_opens`, so
+/// the webview decides *when* the editor opens rather than racing the process
+/// start.
+#[derive(Default)]
+struct PendingOpens(Mutex<Vec<String>>);
 
 /// `<app_data>/cache` — home for waveform JSON and thumbnail frames.
 fn cache_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -729,7 +745,11 @@ async fn polish_render(
     polish::run_polish(&app, &source, &output, &settings)
 }
 
-/// Start a smart hybrid export; progress is streamed via `export-progress`.
+/// Start an export; progress is streamed via `export-progress`.
+///
+/// One command, three formats. `request.options.format` picks the engine:
+/// `video` renders the timeline through the hybrid piece/concat pipeline,
+/// `gif` renders a short looping clip, and `mp3` renders the audio only.
 #[tauri::command]
 async fn start_export(
     app: tauri::AppHandle,
@@ -751,8 +771,13 @@ async fn start_export(
         let project = request.source.clone();
         let preset = request.options.quality.clone();
         let out_path = request.output.clone();
+        let format = request.options.format.clone();
         stats::set_phase("exporting");
-        let res = export::run_export(app_clone, cancel_flag, request);
+        let res = match format.as_str() {
+            "mp3" => mp3::run_mp3_export(&app_clone, cancel_flag, request),
+            "gif" => gif::run_gif_export(&app_clone, cancel_flag, request),
+            _ => export::run_export(app_clone, cancel_flag, request),
+        };
         stats::set_phase("idle");
         match &res {
             Ok(r) => stats::log_export(
@@ -1284,15 +1309,77 @@ fn resume_project(db_path: String) -> Result<Option<String>, String> {
     transcript::resume_project(&conn)
 }
 
+/* ------------------------------------------------- "Edit with" entry point */
+
+/// Drain the video paths this process was launched with.
+///
+/// The frontend calls this once at start-up: whatever the Explorer verb
+/// passed is returned and the queue is emptied, so a second call is a no-op
+/// and the same file is never opened twice.
+#[tauri::command]
+fn take_pending_opens(pending: State<'_, PendingOpens>) -> Vec<String> {
+    pending
+        .0
+        .lock()
+        .map(|mut p| std::mem::take(&mut *p))
+        .unwrap_or_default()
+}
+
+/// Register "Edit with T9 Editor LIT" for every video extension.
+///
+/// HKCU only — no admin, no COM DLL. Returns true when the registry was
+/// actually written (false = already current).
+#[tauri::command]
+fn register_context_menu(app: tauri::AppHandle) -> Result<bool, String> {
+    let cache = cache_root(&app)?;
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("cannot locate the running exe: {e}"))?
+        .to_string_lossy()
+        .trim_matches('"')
+        .to_string();
+    shell_menu::ensure_registered(&cache, &exe)
+}
+
+/// Remove every "Edit with" verb this app registered.
+#[tauri::command]
+fn unregister_context_menu(app: tauri::AppHandle) -> Result<(), String> {
+    let cache = cache_root(&app)?;
+    shell_menu::unregister(&cache)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // A second launch (the Explorer verb while the app is already open)
+        // must not start a second 8 GB-hostile webview: the plugin hands the
+        // argv to the FIRST instance and exits. Registered before every
+        // other plugin so no other plugin sees the second process at all.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let paths: Vec<String> = argv
+                .into_iter()
+                .filter(|a| shell_menu::looks_like_video(a))
+                .collect();
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            if !paths.is_empty() {
+                if let Ok(mut pending) = app.state::<PendingOpens>().0.lock() {
+                    pending.extend(paths.clone());
+                }
+                // The frontend may already be up — tell it now; if it is
+                // still booting, the same paths come back from
+                // `take_pending_opens`.
+                let _ = app.emit("open-files", paths);
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(memory::MemoryProbe::new()))
         .manage(Mutex::new(NetworkProbe::new()))
         .manage(AppStorageProbe::new())
         .manage(Mutex::new(None::<Arc<AtomicBool>>))
+        .manage(PendingOpens::default())
         .invoke_handler(tauri::generate_handler![
             get_memory_stats,
             system_details,
@@ -1307,6 +1394,9 @@ pub fn run() {
             installed_build,
             apply_staged_update,
             resume_project,
+            take_pending_opens,
+            register_context_menu,
+            unregister_context_menu,
             check_yt_dlp,
             download_from_url,
             probe_media,
@@ -1361,6 +1451,42 @@ pub fn run() {
             }
             // The cloud brain comes up with the app - no terminal needed.
             ensure_daemon(app.handle());
+            // "Edit with T9 Editor LIT": any video path on this process's
+            // command line waits in the queue for the frontend to drain.
+            {
+                let videos: Vec<String> = std::env::args()
+                    .skip(1)
+                    .filter(|a| shell_menu::looks_like_video(a))
+                    .collect();
+                if !videos.is_empty() {
+                    if let Ok(mut pending) = app.state::<PendingOpens>().0.lock() {
+                        pending.extend(videos);
+                    }
+                }
+            }
+            // Keep the Explorer verb pointing at this exe. Done once per
+            // install path (the marker decides), and off the main thread so
+            // the dashboard never waits on reg.exe.
+            //
+            // Only the **installed** exe is allowed to register: a dev build
+            // running out of the repo would repoint the verb at a binary that
+            // is deleted at the next clean.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let Ok(exe) = std::env::current_exe() else { return };
+                    let exe_str = exe.to_string_lossy().trim_matches('"').to_string();
+                    let installed = exe_str
+                        .to_ascii_lowercase()
+                        .contains(r"\appdata\local\programs\t9editorlit");
+                    if !installed {
+                        return;
+                    }
+                    if let Ok(cache) = cache_root(&handle) {
+                        let _ = shell_menu::ensure_registered(&cache, &exe_str);
+                    }
+                });
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

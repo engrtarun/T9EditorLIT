@@ -148,6 +148,18 @@ export function setSourcePath(path: string | null) {
   currentSourcePath = path;
 }
 
+/**
+ * The media's URL, set by the project store once it is loaded.
+ *
+ * On the desktop the path is what the engine needs; in the browser preview
+ * there is no path at all, only the URL of the baked demo — and that is what
+ * the dev server's export endpoint reads.
+ */
+let currentSourceUrl: string | null = null;
+export function setSourceUrl(url: string | null) {
+  currentSourceUrl = url;
+}
+
 /** Reveal the current source in Explorer — Clipchamp's "Open file location". */
 export async function revealSource(): Promise<boolean> {
   const path = currentSourcePath;
@@ -481,6 +493,34 @@ export async function revealPath(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * Drain the video paths this process was launched with.
+ *
+ * The Explorer verb ("Edit with T9 Editor LIT") starts the exe with the
+ * selected file as an argument. Returns `[]` in the browser preview.
+ */
+export function takePendingOpens(): Promise<string[]> {
+  if (!isTauri()) return Promise.resolve([]);
+  return invoke<string[]>('take_pending_opens').catch(() => []);
+}
+
+/** Fire when a **second** launch hands video paths to the running app. */
+export function onOpenFiles(cb: (paths: string[]) => void): Promise<() => void> {
+  return listen<string[]>('open-files', (e) => cb(e.payload));
+}
+
+/** Register the Explorer right-click verb for video files (HKCU, no admin). */
+export function registerContextMenu(): Promise<boolean> {
+  if (!isTauri()) return Promise.resolve(false);
+  return invoke<boolean>('register_context_menu').catch(() => false);
+}
+
+/** Remove the Explorer right-click verb. */
+export function unregisterContextMenu(): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('unregister_context_menu').catch(() => {});
+}
+
 /* ----------------------------------------------------------------- system */
 
 /** Live RAM reading for the top-bar meter. */
@@ -506,6 +546,22 @@ export interface ExportOptions {
   alignToleranceMs: number;
   /** `original` · `high` · `balanced` · `small`. */
   quality: string;
+  /** `video` (default) · `gif` · `mp3`. */
+  format: string;
+  /** `source` (default) · `480p` · `720p` · `1080p` · `4k`. */
+  resolution: string;
+  /** MP3 bitrate, in kbps: 128 · 192 · 256 · 320. */
+  bitrateKbps: number;
+  /** MP3 sample rate, in Hz: 44100 · 48000. */
+  sampleRate: number;
+  /** MP3 channels: 1 (mono) · 2 (stereo). */
+  channels: number;
+  /** Even out the loudness of an audio export. */
+  normalize: boolean;
+  /** Apply the timeline's cuts. `false` exports the whole recording. */
+  applyCuts: boolean;
+  /** ID3 title for an audio export. */
+  title?: string | null;
 }
 
 export interface ExportRequest {
@@ -526,15 +582,76 @@ export interface ExportResult {
 }
 
 export interface ExportProgress {
-  stage: 'scan' | 'cut' | 'concat' | 'done' | string;
+  stage: 'scan' | 'cut' | 'concat' | 'audio' | 'gif' | 'done' | string;
   pieceIndex: number;
   pieceCount: number;
   percent: number;
   message: string;
 }
 
+/**
+ * Run an export.
+ *
+ * On the desktop this is the Rust engine: the hybrid piece/concat pipeline
+ * for a video, a palette render for a GIF and a single filter-graph pass for
+ * an MP3 — all of them FFmpeg child processes, none of them in this heap.
+ *
+ * In the **browser preview** only the audio-only export has an engine: the
+ * dev server runs FFmpeg on this machine (see `tools/dev-mp3-api.ts`), so the
+ * browser still gets a real MP3. The video and GIF exports need the desktop
+ * app's Rust engine, and say so.
+ */
 export function startExport(request: ExportRequest): Promise<ExportResult> {
-  return invoke<ExportResult>('start_export', { request });
+  if (isTauri()) return invoke<ExportResult>('start_export', { request });
+  return browserExport(request);
+}
+
+/** The browser preview's export path — see `startExport`. */
+async function browserExport(request: ExportRequest): Promise<ExportResult> {
+  if (request.options.format !== 'mp3') {
+    throw new Error('video and GIF exports run in the desktop app');
+  }
+  const source = currentSourceUrl;
+  if (!source) throw new Error('no media loaded');
+
+  const res = await fetch('/api/mp3-export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source,
+      segments: request.segments,
+      options: request.options,
+      output: request.output
+    })
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text.trim() || `the dev server refused the export (${res.status})`);
+  }
+
+  const blob = await res.blob();
+  const name = request.output.split(/[\\/]/).pop() || 't9-editor-lit.mp3';
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = href;
+  anchor.download = name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  // The blob is handed to the browser's download manager now; give it a
+  // moment before the URL goes back to the pool.
+  setTimeout(() => URL.revokeObjectURL(href), 30_000);
+
+  const duration = Number(res.headers.get('x-t9-duration') ?? 0);
+  return {
+    output: name,
+    durationSecs: Number.isFinite(duration) ? duration : 0,
+    sizeBytes: blob.size,
+    pieceCount: 1,
+    encoder: 'libmp3lame',
+    warnings: []
+  };
 }
 
 export function cancelExport(): Promise<void> {
@@ -551,15 +668,19 @@ export function planExport(request: ExportRequest): Promise<{
 }
 
 export function onExportProgress(cb: (p: ExportProgress) => void): Promise<() => void> {
+  if (!isTauri()) return Promise.resolve(() => {});
   return listen<ExportProgress>('export-progress', (e) => cb(e.payload));
 }
 
 /** Native "save as" dialog for the rendered file. */
-export async function pickOutput(defaultName: string): Promise<string | null> {
+export async function pickOutput(
+  defaultName: string,
+  filters?: Array<{ name: string; extensions: string[] }>
+): Promise<string | null> {
   if (!isTauri()) return null;
   const picked = await save({
     defaultPath: defaultName,
-    filters: [{ name: 'MP4 video', extensions: ['mp4'] }]
+    filters: filters ?? [{ name: 'MP4 video', extensions: ['mp4'] }]
   });
   return picked ?? null;
 }
