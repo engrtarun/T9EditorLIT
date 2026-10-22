@@ -186,7 +186,23 @@ fn parse_rate(rate: &str) -> Option<f64> {
 }
 
 impl MediaInfo {
+    /// Probe a media file. The editor is a **video** editor, so a file with no
+    /// video stream is refused here.
     pub fn probe(path: &Path) -> Result<Self, String> {
+        Self::probe_inner(path, true)
+    }
+
+    /// Probe a file that is allowed to have **no video stream** — an MP3 or a
+    /// WAV the user dropped in.
+    ///
+    /// The audio-only export needs this: it reads the duration and the audio
+    /// facts of a source that may well be a plain recording with no picture
+    /// at all.
+    pub fn probe_any(path: &Path) -> Result<Self, String> {
+        Self::probe_inner(path, false)
+    }
+
+    fn probe_inner(path: &Path, require_video: bool) -> Result<Self, String> {
         if !path.exists() {
             return Err(format!("file not found: {}", path.display()));
         }
@@ -195,11 +211,10 @@ impl MediaInfo {
         let raw: RawProbe = serde_json::from_str(&json)
             .map_err(|e| format!("could not parse ffprobe output: {e}"))?;
 
-        let video = raw
-            .streams
-            .iter()
-            .find(|s| s.codec_type == "video")
-            .ok_or_else(|| "no video stream found in this file".to_string())?;
+        let video = raw.streams.iter().find(|s| s.codec_type == "video");
+        if require_video && video.is_none() {
+            return Err("no video stream found in this file".to_string());
+        }
         let audio = raw.streams.iter().find(|s| s.codec_type == "audio");
 
         let duration_secs = raw
@@ -232,8 +247,7 @@ impl MediaInfo {
             .collect();
 
         let fps = video
-            .avg_frame_rate
-            .as_ref()
+            .and_then(|v| v.avg_frame_rate.as_ref())
             .and_then(|r| parse_rate(r))
             .filter(|f| *f > 0.0 && f.is_finite());
 
@@ -242,11 +256,11 @@ impl MediaInfo {
             duration_secs,
             size_bytes,
             fps,
-            width: video.width,
-            height: video.height,
-            video_codec: video.codec_name.clone(),
+            width: video.and_then(|v| v.width),
+            height: video.and_then(|v| v.height),
+            video_codec: video.and_then(|v| v.codec_name.clone()),
             audio_codec: audio.and_then(|a| a.codec_name.clone()),
-            pix_fmt: video.pix_fmt.clone(),
+            pix_fmt: video.and_then(|v| v.pix_fmt.clone()),
             has_audio: audio.is_some(),
             streams,
         })
