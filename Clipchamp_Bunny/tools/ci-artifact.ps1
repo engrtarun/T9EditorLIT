@@ -138,13 +138,26 @@ function Get-SarkariCiArtifact {
     # must be that commit's build. A mismatch means the release is stale or
     # was replaced, and installing it would put somebody else's work on the
     # user's desktop while claiming to be this agent's.
+    #
+    # A missing gitCommit is not "unknown, so accept it": that was the one
+    # manifest shape a hand-written/custom release could use to skip the
+    # provenance check. When a commit is requested, the manifest must name it.
     $publishedCommit = [string](Get-SarkariCiProp $manifest 'gitCommit')
-    if ($Commit -and $publishedCommit -and -not $publishedCommit.StartsWith($Commit.Substring(0, [Math]::Min(7, $Commit.Length)))) {
-        throw "the release '$tag' holds the build of commit $publishedCommit, not $Commit - refusing to install it"
+    $requestedShort = if ($Commit) { $Commit.Substring(0, [Math]::Min(7, $Commit.Length)) } else { '' }
+    if ($Commit) {
+        if (-not $publishedCommit) {
+            throw "the CI manifest has no gitCommit, so the artifact cannot be proven to be commit $requestedShort - refusing to install it"
+        }
+        if (-not $publishedCommit.StartsWith($requestedShort, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "the release '$tag' holds the build of commit $publishedCommit, not $requestedShort - refusing to install it"
+        }
     }
 
     $buildId = [string](Get-SarkariCiProp $manifest 'buildId')
     if (-not $buildId) { throw "the CI manifest has no buildId: $probe" }
+    if ($Commit -and $buildId -ne "ci-$requestedShort") {
+        throw "the CI manifest buildId '$buildId' does not match commit $requestedShort (expected ci-$requestedShort) - refusing to install it"
+    }
 
     # Keep the download under the build id so two builds never share a folder
     # and a repeat deploy of the same build reuses what is already here.

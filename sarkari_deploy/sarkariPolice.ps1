@@ -315,9 +315,66 @@ foreach ($g in $failedGroups) {
 
 # --------------------------------------------------------------- live builds
 # There is no local build lane any more: every compile happens in CI, and the
-# only thing this machine runs is the ledger-locked install. Keep the field in
-# the report so its consumers do not have to special-case its absence.
+# only thing this machine runs is the ledger-locked install. This scan is the
+# audit half of that rule: the cargo shim blocks `cargo build`, but it cannot
+# see a direct `rustc`, a `tauri build` launched through node, or an agent that
+# exported T9_ALLOW_LOCAL_RUST. Those are exactly the escapes worth finding.
 $liveBuilds = @()
+$distinctWorkIds = @()
+try {
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    $byId = @{}
+    foreach ($p in $processes) { $byId[[int]$p.ProcessId] = $p }
+
+    foreach ($p in $processes) {
+        $cmd = [string]$p.CommandLine
+        if (-not $cmd) { continue }
+        $why = $null
+
+        if ($p.Name -match '(?i)^cargo(\.exe)?$' -and $cmd -match '(?i)(^|\s)(build|test|clippy|bench)(\s|$)') {
+            $why = 'cargo compile command (build/test/clippy/bench)'
+        } elseif ($p.Name -match '(?i)^rustc(\.exe)?$') {
+            $parent = $byId[[int]$p.ParentProcessId]
+            $parentCmd = if ($parent) { [string]$parent.CommandLine } else { '' }
+            # `cargo check` is allowed and runs rustc with --emit=metadata.
+            # A rustc whose parent is not that check is a compile.
+            if (-not ($parentCmd -match '(?i)cargo(\.exe)?\s+check(\s|$)') -and
+                -not ($cmd -match '(?i)--emit(=\s*|\s+)metadata(\s|$)')) {
+                $why = 'direct rustc compile'
+            }
+        } elseif ($cmd -match '(?i)tauri(\.js)?["'']?\s+build(\s|$)') {
+            $why = 'tauri build'
+        }
+
+        if ($why) {
+            $liveBuilds += [pscustomobject]@{
+                ProcessId = [int]$p.ProcessId
+                Name      = [string]$p.Name
+                Reason    = $why
+                CommandLine = $cmd
+            }
+        }
+    }
+
+    if ($liveBuilds.Count -gt 0) {
+        Add-Finding -Code 'LOCAL_RUST_COMPILE' -Severity 'HIGH' `
+            -Subject 'Live process table' `
+            -Evidence (($liveBuilds | ForEach-Object { "$($_.ProcessId) $($_.Name): $($_.Reason)" }) -join '; ') `
+            -Message 'A local Rust/Tauri compile is running. Compilation belongs to CI; local release builds are banned on this 8 GB machine.' `
+            -Action 'Stop it and move the compile to CI. `cargo check` is the only allowed local Rust command.'
+    }
+    if ($env:T9_ALLOW_LOCAL_RUST) {
+        Add-Finding -Code 'LOCAL_RUST_ESCAPE_HATCH' -Severity 'HIGH' `
+            -Subject 'Environment' -Evidence 'T9_ALLOW_LOCAL_RUST is set' `
+            -Message 'The local-compile escape hatch is active; a build started from this environment can bypass the cargo shim.' `
+            -Action 'Unset T9_ALLOW_LOCAL_RUST. It is for a deliberate, watched exception only.'
+    }
+} catch {
+    Add-Finding -Code 'PROCESS_SCAN_FAILED' -Severity 'INFO' `
+        -Subject 'Process table' -Evidence $_.Exception.Message `
+        -Message 'Could not inspect live processes; the local-compile check is incomplete.' `
+        -Action 'Re-run sarkariPolice.ps1 with permission to read Win32_Process.'
+}
 
 # ------------------------------------------------------------------- ledger
 if (-not $ledgerStatus) {

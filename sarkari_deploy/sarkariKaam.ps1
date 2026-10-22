@@ -23,8 +23,11 @@ param(
     [string]$InstallDir = '',
     [int]$Priority = 50,
     [switch]$Emergency,
-    [switch]$SkipBuild,
     [switch]$Launch,
+    # Explicit override for the two cases that used to be silent warnings:
+    # a tracked-dirty working tree and an -ExpectCommit other than HEAD.
+    [switch]$Force,
+    [string]$Session = '',
     # -Ci takes the executable from GitHub's runner instead of compiling it
     # here. On this machine a Tauri release build takes twelve minutes, it
     # holds the build lock that every other agent is waiting for, and it ends
@@ -68,6 +71,12 @@ $script:IntendedDaemonVersion = $null
 # The commit whose CI artifact this work order installs. Set from the
 # parameter, and read by Execute-SmartCiBuild.
 $script:ExpectCommit = $ExpectCommit
+$script:Force = [bool]$Force
+$script:Session = $Session
+$script:WasDirty = $false
+$script:ArtifactCommit = $null
+$script:AgentProfile = $AgentProfile
+$script:Scope = $Scope
 
 # The same lock the classic deploy path uses. Two agents building and
 # installing at the same time is how a half-written executable ends up in
@@ -79,6 +88,7 @@ $DeployLockDir = if ($env:LOCALAPPDATA) {
     Join-Path $WorkspaceRoot '.t9\deploy'
 }
 $DeployLockPath = Join-Path $DeployLockDir 'deploy.lock'
+$EvidenceDir = Join-Path $DeployLockDir 'evidence'
 
 function Wait-DeployLock {
     <#
@@ -117,13 +127,28 @@ function Wait-DeployLock {
     }
 }
 
-if (-not $InstallDir) {
-    if ($env:LOCALAPPDATA) {
-        $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\T9EditorLIT'
-    } else {
-        $InstallDir = Join-Path $WorkspaceRoot 'dist_installed'
+$DefaultInstallDir = if ($env:LOCALAPPDATA) {
+    Join-Path $env:LOCALAPPDATA 'Programs\T9EditorLIT'
+} else {
+    Join-Path $WorkspaceRoot 'dist_installed'
+}
+if (-not $InstallDir) { $InstallDir = $DefaultInstallDir }
+$script:InstallDir = $InstallDir
+
+function Test-SarkariKaamSamePath([string]$Left, [string]$Right) {
+    try {
+        $l = [IO.Path]::GetFullPath($Left).TrimEnd('\', '/')
+        $r = [IO.Path]::GetFullPath($Right).TrimEnd('\', '/')
+        return [string]::Equals($l, $r, [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
     }
 }
+
+# A custom install folder is a test target. It must never be advertised as the
+# user's desktop app: no taskbar pin, no 'shipped' ledger row, and no marker
+# that an ordinary `deploy.ps1 -Doctor` would mistake for the live install.
+$IsLiveInstall = Test-SarkariKaamSamePath $InstallDir $DefaultInstallDir
 
 $ExeName = 't9-editor-lit.exe'
 $PrevExeName = 't9-editor-lit.prev.exe'
@@ -134,6 +159,7 @@ $LiveExe = Join-Path $InstallDir $ExeName
 $PrevExe = Join-Path $InstallDir $PrevExeName
 $StageExe = Join-Path $InstallDir $NewExeName
 $MarkerFile = Join-Path $InstallDir 'build.json'
+$PrevMarkerFile = Join-Path $InstallDir 'build.prev.json'
 
 function Get-Sha256Hash([string]$Path) {
     if (-not (Test-Path $Path)) { return $null }
@@ -220,19 +246,12 @@ function Invoke-PreflightFastCheck {
 }
 
 function Apply-MemoryGovernor {
-    Write-Host "==> [Kaam Stage 2/6] Sarkari Memory Governor & Self-Healing" -ForegroundColor Cyan
-    
-    # Reap orphan compiler processes from previous aborted builds
-    try {
-        $orphans = @(Get-Process -Name 'link', 'rustc' -ErrorAction SilentlyContinue)
-        if ($orphans.Count -gt 0) {
-            Write-Host "    [!] Detected $($orphans.Count) orphan compiler process(es). Reaping to free memory..." -ForegroundColor Yellow
-            foreach ($p in $orphans) {
-                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-            }
-        }
-    } catch {}
+    Write-Host "==> [Kaam Stage 2/6] Sarkari Memory Governor" -ForegroundColor Cyan
 
+    # Do NOT kill rustc/link by name here. That "orphan reaper" also killed a
+    # perfectly healthy `cargo check` belonging to another agent: with a shared
+    # tree, the process name does not tell you whose work it is. Local release
+    # compiles are banned by the cargo shim; the governor only throttles.
     [System.GC]::Collect()
 
     try {
@@ -279,6 +298,142 @@ function Stop-ProcessSynchronously([object[]]$Processes, [int]$TimeoutMs = 3000)
     }
 }
 
+function Restore-SarkariPreviousBuild {
+    <#
+    .SYNOPSIS
+        Restore .prev.exe and the matching build.prev.json marker.
+    .DESCRIPTION
+        This is the ONE rollback implementation. It is used by the automatic
+        canary rollback and by the explicit `deploy.ps1 -Rollback` path, so a
+        manual rollback cannot leave the executable on the old build while
+        build.json still advertises the failed new one.
+
+        A rollback is refused while the app is running: Windows holds the
+        executable open, and a half-copied exe is worse than an honest error.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$InstallDir = $script:InstallDir,
+        [string]$Agent = '',
+        [string]$Model = '',
+        [string]$WorkId = '',
+        [switch]$Force
+    )
+
+    $liveExe = Join-Path $InstallDir $script:ExeName
+    $prevExe = Join-Path $InstallDir $script:PrevExeName
+    $stageExe = Join-Path $InstallDir $script:NewExeName
+    $stageDaemon = Join-Path $InstallDir 't9cloud.new.exe'
+    $markerPath = Join-Path $InstallDir 'build.json'
+    $prevMarkerPath = Join-Path $InstallDir 'build.prev.json'
+    $failedExe = Join-Path $InstallDir 't9-editor-lit.failed.exe'
+    $failedMarker = Join-Path $InstallDir 'build.failed.json'
+
+    if (-not (Test-Path -LiteralPath $prevExe)) {
+        throw "no previous build to restore ($prevExe)"
+    }
+
+    $running = @(Get-RunningAppProcesses)
+    if ($running.Count -gt 0) {
+        throw "the app is running (PID $(($running | ForEach-Object { $_.Id }) -join ', ')); close it before a rollback so the executable is not locked"
+    }
+
+    $prevSha = Get-Sha256Hash $prevExe
+    if (-not $prevSha) { throw "could not hash the previous build ($prevExe)" }
+
+    $prevMarker = $null
+    if (Test-Path -LiteralPath $prevMarkerPath) {
+        try {
+            $prevMarker = Get-Content -LiteralPath $prevMarkerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        } catch {
+            if (-not $Force) {
+                throw "build.prev.json is unreadable ($($_.Exception.Message)); refusing to restore an unverifiable build without -Force"
+            }
+            Write-Host "    [!] build.prev.json unreadable; continuing because -Force was given" -ForegroundColor Yellow
+        }
+    }
+
+    if ($prevMarker -and $prevMarker.PSObject.Properties['appSha256']) {
+        $claimedSha = [string]$prevMarker.appSha256
+        if ($claimedSha -and $claimedSha -ne $prevSha) {
+            if (-not $Force) {
+                throw "the rollback shield ($prevSha) does not match build.prev.json ($claimedSha); refusing without -Force"
+            }
+            Write-Host "    [!] rollback shield does not match build.prev.json; -Force overrides the hash check" -ForegroundColor Yellow
+        }
+    }
+
+    if ($Agent -or $Model -or $WorkId) {
+        # Caller-supplied identity is used below only for the marker/report.
+    } elseif ($script:AgentProfile) {
+        $p = $script:AgentProfile
+        if (-not $Agent -and $p.PSObject.Properties['AgentName']) { $Agent = [string]$p.AgentName }
+        if (-not $Model -and $p.PSObject.Properties['ModelName']) { $Model = [string]$p.ModelName }
+        if (-not $WorkId -and $p.PSObject.Properties['WorkId']) { $WorkId = [string]$p.WorkId }
+    }
+    if (-not $Agent) { $Agent = 'manual-rollback' }
+    if (-not $Model) { $Model = 'manual-rollback' }
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
+    if (-not $WorkId) { $WorkId = "SARKARI-ROLLBACK-$stamp" }
+
+    # Keep the rejected build for forensics before replacing it.
+    if (Test-Path -LiteralPath $liveExe) {
+        try { Copy-ItemWithBackoff -Source $liveExe -Destination $failedExe } catch {
+            Write-Host "    [!] could not preserve the failed executable: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+    if (Test-Path -LiteralPath $markerPath) {
+        try { Copy-Item -LiteralPath $markerPath -Destination $failedMarker -Force -ErrorAction Stop } catch { }
+    }
+
+    Write-Host "    restoring $prevExe -> $liveExe" -ForegroundColor DarkGray
+    Copy-ItemWithBackoff -Source $prevExe -Destination $liveExe
+    $liveSha = Get-Sha256Hash $liveExe
+    if ($liveSha -ne $prevSha) {
+        throw "restored executable hash mismatch ($liveSha vs $prevSha)"
+    }
+
+    # A staged update must not resurrect the build that was just rolled back.
+    foreach ($staged in @($stageExe, $stageDaemon)) {
+        if (Test-Path -LiteralPath $staged) {
+            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $buildId = if ($prevMarker -and $prevMarker.PSObject.Properties['buildId'] -and $prevMarker.buildId) {
+        [string]$prevMarker.buildId
+    } else {
+        "rollback-$stamp"
+    }
+
+    $markerData = [ordered]@{}
+    if ($prevMarker) {
+        foreach ($p in $prevMarker.PSObject.Properties) { $markerData[$p.Name] = $p.Value }
+    } else {
+        $markerData['schema'] = 1
+        $markerData['version'] = '0.1.0'
+        $markerData['builtAt'] = (Get-Item -LiteralPath $prevExe).LastWriteTimeUtc.ToString('o')
+        $markerData['installedAt'] = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    $markerData['mode'] = 'live'
+    $markerData['appSha256'] = $prevSha
+    $markerData['rolledBackAt'] = (Get-Date).ToUniversalTime().ToString('o')
+    $markerData['rolledBackBy'] = $Agent
+    $markerData['rollbackWorkId'] = $WorkId
+    $markerData['buildId'] = $buildId
+    $markerJson = $markerData | ConvertTo-Json -Depth 8
+    [System.IO.File]::WriteAllText($markerPath, $markerJson, (New-Object System.Text.UTF8Encoding($false)))
+
+    Write-Host "    [ok] rollback marker restored ($buildId, $liveSha)" -ForegroundColor Green
+    return [pscustomobject]@{
+        Sha             = $liveSha
+        BuildId         = $buildId
+        MarkerFile      = $markerPath
+        PreviousBuildId = if ($prevMarker) { [string]$prevMarker.buildId } else { '' }
+        RolledBackAt    = $markerData['rolledBackAt']
+    }
+}
+
 function Invoke-SarkariInstall([object]$BuildOutput) {
     Write-Host "==> [Kaam Stage 4/6] Installing Executable with Canary Rollback Safety" -ForegroundColor Cyan
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -289,10 +444,30 @@ function Invoke-SarkariInstall([object]$BuildOutput) {
     $appProcs = @(Get-RunningAppProcesses)
     $isAppRunning = ($appProcs.Count -gt 0)
     $installMode = if ($isAppRunning) { 'staged' } else { 'live' }
+    $prevMarkerPath = Join-Path $InstallDir 'build.prev.json'
 
     if ($isAppRunning) {
         Write-Host "    [!] App is currently running (PID $(($appProcs | ForEach-Object { $_.Id }) -join ', '))." -ForegroundColor Yellow
         Write-Host "    Staging update as '$NewExeName' (App top-bar will show 'Update' button)." -ForegroundColor Cyan
+
+        # The update click will replace the live exe with the staged one. The
+        # rollback target from that moment must be the build that is live NOW,
+        # so snapshot both the exe and its marker before staging.
+        if (Test-Path -LiteralPath $LiveExe) {
+            try {
+                Copy-ItemWithBackoff -Source $LiveExe -Destination $PrevExe
+            } catch {
+                Write-Host "    [!] Could not refresh the rollback shield: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        }
+        if (Test-Path -LiteralPath $MarkerFile) {
+            try {
+                Copy-Item -LiteralPath $MarkerFile -Destination $prevMarkerPath -Force -ErrorAction Stop
+            } catch {
+                Write-Host "    [!] Could not snapshot build.prev.json: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        }
+
         Copy-ItemWithBackoff -Source $BuildOutput.BuiltExe -Destination $StageExe
         $stageSha = Get-Sha256Hash $StageExe
         if ($stageSha -ne $BuildOutput.BuiltSha) {
@@ -300,13 +475,23 @@ function Invoke-SarkariInstall([object]$BuildOutput) {
         }
         Write-Host "    [ok] Staged binary successfully verified ($stageSha)" -ForegroundColor Green
     } else {
-        # App is closed - Prepare .prev.exe for rollback safety
+        # App is closed - Prepare .prev.exe and its matching marker for
+        # rollback safety. Installing without a working shield used to be a
+        # warning; now it is a refusal, because the canary cannot undo a bad
+        # build without it.
         if (Test-Path $LiveExe) {
             Write-Host "    Creating backup of current version -> '$PrevExeName' (Rollback Shield)" -ForegroundColor DarkGray
             try {
                 Copy-ItemWithBackoff -Source $LiveExe -Destination $PrevExe
             } catch {
-                Write-Host "    [!] Could not backup previous binary: $($_.Exception.Message)" -ForegroundColor Yellow
+                throw "could not create the rollback shield ($PrevExe): $($_.Exception.Message). Refusing to install a build that cannot be rolled back."
+            }
+            if (Test-Path -LiteralPath $MarkerFile) {
+                try {
+                    Copy-Item -LiteralPath $MarkerFile -Destination $prevMarkerPath -Force -ErrorAction Stop
+                } catch {
+                    Write-Host "    [!] Could not snapshot build.prev.json: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
             }
         }
 
@@ -338,7 +523,11 @@ function Invoke-SarkariInstall([object]$BuildOutput) {
                 if ($canaryProc.ExitCode -eq 0) {
                     Write-Host "    [ok] Canary test PASSED (Exit code 0)" -ForegroundColor Green
                 } else {
-                    Write-Host "    [!] Canary process exited with code $($canaryProc.ExitCode)" -ForegroundColor Yellow
+                    # A non-zero exit IS the panic signal. This used to print a
+                    # warning and carry on, so a binary that died on startup
+                    # was installed as a successful deploy.
+                    Write-Host "    [x] Canary process exited with code $($canaryProc.ExitCode)" -ForegroundColor Red
+                    $canaryPass = $false
                 }
             }
         } catch {
@@ -346,24 +535,42 @@ function Invoke-SarkariInstall([object]$BuildOutput) {
             $canaryPass = $false
         }
 
-        if (-not $canaryPass -and (Test-Path $PrevExe)) {
-            Write-Host "    >>> SARKARI EMERGENCY AUTO-ROLLBACK TRIGGERED <<<" -ForegroundColor Red
-            Copy-ItemWithBackoff -Source $PrevExe -Destination $LiveExe
-            Write-Host "    [ok] Successfully restored previous stable binary from '$PrevExeName'" -ForegroundColor Green
+        if (-not $canaryPass) {
+            $rollbackNote = 'no previous build existed, so no automatic rollback was possible'
+            if (Test-Path -LiteralPath $PrevExe) {
+                Write-Host "    >>> SARKARI EMERGENCY AUTO-ROLLBACK TRIGGERED <<<" -ForegroundColor Red
+                try {
+                    $restored = Restore-SarkariPreviousBuild -InstallDir $InstallDir -Force
+                    $rollbackNote = "restored the previous build $($restored.BuildId) ($($restored.Sha))"
+                    Write-Host "    [ok] Successfully restored previous stable binary from '$PrevExeName'" -ForegroundColor Green
+                } catch {
+                    $rollbackNote = "AUTOMATIC ROLLBACK FAILED: $($_.Exception.Message)"
+                    Write-Host "    [x] $rollbackNote" -ForegroundColor Red
+                }
+            }
 
             # Issue Official Court Challan
             $courtScript = Join-Path $PSScriptRoot 'sarkariCourt.ps1'
             if (Test-Path $courtScript) {
                 . $courtScript
-                $null = Issue-SarkariChallan -WorkId $AgentProfile.WorkId -Agent $AgentProfile.AgentName -Violation 'CANARY_STARTUP_PANIC' -Description "New executable crashed during startup verification. Auto-rolled back to previous stable build."
+                $panicAgent = if ($script:AgentProfile -and $script:AgentProfile.AgentName) { $script:AgentProfile.AgentName } else { 'unknown-agent' }
+                $panicWork = if ($script:AgentProfile -and $script:AgentProfile.WorkId) { $script:AgentProfile.WorkId } else { 'UNKNOWN-WORK' }
+                $null = Issue-SarkariChallan -WorkId $panicWork -Agent $panicAgent -Violation 'CANARY_STARTUP_PANIC' -Description "New executable crashed during startup verification. $rollbackNote."
             }
-            throw "Canary smoke test failed. New build was rolled back to previous stable version."
+            throw "Canary smoke test failed. $rollbackNote."
         }
     }
 
-    $aName = if ($script:AgentProfile -and $script:AgentProfile.AgentName) { $script:AgentProfile.AgentName } else { 'Agent' }
-    $mName = if ($script:AgentProfile -and $script:AgentProfile.ModelName) { $script:AgentProfile.ModelName } else { 'Model' }
-    $wId   = if ($script:AgentProfile -and $script:AgentProfile.WorkId) { $script:AgentProfile.WorkId } else { 'WORK-LIVE' }
+    # The marker is an audit record, not a place for placeholders. A profile
+    # without an identity used to write "Agent / Model / WORK-LIVE" into
+    # build.json, which is exactly the false attribution this hardening is
+    # meant to remove. Refuse instead.
+    $aName = if ($script:AgentProfile -and $script:AgentProfile.AgentName) { [string]$script:AgentProfile.AgentName } else { '' }
+    $mName = if ($script:AgentProfile -and $script:AgentProfile.ModelName) { [string]$script:AgentProfile.ModelName } else { '' }
+    $wId   = if ($script:AgentProfile -and $script:AgentProfile.WorkId) { [string]$script:AgentProfile.WorkId } else { '' }
+    if (-not $aName -or -not $mName -or -not $wId) {
+        throw 'refusing to write build.json without a real agent, model and work order id'
+    }
 
     # Write build marker build.json
     $markerData = [ordered]@{
@@ -379,25 +586,39 @@ function Invoke-SarkariInstall([object]$BuildOutput) {
         agent          = $aName
         model          = $mName
         workId         = $wId
+        scope          = $script:Scope
+        gitCommit      = $BuildOutput.Manifest.gitCommit
+        gitBranch      = $BuildOutput.Manifest.gitBranch
+        gitDirty       = [bool]$script:WasDirty
+        source         = 'ci'
+        ciRunUrl       = $BuildOutput.Manifest.ciRunUrl
+        host           = $env:COMPUTERNAME
     }
-    $markerJson = $markerData | ConvertTo-Json -Depth 5
+    $markerJson = $markerData | ConvertTo-Json -Depth 6
     [System.IO.File]::WriteAllText($MarkerFile, $markerJson, (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "    [ok] build.json marker updated (Mode: $installMode)" -ForegroundColor Green
 
-    # Start menu / Taskbar pin refresh
-    if (Test-Path $PinScript) {
+    # Start menu / Taskbar pin refresh. A custom install folder is a test
+    # target; repinning the user's real taskbar to it would be a live change
+    # disguised as a test.
+    if (-not $IsLiveInstall) {
+        Write-Host '    [..] custom install folder - taskbar/Start menu pinning skipped (test target)' -ForegroundColor Yellow
+    } elseif (Test-Path $PinScript) {
         Write-Host "    [ok] Updating Start menu / taskbar shortcut..." -ForegroundColor DarkGray
         & pwsh -NoProfile -ExecutionPolicy Bypass -File $PinScript -InstallDir $InstallDir 2>$null | Out-Null
     }
 
     return [pscustomobject]@{
-        InstallMode = $installMode
-        LiveExe     = $LiveExe
-        LiveSha     = Get-Sha256Hash $LiveExe
-        StageExe    = $StageExe
-        StageSha    = Get-Sha256Hash $StageExe
-        PrevExe     = $PrevExe
-        MarkerFile  = $MarkerFile
+        InstallMode   = $installMode
+        IsTestInstall = (-not $IsLiveInstall)
+        BuildId       = $BuildOutput.Manifest.buildId
+        GitCommit     = $BuildOutput.Manifest.gitCommit
+        LiveExe       = $LiveExe
+        LiveSha       = Get-Sha256Hash $LiveExe
+        StageExe      = $StageExe
+        StageSha      = Get-Sha256Hash $StageExe
+        PrevExe       = $PrevExe
+        MarkerFile    = $MarkerFile
     }
 }
 
@@ -418,10 +639,23 @@ function Execute-SmartCiBuild([string]$BuildId) {
     # their work. So the deploy waits for ITS OWN commit's artifact. The
     # rolling release is still used, but only when it holds exactly that
     # commit.
-    $wanted = $script:ExpectCommit
-    if (-not $wanted) {
-        $wanted = (& git -C $WorkspaceRoot rev-parse HEAD 2>$null | Select-Object -First 1)
+    $headAtStart = (& git -C $WorkspaceRoot rev-parse HEAD 2>$null | Select-Object -First 1)
+    $headAtStart = ([string]$headAtStart).Trim()
+
+    # -ExpectCommit is a promise about the binary, not a suggestion. If the
+    # caller names a different commit than the tree is standing on, that is a
+    # deliberate old-build install (or a mistake), and it needs -Force and a
+    # recorded reason. It used to be accepted silently.
+    if ($script:ExpectCommit -and $headAtStart) {
+        $expShort = $script:ExpectCommit.Substring(0, [Math]::Min(7, $script:ExpectCommit.Length))
+        $headShort = $headAtStart.Substring(0, [Math]::Min(7, $headAtStart.Length))
+        if ($expShort -ne $headShort -and -not $script:Force) {
+            throw "refusing -ExpectCommit $expShort while HEAD is $headShort. Commit/push the current tree or pass -Force for a deliberate old-build install."
+        }
     }
+
+    $wanted = $script:ExpectCommit
+    if (-not $wanted) { $wanted = $headAtStart }
     $wanted = ([string]$wanted).Trim()
     if ($wanted) {
         $wantedShort = $wanted.Substring(0, [Math]::Min(7, $wanted.Length))
@@ -483,16 +717,36 @@ function Execute-SmartCiBuild([string]$BuildId) {
 
     if ($artifact.RunUrl) { Write-Host "    [ok] CI run: $($artifact.RunUrl)" -ForegroundColor Green }
 
-    # The installed binary is built from a COMMIT. If the working tree has
-    # moved on, the binary does not contain the local edits, and the operator
-    # has to hear that rather than discover it later.
-    $head = (& git -C $WorkspaceRoot rev-parse HEAD 2>$null | Select-Object -First 1)
-    if ($artifact.GitCommit -and $head -and $artifact.GitCommit -ne $head) {
-        Write-Host "    [!] the CI build is from commit $($artifact.GitCommit) but HEAD is $head - the binary does not contain your uncommitted work" -ForegroundColor Yellow
+    if (-not $artifact.GitCommit) {
+        throw 'the CI artifact does not say which commit it was built from; refusing to install an unprovable binary'
     }
-    $dirty = (& git -C $WorkspaceRoot status --porcelain 2>$null | Select-Object -First 1)
-    if ($dirty) {
-        Write-Host '    [!] the working tree is dirty - CI builds from a commit, so local edits are NOT in this binary' -ForegroundColor Yellow
+    $script:ArtifactCommit = [string]$artifact.GitCommit
+
+    if ($script:ExpectCommit) {
+        $expShort = $script:ExpectCommit.Substring(0, [Math]::Min(7, $script:ExpectCommit.Length))
+        $artShort = $script:ArtifactCommit.Substring(0, [Math]::Min(7, $script:ArtifactCommit.Length))
+        if ($expShort -ne $artShort) {
+            throw "the artifact is from commit $artShort, but -ExpectCommit asked for $expShort; refusing to install the wrong build"
+        }
+    }
+
+    # The installed binary is built from a COMMIT. A tracked-dirty tree means
+    # the source on disk is not the source in the binary; that used to be a
+    # warning. It is now a refusal unless the operator says -Force, and the
+    # marker records the dirty state so nobody can call it clean later.
+    $head = (& git -C $WorkspaceRoot rev-parse HEAD 2>$null | Select-Object -First 1)
+    $head = ([string]$head).Trim()
+    if ($artifact.GitCommit -and $head -and $artifact.GitCommit -ne $head) {
+        Write-Host "    [!] the CI build is from commit $($artifact.GitCommit) but HEAD moved to $head during the wait" -ForegroundColor Yellow
+    }
+    $dirtyTracked = @(& git -C $WorkspaceRoot status --porcelain --untracked-files=no 2>$null)
+    if ($dirtyTracked.Count -gt 0) {
+        if (-not $script:Force) {
+            $preview = ($dirtyTracked | Select-Object -First 8) -join '; '
+            throw "the tracked working tree is dirty ($($dirtyTracked.Count) file(s)): $preview. CI builds from the commit, so these edits are NOT in the binary. Commit them or pass -Force to record a dirty install deliberately."
+        }
+        $script:WasDirty = $true
+        Write-Host "    [!] tracked working tree is dirty ($($dirtyTracked.Count) file(s)); -Force given, marker will record gitDirty=true" -ForegroundColor Yellow
     }
 
     return [pscustomobject]@{
@@ -531,24 +785,12 @@ function Install-SarkariDaemon([object]$BuildOutput) {
         $intended = $ci.DaemonVersion
         Write-Host "    [ok] daemon taken from CI ($intended)" -ForegroundColor Green
     } else {
-        $goId = Get-GoSourceBuildId -Root $GoRoot
-        if (-not $goId) { throw 'the Go sources could not be hashed, so the daemon version cannot be checked' }
-        $intended = $goId
-        if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
-            throw "go is not installed, so the daemon cannot be built for a '$Scope' work order"
-        }
-        $outDir = Join-Path $WorkspaceRoot '.t9\daemon'
-        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-        $out = Join-Path $outDir "t9cloud-$($goId.Substring(3, 8)).exe"
-        Write-Host "==> Building the t9cloud daemon ($goId)" -ForegroundColor Cyan
-        Push-Location $GoRoot
-        try {
-            & go build -trimpath -ldflags "-s -w -X github.com/engrtarun/T9EditorLIT/go/internal/api.Version=$goId" -o $out ./cmd/t9cloud
-            if ($LASTEXITCODE -ne 0) { throw "go build failed (exit code $LASTEXITCODE)" }
-        } finally {
-            Pop-Location
-        }
-        $source = $out
+        # There is deliberately no local `go build` fallback. CI builds the
+        # daemon from the same commit as the app; a local build would use the
+        # working tree, which may contain uncommitted Go edits, and would let a
+        # `go` work order install code that is not in the commit the ledger
+        # recorded. If the artifact has no daemon, that is a CI bug to fix.
+        throw "the CI artifact for this commit does not carry t9cloud.exe. Refusing a local Go build: the daemon is built in CI, from the same commit as the app."
     }
 
     $version = ((& $source -version) | Out-String).Trim() -split '\s+' | Select-Object -Last 1
@@ -563,7 +805,7 @@ function Install-SarkariDaemon([object]$BuildOutput) {
     if ($running.Count -gt 0) {
         Copy-ItemWithBackoff -Source $source -Destination $stageDaemon
         Write-Host "    [!] the daemon is running - staged as '$(Split-Path -Leaf $stageDaemon)'; the Update click swaps it" -ForegroundColor Yellow
-        return [pscustomobject]@{ Mode = 'staged'; Version = $version; Path = $stageDaemon }
+        return [pscustomobject]@{ Mode = 'staged'; Version = $version; Path = $stageDaemon; Sha = Get-Sha256Hash $stageDaemon }
     }
     Copy-ItemWithBackoff -Source $source -Destination $liveDaemon
     $installedSha = Get-Sha256Hash $liveDaemon
@@ -582,17 +824,23 @@ function Execute-SarkariKaam {
         [switch]$Emergency,
         [switch]$Launch,
         [switch]$Ci,
-        [string]$ExpectCommit = ''
+        [string]$ExpectCommit = '',
+        [switch]$Force,
+        [string]$Session = ''
     )
 
     if ($ExpectCommit) { $script:ExpectCommit = $ExpectCommit }
+    $script:Force = [bool]$Force
+    $script:Session = $Session
+    # The caller's catch needs to see the claimed order even if this function
+    # dies later (daemon gate, ledger finish, etc.). It is cleared only after
+    # the order is actually closed.
+    $script:ActiveLedgerOrder = $null
 
     if ($AgentProfile) {
         $script:AgentProfile = $AgentProfile
     }
-    if ($Scope) {
-        $script:Scope = $Scope
-    }
+    $script:Scope = $Scope
     if ($InstallDir) {
         $script:InstallDir = $InstallDir
         $script:LiveExe = Join-Path $InstallDir $script:ExeName
@@ -605,12 +853,10 @@ function Execute-SarkariKaam {
     Write-Host "  SARKARI KAAM EXECUTION PIPELINE STARTED" -ForegroundColor Green
     Write-Host "========================================================" -ForegroundColor Green
 
-    Invoke-PreflightFastCheck
-    Apply-MemoryGovernor
-
-    # WorkId ko guarded tarike se lo: StrictMode ke under kisi bhi object par
-    # missing property turant throw kar deta hai. Real chain me profile valid
-    # na aane par poora deploy mar jata tha — ab fallback + diagnostic dono.
+    # Refuse an unprofiled deploy. This used to generate a random WorkId and
+    # continue, which meant any script that called Execute-SarkariKaam directly
+    # could install without a form, a claim, or a queue position. The only
+    # supported door is tools\deploy.ps1, and it always supplies a profile.
     $rawProfile = $script:AgentProfile
     $hasWorkId = $false
     $resolvedWorkId = ''
@@ -626,9 +872,17 @@ function Execute-SarkariKaam {
         $propNames = if ($null -ne $rawProfile) {
             (($rawProfile.PSObject.Properties | ForEach-Object { $_.Name }) -join ', ')
         } else { '<none>' }
-        Write-Host "    [!] AgentProfile.WorkId missing — profile type: $profileType" -ForegroundColor Yellow
-        Write-Host "    [!] Available properties: $propNames" -ForegroundColor Yellow
-        $resolvedWorkId = New-SarkariWorkId
+        throw "refusing an unprofiled deploy (profile type: $profileType; properties: $propNames). Use tools\deploy.ps1, which creates a WorkId and a ledger order; Execute-SarkariKaam will not invent one."
+    }
+
+    # A docs-only order does not install a binary, so it does not need a
+    # compile preflight. Running one would make a typo in unrelated code block
+    # a documentation change.
+    if ($script:Scope -eq 'docs') {
+        Write-Host '    [..] docs scope: skipping app preflight; no binary will be installed' -ForegroundColor DarkGray
+    } else {
+        Invoke-PreflightFastCheck
+        Apply-MemoryGovernor
     }
 
     # ---- the shared SQLite queue ----------------------------------------
@@ -639,6 +893,16 @@ function Execute-SarkariKaam {
     . (Join-Path $PSScriptRoot 'sarkariLedger.ps1')
     $ledgerOrder = $null
     $ledgerClaimed = $false
+
+    # Provenance is recorded at request time, not guessed later. These three
+    # values used to be blank in the ledger, which made it impossible to tell
+    # which commit a "shipped" row actually described.
+    $requestHead = (& git -C $WorkspaceRoot rev-parse HEAD 2>$null | Select-Object -First 1)
+    $requestHead = ([string]$requestHead).Trim()
+    $requestBranch = (& git -C $WorkspaceRoot rev-parse --abbrev-ref HEAD 2>$null | Select-Object -First 1)
+    $requestBranch = ([string]$requestBranch).Trim()
+    $requestDirty = @(& git -C $WorkspaceRoot status --porcelain --untracked-files=no 2>$null).Count -gt 0
+
     if ($null -ne $rawProfile) {
         # StrictMode: a profile built by an older/other path may not carry
         # this field, and a bare `$rawProfile.AllottedMinutes` would abort the
@@ -651,8 +915,13 @@ function Execute-SarkariKaam {
         if ($leaseMinutes -le 0) { $leaseMinutes = 30 }
 
         $ledgerOrder = New-SarkariLedgerOrder -AgentProfile $rawProfile -Scope $script:Scope `
-            -Priority $Priority -Emergency:$Emergency
+            -Priority $Priority -Emergency:$Emergency -Session $script:Session `
+            -Commit $requestHead -Branch $requestBranch -GitDirty:$requestDirty
         if ($ledgerOrder) {
+            # Publish it to the caller now. If Start-SarkariLedgerOrder or the
+            # deploy-lock wait throws, sarkariDeploy's catch can still close
+            # the queue slot instead of leaving it active for 30 minutes.
+            $script:ActiveLedgerOrder = $ledgerOrder
             # Start-SarkariLedgerOrder keeps the token owner and attaches the
             # claim metadata (run id, state) to it, so the heartbeat and
             # finish steps below still have the token they need.
@@ -663,11 +932,22 @@ function Execute-SarkariKaam {
         }
 
         if (-not $ledgerClaimed) {
-            # The ledger is an advisory queue. Failing hard here meant a
-            # hiccupping `node` (this box runs at ~1 GB free RAM) aborted the
-            # deploy outright, which is exactly the stuck deploy this pipeline
-            # exists to prevent. So the install goes on, loudly, and the
-            # ledger still gets told the outcome; it just does not hold a lease.
+            # The ledger can hiccup (this box runs at ~1 GB free RAM), but a
+            # failed claim must not become a queue bypass. If another order is
+            # active or waiting, refuse; the deploy lock is not a substitute
+            # for the fair queue. Only a genuinely empty/unreadable ledger may
+            # continue, loudly and without a lease.
+            $busy = $false
+            try {
+                $status = Invoke-SarkariLedger -Arguments @('status', '--json')
+                if ($status) {
+                    if ($status.active) { $busy = $true }
+                    if ($null -ne $status.queueDepth -and [int]$status.queueDepth -gt 0) { $busy = $true }
+                }
+            } catch { }
+            if ($busy) {
+                throw "the ledger is busy (another order is active or queued), but this order could not claim its slot. Refusing to jump the queue; retry after the active deploy finishes."
+            }
             $reason = if ($ledgerOrder) { "could not claim $($ledgerOrder.workId)" } else { 'no work order was issued' }
             Write-Host "    [!] proceeding WITHOUT a ledger lease ($reason)" -ForegroundColor Yellow
             Write-Host '    [!] the deploy lock still serialises installs, so this cannot corrupt an executable' -ForegroundColor Yellow
@@ -724,9 +1004,53 @@ function Execute-SarkariKaam {
         # to twelve minutes, held the build lock that every other agent was
         # waiting behind, and died in the linker for want of memory. It was
         # the reason five agents could not work at once.
-        $buildOutput = Execute-SmartCiBuild -BuildId $buildId
-        $installOutput = Invoke-SarkariInstall -BuildOutput $buildOutput
-        $daemonOutput = Install-SarkariDaemon -BuildOutput $buildOutput
+        $buildOutput = $null
+        $installOutput = $null
+        $daemonOutput = $null
+
+        if ($script:Scope -eq 'docs') {
+            # Documentation does not change a binary. It still gets a ledger
+            # row and the commit is recorded, but it must not install the app
+            # and then claim the app half shipped.
+            $buildId = "docs-$($resolvedWorkId.ToLowerInvariant())"
+            $installOutput = [pscustomobject]@{
+                InstallMode   = 'docs'
+                IsTestInstall = $false
+                BuildId       = $buildId
+                GitCommit     = $requestHead
+                LiveExe       = $null
+                LiveSha       = $null
+                StageExe      = $null
+                StageSha      = $null
+                PrevExe       = $null
+                MarkerFile    = $null
+            }
+        } else {
+            $buildOutput = Execute-SmartCiBuild -BuildId $buildId
+            $buildId = [string]$buildOutput.Manifest.buildId
+
+            if ($script:Scope -in @('app', 'both')) {
+                $installOutput = Invoke-SarkariInstall -BuildOutput $buildOutput
+            } else {
+                # A `go` order installs the daemon only. It used to install the
+                # app as a side effect of sharing this pipeline, which meant a
+                # Go-only work order could replace the UI without an app review.
+                $installOutput = [pscustomobject]@{
+                    InstallMode   = 'daemon'
+                    IsTestInstall = (-not $IsLiveInstall)
+                    BuildId       = $buildId
+                    GitCommit     = $buildOutput.Manifest.gitCommit
+                    LiveExe       = $null
+                    LiveSha       = $null
+                    StageExe      = $null
+                    StageSha      = $null
+                    PrevExe       = $null
+                    MarkerFile    = $null
+                }
+            }
+
+            $daemonOutput = Install-SarkariDaemon -BuildOutput $buildOutput
+        }
     } catch {
         # A failed deploy has to release its queue slot. Leaving the order
         # 'active' keeps a dead work order sitting in front of the agents
@@ -738,6 +1062,7 @@ function Execute-SarkariKaam {
             try {
                 $null = Complete-SarkariLedgerOrder -Order $ledgerOrder -Outcome 'failed' `
                     -Mode 'failed' -BuildId $buildId -ErrorText $_.Exception.Message
+                $script:ActiveLedgerOrder = $null
                 Write-Host "    [ok] the failed work order was closed: $($ledgerOrder.workId)" -ForegroundColor Green
             } catch {
                 Write-Host "    [!] could not close the failed work order: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -790,13 +1115,97 @@ function Execute-SarkariKaam {
         Write-Host "    [ok] daemon verified ($intended)" -ForegroundColor Green
     }
 
+    # Attach the daemon half to build.json after it is installed. The marker
+    # used to be written before the daemon step and never updated, so a `both`
+    # work order could ship a daemon that build.json knew nothing about.
+    if ($daemonOutput -and $installOutput.MarkerFile -and (Test-Path -LiteralPath $installOutput.MarkerFile)) {
+        try {
+            $markerObject = Get-Content -LiteralPath $installOutput.MarkerFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            $markerObject | Add-Member -NotePropertyName daemonBuildId -NotePropertyValue $script:IntendedDaemonVersion -Force
+            $markerObject | Add-Member -NotePropertyName daemonVersion -NotePropertyValue $daemonOutput.Version -Force
+            $markerObject | Add-Member -NotePropertyName daemonSha256 -NotePropertyValue $daemonOutput.Sha -Force
+            $markerObject | Add-Member -NotePropertyName daemonMode -NotePropertyValue $daemonOutput.Mode -Force
+            $markerJson = $markerObject | ConvertTo-Json -Depth 8
+            [System.IO.File]::WriteAllText($installOutput.MarkerFile, $markerJson, (New-Object System.Text.UTF8Encoding($false)))
+            Write-Host "    [ok] marker records the daemon half ($($daemonOutput.Version))" -ForegroundColor DarkGray
+        } catch {
+            Write-Host "    [!] could not attach daemon details to build.json: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+
+    # Evidence is the machine-readable half of the ledger row: which artifact,
+    # which commit, which hashes, which marker. The ledger stores the path and
+    # parses these fields into the run record.
+    $evidencePath = $null
+    try {
+        New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
+        $markerEvidence = $null
+        if ($installOutput.MarkerFile -and (Test-Path -LiteralPath $installOutput.MarkerFile)) {
+            try {
+                $markerEvidence = Get-Content -LiteralPath $installOutput.MarkerFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            } catch { $markerEvidence = $null }
+        }
+        $evidence = [ordered]@{
+            schema   = 1
+            workId   = $resolvedWorkId
+            buildId  = $buildId
+            commit   = $(if ($buildOutput) { $buildOutput.Manifest.gitCommit } else { $requestHead })
+            branch   = $requestBranch
+            gitDirty = [bool]($script:WasDirty -or $requestDirty)
+            source   = $(if ($buildOutput) { 'ci' } else { 'git' })
+            ciRunUrl = $(if ($buildOutput) { $buildOutput.Manifest.ciRunUrl } else { $null })
+            app      = [ordered]@{
+                sha256   = $(if ($buildOutput) { $buildOutput.BuiltSha } else { $null })
+                artifact = $(if ($buildOutput) { $buildOutput.BuiltExe } else { $null })
+            }
+            install  = [ordered]@{
+                mode          = $installOutput.InstallMode
+                isTestInstall = [bool]$installOutput.IsTestInstall
+                liveSha256    = $installOutput.LiveSha
+                stagedSha256  = $installOutput.StageSha
+                markerPath    = $installOutput.MarkerFile
+            }
+            daemon   = $(if ($daemonOutput) {
+                [ordered]@{
+                    version = $daemonOutput.Version
+                    sha256  = $daemonOutput.Sha
+                    mode    = $daemonOutput.Mode
+                    path    = $daemonOutput.Path
+                }
+            } else { $null })
+            marker   = $markerEvidence
+        }
+        $evidencePath = Join-Path $EvidenceDir "$resolvedWorkId.json"
+        $evidenceJson = $evidence | ConvertTo-Json -Depth 10
+        [System.IO.File]::WriteAllText($evidencePath, $evidenceJson, (New-Object System.Text.UTF8Encoding($false)))
+    } catch {
+        $evidencePath = $null
+        Write-Host "    [!] could not write deploy evidence: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
     # The queue is released here, with the real outcome.
-    if ($ledgerOrder -and $ledgerClaimed) {
-        $null = Complete-SarkariLedgerOrder -Order $ledgerOrder -Outcome 'shipped' -Mode $installOutput.InstallMode -BuildId $buildId
-    } elseif ($ledgerOrder) {
-        # It was queued but never held the lease; close it as cancelled so it
-        # stops occupying a queue position the waiting agents can see.
-        $null = Complete-SarkariLedgerOrder -Order $ledgerOrder -Outcome 'cancelled' -Mode $installOutput.InstallMode -BuildId $buildId -ErrorText 'built without a lease - the ledger never handed over the slot'
+    if ($ledgerOrder) {
+        $ledgerOutcome = 'shipped'
+        $ledgerMode = $installOutput.InstallMode
+        $ledgerError = ''
+        if ($installOutput.IsTestInstall) {
+            # A custom install folder is a test. The files changed there, but
+            # the user's desktop app did not, so the ledger must not say
+            # 'shipped'.
+            $ledgerOutcome = 'cancelled'
+            $ledgerMode = 'test'
+            $ledgerError = "test-only install to $InstallDir; the live desktop app was not changed"
+            Write-Host "    [!] custom install folder - recording this as a TEST, not a desktop deploy" -ForegroundColor Yellow
+        } elseif (-not $ledgerClaimed) {
+            # It was queued but never held the lease; close it as cancelled so
+            # it stops occupying a queue position the waiting agents can see.
+            $ledgerOutcome = 'cancelled'
+            $ledgerError = 'built without a lease - the ledger never handed over the slot'
+        }
+
+        $null = Complete-SarkariLedgerOrder -Order $ledgerOrder -Outcome $ledgerOutcome `
+            -Mode $ledgerMode -BuildId $buildId -Evidence $evidencePath -ErrorText $ledgerError
+        $script:ActiveLedgerOrder = $null
     }
 
     Write-Host "========================================================`n" -ForegroundColor Green
@@ -808,5 +1217,8 @@ function Execute-SarkariKaam {
         InstallOutput  = $installOutput
         DaemonOutput   = $daemonOutput
         LedgerOrder    = $ledgerOrder
+        IsTestInstall  = [bool]$installOutput.IsTestInstall
+        EvidencePath   = $evidencePath
+        GitCommit      = $(if ($buildOutput) { $buildOutput.Manifest.gitCommit } else { $requestHead })
     }
 }

@@ -125,7 +125,14 @@ try {
         } else {
             $msg = if ($Message) { $Message } else { $Task }
             if (-not $msg) { $msg = 'work from the sarkari agents' }
-            git commit -m $msg
+            # With -Paths, commit ONLY those paths. A plain commit would also
+            # pick up anything another agent had already staged, which is not
+            # what "only my files" means.
+            if ($Paths.Count -gt 0) {
+                git commit --only -m $msg -- @Paths
+            } else {
+                git commit -m $msg
+            }
             if ($LASTEXITCODE -ne 0) { throw "git commit failed (exit $LASTEXITCODE)" }
             Write-Ok "committed $((git rev-parse HEAD) -replace '^(.{7}).*','$1') ($($staged.Count) files)"
         }
@@ -156,6 +163,10 @@ try {
             throw "the push failed again (exit $LASTEXITCODE)"
         }
     }
+    # A rebase rewrites the commit. The deploy must wait for the artifact of
+    # what is actually on HEAD now, not the pre-rebase hash that CI will never
+    # publish.
+    $commit = (git rev-parse HEAD).Trim()
     Write-Ok "pushed $commit"
 } finally {
     Pop-Location

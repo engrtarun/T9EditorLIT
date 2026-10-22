@@ -47,13 +47,21 @@ Entry points:
 `deploy.ps1` and `Deploy-T9EditorLIT.bat` are wired to the **Sarkari High-Speed
 Engine** in `sarkari_deploy/`. It is the same door, not a second one:
 
-| Switch      | What it does                                                                                                      |
-| ----------- | ----------------------------------------------------------------------------------------------------------------- |
-| `-Check`    | **10-second fast check**: TypeScript + Svelte + Rust types. No build, no install. Use it before you burn a build. |
-| `-Fast`     | Autonomous deploy with non-interactive defaults.                                                                  |
-| `-Doctor`   | Installed-state check (exe, `.prev.exe` rollback shield, staged update, daemon health).                           |
-| `-Status`   | Recent Sarkari orders.                                                                                            |
-| `-Rollback` | Restore the previous stable build from `.prev.exe` by hand.                                                       |
+| Switch          | What it does                                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `-Check`        | **10-second fast check**: TypeScript + Svelte + Rust types. No build, no install. Use it before you burn a build. |
+| `-Fast`         | Skip interactive questions only. It does **not** invent a task, reason, ETA, agent or model.                      |
+| `-Doctor`       | Installed-state check (exe, marker hash, `.prev.exe` shield, staged update, daemon health).                       |
+| `-Status`       | SQLite ledger: active order, queue, and recent work orders.                                                       |
+| `-Rollback`     | Restore `.prev.exe` **and** `build.prev.json`. Requires `-Force` or an interactive yes.                           |
+| `-Force`        | Explicit override for a tracked-dirty tree, an old `-ExpectCommit`, a test install folder, or a manual rollback.  |
+| `-ExpectCommit` | Install the artifact for this commit. A commit other than HEAD needs `-Force`; the artifact must match it.        |
+| `-InstallDir`   | **Test only.** A custom folder is not the desktop app; it needs `-Force`, skips pinning, and is recorded `test`.  |
+
+`-CiBaseUrl` / `-CiRepo` override where the artifact comes from. They are a
+mirror/test override only: using either one requires `-Force` **and** a custom
+`-InstallDir`, and the deploy refuses to put that artifact into the live desktop
+folder. The normal path always uses this repository's CI release.
 
 Two things the Sarkari engine does **not** change:
 
@@ -141,7 +149,9 @@ Copy `Clipchamp_Bunny\tools\deploy-form.example.json`, fill it, then:
 pwsh -File tools\deploy.ps1 -FormFile .\my-deploy.json
 ```
 
-A form file is just JSON. Command-line switches win when both are present.
+A form file is just JSON. Precedence is: command-line switch, then form file,
+then environment variable, then a hard rejection. A stale `T9_TASK` in the
+agent's shell can no longer overwrite a task that the form file supplied.
 
 ### 2d. Environment variables
 
@@ -172,10 +182,14 @@ index in SQLite, not by a polite convention.
 - An active order has a **lease** (`max(10, min(90, ETA + 15))` minutes). A
   child Node process heartbeats every **20 seconds**. If the agent process
   dies, the lease expires and the next order can run.
-- The deploy also holds a file lock (`deploy.lock`) across build+install, so a
-  second deploy cannot interleave file copies even if the ledger is bypassed.
-- `-NoWait` cancels instead of waiting. `-MaxWaitMinutes N` caps the queue
-  wait. The default cap is `max(10, min(180, ETA + 30))`.
+- The deploy also holds a file lock (`deploy.lock`) across install+verify, so a
+  second deploy cannot interleave file copies. **The lock is not a queue
+  bypass:** if the ledger is unreadable and another order is active or queued,
+  the deploy refuses to jump ahead.
+- There is no `-NoWait` / `-MaxWaitMinutes` escape hatch in `deploy.ps1` any
+  more. The ledger waits for its slot and the lease is what expires a dead
+  order. `recover --max-heartbeat-age` requires `--force` and at least 5
+  minutes, so a waiting agent cannot expire the deploy ahead of it.
 
 While waiting, `deploy.ps1` prints:
 
@@ -193,16 +207,20 @@ active order. It is an estimate, not a promise.
 ### 4.1 Build (CI only)
 
 There is no local compile path. A push to `main` makes
-`.github/workflows/ci.yml` build the frontend, the Tauri app and the daemon on
-GitHub's Windows runner, and publish:
+`.github/workflows/sarkari-artifact.yml` build the frontend, the Tauri app and
+the daemon on GitHub's Windows runner, and publish a per-commit release
+`ci-<short-sha>` plus the rolling `ci-latest`:
 
 - `t9-editor-lit.exe`
 - `t9cloud.exe`
-- `sarkari-manifest.json` (build id, commit, SHA-256 of both binaries)
+- `sarkari-manifest.json` (build id, commit, branch, run URL, Go source id,
+  SHA-256 of both binaries)
 
 The deploy downloads the artifact for **this working tree's commit** - waiting
 up to 12 minutes if CI is still running - and checks both SHA-256 values
-against the manifest. A binary whose hash does not match is never installed.
+against the manifest. A manifest without `gitCommit`, or whose `buildId` is
+not `ci-<short-sha>`, is refused. A tracked-dirty tree is refused unless
+`-Force` is explicit, and the marker then records `gitDirty: true`.
 `cargo build`, `cargo test`, `cargo clippy` and `tauri build` are blocked by
 the cargo shim, and `build.ps1` no longer exists.
 
@@ -217,18 +235,20 @@ running app and daemon can prove which build they are.
 | not running   | new exe is installed in place; taskbar opens it                                                         |
 | running       | new exe is staged as `t9-editor-lit.new.exe`; the app polls `build.json` every 5 s and shows **Update** |
 
-Any app instance started from the repository (`target\release\...`) is closed:
-the installed taskbar app is the only supported entry point. A running
-installed app is never killed just to install.
+A running app is never killed just to install; the new binary is staged. The
+deploy does not hunt down repository builds either - it only installs the
+taskbar app's copy.
 
-Staged files are hash-checked before and after the move. A failed direct
-install falls back to staging instead of leaving a half-installed folder.
+Staged files are hash-checked before and after the move. The live path creates
+both `.prev.exe` and `build.prev.json`; if the shield cannot be created, the
+install is refused rather than performed without a rollback target.
 
 ### 4.3 Daemon install
 
-`t9cloud` comes from the same CI artifact. For a `go`/`both` work order whose
-artifact has no daemon, the deploy falls back to a local `go build` (Go is fast
-on this box and is not the banned Rust compile). Then:
+`t9cloud` comes from the same CI artifact as the app. There is **no local
+`go build` fallback**: a `go`/`both` work order whose artifact has no
+`t9cloud.exe` fails, because a local build could contain uncommitted Go edits
+that the ledger's commit does not describe. Then:
 
 | Situation                | Result                                                                       |
 | ------------------------ | ---------------------------------------------------------------------------- |
@@ -245,9 +265,8 @@ restart.
 ### 4.4 Verification (must all pass)
 
 - installed or staged app SHA-256 equals the build manifest hash
-- `build.json` has the same `buildId`
-- `build.json` carries the same `appSha256`
-- no app instance is running from outside the install folder
+- `build.json` has the same `buildId` and `appSha256`
+- the live marker's `appSha256` equals the live executable on disk
 - staged mode: `t9-editor-lit.new.exe` has the right hash and the installed
   app is running
 - installed mode: live `t9-editor-lit.exe` has the right hash
@@ -256,7 +275,12 @@ restart.
 - evidence file written to
   `%LOCALAPPDATA%\T9EditorLIT\deploy\evidence\<workId>.json`
 
-Only after all checks does the ledger close as **`shipped`**.
+A live marker also records `gitCommit`, `gitBranch`, `gitDirty`, `source`,
+`ciRunUrl`, `scope` and `host`; a `both` deploy adds the daemon id/hash/version.
+
+Only after all checks does the ledger close as **`shipped`** (or `staged` mode
+inside that shipped row). A custom `-InstallDir` closes as **`cancelled`** with
+mode `test`; it never claims the desktop app changed.
 
 ### 4.5 Update button
 
@@ -276,6 +300,19 @@ So:
   still has to click **Update**. Say that explicitly; do not claim the UI is
   already showing the change.
 
+### 4.6 Scope decides what is installed
+
+| Scope  | App binary | Daemon | Ledger/report              |
+| ------ | ---------- | ------ | -------------------------- |
+| `app`  | installed  | no     | `shipped`                  |
+| `go`   | **no**     | yes    | `shipped`, report `DAEMON` |
+| `both` | installed  | yes    | `shipped`                  |
+| `docs` | **no**     | **no** | `shipped`, report `DOCS`   |
+
+A `go` order must not replace the UI as a side effect, and an `app` order must
+not install a daemon it did not build. `docs` skips the app preflight and
+installs nothing; it still records the commit and the work order.
+
 ---
 
 ## 5. Exit codes and outcomes
@@ -292,7 +329,8 @@ Ledger outcomes:
 
 - **`shipped`** — build installed/staged, hashes verified, evidence written.
 - **`failed`** — an error was recorded with the work order and evidence path.
-- **`cancelled`** — the agent chose not to wait, or cancelled interactively.
+- **`cancelled`** — a test-only install (`mode: test`), a cancelled form, or
+  a run that never held a ledger lease. It never means "the desktop changed".
 - **`expired`** — the agent vanished (queue TTL or lease expiry).
 
 An agent that is blocked must close the order as `failed` with the real error.
@@ -342,11 +380,14 @@ The install folder:
 ```text
 %LOCALAPPDATA%\Programs\T9EditorLIT\
   t9-editor-lit.exe
+  t9-editor-lit.prev.exe    (rollback shield)
   t9-editor-lit.new.exe     (only while an update is staged)
   t9cloud.exe
   t9cloud.new.exe           (only while a daemon update is staged)
   .env
   build.json
+  build.prev.json           (the marker that belongs to .prev.exe)
+  build.failed.json         (forensics after a rollback, when available)
 ```
 
 `build.json` contains `buildId`, `builtAt`, `installedAt`, `stagedAt`, `mode`,
@@ -359,26 +400,28 @@ staged update it adds `appliedAtUnix`; `mode` is then `installed` and
 
 ## 7. Troubleshooting
 
-| Symptom                                                   | What to do                                                                                                                                                                                                                   |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `the ledger did not return a work id`                     | Run `deploy.ps1 -Status`; check Node 22.5+ and `node:sqlite`                                                                                                                                                                 |
-| `queue is busy` / `-NoWait`                               | Re-run without `-NoWait`, or wait; check the active order in status                                                                                                                                                          |
-| `work order ... is expired`                               | The previous agent died; create a new request                                                                                                                                                                                |
-| `the manifest points at a missing executable`             | The build folder was cleaned; run without `-SkipBuild`                                                                                                                                                                       |
-| `the build is from commit ..., HEAD is ...`               | Push your commit and deploy again; the artifact must match HEAD. `-Force` only if you truly mean the older binary                                                                                                            |
-| `CI has not published that build yet`                     | Push the commit, let the Actions run finish, then deploy again; the deploy itself waits up to 12 minutes                                                                                                                      |
-| `sarkari-manifest.json` 404 / artifact missing            | CI has not published this commit's artifact. Check the Actions run for red, then push a fix - never install an older binary to "get unblocked"                                                                                |
-| `installed app hash mismatch`                             | Run `-Doctor`; do not hand-copy exes                                                                                                                                                                                         |
-| `daemon did not answer /healthz`                          | Check `logs\t9cloud.err.log`, `.env`, port 7878                                                                                                                                                                              |
-| `daemon still has N jobs in flight`                       | Wait for the queue; deploy refuses to kill work                                                                                                                                                                              |
-| Update button not visible                                 | App must be running **and** `t9-editor-lit.new.exe` must exist; run `-Doctor`                                                                                                                                                |
-| `non-installed app instance`                              | Close the repo `target\release` app; use the taskbar app                                                                                                                                                                     |
-| Stale taskbar shortcut                                    | `pwsh -File tools\pin-taskbar.ps1` (deploy already runs it)                                                                                                                                                                  |
-| A queued order nobody ever claimed                        | `node tools\deploy-ledger-reclaim.mjs reclaim-stale` (15-minute floor)                                                                                                                                                       |
-| An order that was expired by mistake                      | `node tools\deploy-ledger-restore.mjs restore --id WO-...`                                                                                                                                                                   |
-| An order stuck `active` after its agent died              | `node tools\deploy-ledger-restore.mjs release --id WO-...`                                                                                                                                                                   |
-| `Blocking waiting for file lock on build directory`       | Something is compiling locally, which the rules forbid. Stop it; the compile belongs to CI and the deploy only installs                                                                                                       |
-| `link.exe` failed with `0xffffffff` / `LNK1181`           | Not enough free RAM for a local link - which is exactly why local compiles are blocked. Push and let CI build                                                                                                                |
+| Symptom                                             | What to do                                                                                                                                     |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `the ledger did not return a work id`               | Run `deploy.ps1 -Status`; check Node 22.5+ and `node:sqlite`                                                                                   |
+| `queue is busy`                                     | Wait; the ledger's fairness rules will hand over the slot. There is no `-NoWait` bypass in `deploy.ps1`                                        |
+| `work order ... is expired`                         | The previous agent died; create a new request                                                                                                  |
+| `the tracked working tree is dirty`                 | Commit the changes and push, then deploy; or pass `-Force` and the marker records `gitDirty: true`                                             |
+| `refusing -ExpectCommit ... while HEAD is ...`      | Push the current tree or name the commit HEAD is on. `-Force` is only for a deliberate old-build install                                       |
+| `the build is from commit ..., HEAD is ...`         | Push your commit and deploy again; the artifact must match HEAD. `-Force` only if you truly mean the older binary                              |
+| `CI has not published that build yet`               | Push the commit, let the Actions run finish, then deploy again; the deploy itself waits up to 12 minutes                                       |
+| `sarkari-manifest.json` 404 / artifact missing      | CI has not published this commit's artifact. Check the Actions run for red, then push a fix - never install an older binary to "get unblocked" |
+| `manifest has no gitCommit` / buildId mismatch      | The manifest is not a CI artifact for that commit. Do not install it; fix the workflow/release                                                 |
+| `installed app hash mismatch`                       | Run `-Doctor`; do not hand-copy exes                                                                                                           |
+| `daemon did not answer /healthz`                    | Check `logs\t9cloud.err.log`, `.env`, port 7878                                                                                                |
+| `artifact ... does not carry t9cloud.exe`           | A `go`/`both` artifact was incomplete. Fix CI; there is no local `go build` fallback                                                           |
+| `daemon still has N jobs in flight`                 | Wait for the queue; deploy refuses to kill work                                                                                                |
+| Update button not visible                           | App must be running **and** `t9-editor-lit.new.exe` must exist; run `-Doctor`                                                                  |
+| Stale taskbar shortcut                              | `pwsh -File tools\pin-taskbar.ps1` (the live deploy runs it; a test `-InstallDir` deliberately does not)                                       |
+| A queued order nobody ever claimed                  | Default `recover` only reaps expired leases. `recover --max-heartbeat-age 5 --force` is a human override                                       |
+| An order that was expired by mistake                | `node tools\deploy-ledger-restore.mjs restore --id WO-...`                                                                                     |
+| An order stuck `active` after its agent died        | Default lease expiry, or `node tools\deploy-ledger-restore.mjs release --id WO-...` after confirming the process is gone                       |
+| `Blocking waiting for file lock on build directory` | Something is compiling locally, which the rules forbid. Stop it; the compile belongs to CI and the deploy only installs                        |
+| `link.exe` failed with `0xffffffff` / `LNK1181`     | Not enough free RAM for a local link - which is exactly why local compiles are blocked. Push and let CI build                                  |
 
 Diagnostics to attach to a bug report:
 
@@ -415,7 +458,9 @@ Get-Content (Join-Path $env:LOCALAPPDATA 'T9EditorLIT\deploy\logs\t9cloud.err.lo
     abandoned, but the agent that owns it may still be in its fast-check
     before it claims the slot. `tools\deploy-ledger-reclaim.mjs` refuses to
     touch anything younger than the queue's own TTL, for exactly this
-    reason. If you expired an order by mistake, put it back with
+    reason. `recover --max-heartbeat-age` is an operator override: it needs
+    `--force` and at least 5 minutes, so it cannot be used to clear the deploy
+    ahead of you. If you expired an order by mistake, put it back with
     `tools\deploy-ledger-restore.mjs restore --id WO-...`.
 12. **A dead order blocks the queue.** The claim only hands the slot to the
     order that is _first_ in line, so an order whose agent died stays at
@@ -428,6 +473,16 @@ Get-Content (Join-Path $env:LOCALAPPDATA 'T9EditorLIT\deploy\logs\t9cloud.err.lo
     If a deploy seems stuck with nobody active, check the head of the
     queue first: `deploy.ps1 -Status` shows the position.
 
+13. **A plea is not a pardon.** `sarkariVakil.ps1` files the plea; it does not
+    call the judge. A human must review the plea and run
+    `sarkariCourt.ps1 -JudgePleaId <id> -ApprovePlea`. The court checks prior
+    non-pardoned challans, requires telemetry for external-cause claims, and
+    leaves an upheld sentence as `ACTIVE_PENALTY`.
+14. **A rollback is a desktop change.** `deploy.ps1 -Rollback` needs `-Force`
+    (or an interactive yes), takes the deploy lock, verifies `.prev.exe`
+    against `build.prev.json`, restores the marker, and writes a
+    `ROLLED_BACK` report. `-Fast` is not consent for a rollback.
+
 ### Agent checklist
 
 ```text
@@ -435,6 +490,7 @@ Get-Content (Join-Path $env:LOCALAPPDATA 'T9EditorLIT\deploy\logs\t9cloud.err.lo
 [ ] My task and why are specific enough for a human to understand.
 [ ] My ETA includes build + install + verify, not queue wait.
 [ ] I chose the scope: app | go | both | docs.
+[ ] The tracked tree is committed and pushed (or I passed -Force and it is recorded dirty).
 [ ] I ran deploy.ps1 (not a bare build).
 [ ] The ledger says shipped (or I recorded failed with the real error).
 [ ] If staged, I told the user to click Update.

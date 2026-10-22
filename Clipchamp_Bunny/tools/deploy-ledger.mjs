@@ -1407,8 +1407,26 @@ async function main(argv) {
     }
 
     if (command === 'recover') {
-      assertKnown(flags, ['max-heartbeat-age'], command);
+      assertKnown(flags, ['max-heartbeat-age', 'force'], command);
       const maxHeartbeatAge = flagInt(flags, 'max-heartbeat-age', 0);
+      if (maxHeartbeatAge < 0) {
+        throw new LedgerError('--max-heartbeat-age cannot be negative');
+      }
+      // The default recovery only reaps orders whose lease has already
+      // expired. The heartbeat override can expire a LIVE order, so it is an
+      // operator action: it needs --force and a sane floor. Without this, any
+      // agent could run `recover --max-heartbeat-age 1` and clear the deploy
+      // that is ahead of it in the queue.
+      if (maxHeartbeatAge > 0) {
+        if (!flags.force) {
+          throw new LedgerError(
+            'recover --max-heartbeat-age can expire an active deploy; pass --force after confirming that agent is gone'
+          );
+        }
+        if (maxHeartbeatAge < 5) {
+          throw new LedgerError('--max-heartbeat-age must be at least 5 minutes');
+        }
+      }
       const expired = reap(db, now, maxHeartbeatAge > 0 ? maxHeartbeatAge * 60000 : null);
       if (flags.json) console.log(JSON.stringify({ ok: true, expired }, null, 2));
       else {
@@ -1471,7 +1489,7 @@ T9 deploy ledger - one SQLite queue for every desktop deploy.
                                 [--mode installed|staged] [--build-id ID]
                                 [--evidence FILE] [--error TEXT] [--json]
   node deploy-ledger.mjs status  [--limit N] [--json]
-  node deploy-ledger.mjs recover [--max-heartbeat-age MINUTES] [--json]
+  node deploy-ledger.mjs recover [--max-heartbeat-age MINUTES --force] [--json]
   node deploy-ledger.mjs event   --message TEXT [--id WO] [--phase TEXT] [--level info|warn|error]
   node deploy-ledger.mjs session-end --session ID
   node deploy-ledger.mjs path

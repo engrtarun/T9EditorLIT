@@ -23,7 +23,10 @@ param(
     [string]$ViolationType = '',
     [string]$AgentName = '',
     [string]$Details = '',
-    [string]$JudgePleaId = ''
+    [string]$JudgePleaId = '',
+    # A plea is not a self-service pardon. The script can prepare a record,
+    # but a human must pass this switch after reading the evidence.
+    [switch]$ApprovePlea
 )
 
 $ErrorActionPreference = 'Stop'
@@ -118,12 +121,29 @@ function Invoke-JudgeReview([string]$PleaId) {
         throw "Plea file not found: $pleaFile"
     }
 
+    # This used to be an automatic pardon path: filing a plea triggered the
+    # judge, and the judge accepted the agent's own grounds. A human is the
+    # final veto (see sarkariPolice.ps1), so the hearing now requires an
+    # explicit approval switch.
+    if (-not $ApprovePlea) {
+        Write-Host "`n  [x] Judicial review needs explicit human approval." -ForegroundColor Red
+        Write-Host "      Read the plea, then run:" -ForegroundColor Yellow
+        Write-Host "      pwsh -File sarkari_deploy\sarkariCourt.ps1 -JudgePleaId $PleaId -ApprovePlea" -ForegroundColor Gray
+        throw "plea $PleaId was not reviewed: -ApprovePlea was not supplied"
+    }
+
     $plea = Get-Content -Path $pleaFile -Raw | ConvertFrom-Json
+    if ($plea.status -ne 'SUBMITTED_TO_COURT') {
+        throw "Plea $PleaId is already '$($plea.status)'; a plea can be judged once."
+    }
     $challanFile = Join-Path $ChallanDir "$($plea.challanId).json"
     if (-not (Test-Path $challanFile)) {
         throw "Associated challan not found: $($plea.challanId)"
     }
     $challan = Get-Content -Path $challanFile -Raw | ConvertFrom-Json
+    if ($challan.status -ne 'ACTIVE_PENALTY') {
+        throw "Challan $($challan.challanId) is '$($challan.status)'; only an active penalty can be reviewed."
+    }
 
     Write-Host "`n========================================================" -ForegroundColor Cyan
     Write-Host "  ⚖️  SARKARI NYAYALAY: PLEA HEARING FOR $($plea.pleaId)" -ForegroundColor Cyan
@@ -134,34 +154,69 @@ function Invoke-JudgeReview([string]$PleaId) {
     Write-Host "  Lawyer Defense: $($plea.safaiStatement)" -ForegroundColor Cyan
     Write-Host "  Grounds:        $($plea.pleaGrounds)" -ForegroundColor DarkGray
 
+    # A prior non-pardoned challan means this is not a first offense, even if
+    # the agent says it is. Count reduced/upheld rows; a pardon does not count.
+    $priorChallans = @(
+        Get-ChildItem -Path $ChallanDir -Filter 'CHALLAN-*.json' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                try { Get-Content -Path $_.FullName -Raw | ConvertFrom-Json } catch { $null }
+            } |
+            Where-Object {
+                $_ -and $_.challanId -ne $challan.challanId -and
+                $_.agent -eq $challan.agent -and $_.status -ne 'PARDONED'
+            }
+    )
+    $hasTelemetry = [bool]($plea.telemetryProof -and (Test-Path -LiteralPath ([string]$plea.telemetryProof)))
+
     # Judicial Decision Algorithm
-    $verdict = 'REDUCED'
-    $newPoints = [math]::Round($challan.points / 2)
+    $verdict = 'SENTENCE_UPHELD'
+    $newPoints = [int]$challan.points
     $reason = ''
 
     if ($plea.pleaGrounds -eq 'ANTIVIRUS_DEFENDER_LOCK' -or $plea.pleaGrounds -eq 'CRITICAL_OOM_SPIKE') {
-        $verdict = 'PARDONED'
-        $newPoints = 0
-        $reason = "Court acknowledges external OS/Antivirus environment constraints beyond agent control."
+        if ($hasTelemetry) {
+            $verdict = 'PARDONED'
+            $newPoints = 0
+            $reason = 'Court acknowledges external OS/Antivirus constraints; telemetry evidence is attached.'
+        } else {
+            $reason = 'External-cause defense rejected: no telemetry evidence was attached.'
+        }
     } elseif ($plea.pleaGrounds -eq 'HONEST_MISTAKE_FIRST_OFFENSE') {
-        $verdict = 'REDUCED'
-        $newPoints = [math]::Round($challan.points / 2)
-        $reason = "First offense with genuine Safai. Penalty halved from $($challan.points) to $newPoints pts."
+        if ($priorChallans.Count -eq 0) {
+            $verdict = 'REDUCED'
+            $newPoints = [int][math]::Round($challan.points / 2)
+            $reason = "First offense with genuine Safai. Penalty halved from $($challan.points) to $newPoints pts."
+        } else {
+            $reason = "First-offense claim rejected: $($priorChallans.Count) prior non-pardoned challan(s) on record."
+        }
     } else {
-        $verdict = 'SENTENCE_UPHELD'
-        $newPoints = $challan.points
-        $reason = "Defense rejected. Inadequate evidence provided."
+        $reason = 'Defense rejected. Inadequate evidence provided.'
     }
 
-    # Update Challan record
-    $challan.status = $verdict
-    $challan.points = $newPoints
-    $challan.courtVerdict = $reason
+    # Update Challan record. SENTENCE_UPHELD must stay ACTIVE_PENALTY, or it
+    # disappears from the docket and from the Police's active-challan check -
+    # a plea that failed would otherwise erase the penalty.
+    #
+    # Add-Member -Force is deliberate: under StrictMode, assigning a property
+    # that an older challan/plea record does not have is a terminating error.
+    # The old code did exactly that, so the first real hearing crashed after
+    # printing the verdict and left the record unchanged.
+    $challan | Add-Member -NotePropertyName status -NotePropertyValue $(if ($verdict -eq 'PARDONED') { 'PARDONED' } elseif ($verdict -eq 'REDUCED') { 'REDUCED' } else { 'ACTIVE_PENALTY' }) -Force
+    $challan | Add-Member -NotePropertyName points -NotePropertyValue $newPoints -Force
+    $challan | Add-Member -NotePropertyName courtVerdict -NotePropertyValue $reason -Force
+    $challan | Add-Member -NotePropertyName approvedBy -NotePropertyValue ([Environment]::UserName) -Force
+    $challan | Add-Member -NotePropertyName approvedAt -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
 
     $updatedJson = $challan | ConvertTo-Json -Depth 5
     [System.IO.File]::WriteAllText($challanFile, $updatedJson, (New-Object System.Text.UTF8Encoding($false)))
 
-    $vColor = if ($verdict -eq 'PARDONED') { 'Green' } else { 'Yellow' }
+    $plea | Add-Member -NotePropertyName status -NotePropertyValue 'REVIEWED' -Force
+    $plea | Add-Member -NotePropertyName reviewedBy -NotePropertyValue ([Environment]::UserName) -Force
+    $plea | Add-Member -NotePropertyName reviewedAt -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+    $plea | Add-Member -NotePropertyName verdict -NotePropertyValue $verdict -Force
+    [System.IO.File]::WriteAllText($pleaFile, ($plea | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+
+    $vColor = if ($verdict -eq 'PARDONED') { 'Green' } elseif ($verdict -eq 'SENTENCE_UPHELD') { 'Red' } else { 'Yellow' }
     Write-Host "`n  >>> SARKARI JUDGE VERDICT: $verdict <<<" -ForegroundColor $vColor
     Write-Host "      Judicial Rationale: $reason" -ForegroundColor White
     $pColor = if ($newPoints -eq 0) { 'Green' } else { 'Yellow' }

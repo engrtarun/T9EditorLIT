@@ -102,7 +102,11 @@ function New-SarkariLedgerOrder {
         [pscustomobject]$AgentProfile,
         [string]$Scope = 'app',
         [int]$Priority = 50,
-        [switch]$Emergency
+        [switch]$Emergency,
+        [string]$Session = '',
+        [string]$Commit = '',
+        [string]$Branch = '',
+        [switch]$GitDirty
     )
 
     # Every field is read defensively. Under `Set-StrictMode -Version Latest`
@@ -118,7 +122,7 @@ function New-SarkariLedgerOrder {
     $taskText = Read-ProfileText $AgentProfile 'Task' 'deploy task'
     $whyText = Read-ProfileText $AgentProfile 'Why' 'no reason recorded by this profile'
     $etaText = Read-ProfileText $AgentProfile 'EtaMinutes' '20'
-    $sessionText = Read-ProfileText $AgentProfile 'WorkId' ("S-" + [guid]::NewGuid().ToString('N').Substring(0, 12))
+    $sessionText = if ($Session) { $Session } else { Read-ProfileText $AgentProfile 'WorkId' ("S-" + [guid]::NewGuid().ToString('N').Substring(0, 12)) }
 
     # The ledger's schema caps `task` at 200 characters (deploy-ledger.mjs:
     # exactText(input.task, 'task', 8, 200)). An agent writing an ordinary
@@ -149,6 +153,11 @@ function New-SarkariLedgerOrder {
         '--json'
     )
     if ($Emergency) { $args += '--emergency' }
+    if ($Commit) { $args += @('--commit', $Commit) }
+    if ($Branch) { $args += @('--branch', $Branch) }
+    # The CLI reads the presence of --git-dirty as true, so only add it for a
+    # dirty tree. `--git-dirty false` would still be true in JavaScript.
+    if ($GitDirty) { $args += '--git-dirty' }
 
     $order = Invoke-SarkariLedger -Arguments $args
     # The CLI answers with the work order itself: `workId` and `token`.

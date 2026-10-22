@@ -100,11 +100,18 @@ param(
     [string]$Session = '',
     [string]$Task = '',
     [string]$Why = '',
+    [string]$RootCause = '',
+    [string]$TestingDone = '',
+    [string]$ModulesAffected = '',
+    [switch]$IsBreakingChange,
     [int]$EtaMinutes = 0,
     [ValidateSet('app', 'go', 'both', 'docs')]
     [string]$Scope = 'app',
     [int]$Priority = 50,
     [switch]$Emergency,
+    # Skip the interactive questions. This is NOT a source of defaults: task,
+    # why and ETA still have to be supplied.
+    [switch]$Fast,
     # -Ci is kept only so existing commands (sarkariShip.ps1, agent scripts)
     # keep working. There is no local compile path any more, so this switch
     # no longer selects anything: the Sarkari engine always fetches the
@@ -189,10 +196,15 @@ $forward = @{
     Session     = $Session
     Task        = $Task
     Why         = $Why
+    RootCause   = $RootCause
+    TestingDone = $TestingDone
+    ModulesAffected = $ModulesAffected
+    IsBreakingChange = [bool]$IsBreakingChange
     EtaMinutes  = $EtaMinutes
     Scope       = $Scope
     Priority    = $Priority
     Emergency   = [bool]$Emergency
+    Fast        = [bool]$Fast
     Ci          = [bool]$Ci
     CiRelease   = $CiRelease
     CiRepo      = $CiRepo

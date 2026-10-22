@@ -60,9 +60,14 @@ function Invoke-VakilInteractive {
     }
 
     if (-not $script:AgentName) {
-        $defAgent = if ($env:T9_AGENT) { $env:T9_AGENT } else { 'Antigravity-Agent' }
-        $ans = Read-Host "Agent Name [$defAgent]"
-        $script:AgentName = if ($ans) { $ans } else { $defAgent }
+        # No invented fallback identity. The old default "Antigravity-Agent"
+        # put a fictional name on a real court record; an empty answer now
+        # stops the filing instead.
+        $defAgent = [string]$env:T9_AGENT
+        $prompt = if ($defAgent) { "Agent Name [$defAgent]" } else { 'Agent Name (required)' }
+        $ans = Read-Host $prompt
+        $script:AgentName = if ($ans) { $ans } elseif ($defAgent) { $defAgent } else { '' }
+        if (-not $script:AgentName) { throw 'Agent name is required to file a plea; refusing to invent one.' }
     }
 
     Write-Host "`nChoose Legal Grounds for Defense:" -ForegroundColor Cyan
@@ -95,7 +100,9 @@ function Submit-SafaiNama {
     if (-not $script:ChallanId) { throw "Challan ID is required to file a plea." }
     if ($script:SafaiStatement.Length -lt 15) { throw "Safai statement is too short (min 15 chars required). Explain properly!" }
     if (-not $script:PleaGrounds) { $script:PleaGrounds = 'HONEST_MISTAKE_FIRST_OFFENSE' }
-    if (-not $script:AgentName) { $script:AgentName = 'Agent' }
+    if (-not $script:AgentName) {
+        throw 'Agent name is required to file a plea; refusing to record it under a made-up identity.'
+    }
 
     $pleaId = "PLEA-$((Get-Date).ToString('yyyyMMdd-HHmmss'))-$([math]::Abs((Get-Random) % 9000 + 1000))"
 
@@ -136,10 +143,13 @@ function Submit-SafaiNama {
     }
     Write-Host "╚════════════════════════════════════════════════════════════════════════════════╝`n" -ForegroundColor Green
 
-    # Automatically trigger judicial review if requested
+    # Filing a plea is not a ruling. The old code called the judge
+    # immediately, so an agent's own grounds became a pardon. A human now
+    # reviews the plea and runs the court with -ApprovePlea.
     if ($RequestHearing) {
-        Write-Host "==> Presenting Safai Nama before Sarkari Judge immediately..." -ForegroundColor Cyan
-        . (Join-Path $SarkariDir 'sarkariCourt.ps1') -JudgePleaId $pleaId
+        Write-Host "==> Plea filed; a human must approve the hearing." -ForegroundColor Cyan
+        Write-Host "    Review the plea, then run:" -ForegroundColor Yellow
+        Write-Host "    pwsh -File sarkari_deploy\sarkariCourt.ps1 -JudgePleaId $pleaId -ApprovePlea" -ForegroundColor Gray
     }
 
     return $pleaRecord

@@ -21,6 +21,7 @@
 param(
     [string]$Agent = '',
     [string]$Model = '',
+    [string]$Session = '',
     [string]$Task = '',
     [string]$Why = '',
     [string]$RootCause = '',
@@ -62,18 +63,66 @@ Set-StrictMode -Version Latest
 
 $SarkariDir = $PSScriptRoot
 $WorkspaceRoot = (Split-Path -Parent $SarkariDir)
-if (-not $InstallDir) {
-    $InstallDir = if ($env:LOCALAPPDATA) {
-        Join-Path $env:LOCALAPPDATA 'Programs\T9EditorLIT'
-    } else {
-        Join-Path $WorkspaceRoot 'dist_installed'
+
+# The live install folder is the ONE folder whose contents are the user's
+# desktop app. A custom -InstallDir is a test target, never a desktop deploy:
+# it must not repin the taskbar, and it must not be recorded as `shipped`.
+$DefaultInstallDir = if ($env:LOCALAPPDATA) {
+    Join-Path $env:LOCALAPPDATA 'Programs\T9EditorLIT'
+} else {
+    Join-Path $WorkspaceRoot 'dist_installed'
+}
+if (-not $InstallDir) { $InstallDir = $DefaultInstallDir }
+
+function Test-SarkariSamePath([string]$Left, [string]$Right) {
+    try {
+        $l = [IO.Path]::GetFullPath($Left).TrimEnd('\', '/')
+        $r = [IO.Path]::GetFullPath($Right).TrimEnd('\', '/')
+        return [string]::Equals($l, $r, [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
     }
 }
+
+$IsLiveInstall = Test-SarkariSamePath $InstallDir $DefaultInstallDir
+$UsesCustomCiSource = [bool]$CiBaseUrl -or [bool]$CiRepo
 
 $LiveExe = Join-Path $InstallDir 't9-editor-lit.exe'
 $PrevExe = Join-Path $InstallDir 't9-editor-lit.prev.exe'
 $StageExe = Join-Path $InstallDir 't9-editor-lit.new.exe'
 $RecordsDir = Join-Path $SarkariDir 'records'
+
+# One lock for every writer of the install folder. The normal pipeline takes
+# it inside sarkariKaam; the manual rollback used to bypass it entirely, so a
+# rollback could copy over an executable while a deploy was installing one.
+$DeployLockDir = if ($env:LOCALAPPDATA) {
+    Join-Path $env:LOCALAPPDATA 'T9EditorLIT\deploy'
+} else {
+    Join-Path $WorkspaceRoot '.t9\deploy'
+}
+$DeployLockPath = Join-Path $DeployLockDir 'deploy.lock'
+
+function Open-SarkariDeployLock([int]$TimeoutSeconds = 120) {
+    if (-not (Test-Path $DeployLockDir)) {
+        New-Item -ItemType Directory -Force -Path $DeployLockDir | Out-Null
+    }
+    $start = Get-Date
+    while ($true) {
+        try {
+            return [IO.File]::Open(
+                $DeployLockPath,
+                [IO.FileMode]::OpenOrCreate,
+                [IO.FileAccess]::ReadWrite,
+                [IO.FileShare]::None
+            )
+        } catch {
+            if (((Get-Date) - $start).TotalSeconds -ge $TimeoutSeconds) {
+                throw "timed out waiting for the deploy lock: $DeployLockPath"
+            }
+            Start-Sleep -Seconds 1
+        }
+    }
+}
 
 # ------------------------------------------------------------- 1. LIGHTNING FAST CHECK (-Check)
 if ($Check) {
@@ -99,17 +148,77 @@ if ($Doctor) {
     Write-Host "  🏛️  SARKARI SYSTEM & DEPLOYMENT DOCTOR" -ForegroundColor Cyan
     Write-Host "========================================================" -ForegroundColor Cyan
     Write-Host "  Install Directory: $InstallDir" -ForegroundColor Gray
-    
+    if (-not $IsLiveInstall) {
+        Write-Host "  [*] This is a CUSTOM/TEST directory, not the live desktop install." -ForegroundColor Yellow
+    }
+
+    $doctorProblems = 0
+    $liveHash = $null
+    $markerPath = Join-Path $InstallDir 'build.json'
+    $prevMarkerPath = Join-Path $InstallDir 'build.prev.json'
+
     if (Test-Path $LiveExe) {
-        $hash = (Get-FileHash $LiveExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        $liveHash = (Get-FileHash $LiveExe -Algorithm SHA256).Hash.ToLowerInvariant()
         Write-Host "  [ok] Live App Executable: PRESENT ($LiveExe)" -ForegroundColor Green
-        Write-Host "       SHA-256: $hash" -ForegroundColor DarkGray
+        Write-Host "       SHA-256: $liveHash" -ForegroundColor DarkGray
     } else {
-        Write-Host "  [!] Live App Executable: NOT FOUND ($LiveExe)" -ForegroundColor Red
+        $doctorProblems++
+        Write-Host "  [x] Live App Executable: NOT FOUND ($LiveExe)" -ForegroundColor Red
+    }
+
+    # The marker is half of the install proof. The other half is the exe on
+    # disk. This used to print the hash and never compare the two, so a
+    # hand-edited marker, a half-finished install or a silent rollback all
+    # looked healthy.
+    if (Test-Path $markerPath) {
+        try {
+            $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $markerBuild = [string]$marker.buildId
+            $markerSha = [string]$marker.appSha256
+            $markerMode = [string]$marker.mode
+            $markerWork = [string]$marker.workId
+            Write-Host "  [ok] build.json Marker: PRESENT (mode: $markerMode, buildId: $markerBuild)" -ForegroundColor Green
+            if ($markerWork) { Write-Host "       Work Order: $markerWork" -ForegroundColor DarkGray }
+            if (-not $markerBuild) {
+                $doctorProblems++
+                Write-Host "  [x] Marker has no buildId - it cannot prove which build is installed." -ForegroundColor Red
+            }
+            if (-not $markerSha) {
+                $doctorProblems++
+                Write-Host "  [x] Marker has no appSha256 - it cannot prove the executable." -ForegroundColor Red
+            } elseif ($liveHash -and $markerSha -ne $liveHash) {
+                $doctorProblems++
+                Write-Host "  [x] Marker hash does not match the installed exe!" -ForegroundColor Red
+                Write-Host "       marker: $markerSha" -ForegroundColor DarkGray
+                Write-Host "       exe:    $liveHash" -ForegroundColor DarkGray
+            } else {
+                Write-Host "  [ok] Marker hash matches the installed executable." -ForegroundColor Green
+            }
+        } catch {
+            $doctorProblems++
+            Write-Host "  [x] build.json Marker is unreadable: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    } else {
+        $doctorProblems++
+        Write-Host "  [x] build.json Marker: MISSING ($markerPath)" -ForegroundColor Red
     }
 
     if (Test-Path $PrevExe) {
         Write-Host "  [ok] Rollback Shield (.prev.exe): READY for instant restore" -ForegroundColor Green
+        if (Test-Path $prevMarkerPath) {
+            try {
+                $prevMarker = Get-Content -LiteralPath $prevMarkerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $prevSha = [string]$prevMarker.appSha256
+                $prevHash = (Get-FileHash $PrevExe -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($prevSha -and $prevSha -ne $prevHash) {
+                    Write-Host "  [!] .prev.exe does not match build.prev.json - rollback would need -Force." -ForegroundColor Yellow
+                } else {
+                    Write-Host "       build.prev.json matches the rollback shield." -ForegroundColor DarkGray
+                }
+            } catch {
+                Write-Host "  [!] build.prev.json is unreadable; rollback will need -Force." -ForegroundColor Yellow
+            }
+        }
     } else {
         Write-Host "  [!] Rollback Shield (.prev.exe): None yet" -ForegroundColor Yellow
     }
@@ -127,6 +236,7 @@ if ($Doctor) {
         Write-Host "  [!] t9cloud Daemon: OFFLINE or not responding on 127.0.0.1:7878" -ForegroundColor Yellow
     }
     Write-Host "========================================================`n" -ForegroundColor Cyan
+    if ($doctorProblems -gt 0) { exit 1 }
     exit 0
 }
 
@@ -139,18 +249,74 @@ if ($Rollback) {
         Write-Host "  [x] Error: No previous backup found ($PrevExe)." -ForegroundColor Red
         exit 1
     }
-    
-    $shouldRevert = $Fast -or $Force
+
+    # -Fast means "do not ask questions during a deploy"; it is NOT consent to
+    # replace the user's desktop app with an older binary. Only -Force (or an
+    # explicit interactive yes) authorizes a rollback.
+    $shouldRevert = [bool]$Force
     if (-not $shouldRevert) {
+        if ($Fast) {
+            Write-Host "  [x] -Fast does not authorize a rollback. Re-run with -Force after reviewing -Doctor." -ForegroundColor Red
+            exit 1
+        }
         $confirm = Read-Host "Are you sure you want to revert current app to previous stable build? [y/N]"
         $shouldRevert = ($confirm -match '^[yY]')
     }
-    if ($shouldRevert) {
-        Copy-Item -Path $PrevExe -Destination $LiveExe -Force
-        Write-Host "  [ok] App restored successfully from '$PrevExe' -> '$LiveExe'" -ForegroundColor Green
-    } else {
+    if (-not $shouldRevert) {
         Write-Host "  [!] Rollback cancelled." -ForegroundColor Yellow
+        exit 0
     }
+
+    $rollbackId = "SARKARI-ROLLBACK-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
+    $rollbackAgent = if ($Agent) { $Agent } elseif ($env:T9_AGENT) { $env:T9_AGENT } else { 'manual-rollback' }
+    $rollbackModel = if ($Model) { $Model } elseif ($env:T9_MODEL) { $env:T9_MODEL } else { 'manual-rollback' }
+    $rollbackWhy = if ($Why) { $Why } else { 'Manual rollback requested by the user' }
+    $rollbackForce = [bool]$Force
+    $lock = $null
+    try {
+        $lock = Open-SarkariDeployLock
+        . (Join-Path $SarkariDir 'sarkariKaam.ps1') -AgentProfile $null -InstallDir $InstallDir -Force:$rollbackForce
+        $restored = Restore-SarkariPreviousBuild -InstallDir $InstallDir `
+            -Agent $rollbackAgent -Model $rollbackModel -WorkId $rollbackId -Force:$rollbackForce
+        Write-Host "  [ok] App restored from '$PrevExe' -> '$LiveExe'" -ForegroundColor Green
+        Write-Host "       restored build: $($restored.BuildId) ($($restored.Sha))" -ForegroundColor Gray
+    } catch {
+        Write-Host "  [x] Rollback failed: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    } finally {
+        if ($lock) { $lock.Close(); $lock.Dispose() }
+    }
+
+    # A rollback is a change to the user's desktop; it gets a record just like
+    # a deploy, instead of silently copying an exe and leaving build.json
+    # claiming the newer build is installed.
+    $profile = [pscustomobject]@{
+        WorkId          = $rollbackId
+        AgentName       = $rollbackAgent
+        ModelName       = $rollbackModel
+        StartTime       = (Get-Date)
+        StartTimeIso    = (Get-Date).ToUniversalTime().ToString('o')
+        Why             = $rollbackWhy
+        Task            = 'Manual rollback to previous build'
+        EtaMinutes      = 1
+        AllottedMinutes = 1
+    }
+    $kaam = [pscustomobject]@{
+        BuildId      = $restored.BuildId
+        BuildOutput  = $null
+        InstallOutput = [pscustomobject]@{
+            InstallMode = 'rollback'
+            LiveExe     = $LiveExe
+            LiveSha     = $restored.Sha
+            StageExe    = $null
+            StageSha    = $null
+            PrevExe     = $PrevExe
+            MarkerFile  = (Join-Path $InstallDir 'build.json')
+        }
+        DaemonOutput = $null
+        LedgerOrder  = $null
+    }
+    . (Join-Path $SarkariDir 'sarkariReport.ps1') -AgentProfile $profile -KaamResult $kaam -Outcome 'ROLLED_BACK'
     exit 0
 }
 
@@ -159,6 +325,22 @@ if ($Status) {
     Write-Host "`n========================================================" -ForegroundColor Cyan
     Write-Host "  🏛️  SARKARI RECENT DEPLOYMENT LEDGER ORDERS" -ForegroundColor Cyan
     Write-Host "========================================================" -ForegroundColor Cyan
+
+    # The SQLite ledger is the queue every agent waits in. Printing only the
+    # Sarkari JSON records here made `deploy.ps1 -Status` look empty while
+    # another agent was actively deploying.
+    $ledgerScript = Join-Path $WorkspaceRoot 'Clipchamp_Bunny\tools\deploy-ledger.mjs'
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if ($node -and (Test-Path -LiteralPath $ledgerScript)) {
+        try {
+            & $node.Source --no-warnings $ledgerScript status
+        } catch {
+            Write-Host "  [!] SQLite ledger status unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  [!] SQLite ledger status unavailable (node or deploy-ledger.mjs missing)" -ForegroundColor Yellow
+    }
+
     if (Test-Path $RecordsDir) {
         $recent = @(Get-ChildItem -Path $RecordsDir -Filter 'SARKARI-*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 5)
         if ($recent.Length -eq 0) {
@@ -201,22 +383,40 @@ if ($Feedback) {
 $pulseHandle = $null
 $agentProfile = $null
 $kaamResult = $null
+$script:ActiveLedgerOrder = $null
 
 try {
+    # A custom artifact source or a custom install folder is a TEST path. It
+    # cannot be allowed to replace the user's real desktop app, because a
+    # hand-made manifest with matching hashes would otherwise be indistinguish-
+    # able from CI's artifact. Tests must use -Force and a custom -InstallDir.
+    if ($UsesCustomCiSource) {
+        if (-not $Force) {
+            throw "Refusing a custom -CiBaseUrl/-CiRepo without -Force. A custom artifact source is a test/mirror override; the normal deploy must use this repository's CI release."
+        }
+        if ($IsLiveInstall) {
+            throw "Refusing to install a custom artifact source into the live desktop folder ($InstallDir). Point -InstallDir at a test folder; the live app may only be replaced by this repository's CI artifact."
+        }
+        Write-Host "  [!] TEST ARTIFACT SOURCE: $($CiBaseUrl)$($CiRepo) (not a desktop deploy)" -ForegroundColor Yellow
+    } elseif (-not $IsLiveInstall -and -not $Force) {
+        throw "Refusing a custom -InstallDir without -Force. A custom install folder is a test target and will never be recorded as 'shipped'."
+    }
+
     # STEP 1: Deep Dossier & Form Collection
     # NOTE: dot-sourcing runs sarkariForm's param block in THIS scope. Without
     # forwarding the values it resets Agent/Task/Why/FormFile to '' and every
     # deploy is rejected as "too vague".
     . (Join-Path $SarkariDir 'sarkariForm.ps1') `
-        -Agent $Agent -Model $Model -Task $Task -Why $Why `
+        -Agent $Agent -Model $Model -Session $Session -Task $Task -Why $Why `
         -RootCause $RootCause -TestingDone $TestingDone `
         -EtaMinutes $EtaMinutes -Scope $Scope -ModulesAffected $ModulesAffected `
         -IsBreakingChange:$IsBreakingChange -Priority $Priority `
-        -Emergency:$Emergency -FormFile $FormFile -Interactive:$Interactive
+        -Emergency:$Emergency -FormFile $FormFile -Interactive:$Interactive -Fast:$Fast
     
     $form = Get-SarkariApplicationForm `
         -Agent $Agent `
         -Model $Model `
+        -Session $Session `
         -Task $Task `
         -Why $Why `
         -RootCause $RootCause `
@@ -262,17 +462,31 @@ try {
     . (Join-Path $SarkariDir 'sarkariKaam.ps1') `
         -AgentProfile $agentProfile -Scope $form.Scope -InstallDir $InstallDir `
         -Priority $form.Priority -Emergency:$form.Emergency -Launch:$Launch `
-        -Ci:$Ci -CiRelease $CiRelease -CiRepo $CiRepo -CiBaseUrl $CiBaseUrl -ExpectCommit $ExpectCommit
+        -Ci:$Ci -CiRelease $CiRelease -CiRepo $CiRepo -CiBaseUrl $CiBaseUrl `
+        -ExpectCommit $ExpectCommit -Force:$Force -Session $form.Session
     $kaamResult = Execute-SarkariKaam -AgentProfile $agentProfile -Scope $form.Scope `
         -InstallDir $InstallDir -Priority $form.Priority -Emergency:$form.Emergency -Launch:$Launch `
-        -Ci:$Ci -ExpectCommit $ExpectCommit
+        -Ci:$Ci -ExpectCommit $ExpectCommit -Force:$Force -Session $form.Session
 
     # Stop 4-minute monitor
     Stop-SarkariPulseMonitor -MonitorHandle $pulseHandle
     $pulseHandle = $null
 
     # STEP 5: Official Report Card & Bulletin
-    $finalOutcome = if ($kaamResult.InstallOutput.InstallMode -eq 'staged') { 'STAGED' } else { 'SHIPPED' }
+    # A test install is not a desktop deploy; docs and daemon-only orders did
+    # not replace the app. The report says which one actually happened.
+    $finalOutcome = if ($kaamResult.IsTestInstall) {
+        'TEST'
+    } else {
+        switch ($kaamResult.InstallOutput.InstallMode) {
+            'staged'   { 'STAGED' }
+            'docs'     { 'DOCS' }
+            'daemon'   { 'DAEMON' }
+            'test'     { 'TEST' }
+            'rollback' { 'ROLLED_BACK' }
+            default    { 'SHIPPED' }
+        }
+    }
     . (Join-Path $SarkariDir 'sarkariReport.ps1') `
         -AgentProfile $agentProfile `
         -KaamResult $kaamResult `
@@ -302,10 +516,25 @@ try {
     }
 
     # A failed deploy must close its queue slot too, or the next agent waits
-    # for a lease that nobody is going to release.
+    # for a lease that nobody is going to release. There are two handles:
+    # the result (if Execute returned) and the active order Execute published
+    # before it claimed the lease. The second one matters when Execute throws
+    # after the claim but before it can return - a daemon-version failure or a
+    # failed ledger finish used to leave the order active for its full lease.
+    $orderToClose = $null
     if ($kaamResult -and $kaamResult.LedgerOrder) {
-        . (Join-Path $SarkariDir 'sarkariLedger.ps1')
-        $null = Complete-SarkariLedgerOrder -Order $kaamResult.LedgerOrder -Outcome 'failed' -ErrorText $err
+        $orderToClose = $kaamResult.LedgerOrder
+    } elseif ($script:ActiveLedgerOrder) {
+        $orderToClose = $script:ActiveLedgerOrder
+    }
+    if ($orderToClose) {
+        try {
+            . (Join-Path $SarkariDir 'sarkariLedger.ps1')
+            $null = Complete-SarkariLedgerOrder -Order $orderToClose -Outcome 'failed' -ErrorText $err
+            $script:ActiveLedgerOrder = $null
+        } catch {
+            Write-Host "  [!] could not close the failed ledger order: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
     }
 
     if ($agentProfile) {

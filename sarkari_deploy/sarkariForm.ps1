@@ -34,7 +34,8 @@ param(
     [int]$Priority = 50,
     [switch]$Emergency,
     [string]$FormFile = '',
-    [switch]$Interactive
+    [switch]$Interactive,
+    [switch]$Fast
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,47 +43,16 @@ Set-StrictMode -Version Latest
 
 $WorkspaceRoot = (Split-Path -Parent $PSScriptRoot)
 
-# ------------------------------------------------------------- AUTO DETECTIONS
-if (-not $Agent) { $Agent = if ($env:T9_AGENT) { $env:T9_AGENT } else { 'Antigravity-Agent' } }
-if (-not $Model) {
-    foreach ($k in @('T9_MODEL', 'OPENCODE_MODEL', 'OPENCODE_MODEL_ID')) {
-        $val = [Environment]::GetEnvironmentVariable($k)
-        if ($val) { $Model = $val; break }
-    }
-    if (-not $Model) { $Model = 'Gemini 3.8 Flash (High)' }
-}
-if (-not $Session) {
-    $Session = if ($env:T9_SESSION) { $env:T9_SESSION } else { "SESS-$((Get-Date).ToString('yyyyMMdd-HHmmss'))" }
-}
+# The form is loaded by Get-SarkariApplicationForm below. It must not be
+# pre-filled here as well: this file is dot-sourced by the deploy orchestrator,
+# and a second copy of the defaults used to let an environment variable (or the
+# old invented "Antigravity-Agent" fallback) win over an explicit form file.
 
 function Get-SafeProp($obj, [string]$prop) {
     if ($null -eq $obj) { return $null }
     $p = $obj.PSObject.Properties[$prop]
     if ($null -ne $p) { return $p.Value }
     return $null
-}
-
-# ------------------------------------------------------------- LOAD FORM FILE
-if ($FormFile -and (Test-Path $FormFile)) {
-    try {
-        $data = Get-Content -Path $FormFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        $v = Get-SafeProp $data 'agent'; if ($v -and -not $Agent) { $Agent = [string]$v }
-        $v = Get-SafeProp $data 'model'; if ($v -and -not $Model) { $Model = [string]$v }
-        $v = Get-SafeProp $data 'session'; if ($v -and -not $Session) { $Session = [string]$v }
-        $v = Get-SafeProp $data 'task'; if ($v -and -not $Task) { $Task = [string]$v }
-        $v = Get-SafeProp $data 'why'; if ($v -and -not $Why) { $Why = [string]$v }
-        $v = Get-SafeProp $data 'rootCause'; if ($v -and -not $RootCause) { $RootCause = [string]$v }
-        $v = Get-SafeProp $data 'testingDone'; if ($v -and -not $TestingDone) { $TestingDone = [string]$v }
-        $v = Get-SafeProp $data 'etaMinutes'; if ($null -ne $v -and $EtaMinutes -le 0) { $EtaMinutes = [int]$v }
-        $v = Get-SafeProp $data 'scope'; if ($v -and -not $Scope) { $Scope = [string]$v }
-        $v = Get-SafeProp $data 'modulesAffected'; if ($v -and -not $ModulesAffected) { $ModulesAffected = [string]$v }
-        $v = Get-SafeProp $data 'zeroRamCertified'; if ($null -ne $v) { $ZeroRamCertified = [bool]$v }
-        $v = Get-SafeProp $data 'noPythonCertified'; if ($null -ne $v) { $NoPythonCertified = [bool]$v }
-        $v = Get-SafeProp $data 'isBreakingChange'; if ($null -ne $v) { $IsBreakingChange = [bool]$v }
-        $v = Get-SafeProp $data 'priority'; if ($null -ne $v -and $Priority -eq 50) { $Priority = [int]$v }
-    } catch {
-        Write-Host "    [!] Could not parse form file ($FormFile): $($_.Exception.Message)" -ForegroundColor Yellow
-    }
 }
 
 # ------------------------------------------------------------- DEEP GIT INSPECTOR
@@ -253,23 +223,29 @@ function Get-SarkariApplicationForm {
         }
     }
 
-    # 2. Defaults if still unassigned
-    if (-not $Agent) { $Agent = if ($env:T9_AGENT) { $env:T9_AGENT } else { 'Antigravity-Agent' } }
+    # 2. Defaults if still unassigned.
+    #
+    # Agent and Model have NO invented fallback on purpose. The ledger compares
+    # ETA accuracy per agent/model, and a deploy recorded under
+    # "Antigravity-Agent / Gemini 3.8 Flash" is a false attribution, not a
+    # default. Only a value the caller or the environment actually supplied is
+    # accepted; otherwise the dossier is rejected below.
+    if (-not $Agent -and $env:T9_AGENT) { $Agent = [string]$env:T9_AGENT }
     if (-not $Model) {
         foreach ($k in @('T9_MODEL', 'OPENCODE_MODEL', 'OPENCODE_MODEL_ID')) {
             $val = [Environment]::GetEnvironmentVariable($k)
             if ($val) { $Model = $val; break }
         }
-        if (-not $Model) { $Model = 'Gemini 3.8 Flash (High)' }
     }
+    if (-not $Task -and $env:T9_TASK) { $Task = [string]$env:T9_TASK }
+    if (-not $Why -and $env:T9_WHY) { $Why = [string]$env:T9_WHY }
     if (-not $Session) {
         $Session = if ($env:T9_SESSION) { $env:T9_SESSION } else { "SESS-$((Get-Date).ToString('yyyyMMdd-HHmmss'))" }
     }
-    if ($Fast -and -not $Task) {
-        $Task = "Autonomous agent update & optimization"
-        $Why  = "Continuous codebase enhancement and stabilization"
-        $EtaMinutes = 15
-    }
+
+    # -Fast only skips the interactive questions. It must never invent the task,
+    # reason or ETA: that is exactly how a vague "autonomous update" reached the
+    # ledger while the agent had not said what it was shipping or why.
 
     $script:Agent = $Agent
     $script:Model = $Model
@@ -295,9 +271,12 @@ function Get-SarkariApplicationForm {
     if ($needsInteractive) {
         Invoke-DeepInteractiveForm -GitAudit $gitAudit
     } else {
-        # Defaults for non-interactive
-        if (-not $script:RootCause) { $script:RootCause = 'Autonomous optimization and bug mitigation' }
-        if (-not $script:TestingDone) { $script:TestingDone = 'Automated verification pipeline' }
+        # Defaults for non-interactive. These are deliberately honest labels,
+        # not claims: the old text said "Autonomous optimization" and
+        # "Automated verification pipeline" even when the caller had supplied
+        # neither, which put a false testing claim in the dossier.
+        if (-not $script:RootCause) { $script:RootCause = 'Not recorded by the caller' }
+        if (-not $script:TestingDone) { $script:TestingDone = 'Not recorded by the caller' }
         $script:ZeroRamCertified = $true
         $script:NoPythonCertified = $true
     }
@@ -310,14 +289,24 @@ function Get-SarkariApplicationForm {
     $script:RootCause = ($script:RootCause -replace '\s+', ' ').Trim()
     $script:TestingDone = ($script:TestingDone -replace '\s+', ' ').Trim()
     $script:Scope = if ($script:Scope) { $script:Scope.ToLowerInvariant().Trim() } else { 'app' }
-    if ($script:EtaMinutes -le 0) { $script:EtaMinutes = 20 }
 
     # 4. DEEP FACT-CHECKING VALIDATION
     $rejections = @()
 
-    # Validation A: Basic lengths
-    if ($script:Agent.Length -lt 2) { $rejections += "Agent identifier too short (min 2 chars)." }
-    if ($script:Model.Length -lt 3) { $rejections += "Model identifier too short (min 3 chars)." }
+    # Validation A: identity, task, reason and an honest ETA.
+    if (-not $script:Agent) {
+        $rejections += "Agent is required. Pass -Agent or set T9_AGENT; this engine no longer invents an identity."
+    } elseif ($script:Agent.Length -lt 2) {
+        $rejections += "Agent identifier too short (min 2 chars)."
+    }
+    if (-not $script:Model) {
+        $rejections += "Model is required. Pass the exact provider/model id with -Model or set T9_MODEL; this engine no longer invents a model."
+    } elseif ($script:Model.Length -lt 3) {
+        $rejections += "Model identifier too short (min 3 chars)."
+    }
+    if ($script:EtaMinutes -le 0 -or $script:EtaMinutes -gt 480) {
+        $rejections += "ETA must be an honest 1..480 minutes. Pass -EtaMinutes; -Fast does not guess it."
+    }
     if ($script:Task.Length -lt 8) { $rejections += "Task description is too vague (min 8 chars required)." }
     if ($script:Why.Length -lt 15) { $rejections += "Kyo/Reason is too casual (min 15 chars required). Explain impact!" }
     if ($script:RootCause.Length -lt 10) { $rejections += "Root cause must explain what core issue is being resolved (min 10 chars)." }
@@ -427,6 +416,12 @@ function Get-SarkariApplicationForm {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    $res = Get-SarkariApplicationForm
+    $res = Get-SarkariApplicationForm `
+        -Agent $Agent -Model $Model -Session $Session -Task $Task -Why $Why `
+        -EtaMinutes $EtaMinutes -Scope $Scope -ModulesAffected $ModulesAffected `
+        -RootCause $RootCause -TestingDone $TestingDone `
+        -ZeroRamCertified:$ZeroRamCertified -NoPythonCertified:$NoPythonCertified `
+        -IsBreakingChange:$IsBreakingChange -Priority $Priority -Emergency:$Emergency `
+        -FormFile $FormFile -Interactive:$Interactive -Fast:$Fast
     $res | Format-List
 }
