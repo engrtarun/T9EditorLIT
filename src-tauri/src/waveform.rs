@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use crate::cache;
@@ -201,7 +201,7 @@ fn samples_per_bar(duration_secs: f64, bars: usize) -> u64 {
 
 /// Spawn ffmpeg, fold its PCM stdout into peaks, kill it at the deadline.
 fn stream_peaks(source: &Path, bars: usize, samples_per_bar: u64) -> Result<Vec<f32>, String> {
-    let mut child = Command::new("ffmpeg")
+    let mut child = crate::ffmpeg::silent("ffmpeg")
         .args(["-v", "error"])
         // Same reasoning as thumbnail.rs: the decode threads own their own
         // contexts and frame buffers, so capping them caps the spike. Audio
@@ -246,7 +246,7 @@ fn stream_peaks(source: &Path, bars: usize, samples_per_bar: u64) -> Result<Vec<
 }
 
 fn probe_duration(source: &Path) -> Option<f64> {
-    let out = Command::new("ffprobe")
+    let out = crate::ffmpeg::silent("ffprobe")
         .args([
             "-v",
             "error",

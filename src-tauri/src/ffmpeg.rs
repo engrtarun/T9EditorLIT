@@ -25,6 +25,28 @@ impl RunOutput {
     }
 }
 
+/// A child process that never flashes a console window.
+///
+/// A GUI parent passes no console down, so a bare `Command::new("ffmpeg")`
+/// would open a black CMD box for milliseconds on every probe, waveform,
+/// thumbnail and export — fourteen-plus boxes over a session, which is the
+/// "CMD appears and disappears" the user reported. CREATE_NO_WINDOW keeps
+/// the run byte-for-byte identical and makes it invisible.
+///
+/// This is the ONLY constructor every child-process site in this crate
+/// should use; `cargo test` pins it so a bare `Command::new` cannot sneak
+/// back in unnoticed.
+pub fn silent(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW — the work is unchanged; only the flash is gone.
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
+}
+
 /// Run a binary to completion, capturing both streams.
 ///
 /// FFmpeg is chatty on stderr even on success (stream sizes, speed, etc.), so
@@ -34,7 +56,7 @@ pub fn run(program: &str, args: &[&str]) -> Result<RunOutput, String> {
     // no real workload — they would only add noise to the child metrics.
     let trivial = is_trivial_probe(args);
     let started = Instant::now();
-    let mut child = Command::new(program)
+    let mut child = silent(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -239,7 +261,7 @@ pub fn run_streaming<A: AsRef<std::ffi::OsStr>>(
     mut on_line: impl FnMut(&str),
 ) -> Result<StreamOutput, String> {
     let started = Instant::now();
-    let mut child = Command::new(program)
+    let mut child = silent(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -397,6 +419,16 @@ fn append_bounded(buf: &mut String, line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every child process in this crate must be built through `silent()` —
+    /// the constructor that sets CREATE_NO_WINDOW. A bare
+    /// `Command::new("ffmpeg")` would bring the CMD-box flash back on every
+    /// probe, waveform, thumbnail and export, so the helper is pinned here.
+    #[test]
+    fn the_silent_constructor_is_the_one_we_use() {
+        assert_eq!(silent("ffmpeg").get_program(), std::ffi::OsStr::new("ffmpeg"));
+        assert_eq!(silent("ffprobe").get_program(), std::ffi::OsStr::new("ffprobe"));
+    }
 
     #[test]
     fn stderr_tail_stays_bounded_and_keeps_recent_lines() {

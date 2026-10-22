@@ -7,7 +7,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,7 +19,7 @@ pub struct AudioChunk {
 
 /// Probe a single media file's duration in seconds via ffprobe.
 pub fn probe_duration(path: &Path) -> Result<f64, String> {
-    let out = Command::new("ffprobe")
+    let out = crate::ffmpeg::silent("ffprobe")
         .args([
             "-v",
             "error",
@@ -83,7 +82,7 @@ pub fn extract_chunks(
 
     let pattern = out_dir.join("chunk_%03d.wav");
     let seg_arg = format!("{segment_secs}");
-    let status = Command::new("ffmpeg")
+    let status = crate::ffmpeg::silent("ffmpeg")
         .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
         .arg(source)
         .args([
@@ -182,7 +181,7 @@ pub fn detect_silence(
     //
     // silencedetect reports every marker on stderr, so this pass needs the full
     // stderr (not the bounded tail ffmpeg::run keeps) -- run the child directly.
-    let output = Command::new("ffmpeg")
+    let output = crate::ffmpeg::silent("ffmpeg")
         .args([
             "-hide_banner",
             "-nostdin",

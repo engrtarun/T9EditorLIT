@@ -8,7 +8,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use super::{cache, media};
 
@@ -94,7 +93,7 @@ pub fn extract(
 
     let pattern = dir.join("thumb_%05d.jpg");
     let vf = format!("fps={fps},scale={width}:-2");
-    let status = Command::new("ffmpeg")
+    let status = crate::ffmpeg::silent("ffmpeg")
         .args(["-y", "-hide_banner", "-nostats", "-loglevel", "error"])
         // Frame-threaded decode is where FFmpeg's RAM lives: every thread owns
         // its own decoder context plus one or two reference frames, and on a
