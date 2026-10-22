@@ -208,12 +208,26 @@ fn parse_default_reg_value(output: &str) -> Option<String> {
     None
 }
 
+/// `reg.exe` as a child process that never shows a console window.
+///
+/// A GUI parent does not pass a console down, so every `reg` call flashed a
+/// black CMD box for a few milliseconds — fourteen of them at every app
+/// launch, which is exactly the "CMD window appears and disappears" the user
+/// saw. CREATE_NO_WINDOW keeps the query identical and makes it invisible.
+fn reg() -> Command {
+    let mut cmd = Command::new("reg");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW — the work is unchanged; only the flash is gone.
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
+}
+
 /// Read one key's default value through a `reg query` child process.
 fn query_default(key: &str) -> Option<String> {
-    let out = Command::new("reg")
-        .args(["query", key, "/ve"])
-        .output()
-        .ok()?;
+    let out = reg().args(["query", key, "/ve"]).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -226,7 +240,7 @@ fn query_default(key: &str) -> Option<String> {
 pub fn run_all(commands: &[Vec<String>]) -> Result<(), String> {
     let mut last_err: Option<String> = None;
     for args in commands {
-        let out = Command::new("reg")
+        let out = reg()
             .args(args)
             .output()
             .map_err(|e| format!("reg.exe could not be started: {e}"))?;
@@ -475,6 +489,14 @@ mod tests {
         assert!(cmds
             .iter()
             .any(|c| c[1].ends_with(r"\PotPlayerMini64.MP4\shell\T9EditorLit")));
+    }
+
+    /// Every registry call goes through `reg()` — the helper that sets
+    /// CREATE_NO_WINDOW. Writing a bare `Command::new("reg")` again would
+    /// bring the launch-time CMD flash back, so the helper is pinned here.
+    #[test]
+    fn registry_calls_go_through_the_silent_helper() {
+        assert_eq!(reg().get_program(), std::ffi::OsStr::new("reg"));
     }
 
     /// `reg query` output parsing: the value is everything after `REG_SZ`,

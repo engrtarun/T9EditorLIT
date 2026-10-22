@@ -635,14 +635,24 @@ fn extract_poster_sync(
     });
 
     let vf = format!("scale={w}:-2");
-    let status = std::process::Command::new("ffmpeg")
-        .args(["-y", "-hide_banner", "-nostats", "-loglevel", "error"])
+    let mut cmd = std::process::Command::new("ffmpeg");
+    cmd.args(["-y", "-hide_banner", "-nostats", "-loglevel", "error"])
         .arg("-ss")
         .arg(format!("{at:.3}"))
         .arg("-i")
         .arg(&source)
         .args(["-frames:v", "1", "-vf", &vf, "-q:v", "5", "-f", "image2"])
-        .arg(&out)
+        .arg(&out);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW — a poster extraction must not flash a CMD box
+        // behind the app the moment a video opens.
+        cmd.creation_flags(0x0800_0000);
+    }
+
+    let status = cmd
         .status()
         .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
 

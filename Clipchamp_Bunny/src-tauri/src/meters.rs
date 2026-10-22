@@ -385,8 +385,18 @@ pub fn set_system_clock(time_zone: Option<String>, utc_iso: String) -> Result<St
         utc_iso.trim().replace('\'', "''")
     ));
 
-    let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW — the clock change is a background courtesy; it
+        // must not flash a console box while the app stays on screen.
+        cmd.creation_flags(0x0800_0000);
+    }
+
+    let out = cmd
         .output()
         .map_err(|e| format!("could not run PowerShell: {e}"))?;
 
