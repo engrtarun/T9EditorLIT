@@ -122,8 +122,8 @@ Ye script khud ye sab karti hai:
 | Step    | Kya                                                                      |
 | ------- | ------------------------------------------------------------------------ |
 | ledger  | work order + fair queue (one active, FIFO, priority aging)               |
-| build   | `build.ps1` → frontend + `npx tauri build --no-bundle`, SHA-256 manifest |
-| daemon  | `go/` sources naye hon to rebuild + restart/stage `t9cloud`              |
+| build   | GitHub Actions (`.github/workflows/ci.yml`) → frontend + `tauri build` + SHA-256 manifest; `deploy.ps1` sirf artifact download + verify + install karta hai |
+| daemon  | CI ka `t9cloud` install + restart/stage (Go source hash se verify)       |
 | install | `%LOCALAPPDATA%\Programs\T9EditorLIT\` — app + daemon + `.env`           |
 | stage   | app chal raha ho to `t9-editor-lit.new.exe` / `t9cloud.new.exe`          |
 | verify  | hashes, `build.json`, `/healthz`, no repo-exe instances                  |

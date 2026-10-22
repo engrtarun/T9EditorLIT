@@ -30,7 +30,9 @@ if (!orderId) {
 }
 
 const db = new DatabaseSync(dbPath);
-const row = db.prepare('SELECT id, status, agent, lease_until_ms, heartbeat_ms FROM work_orders WHERE id = ?').get(orderId);
+const row = db
+  .prepare('SELECT id, status, agent, lease_until_ms, heartbeat_ms FROM work_orders WHERE id = ?')
+  .get(orderId);
 if (!row) {
   console.error(`no such work order: ${orderId}`);
   process.exit(2);

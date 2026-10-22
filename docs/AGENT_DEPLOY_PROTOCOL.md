@@ -21,7 +21,8 @@ Clipchamp_Bunny/tools/deploy.ps1     ← the only supported deploy path
    │
    ├── work order in SQLite (agent, model, task, why, ETA, timestamps)
    ├── queue claim (one active deploy, fair FIFO + aging)
-   ├── build.ps1 (frontend + Rust, build id, SHA-256 manifest)
+   ├── CI build: GitHub Actions builds the app + daemon, publishes SHA-256 manifest
+   ├── download the artifact for this commit and verify both hashes
    ├── install app (direct when closed, staged when running)
    ├── build/restart/stage the t9cloud daemon
    ├── write build.json marker
@@ -65,9 +66,11 @@ Two things the Sarkari engine does **not** change:
    closes its queue slot too, so the next agent is not left waiting on a lease
    nobody will release.
 
-`tools\build.ps1` exists, but it is a **build**, not a deploy. A build alone
-does not reach the taskbar app and does not create a work order. Use it only
-inside `deploy.ps1`, or for a throw-away build you will not ship.
+There is no local build script. `build.ps1` was deleted along with the
+`-Legacy` opt-out: a compile on this machine took six to twelve minutes, held
+the build lock every other agent was waiting behind, and died in the linker for
+want of memory. The compile happens in CI, and `deploy.ps1` only installs what
+CI built.
 
 ---
 
@@ -187,25 +190,21 @@ active order. It is an estimate, not a promise.
 
 ## 4. What the deploy actually does
 
-### 4.1 Build
+### 4.1 Build (CI only)
 
-`build.ps1`:
+There is no local compile path. A push to `main` makes
+`.github/workflows/ci.yml` build the frontend, the Tauri app and the daemon on
+GitHub's Windows runner, and publish:
 
-1. Takes the build lock (`<target>\.build-lock`) so two builds cannot mix
-   `dist/` and Rust output.
-2. Runs `npm run build` and stops if the frontend fails — a stale `dist/` must
-   never be embedded.
-3. Runs `npx tauri build --no-bundle`, with up to 3 attempts for the fragile
-   Windows link step.
-4. Computes the executable SHA-256 and writes a manifest to:
-   - `%LOCALAPPDATA%\T9EditorLIT\deploy\builds\<buildId>.json`
-   - `%LOCALAPPDATA%\T9EditorLIT\deploy\builds\latest.json`
-   - `<target>\release\build-manifest.json`
+- `t9-editor-lit.exe`
+- `t9cloud.exe`
+- `sarkari-manifest.json` (build id, commit, SHA-256 of both binaries)
 
-`T9_TARGET_DIR` is supported. If an agent builds in an isolated target, the
-central manifest still points at the real executable, and `deploy.ps1`
-installs **that exact file with that exact hash** — never “whatever is in
-`target\release`”.
+The deploy downloads the artifact for **this working tree's commit** - waiting
+up to 12 minutes if CI is still running - and checks both SHA-256 values
+against the manifest. A binary whose hash does not match is never installed.
+`cargo build`, `cargo test`, `cargo clippy` and `tauri build` are blocked by
+the cargo shim, and `build.ps1` no longer exists.
 
 The build id is compiled into the app (`T9_BUILD_ID` → `build.rs` →
 `lib.rs`) and passed to the Go linker (`-X .../api.Version=<id>`), so the
@@ -227,8 +226,9 @@ install falls back to staging instead of leaving a half-installed folder.
 
 ### 4.3 Daemon install
 
-`t9cloud` is rebuilt when Go sources changed (content hash of `go/**/*.go`,
-`go.mod`, `go.sum` differs from the binary's `-version`). Then:
+`t9cloud` comes from the same CI artifact. For a `go`/`both` work order whose
+artifact has no daemon, the deploy falls back to a local `go build` (Go is fast
+on this box and is not the banned Rust compile). Then:
 
 | Situation                | Result                                                                       |
 | ------------------------ | ---------------------------------------------------------------------------- |
@@ -365,7 +365,9 @@ staged update it adds `appliedAtUnix`; `mode` is then `installed` and
 | `queue is busy` / `-NoWait`                               | Re-run without `-NoWait`, or wait; check the active order in status                                                                                                                                                          |
 | `work order ... is expired`                               | The previous agent died; create a new request                                                                                                                                                                                |
 | `the manifest points at a missing executable`             | The build folder was cleaned; run without `-SkipBuild`                                                                                                                                                                       |
-| `the build is from commit ..., HEAD is ...`               | Rebuild, or use `-Force` only if you truly mean the older binary                                                                                                                                                             |
+| `the build is from commit ..., HEAD is ...`               | Push your commit and deploy again; the artifact must match HEAD. `-Force` only if you truly mean the older binary                                                                                                            |
+| `CI has not published that build yet`                     | Push the commit, let the Actions run finish, then deploy again; the deploy itself waits up to 12 minutes                                                                                                                      |
+| `sarkari-manifest.json` 404 / artifact missing            | CI has not published this commit's artifact. Check the Actions run for red, then push a fix - never install an older binary to "get unblocked"                                                                                |
 | `installed app hash mismatch`                             | Run `-Doctor`; do not hand-copy exes                                                                                                                                                                                         |
 | `daemon did not answer /healthz`                          | Check `logs\t9cloud.err.log`, `.env`, port 7878                                                                                                                                                                              |
 | `daemon still has N jobs in flight`                       | Wait for the queue; deploy refuses to kill work                                                                                                                                                                              |
@@ -375,9 +377,8 @@ staged update it adds `appliedAtUnix`; `mode` is then `installed` and
 | A queued order nobody ever claimed                        | `node tools\deploy-ledger-reclaim.mjs reclaim-stale` (15-minute floor)                                                                                                                                                       |
 | An order that was expired by mistake                      | `node tools\deploy-ledger-restore.mjs restore --id WO-...`                                                                                                                                                                   |
 | An order stuck `active` after its agent died              | `node tools\deploy-ledger-restore.mjs release --id WO-...`                                                                                                                                                                   |
-| `OUT_DIR env var is not set, do you have a build script?` | The package build folder was deleted without its fingerprint. `build.ps1` now removes both; if you hit this by hand, delete `src-tauri\target\release\.fingerprint\t9-editor-lit-*` too                                      |
-| `Blocking waiting for file lock on build directory`       | Another build owns the shared target folder. **Do not run `cargo` by hand** — it bypasses the lock and the two builds delete each other's build folder. Use `tools\build.ps1`, or set `T9_TARGET_DIR` for an isolated folder |
-| `link.exe` failed with `0xffffffff` / `LNK1181`           | Not enough free RAM for the link step (~1 GB). Close other apps, then re-run; the build script already retries                                                                                                               |
+| `Blocking waiting for file lock on build directory`       | Something is compiling locally, which the rules forbid. Stop it; the compile belongs to CI and the deploy only installs                                                                                                       |
+| `link.exe` failed with `0xffffffff` / `LNK1181`           | Not enough free RAM for a local link - which is exactly why local compiles are blocked. Push and let CI build                                                                                                                |
 
 Diagnostics to attach to a bug report:
 
@@ -395,7 +396,7 @@ Get-Content (Join-Path $env:LOCALAPPDATA 'T9EditorLIT\deploy\logs\t9cloud.err.lo
 1. **Create the work order first.** No build/install before `request` returns a
    work id. `deploy.ps1` enforces this; do not bypass it.
 2. **One deploy at a time.** The ledger and `deploy.lock` enforce it. Do not
-   run a second `deploy.ps1`, `build.ps1`, or `tauri build` in parallel.
+   run a second `deploy.ps1` or `tauri build` in parallel.
 3. **Never start the repository exe as the user-facing app.** The installed
    copy is the only entry point. `-Dev` is for development only.
 4. **Never hand-copy binaries into the install folder.** Use the manifest and

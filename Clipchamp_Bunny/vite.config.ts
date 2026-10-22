@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
+import { mp3DevApi } from './tools/dev-mp3-api';
 
 export default defineConfig({
-  plugins: [tailwindcss(), svelte()],
+  plugins: [tailwindcss(), svelte(), mp3DevApi()],
   server: {
     port: 5174,
     strictPort: false,

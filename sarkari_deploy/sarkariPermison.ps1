@@ -145,8 +145,8 @@ function Test-SarkariPermission {
     # else was legitimately building. The two gates contradicted each other:
     # the queue said "wait your turn" while sanction said "rejected".
     # Both real critical sections already wait for their holder with progress
-    # output (Wait-DeployLock, build.ps1's build lock), so all this check has
-    # to do is say so. Genuine problems - missing tools - still reject.
+    # output (the ledger queue and Wait-DeployLock), so all this check has to
+    # do is say so. Genuine problems - missing tools - still reject.
     if ($locks.Count -gt 0 -and -not $SkipLockCheck) {
         $warnings += "Another deploy is in progress ($($locks.Count) lock held) - this one will queue and wait for it."
         Write-Host "  [4] Execution Locks:    BUSY ($($locks.Count) lock held by another process - waiting, not rejected)" -ForegroundColor Yellow

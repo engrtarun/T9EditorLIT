@@ -20,9 +20,11 @@ mod cache;
 mod env;
 mod export;
 mod ffmpeg;
+mod gif;
 mod keyframes;
 mod media;
 mod memory;
+mod mp3;
 mod polish;
 mod stats;
 mod thumbnail;
@@ -304,7 +306,10 @@ async fn polish_render(
     polish::run_polish(&app, &source, &output, &settings)
 }
 
-/// Start a smart hybrid export; progress is streamed via `export-progress`.
+/// Start an export; progress is streamed via `export-progress`.
+///
+/// One command, three formats: `video` (the hybrid piece/concat pipeline),
+/// `gif` (a short looping clip) and `mp3` (audio only).
 #[tauri::command]
 async fn start_export(
     app: tauri::AppHandle,
@@ -318,7 +323,12 @@ async fn start_export(
     let cancel_flag = Arc::clone(&flag);
     let app_clone = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        export::run_export(app_clone, cancel_flag, request)
+        let format = request.options.format.clone();
+        match format.as_str() {
+            "mp3" => mp3::run_mp3_export(&app_clone, cancel_flag, request),
+            "gif" => gif::run_gif_export(&app_clone, cancel_flag, request),
+            _ => export::run_export(app_clone, cancel_flag, request),
+        }
     })
     .await
     .map_err(|e| e.to_string())?;

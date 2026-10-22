@@ -3,9 +3,9 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    // The deploy ledger needs an identity it can trust. `build.ps1` sets this
-    // before `cargo` runs; a plain `cargo build` keeps "dev". The value is
-    // written into OUT_DIR and included by lib.rs, so it is compiled into the
+    // The deploy ledger needs an identity it can trust. CI sets this before
+    // `cargo` runs; a plain `cargo check` keeps "dev". The value is written
+    // into OUT_DIR and included by lib.rs, so it is compiled into the
     // executable and cannot drift from the build.json marker.
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by cargo"));
     let build_id = env::var("T9_BUILD_ID").unwrap_or_else(|_| "dev".to_string());

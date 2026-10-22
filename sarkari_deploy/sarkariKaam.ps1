@@ -49,7 +49,6 @@ Set-StrictMode -Version Latest
 
 $WorkspaceRoot = (Split-Path -Parent $PSScriptRoot)
 $BunnyTools = Join-Path $WorkspaceRoot 'Clipchamp_Bunny\tools'
-$BuildScript = Join-Path $BunnyTools 'build.ps1'
 $LedgerScript = Join-Path $BunnyTools 'deploy-ledger.mjs'
 $PinScript = Join-Path $BunnyTools 'pin-taskbar.ps1'
 $GoRoot = Join-Path $WorkspaceRoot 'go'
@@ -185,11 +184,10 @@ function Invoke-PreflightFastCheck {
         # error that did not exist, which failed the deploy for no reason.
         #
         # Rebuilding dist/ here would be worse than the bug: this preflight
-        # holds no lock, so it would rewrite dist/ underneath the build that
-        # does hold it and produce exactly the mixed executable build.ps1's
-        # lock exists to prevent. So the preflight stands down, and the locked
-        # build - which owns dist/ and rebuilds it itself - does the real
-        # verification.
+        # holds no lock, so it would rewrite dist/ underneath the install that
+        # does hold it and could pair a stale frontend with a fresh binary.
+        # So the preflight stands down, and the install path - which owns
+        # dist/ - does the real verification.
         $distIndex = Join-Path $appDir 'dist\index.html'
         if (-not (Test-Path -LiteralPath $distIndex)) {
             Write-Host "    [..] dist/index.html is missing - a build is probably rewriting it" -ForegroundColor Yellow
@@ -251,96 +249,6 @@ function Apply-MemoryGovernor {
         }
     } catch {
         $env:CARGO_BUILD_JOBS = '1'
-    }
-}
-
-function Execute-SmartBuild([string]$BuildId) {
-    Write-Host "==> [Kaam Stage 3/6] Smart Build Pipeline Trigger ($BuildId)" -ForegroundColor Cyan
-    if (-not (Test-Path $BuildScript)) {
-        throw "build.ps1 missing at: $BuildScript"
-    }
-
-    $attempt = 0
-    $maxAttempts = 2
-    $builtResult = $null
-
-    $aName = if ($script:AgentProfile -and $script:AgentProfile.PSObject.Properties['AgentName'] -and $script:AgentProfile.AgentName) { $script:AgentProfile.AgentName } else { 'Agent' }
-    $mName = if ($script:AgentProfile -and $script:AgentProfile.PSObject.Properties['ModelName'] -and $script:AgentProfile.ModelName) { $script:AgentProfile.ModelName } else { 'Model' }
-    $wProp = if ($script:AgentProfile) { $script:AgentProfile.PSObject.Properties['WorkId'] } else { $null }
-    $wId   = if ($wProp -and $wProp.Value) { $wProp.Value } else { $BuildId }
-
-    # The build folder is shared on purpose.
-    #
-    # An isolated folder per work order stops two builds from touching the
-    # same files, but it also throws away the dependency cache: every build
-    # then costs the full ~5 minutes instead of ~1. The deploy lock (taken
-    # below) is what actually stops two agents from building at once, and
-    # cargo's own file lock keeps the shared folder safe.
-    $env:T9_TARGET_DIR = $null
-    $env:CARGO_TARGET_DIR = $null
-
-    # Old isolated folders are worth gigabytes each, and nobody needs them
-    # once their build shipped. Keep the two most recent, drop the rest.
-    try {
-        $targetRoot = Join-Path $WorkspaceRoot '.t9\targets'
-        if (Test-Path $targetRoot) {
-            $old = Get-ChildItem $targetRoot -Directory -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending |
-                Select-Object -Skip 2
-            foreach ($dir in $old) {
-                Remove-Item $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
-            }
-        }
-    } catch {}
-
-    while ($attempt -lt $maxAttempts) {
-        $attempt++
-        try {
-            Write-Host "    Starting build attempt $attempt of $maxAttempts..." -ForegroundColor DarkGray
-            & pwsh -NoProfile -ExecutionPolicy Bypass -File $BuildScript `
-                -BuildId $BuildId `
-                -WorkId $wId `
-                -Agent $aName `
-                -Model $mName | Out-Host
-
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "    [ok] Smart build succeeded on attempt $attempt" -ForegroundColor Green
-                break
-            } else {
-                Write-Host "    [x] Build exited with code $LASTEXITCODE" -ForegroundColor Red
-                if ($attempt -ge $maxAttempts) {
-                    throw "Build failed after $maxAttempts attempts (exit code $LASTEXITCODE)"
-                }
-                Write-Host "    Applying emergency memory garbage collection and retrying once with 1 job..." -ForegroundColor Yellow
-                [System.GC]::Collect()
-                $env:CARGO_BUILD_JOBS = '1'
-                Start-Sleep -Seconds 10
-            }
-        } catch {
-            if ($attempt -ge $maxAttempts) { throw $_ }
-        }
-    }
-
-    # Resolve manifest
-    $manifestDir = if ($env:LOCALAPPDATA) {
-        Join-Path $env:LOCALAPPDATA 'T9EditorLIT\deploy\builds'
-    } else {
-        Join-Path $WorkspaceRoot '.t9\builds'
-    }
-    $manifestPath = Join-Path $manifestDir "$BuildId.json"
-    if (-not (Test-Path $manifestPath)) {
-        $manifestPath = Join-Path $manifestDir 'latest.json'
-    }
-    if (-not (Test-Path $manifestPath)) {
-        throw "Build manifest was not produced for $BuildId"
-    }
-
-    $manifest = Get-Content -Path $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    return [pscustomobject]@{
-        ManifestPath = $manifestPath
-        Manifest     = $manifest
-        BuiltExe     = [string]$manifest.exe
-        BuiltSha     = [string]$manifest.sha256
     }
 }
 
@@ -755,23 +663,22 @@ function Execute-SarkariKaam {
         }
 
         if (-not $ledgerClaimed) {
-            # The ledger is an advisory queue, not the mutex that keeps two
-            # builds apart - `build.ps1`'s lock is. Failing hard here meant a
+            # The ledger is an advisory queue. Failing hard here meant a
             # hiccupping `node` (this box runs at ~1 GB free RAM) aborted the
-            # deploy outright, which is exactly the stuck build this pipeline
-            # exists to prevent. So the build goes on, loudly, and the ledger
-            # still gets told the outcome; it just does not hold a lease.
+            # deploy outright, which is exactly the stuck deploy this pipeline
+            # exists to prevent. So the install goes on, loudly, and the
+            # ledger still gets told the outcome; it just does not hold a lease.
             $reason = if ($ledgerOrder) { "could not claim $($ledgerOrder.workId)" } else { 'no work order was issued' }
             Write-Host "    [!] proceeding WITHOUT a ledger lease ($reason)" -ForegroundColor Yellow
-            Write-Host '    [!] build.ps1 lock still serialises builds, so this cannot corrupt an executable' -ForegroundColor Yellow
+            Write-Host '    [!] the deploy lock still serialises installs, so this cannot corrupt an executable' -ForegroundColor Yellow
         }
     }
 
     $buildId = "app-$($resolvedWorkId.ToLowerInvariant())"
 
-    # A release build on this machine takes minutes, and the ledger's lease
-    # has to be kept alive while it runs - otherwise the queue thinks the
-    # deploy died and lets somebody else in front of it.
+    # The CI wait can take minutes, and the ledger's lease has to be kept
+    # alive while it runs - otherwise the queue thinks the deploy died and
+    # lets somebody else in front of it.
     $heartbeatJob = $null
     if ($ledgerOrder -and $ledgerClaimed) {
         # The heartbeat has to go through the ledger's CLI, not through the

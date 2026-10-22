@@ -101,18 +101,10 @@ param(
     [int]$Priority = 50,
     [switch]$Emergency,
     [switch]$SkipBuild,
-    # -Ci takes the executable from CI instead of compiling it here.
-    #
-    # The reason is not fashion. This machine is an i3 with 8 GB of RAM that
-    # is already ~96% used, and a Tauri release build on it dies in the
-    # linker (rustc exits 0xffffffff) or takes twelve minutes while holding
-    # the build lock that every other agent is waiting for. GitHub's Windows
-    # runner has 7 GB and its own CPU, so the compile happens there and this
-    # machine only verifies hashes and installs - which is the difference
-    # between a twelve-minute build and a one-minute install.
-    #
-    # The contract does not change: same ledger, same build lock, same canary,
-    # same marker, same doctor. Only the compiler moves.
+    # -Ci is kept only so existing commands (sarkariShip.ps1, agent scripts)
+    # keep working. There is no local compile path any more, so this switch
+    # no longer selects anything: the Sarkari engine always fetches the
+    # artifact GitHub's runner built and installs it.
     [switch]$Ci,
     [string]$CiRelease = 'ci-latest',
     [string]$CiRepo = '',
@@ -133,13 +125,11 @@ param(
     [switch]$Status,
     [switch]$Json,
     [switch]$Force,
-    # Declared here even though the Sarkari engine owns them. PowerShell
-    # binds -File arguments against THIS param block before line 143 runs, so
-    # without these two the documented `pwsh -File tools\deploy.ps1 -Check`
-    # died with "A parameter cannot be found" and never reached the engine.
-    # -Legacy also makes the opt-out below reachable instead of dead code.
-    [switch]$Check,
-    [switch]$Legacy
+    # Declared here even though the Sarkari engine owns it. PowerShell binds
+    # -File arguments against THIS param block before the bridge below runs,
+    # so without it the documented `pwsh -File tools\deploy.ps1 -Check` died
+    # with "A parameter cannot be found" and never reached the engine.
+    [switch]$Check
 )
 
 $ErrorActionPreference = 'Stop'
@@ -155,7 +145,6 @@ $InstallMarker = Join-Path $InstallDir 'build.json'
 $StageExe = Join-Path $InstallDir 't9-editor-lit.new.exe'
 $StageDaemon = Join-Path $InstallDir 't9cloud.new.exe'
 $LedgerScript = Join-Path $PSScriptRoot 'deploy-ledger.mjs'
-$BuildScript = Join-Path $PSScriptRoot 'build.ps1'
 $PinScript = Join-Path $PSScriptRoot 'pin-taskbar.ps1'
 $GoRoot = Join-Path $RepoRoot 'go'
 
@@ -180,25 +169,16 @@ $env:T9_LEDGER_DB = $LedgerDb
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 # -------------------------------------------------------- sarkari bridge
+# There is exactly one path from source to the installed app: the Sarkari
+# engine fetches the artifact GitHub's runner built, verifies its SHA-256 and
+# installs it. The classic pipeline that compiled here - and the -Legacy
+# opt-out that reached it - have been deleted, not disabled.
 $SarkariDeploy = Join-Path $RepoRoot 'sarkari_deploy\sarkariDeploy.ps1'
-if ((-not $PSBoundParameters.ContainsKey('Legacy')) -and (Test-Path $SarkariDeploy)) {
-    & pwsh -NoProfile -ExecutionPolicy Bypass -File $SarkariDeploy @PSBoundParameters
-    exit $LASTEXITCODE
-}
-
-# The classic pipeline that used to live here has been removed.
-#
-# It compiled the release ON THIS MACHINE: six to twelve minutes, a build
-# lock every other agent had to wait behind, and a linker that ran out of
-# memory on an 8 GB box. It was also a SECOND copy of a pipeline that
-# already existed in sarkari_deploy\ - and two copies of one pipeline is
-# how the Go daemon went missing for three deploys: the live path never
-# had a daemon build in it, and the copy nobody ran was the one that did.
-#
-# The compile now happens on GitHub's runner (.github\workflows\ci.yml)
-# and sarkari_deploy\sarkariKaam.ps1 installs what it built.
-if ($PSBoundParameters.ContainsKey('Legacy')) {
-    Write-Error 'the classic deploy pipeline has been removed - the compile now happens in CI. Use deploy.ps1 (it forwards to sarkari_deploy\sarkariDeploy.ps1) or sarkari_deploy\sarkariDeploy.ps1 directly.'
+if (-not (Test-Path $SarkariDeploy)) {
+    Write-Error "the Sarkari deploy engine is missing at $SarkariDeploy - deploy cannot continue without it."
     exit 2
 }
+
+& pwsh -NoProfile -ExecutionPolicy Bypass -File $SarkariDeploy @PSBoundParameters
+exit $LASTEXITCODE
 

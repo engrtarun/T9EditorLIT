@@ -314,51 +314,10 @@ foreach ($g in $failedGroups) {
 }
 
 # --------------------------------------------------------------- live builds
+# There is no local build lane any more: every compile happens in CI, and the
+# only thing this machine runs is the ledger-locked install. Keep the field in
+# the report so its consumers do not have to special-case its absence.
 $liveBuilds = @()
-try {
-    $liveBuilds = @(Get-CimInstance Win32_Process -Filter "Name='pwsh.exe'" -ErrorAction Stop |
-            Where-Object { $_.CommandLine -and $_.CommandLine -match 'tools[\\/]build\.ps1' } |
-            ForEach-Object {
-                $cmd = [string]$_.CommandLine
-                $wid = ''
-                $m = [regex]::Match($cmd, '-WorkId\s+([^\s"'']+)')
-                if ($m.Success) { $wid = $m.Groups[1].Value }
-                $agent = ''
-                $m = [regex]::Match($cmd, '-Agent\s+([^\s"'']+)')
-                if ($m.Success) { $agent = $m.Groups[1].Value }
-                [pscustomobject]@{
-                    Pid      = [int]$_.ProcessId
-                    WorkId   = $wid
-                    Agent    = $agent
-                    SkipLock = ($cmd -match '-SkipLock')
-                    Command  = $cmd
-                }
-            })
-} catch {
-    Add-Finding -Code 'LIVE_SCAN_FAILED' -Severity 'MEDIUM' `
-        -Subject 'Process table' -Evidence $_.Exception.Message `
-        -Message 'Could not inspect live build processes.' `
-        -Action 'Run the audit from an elevated/ordinary pwsh session.'
-}
-
-$distinctWorkIds = @($liveBuilds | Where-Object { $_.WorkId } | ForEach-Object { $_.WorkId } | Select-Object -Unique)
-$manualBuilds = @($liveBuilds | Where-Object { $_.SkipLock })
-
-if ($distinctWorkIds.Count -gt 1) {
-    Add-Finding -Code 'CONCURRENT_BUILD' -Severity 'HIGH' `
-        -Subject 'Live build lane' `
-        -Evidence ($distinctWorkIds -join ', ') `
-        -Message ("{0} distinct work orders are running build.ps1 at the same time." -f $distinctWorkIds.Count) `
-        -Action 'Let one build own the lane; concurrent builds rewrite dist and cause false failures.'
-}
-
-foreach ($p in $manualBuilds) {
-    Add-Finding -Code 'BUILD_LOCK_BYPASS' -Severity 'HIGH' `
-        -Subject ("PID {0}" -f $p.Pid) `
-        -Evidence (($p.Command -replace '\s+', ' ').Trim()) `
-        -Message 'A build.ps1 process is running with -SkipLock.' `
-        -Action 'Identify who launched it before issuing a challan; -SkipLock bypasses the one-door rule.'
-}
 
 # ------------------------------------------------------------------- ledger
 if (-not $ledgerStatus) {
@@ -366,12 +325,6 @@ if (-not $ledgerStatus) {
         -Subject 'SQLite ledger' -Evidence $ledgerError `
         -Message 'Could not read the shared ledger; the audit is incomplete.' `
         -Action 'Run deploy.ps1 -Status manually before trusting this report.'
-} elseif ($liveBuilds.Count -gt 0 -and -not $active) {
-    $liveIds = @($liveBuilds | ForEach-Object { "PID $($_.Pid) $($_.WorkId)" }) -join '; '
-    Add-Finding -Code 'UNLEDGERED_BUILD' -Severity 'HIGH' `
-        -Subject 'Live build lane' -Evidence $liveIds `
-        -Message 'build.ps1 is running while the ledger has no active order.' `
-        -Action 'Stop launching new builds; use sarkariDeploy.ps1 so the lane is serialized.'
 }
 
 # ------------------------------------------------------------------- Python
