@@ -57,9 +57,11 @@
 .PARAMETER Scope
     app, go, both or docs. `both` is the normal full desktop deploy.
 
-.PARAMETER SkipBuild
-    Reuse the newest build manifest. It is verified against its SHA-256 and
-    refused if the manifest is from a different git commit (unless -Force).
+.PARAMETER Force
+    Allow the explicitly dangerous paths only: a tracked-dirty working tree,
+    an -ExpectCommit other than HEAD, a custom test install folder, or a
+    manual rollback. It never authorizes a local compile and never turns a
+    custom artifact source into a live desktop install.
 
 .PARAMETER Interactive
     Ask the form questions in the terminal. Deploy.bat uses this.
@@ -90,17 +92,19 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Agent = $env:T9_AGENT,
-    [string]$Model = $env:T9_MODEL,
-    [string]$Session = $env:T9_SESSION,
-    [string]$Task = $env:T9_TASK,
-    [string]$Why = $env:T9_WHY,
+    # Environment values are applied by sarkariForm AFTER a -FormFile is read,
+    # so a form file is not silently overridden by a stale T9_* variable in the
+    # agent's shell. Command-line values still win over both.
+    [string]$Agent = '',
+    [string]$Model = '',
+    [string]$Session = '',
+    [string]$Task = '',
+    [string]$Why = '',
     [int]$EtaMinutes = 0,
     [ValidateSet('app', 'go', 'both', 'docs')]
     [string]$Scope = 'app',
     [int]$Priority = 50,
     [switch]$Emergency,
-    [switch]$SkipBuild,
     # -Ci is kept only so existing commands (sarkariShip.ps1, agent scripts)
     # keep working. There is no local compile path any more, so this switch
     # no longer selects anything: the Sarkari engine always fetches the
@@ -113,17 +117,12 @@ param(
     # working tree is on. With several agents pushing, naming the commit is
     # what stops an agent being handed somebody else's build.
     [string]$ExpectCommit = '',
-    [switch]$SkipPin,
     [switch]$Launch,
     [switch]$Interactive,
-    [switch]$NoWait,
-    [int]$MaxWaitMinutes = 0,
     [string]$FormFile = '',
-    [string]$BuildManifest = '',
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\T9EditorLIT'),
     [switch]$Doctor,
     [switch]$Status,
-    [switch]$Json,
     [switch]$Force,
     # Declared here even though the Sarkari engine owns it. PowerShell binds
     # -File arguments against THIS param block before the bridge below runs,
@@ -179,6 +178,50 @@ if (-not (Test-Path $SarkariDeploy)) {
     exit 2
 }
 
-& pwsh -NoProfile -ExecutionPolicy Bypass -File $SarkariDeploy @PSBoundParameters
+# Forward the EFFECTIVE values, not just @PSBoundParameters. The old bridge
+# forwarded only switches the caller typed, so `T9_AGENT` / `T9_MODEL` /
+# `T9_TASK` defaults set in this param block were silently dropped before the
+# engine saw them. The explicit hashtable also guarantees this door can never
+# pass an option the engine does not implement.
+$forward = @{
+    Agent       = $Agent
+    Model       = $Model
+    Session     = $Session
+    Task        = $Task
+    Why         = $Why
+    EtaMinutes  = $EtaMinutes
+    Scope       = $Scope
+    Priority    = $Priority
+    Emergency   = [bool]$Emergency
+    Ci          = [bool]$Ci
+    CiRelease   = $CiRelease
+    CiRepo      = $CiRepo
+    CiBaseUrl   = $CiBaseUrl
+    ExpectCommit = $ExpectCommit
+    Launch      = [bool]$Launch
+    Interactive = [bool]$Interactive
+    FormFile    = $FormFile
+    InstallDir  = $InstallDir
+    Doctor      = [bool]$Doctor
+    Status      = [bool]$Status
+    Force       = [bool]$Force
+    Check       = [bool]$Check
+}
+
+# `pwsh -File` cannot carry an empty string: on the child's command line it
+# collapses to a bare token and the NEXT parameter's name is swallowed as its
+# value - forwarding CiRepo='' made the engine see CiBaseUrl='-CiRepo:', which
+# tripped the "custom artifact source" guard on a deploy that named no custom
+# source at all. The engine's own defaults for these strings are empty, so
+# dropping an empty value is a no-op semantically and keeps the binding honest.
+# Booleans and numbers are unaffected (0/false are real forwarded values).
+$effective = $forward
+$forward = @{}
+foreach ($kv in $effective.GetEnumerator()) {
+    if ($kv.Value -is [string] -and $kv.Value -eq '') { continue }
+    $forward[$kv.Key] = $kv.Value
+}
+
+& pwsh -NoProfile -ExecutionPolicy Bypass -File $SarkariDeploy @forward
 exit $LASTEXITCODE
 
