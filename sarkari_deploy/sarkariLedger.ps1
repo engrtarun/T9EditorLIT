@@ -106,7 +106,8 @@ function New-SarkariLedgerOrder {
         [string]$Session = '',
         [string]$Commit = '',
         [string]$Branch = '',
-        [switch]$GitDirty
+        [switch]$GitDirty,
+        [switch]$GitClean
     )
 
     # Every field is read defensively. Under `Set-StrictMode -Version Latest`
@@ -156,8 +157,11 @@ function New-SarkariLedgerOrder {
     if ($Commit) { $args += @('--commit', $Commit) }
     if ($Branch) { $args += @('--branch', $Branch) }
     # The CLI reads the presence of --git-dirty as true, so only add it for a
-    # dirty tree. `--git-dirty false` would still be true in JavaScript.
+    # dirty tree. `--git-dirty false` would still be true in JavaScript. A
+    # clean tree gets the explicit --git-clean flag, so the ledger records
+    # false instead of NULL ("nobody checked").
     if ($GitDirty) { $args += '--git-dirty' }
+    elseif ($GitClean) { $args += '--git-clean' }
 
     $order = Invoke-SarkariLedger -Arguments $args
     # The CLI answers with the work order itself: `workId` and `token`.

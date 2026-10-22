@@ -1164,7 +1164,16 @@ function requestFromFlags(flags) {
     worktree: flagText(flags, 'worktree', 'worktree'),
     branch: flagText(flags, 'branch', 'branch'),
     commit: flagText(flags, 'commit', 'commit'),
-    gitDirty: flags['git-dirty'] === undefined ? undefined : Boolean(flags['git-dirty']),
+    // `--git-dirty` means true; `--git-clean` records false. Omitting both is
+    // "unknown" (NULL) for callers that genuinely cannot inspect the tree.
+    // This lets a normal clean deploy say false instead of leaving the ledger
+    // ambiguous about whether anybody checked.
+    gitDirty:
+      flags['git-dirty'] !== undefined
+        ? true
+        : flags['git-clean'] !== undefined
+          ? false
+          : undefined,
     agentPid: flagInt(flags, 'agent-pid', undefined),
     notes: flagText(flags, 'notes', 'notes')
   };
@@ -1301,6 +1310,7 @@ async function main(argv) {
           'branch',
           'commit',
           'git-dirty',
+          'git-clean',
           'agent-pid',
           'notes'
         ],
@@ -1480,7 +1490,7 @@ T9 deploy ledger - one SQLite queue for every desktop deploy.
                                 --eta MINUTES [--scope app|go|both|docs]
                                 [--priority 0..100] [--emergency]
                                 [--session ID] [--worktree PATH] [--branch NAME]
-                                [--commit SHA] [--git-dirty] [--agent-pid PID]
+                                [--commit SHA] [--git-dirty|--git-clean] [--agent-pid PID]
                                 [--notes TEXT] [--json]
 
   node deploy-ledger.mjs claim   --id WO --token TOKEN [--lease-minutes N] [--json]

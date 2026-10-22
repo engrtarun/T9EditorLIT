@@ -952,7 +952,7 @@ function Execute-SarkariKaam {
 
         $ledgerOrder = New-SarkariLedgerOrder -AgentProfile $rawProfile -Scope $script:Scope `
             -Priority $Priority -Emergency:$Emergency -Session $script:Session `
-            -Commit $requestHead -Branch $requestBranch -GitDirty:$requestDirty
+            -Commit $requestHead -Branch $requestBranch -GitDirty:$requestDirty -GitClean:(-not $requestDirty)
         if ($ledgerOrder) {
             # Publish it to the caller now. If Start-SarkariLedgerOrder or the
             # deploy-lock wait throws, sarkariDeploy's catch can still close
