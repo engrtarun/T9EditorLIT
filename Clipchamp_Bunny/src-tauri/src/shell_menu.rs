@@ -48,8 +48,13 @@ pub fn looks_like_video(path: &str) -> bool {
 }
 
 /// `HKCU` key that carries the verb for one extension.
+///
+/// The extension key is literally `.mp4` — one key, dot included. (An
+/// earlier version of this had `Classes\.\{ext}`, which builds TWO path
+/// segments — a key named `.` with `mp4` inside it — and Explorer never
+/// saw the verb.)
 fn verb_key(ext: &str) -> String {
-    format!(r"HKCU\Software\Classes\.\{ext}\shell\{VERB}")
+    format!(r"HKCU\Software\Classes\.{ext}\shell\{VERB}")
 }
 
 /// The `.reg`-style command line the verb runs.
@@ -232,6 +237,31 @@ mod tests {
     #[test]
     fn the_verb_name_is_a_single_token() {
         assert!(!VERB.contains('\\') && !VERB.contains(' '));
+    }
+
+    /// The key must be exactly `HKCU\Software\Classes\.mp4\shell\<verb>` —
+    /// the extension is ONE key whose name starts with a dot.
+    ///
+    /// This test exists because the first version built `Classes\.\{ext}`:
+    /// two segments (`.` and `mp4`), so every verb landed under a junk key
+    /// named `.` that Explorer never reads. Writing the keys "succeeded",
+    /// the marker said "registered", and the menu showed nothing — only a
+    /// registry query caught it.
+    #[test]
+    fn the_key_is_one_dotted_segment_not_a_dot_folder() {
+        for ext in VIDEO_EXTS {
+            let key = verb_key(ext);
+            assert_eq!(
+                key,
+                format!(r"HKCU\Software\Classes\.{ext}\shell\{VERB}"),
+                "wrong key layout for .{ext}: {key}"
+            );
+            // No segment may be a bare "." — that is the exact shape of the bug.
+            assert!(
+                !key.split('\\').any(|s| s == "."),
+                "a bare '.' segment crept back into the key for .{ext}: {key}"
+            );
+        }
     }
 
     #[test]
