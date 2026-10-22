@@ -198,8 +198,8 @@
 </script>
 
 <aside
-  class="relative flex min-h-0 shrink-0 flex-col border-r border-nc-line bg-nc-panel
-         {collapsed ? 'w-[44px]' : ''}"
+  class="relative flex min-h-0 shrink-0 flex-col
+         {collapsed ? 'w-[44px]' : 'border-r border-nc-line bg-nc-panel'}"
   style={collapsed ? undefined : `width:${layout.mediaWidth}px`}
 >
   <div class="flex h-10 shrink-0 items-center justify-between px-2.5">
