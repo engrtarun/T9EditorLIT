@@ -119,15 +119,15 @@ Ya repo root se double-click: `Deploy-T9EditorLIT.bat`.
 
 Ye script khud ye sab karti hai:
 
-| Step    | Kya                                                                      |
-| ------- | ------------------------------------------------------------------------ |
-| ledger  | work order + fair queue (one active, FIFO, priority aging)               |
+| Step    | Kya                                                                                                                                                         |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ledger  | work order + fair queue (one active, FIFO, priority aging)                                                                                                  |
 | build   | GitHub Actions (`.github/workflows/ci.yml`) → frontend + `tauri build` + SHA-256 manifest; `deploy.ps1` sirf artifact download + verify + install karta hai |
-| daemon  | CI ka `t9cloud` install + restart/stage (Go source hash se verify)       |
-| install | `%LOCALAPPDATA%\Programs\T9EditorLIT\` — app + daemon + `.env`           |
-| stage   | app chal raha ho to `t9-editor-lit.new.exe` / `t9cloud.new.exe`          |
-| verify  | hashes, `build.json`, `/healthz`, no repo-exe instances                  |
-| pin     | Start menu shortcut + AppUserModelID + taskbar pin                       |
+| daemon  | CI ka `t9cloud` install + restart/stage (Go source hash se verify)                                                                                          |
+| install | `%LOCALAPPDATA%\Programs\T9EditorLIT\` — app + daemon + `.env`                                                                                              |
+| stage   | app chal raha ho to `t9-editor-lit.new.exe` / `t9cloud.new.exe`                                                                                             |
+| verify  | hashes, `build.json`, `/healthz`, no repo-exe instances                                                                                                     |
+| pin     | Start menu shortcut + AppUserModelID + taskbar pin                                                                                                          |
 
 **Running app me update:** app chal raha ho to naya build stage hota hai aur
 top bar me chhota **"Update"** button aata hai (sirf staged exe hone par).
@@ -279,7 +279,7 @@ What moved is the compile.
 pwsh -File tools\sarkariShip.ps1 `
     -Agent "opencode/beam-free" -Model "opencode/beam-free" `
     -Task "add the thumbnail menu action" `
-    -Why "the card menu had no thumbnail action at all" -Scope app
+    -Why "the card menu had no thumbnail action at all" -EtaMinutes 10 -Scope app
 ```
 
 It verifies, commits, rebases, pushes, and deploys - in that order, and it

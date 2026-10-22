@@ -16,22 +16,24 @@ param(
     [string]$RootCause = '',
     [string]$TestingDone = '',
     [int]$RiskScore = 20,
-    [int]$EtaMinutes = 20,
+    [int]$EtaMinutes = 0,
     [string]$WorkId = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-if (-not $AgentName) {
-    $AgentName = if ($env:T9_AGENT) { $env:T9_AGENT } else { 'Antigravity-Agent' }
-}
+# This file is dot-sourced by sarkariDeploy with no parameters, so the
+# top-level values may legitimately be empty. Do not invent an identity here:
+# Register-SarkariAgent validates the values the deploy actually supplies.
+# The old "Antigravity-Agent / Gemini 3.8 Flash" fallback was a false
+# attribution in the ledger and in the agent report.
+if (-not $AgentName -and $env:T9_AGENT) { $AgentName = [string]$env:T9_AGENT }
 if (-not $ModelName) {
     foreach ($envKey in @('T9_MODEL', 'OPENCODE_MODEL', 'OPENCODE_MODEL_ID')) {
         $val = [Environment]::GetEnvironmentVariable($envKey)
         if ($val) { $ModelName = $val; break }
     }
-    if (-not $ModelName) { $ModelName = 'Gemini 3.8 Flash (High)' }
 }
 
 function New-SarkariWorkId {
@@ -61,6 +63,30 @@ function Register-SarkariAgent {
         [int]$Eta = $EtaMinutes,
         [string]$Id = $WorkId
     )
+
+    # The deploy form already validates these, but Register-SarkariAgent is a
+    # public function. Refusing here closes the direct-call path: no caller can
+    # skip the form and still get a ledger identity or a time lease with blank
+    # values. There is deliberately no default agent/model/ETA.
+    $Agent = ([string]$Agent).Trim()
+    $Model = ([string]$Model).Trim()
+    $TaskDesc = ([string]$TaskDesc).Trim()
+    $Reason = ([string]$Reason).Trim()
+    if (-not $Agent -or $Agent.Length -lt 2) {
+        throw "a real Agent name is required (2+ characters). Set -Agent or T9_AGENT; no invented fallback is used."
+    }
+    if (-not $Model -or $Model.Length -lt 3) {
+        throw "a real Model name is required (3+ characters). Set -Model or T9_MODEL; no invented fallback is used."
+    }
+    if (-not $TaskDesc -or $TaskDesc.Length -lt 8) {
+        throw "a real Task is required (8+ characters); it is recorded in the ledger and the deploy report."
+    }
+    if (-not $Reason -or $Reason.Length -lt 15) {
+        throw "a real Why is required (15+ characters); it is recorded in the ledger and the deploy report."
+    }
+    if ($Eta -lt 1 -or $Eta -gt 480) {
+        throw "a real ETA is required (1..480 minutes). A default ETA is not honest; pass -EtaMinutes explicitly."
+    }
 
     if (-not $Id) { $Id = New-SarkariWorkId }
     $sanctionedLease = Get-SarkariLeaseMinutes -EstimatedEta $Eta -Risk $Risk

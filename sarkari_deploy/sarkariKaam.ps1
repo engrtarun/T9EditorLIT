@@ -875,6 +875,42 @@ function Execute-SarkariKaam {
         throw "refusing an unprofiled deploy (profile type: $profileType; properties: $propNames). Use tools\deploy.ps1, which creates a WorkId and a ledger order; Execute-SarkariKaam will not invent one."
     }
 
+    # A WorkId alone is not a profile. The form validates these fields, but a
+    # script could call Execute-SarkariKaam directly with a hand-made object.
+    # Refuse the blank/fake shape here too, so no path can acquire a queue slot
+    # with an invented agent, model, task, reason or ETA.
+    $profileAgentProp = $rawProfile.PSObject.Properties['AgentName']
+    $profileModelProp = $rawProfile.PSObject.Properties['ModelName']
+    $profileTaskProp = $rawProfile.PSObject.Properties['Task']
+    $profileWhyProp = $rawProfile.PSObject.Properties['Why']
+    $profileEtaProp = $rawProfile.PSObject.Properties['EtaMinutes']
+    $profileAgent = if ($profileAgentProp) { ([string]$profileAgentProp.Value).Trim() } else { '' }
+    $profileModel = if ($profileModelProp) { ([string]$profileModelProp.Value).Trim() } else { '' }
+    $profileTask = if ($profileTaskProp) { ([string]$profileTaskProp.Value).Trim() } else { '' }
+    $profileWhy = if ($profileWhyProp) { ([string]$profileWhyProp.Value).Trim() } else { '' }
+    $profileEta = 0
+    if ($profileEtaProp) {
+        try { $profileEta = [int]$profileEtaProp.Value } catch { $profileEta = 0 }
+    }
+    if ($resolvedWorkId.Length -lt 8) {
+        throw "refusing a deploy with the placeholder WorkId '$resolvedWorkId'. Use tools\deploy.ps1; it creates a real work order."
+    }
+    if ($profileAgent.Length -lt 2) {
+        throw "refusing a deploy profile without a real AgentName. Use tools\deploy.ps1; it records the agent that is actually deploying."
+    }
+    if ($profileModel.Length -lt 3) {
+        throw "refusing a deploy profile without a real ModelName. Use tools\deploy.ps1; it records the exact provider/model id."
+    }
+    if ($profileTask.Length -lt 8) {
+        throw "refusing a deploy profile without a real Task (8+ characters). Use tools\deploy.ps1; the task is part of the work order."
+    }
+    if ($profileWhy.Length -lt 15) {
+        throw "refusing a deploy profile without a real Why (15+ characters). Use tools\deploy.ps1; the reason is part of the work order."
+    }
+    if ($profileEta -lt 1 -or $profileEta -gt 480) {
+        throw "refusing a deploy profile without a real ETA (1..480 minutes). A default ETA is not honest."
+    }
+
     # A docs-only order does not install a binary, so it does not need a
     # compile preflight. Running one would make a typo in unrelated code block
     # a documentation change.

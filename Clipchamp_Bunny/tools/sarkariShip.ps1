@@ -40,7 +40,11 @@
     What changed. 8+ characters. It goes into the ledger.
 
 .PARAMETER Why
-    Why it matters. 12+ characters.
+    Why it matters. 15+ characters.
+
+.PARAMETER EtaMinutes
+    Your honest estimate, 1..480 minutes. Required: this wrapper has no
+    default ETA, because a made-up estimate poisons the ledger accuracy.
 
 .PARAMETER Scope
     app | go | both | docs.
@@ -60,7 +64,7 @@
 .EXAMPLE
     pwsh -File tools\sarkariShip.ps1 -Agent "opencode/beam-free" `
         -Model "opencode/beam-free" -Task "add the thumbnail menu action" `
-        -Why "the card menu had no thumbnail action at all" -Scope app
+        -Why "the card menu had no thumbnail action at all" -EtaMinutes 10 -Scope app
 #>
 [CmdletBinding()]
 param(
@@ -70,7 +74,7 @@ param(
     [string]$Why = $env:T9_WHY,
     [ValidateSet('app', 'go', 'both', 'docs')]
     [string]$Scope = 'app',
-    [int]$EtaMinutes = 10,
+    [int]$EtaMinutes = 0,
     [int]$Priority = 50,
     [switch]$Emergency,
     [string]$Message = '',
@@ -90,6 +94,19 @@ function Write-Step([string]$m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Write-Ok([string]$m) { Write-Host "    [ok] $m" -ForegroundColor Green }
 function Write-Warn([string]$m) { Write-Host "    [!]  $m" -ForegroundColor Yellow }
 function Write-Bad([string]$m) { Write-Host "    [x] $m" -ForegroundColor Red }
+
+# Validate before verify/commit/push. Otherwise a missing ETA or identity
+# would still push the commit and only fail at the deploy form - the agent
+# would have moved main and learned nothing until the last step.
+$agentText = ([string]$Agent).Trim()
+$modelText = ([string]$Model).Trim()
+$taskText = ([string]$Task).Trim()
+$whyText = ([string]$Why).Trim()
+if ($agentText.Length -lt 2) { Write-Bad 'a real -Agent is required (2+ characters); no invented fallback is used.'; exit 2 }
+if ($modelText.Length -lt 3) { Write-Bad 'a real -Model is required (3+ characters); no invented fallback is used.'; exit 2 }
+if ($taskText.Length -lt 8) { Write-Bad 'a real -Task is required (8+ characters).'; exit 2 }
+if ($whyText.Length -lt 15) { Write-Bad 'a real -Why is required (15+ characters).'; exit 2 }
+if ($EtaMinutes -lt 1 -or $EtaMinutes -gt 480) { Write-Bad 'a real -EtaMinutes is required (1..480); this wrapper has no default ETA.'; exit 2 }
 
 # ---------------------------------------------------------------- 1. verify
 Write-Step 'Verifying (types, Svelte, unit tests, cargo check - no linker)'

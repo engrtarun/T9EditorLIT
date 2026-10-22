@@ -35,6 +35,7 @@ Set-StrictMode -Version Latest
 $SarkariDir = $PSScriptRoot
 $ChallanDir = Join-Path $SarkariDir 'records\challans'
 $PleaDir = Join-Path $SarkariDir 'records\pleas'
+$TelemetryDir = Join-Path $SarkariDir 'records\telemetry'
 New-Item -ItemType Directory -Force -Path $ChallanDir | Out-Null
 New-Item -ItemType Directory -Force -Path $PleaDir | Out-Null
 
@@ -145,6 +146,27 @@ function Invoke-JudgeReview([string]$PleaId) {
         throw "Challan $($challan.challanId) is '$($challan.status)'; only an active penalty can be reviewed."
     }
 
+    # A plea is a statement by the agent who was fined. A hand-written plea
+    # could name a different agent and put words in their mouth, so require
+    # the two records to agree. The grounds and statement are re-checked here
+    # too: the court must not rely on Vakil having validated a JSON file that
+    # can be edited by hand.
+    if ([string]$plea.agent -ne [string]$challan.agent) {
+        throw "Plea agent '$($plea.agent)' does not match challan agent '$($challan.agent)'; refusing to judge somebody else's plea."
+    }
+    if (([string]$plea.safaiStatement).Trim().Length -lt 15) {
+        throw 'The plea has no real Safai statement (15+ characters); refusing to judge an empty defense.'
+    }
+    $validGrounds = @(
+        'ANTIVIRUS_DEFENDER_LOCK',
+        'CRITICAL_OOM_SPIKE',
+        'THIRD_PARTY_NETWORK_FAIL',
+        'HONEST_MISTAKE_FIRST_OFFENSE'
+    )
+    if ([string]$plea.pleaGrounds -notin $validGrounds) {
+        throw "Unknown plea grounds '$($plea.pleaGrounds)'; refusing to invent a legal theory for the court."
+    }
+
     Write-Host "`n========================================================" -ForegroundColor Cyan
     Write-Host "  ⚖️  SARKARI NYAYALAY: PLEA HEARING FOR $($plea.pleaId)" -ForegroundColor Cyan
     Write-Host "========================================================" -ForegroundColor Cyan
@@ -166,7 +188,23 @@ function Invoke-JudgeReview([string]$PleaId) {
                 $_.agent -eq $challan.agent -and $_.status -ne 'PARDONED'
             }
     )
-    $hasTelemetry = [bool]($plea.telemetryProof -and (Test-Path -LiteralPath ([string]$plea.telemetryProof)))
+    # The proof must be a real file in the telemetry folder, not any arbitrary
+    # path an agent can write into the plea JSON. (The timestamp/agent match is
+    # still a human judgement - the court only guarantees it is the right kind
+    # of evidence, not that it proves the right incident.)
+    $hasTelemetry = $false
+    if ($plea.telemetryProof) {
+        try {
+            $proofPath = [System.IO.Path]::GetFullPath([string]$plea.telemetryProof)
+            $telemetryRoot = [System.IO.Path]::GetFullPath($TelemetryDir).TrimEnd('\') + '\'
+            if ($proofPath.StartsWith($telemetryRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
+                (Test-Path -LiteralPath $proofPath -PathType Leaf)) {
+                $hasTelemetry = $true
+            }
+        } catch {
+            $hasTelemetry = $false
+        }
+    }
 
     # Judicial Decision Algorithm
     $verdict = 'SENTENCE_UPHELD'

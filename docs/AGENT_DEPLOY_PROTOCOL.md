@@ -91,11 +91,16 @@ Every deploy must answer these fields **before any build starts**:
 | Agent    | `-Agent`      | 2–64 chars, who is deploying                                     | `opencode`                                                            |
 | Model    | `-Model`      | exact `provider/model` id, 3–120 chars                           | `opencode/deepseek-v4.1-flash-free`                                   |
 | Task     | `-Task`       | 8–200 chars, what changes                                        | `fix the export button after a successful export`                     |
-| Why      | `-Why`        | 12–2000 chars, why it matters                                    | `the button stays disabled, so the same cut cannot be exported twice` |
+| Why      | `-Why`        | 15–2000 chars, why it matters                                    | `the button stays disabled, so the same cut cannot be exported twice` |
 | ETA      | `-EtaMinutes` | 1–480, honest build+install+verify estimate, excludes queue wait | `25`                                                                  |
 | Scope    | `-Scope`      | `app`, `go`, `both`, `docs`; default `app`                       | `both`                                                                |
 | Priority | `-Priority`   | 0–100; default 50; above 60 needs `-Emergency`                   | `50`                                                                  |
 | Session  | `-Session`    | optional; auto-generated when omitted                            | `S-opencode-20261020-2130`                                            |
+
+`tools\sarkariShip.ps1` is a wrapper around this form, not a way around it.
+It has **no default ETA** either: pass `-EtaMinutes` explicitly. `deploy.ps1
+-Fast` skips questions only; it never supplies a missing task, reason, ETA,
+agent or model.
 
 Also recorded automatically:
 
@@ -477,7 +482,11 @@ Get-Content (Join-Path $env:LOCALAPPDATA 'T9EditorLIT\deploy\logs\t9cloud.err.lo
     call the judge. A human must review the plea and run
     `sarkariCourt.ps1 -JudgePleaId <id> -ApprovePlea`. The court checks prior
     non-pardoned challans, requires telemetry for external-cause claims, and
-    leaves an upheld sentence as `ACTIVE_PENALTY`.
+    leaves an upheld sentence as `ACTIVE_PENALTY`. The plea agent must match
+    the challan agent, the defense must be a real statement with valid grounds,
+    and the telemetry path must be a file under `sarkari_deploy\records\telemetry`.
+    A hand-written plea that names somebody else, contains a blank defense, or
+    points at an arbitrary file is refused instead of judged.
 14. **A rollback is a desktop change.** `deploy.ps1 -Rollback` needs `-Force`
     (or an interactive yes), takes the deploy lock, verifies `.prev.exe`
     against `build.prev.json`, restores the marker, and writes a
