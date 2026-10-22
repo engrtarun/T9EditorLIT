@@ -42,6 +42,7 @@ import {
   saveProject,
   saveTranscript,
   setSourcePath,
+  setSourceUrl,
   updateProjectOpened
 } from '../ipc';
 import type { RustProject } from '../ipc';
@@ -208,6 +209,9 @@ class ProjectStore {
     ]);
     this.media = baked;
     this.name = baked.name.replace(/\.[^.]+$/, '');
+    // The browser has no path — the dev server's export endpoint reads the
+    // baked asset by its URL.
+    setSourceUrl(baked.url);
     this.waveform = waveform;
     this.thumbnails = thumbnails;
     this.lines = scaleLines(MOCK_LINES, baked.durationSecs);
@@ -270,6 +274,7 @@ class ProjectStore {
     this.name = this.media.name.replace(/\.[^.]+$/, '');
     this.sourcePath = canonical;
     setSourcePath(canonical);
+    setSourceUrl(this.media.url);
 
     // A rename lives in SQLite, not in the filename: take the stored name when
     // a row exists for this file, so reopening cannot wipe a custom rename —
@@ -772,6 +777,26 @@ class ProjectStore {
     }
     return sec;
   };
+
+  /**
+   * Move the playhead by `delta` seconds without ever landing inside a cut.
+   *
+   * Forward jumps to the **end** of the cut it lands in, backward to its
+   * **start** — so a "back" press can never fling the playhead forward (which
+   * is what the plain `skipCuts` correction did when the target fell inside a
+   * cut range).
+   */
+  skipBy(fromSec: number, delta: number): number {
+    const end = this.durationSec || Infinity;
+    let t = Math.min(Math.max(fromSec + delta, 0), end);
+    for (const [a, b] of this.cutRanges) {
+      if (t >= a && t < b) {
+        t = delta >= 0 ? b : a;
+        break;
+      }
+    }
+    return Math.min(Math.max(t, 0), end);
+  }
 
   /** Open a library entry as the current project (a new project, in effect). */
   async openLibraryEntry(id: string) {

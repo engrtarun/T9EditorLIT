@@ -36,11 +36,17 @@
   function onTimeUpdate() {
     const v = videoEl;
     if (!v || scrubbing) return;
+    // A seek we just asked for may not have landed yet — this event still
+    // carries the pre-seek position. Trusting it would undo the skip.
+    if (player.isStaleUpdate(v.currentTime)) return;
     const corrected = project.skipCuts(v.currentTime);
     if (corrected !== v.currentTime) {
       scrubbing = true;
       v.currentTime = corrected;
       scrubbing = false;
+      // The label must follow the frame the user is actually watching, not
+      // the position the seek asked for.
+      player.currentTime = corrected;
       return;
     }
     player.currentTime = v.currentTime;

@@ -16,6 +16,7 @@
   import { player } from './lib/stores/player.svelte';
   import { project } from './lib/stores/project.svelte';
   import { layout } from './lib/stores/layout.svelte';
+  import { settings } from './lib/stores/settings.svelte';
   import { toast } from './lib/stores/toast.svelte';
   import { menu } from './lib/stores/menu.svelte';
   import { keys, type KeyAction } from './lib/stores/keys.svelte';
@@ -214,11 +215,11 @@
       return;
     }
     if (hit('seekBack', e)) {
-      player.seek(clamp(player.currentTime - 5, 0, project.durationSec));
+      player.seek(project.skipBy(player.currentTime, -settings.seekStepSec));
       return;
     }
     if (hit('seekForward', e)) {
-      player.seek(clamp(player.currentTime + 5, 0, project.durationSec));
+      player.seek(project.skipBy(player.currentTime, settings.seekStepSec));
       return;
     }
     if (hit('nextLine', e)) {

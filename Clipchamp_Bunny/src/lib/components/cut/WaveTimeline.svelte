@@ -2,6 +2,7 @@
   import { project } from '../../stores/project.svelte';
   import { player } from '../../stores/player.svelte';
   import { layout } from '../../stores/layout.svelte';
+  import { settings } from '../../stores/settings.svelte';
   import { toast } from '../../stores/toast.svelte';
   import { thumbUrl } from '../../media';
   import { dropIndex } from '../../segments';
@@ -654,9 +655,9 @@
           </svg>
         </button>
         <button
-          onclick={() => player.seek(clamp(player.currentTime - 5, 0, project.durationSec))}
+          onclick={() => player.seek(project.skipBy(player.currentTime, -settings.seekStepSec))}
           class="grid h-7 w-7 place-items-center rounded-full text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-          title="Back 5s (J)"
+          title="Back {settings.seekStepLabel}s (J)"
         >
           <svg
             width="14"
@@ -667,13 +668,19 @@
             stroke-width="1.8"
           >
             <path d="M11 17l-5-5 5-5" /><path d="M18 17l-5-5 5-5" />
-            <text x="12" y="21" font-size="7" fill="currentColor" text-anchor="middle">5</text>
+            <text
+              x="12"
+              y="21"
+              font-size={settings.seekStepLabel.length > 1 ? 6 : 7}
+              fill="currentColor"
+              text-anchor="middle">{settings.seekStepLabel}</text
+            >
           </svg>
         </button>
         <button
-          onclick={() => player.seek(clamp(player.currentTime + 5, 0, project.durationSec))}
+          onclick={() => player.seek(project.skipBy(player.currentTime, settings.seekStepSec))}
           class="grid h-7 w-7 place-items-center rounded-full text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-          title="Forward 5s (L)"
+          title="Forward {settings.seekStepLabel}s (L)"
         >
           <svg
             width="14"
@@ -684,7 +691,13 @@
             stroke-width="1.8"
           >
             <path d="M13 17l5-5-5-5" /><path d="M6 17l5-5-5-5" />
-            <text x="12" y="21" font-size="7" fill="currentColor" text-anchor="middle">5</text>
+            <text
+              x="12"
+              y="21"
+              font-size={settings.seekStepLabel.length > 1 ? 6 : 7}
+              fill="currentColor"
+              text-anchor="middle">{settings.seekStepLabel}</text
+            >
           </svg>
         </button>
         <button

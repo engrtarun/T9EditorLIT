@@ -11,7 +11,7 @@
    */
   import { defaultDbPath, purgeExpiredTrash, isTauri } from '../ipc';
   import { layout } from '../stores/layout.svelte';
-  import { settings, TRASH_DAYS_DEFAULT } from '../stores/settings.svelte';
+  import { settings, SEEK_STEP_DEFAULT, TRASH_DAYS_DEFAULT } from '../stores/settings.svelte';
   import { toast } from '../stores/toast.svelte';
 
   /** The presets most people want; the custom field covers everything else. */
@@ -23,7 +23,11 @@
     { days: 0, label: 'Never' }
   ];
 
+  /** Transport skip presets, in seconds. */
+  const STEP_PRESETS = [0.5, 1, 5, 10, 30];
+
   let customDays = $state(String(settings.trashRetentionDays));
+  let customStep = $state(settings.seekStepLabel);
   let cleaning = $state(false);
 
   function onKey(e: KeyboardEvent) {
@@ -50,6 +54,23 @@
       'info',
       n === 0 ? 'Trash kabhi auto-delete nahi hoga.' : `Trash ${n} din baad auto-delete hoga.`
     );
+  }
+
+  function pickStep(sec: number) {
+    settings.setSeekStep(sec);
+    customStep = settings.seekStepLabel;
+  }
+
+  function applyCustomStep() {
+    const n = Number(customStep);
+    if (!Number.isFinite(n) || n <= 0) {
+      toast.push('warn', 'Skip step positive number hona chahiye (seconds).');
+      customStep = settings.seekStepLabel;
+      return;
+    }
+    settings.setSeekStep(n);
+    customStep = settings.seekStepLabel;
+    toast.push('info', `Skip step ${settings.seekStepLabel}s — J / L aur transport buttons.`);
   }
 
   async function cleanExpired() {
@@ -93,7 +114,7 @@
         >
         <div>
           <h2 class="text-base font-bold">Settings</h2>
-          <p class="text-[11px] text-nc-mut">Trash retention · app behaviour</p>
+          <p class="text-[11px] text-nc-mut">Trash retention · transport · app behaviour</p>
         </div>
         <div class="flex-1"></div>
         <button
@@ -170,6 +191,59 @@
           {#if isBrowser}
             <span class="text-[10px] text-nc-mut-2">Desktop app me hi SQLite purge chalega.</span>
           {/if}
+        </div>
+      </section>
+
+      <section class="mt-4 rounded-xl border border-nc-line bg-nc-panel-2/50 p-4">
+        <div class="flex items-baseline justify-between gap-3">
+          <h3 class="text-[10px] font-bold tracking-widest text-nc-brand">SKIP STEP</h3>
+          <span class="text-[11px] text-nc-mut">
+            {settings.seekStepLabel}s forward / back
+          </span>
+        </div>
+
+        <p class="mt-2 text-[11px] leading-relaxed text-nc-mut">
+          Transport ke ⏪ ⏩ buttons aur <b class="text-nc-txt">J / L</b> keys itne seconds move karte
+          hain.
+        </p>
+
+        <div class="mt-3 flex flex-wrap gap-2">
+          {#each STEP_PRESETS as s (s)}
+            <button
+              onclick={() => pickStep(s)}
+              class="rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-colors duration-150
+                     {settings.seekStepSec === s
+                ? 'border-nc-brand bg-nc-brand/15 text-nc-brand'
+                : 'border-nc-line bg-nc-panel text-nc-mut hover:border-nc-line-2 hover:text-nc-txt'}"
+            >
+              {s}s
+            </button>
+          {/each}
+        </div>
+
+        <div class="mt-3 flex items-center gap-2">
+          <label class="text-[11px] text-nc-mut" for="skip-step">Custom seconds</label>
+          <input
+            id="skip-step"
+            type="number"
+            min="0.5"
+            max="60"
+            step="0.5"
+            bind:value={customStep}
+            onchange={applyCustomStep}
+            class="w-24 rounded-md border border-nc-line bg-nc-bg px-2 py-1 text-[12px] text-nc-txt outline-none focus:border-nc-brand"
+          />
+          <span class="text-[11px] text-nc-mut-2">0.5 – 60</span>
+        </div>
+
+        <div class="mt-4">
+          <button
+            onclick={() => pickStep(SEEK_STEP_DEFAULT)}
+            class="rounded-lg border border-nc-line px-3 py-1.5 text-[12px] text-nc-mut
+                   transition-colors duration-150 hover:border-nc-line-2 hover:text-nc-txt"
+          >
+            Reset to {SEEK_STEP_DEFAULT}s
+          </button>
         </div>
       </section>
     </div>
