@@ -226,7 +226,9 @@ function Invoke-SarkariHttp {
 # ---------------------------------------------------------------------------
 
 function Invoke-SarkariModels {
-    # GET {api}/models - sasta call, token ki validity check + list ke liye.
+    # GET models list. Pehla tarika: OpenAI-compat '/models'; 404 aaye to
+    # Puter ka apna '/puterai/chat/models/' (yahi puter.js use karta hai -
+    # 2026 par iska hi jhoot pakda gaya tha: OpenAI /models dete hi nahi).
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Token, [int]$TimeoutSec = 30)
     $cfg = Get-SarkariBrainConfig
     try {
@@ -236,7 +238,20 @@ function Invoke-SarkariModels {
         elseif ($resp -is [System.Array]) { $ids = @($resp | ForEach-Object { [string]$_ }) }
         return @{ OK = $true; Models = $ids; Status = ''; Error = ''; LatencyMs = 0 }
     } catch {
-        return @{ OK = $false; Models = @(); Status = (Get-SarkariHttpStatus $_); Error = $_.Exception.Message; LatencyMs = 0 }
+        $st1 = Get-SarkariHttpStatus $_
+        $err1 = $_.Exception.Message
+        if ($st1 -ne '404') {
+            return @{ OK = $false; Models = @(); Status = $st1; Error = $err1; LatencyMs = 0 }
+        }
+        # fallback: Puter ka apna models list (string array)
+        try {
+            $resp2 = Invoke-SarkariHttp -Uri 'https://api.puter.com/puterai/chat/models/' -Method Get -Token $Token -TimeoutSec $TimeoutSec
+            $ids2 = @()
+            if ($resp2.models) { $ids2 = @($resp2.models | ForEach-Object { [string]$_ }) }
+            return @{ OK = $true; Models = $ids2; Status = ''; Error = ''; LatencyMs = 0 }
+        } catch {
+            return @{ OK = $false; Models = @(); Status = (Get-SarkariHttpStatus $_); Error = $_.Exception.Message; LatencyMs = 0 }
+        }
     }
 }
 
@@ -475,7 +490,7 @@ function Invoke-SarkariChat {
 
     $body = @{
         model       = $resolvedModel
-        messages    = @($messages)
+        messages    = $messages.ToArray()
         temperature = $cfg.Temperature
         max_tokens  = $cfg.MaxAnswerTokens
     }
@@ -518,6 +533,11 @@ function Invoke-SarkariChat {
 
             if ($lastStatus -eq '401' -or $lastStatus -eq '403') {
                 return Fail 'TOKEN_REJECTED' ('Puter ne token reject kiya (HTTP {0}) - sarkariPuterjs.ps1 -Rotate se naya token lagao.' -f $lastStatus)
+            }
+            if ($lastStatus -eq '402') {
+                # 402 = Payment Required: model is account pe free nahi.
+                # Ye retry se theek NAHI hota - turant sach bolo.
+                return Fail 'PAYMENT_REQUIRED' ("HTTP 402 - model '$resolvedModel' is Puter account par free nahi hai. Free model chuno: sarkariPuterjs.ps1 -ListModels (list deta hai), phir -Model <id> / SARKARI_AI_MODEL env se lagao. (Bina AI lein se sab local kaam chalta rahega.)")
             }
             if ($lastStatus -eq '404') {
                 return Fail 'MODEL_NOT_FOUND' ("Model '$resolvedModel' API ne nahi diya - sarkariPuterjs.ps1 -ListModels se available dekho, phir -Model <id> try karo.")

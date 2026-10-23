@@ -28,6 +28,17 @@
 .PARAMETER IncludeCleared
     List inspected-but-cleared items (for example dry tests).
 
+.PARAMETER Explain
+    OPTIONAL AI saar (persona: prompts\police.md, thanedar). Findings ke
+    baad ek Hinglish FIR-saar: kya hua, kyun serious, agla kadam. Ye
+    NEVER challan thokta (Police hi read-only hai); AI band/402/401 ho to
+    FIR waise hi chapti hai — bas ek yellow note. Repo ka thoda text
+    (findings JSON) Puter cloud pe jata hai — consent flag pehle se
+    li hoti hai (sarkariPuterjs.ps1 -Login).
+
+.PARAMETER Model
+    AI model override (SARKARI_AI_MODEL env se bhi hota hai).
+
 .NOTES
     Exit codes:
       0 = no high/critical finding
@@ -40,7 +51,9 @@ param(
     [string]$RepoRoot = '',
     [int]$Hours = 24,
     [switch]$Json,
-    [switch]$IncludeCleared
+    [switch]$IncludeCleared,
+    [switch]$Explain,
+    [string]$Model = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -56,6 +69,9 @@ if (-not $RepoRoot) {
     }
 }
 if ($Hours -lt 1) { $Hours = 24 }
+
+# AI engine (dot-source module; AI optional hai - -Explain ka hi kaam hai)
+. (Join-Path $PSScriptRoot 'sarkariBrain.ps1')
 
 $recordsDir = Join-Path $RepoRoot 'sarkari_deploy\records'
 $contribDir = Join-Path $RepoRoot 'sarkari_open_contribute'
@@ -478,6 +494,34 @@ $totals = [pscustomobject]@{
     ActiveChallans     = $activeChallans.Count
 }
 
+# -------------------------------------------------------------------- AI
+# OPTIONAL -Explain: FIR ka AI-saar (persona: prompts\police.md, thanedar).
+# Advisory only - challan/verdict ke decisions Court + user ke paas hi rehte
+# hain. Zero real findings (sirf INFO) hue to AI ka kharcha hi nahi uthaya
+# jata - thanedar ko shanti-ka-report bhejne ki zaroorat nahi.
+# Brain ka redaction + 24KB cap hamesha chalta hai; data Puter cloud pe jata
+# hai, isliye consent flag job hi lagta hai (sarkariPuterjs.ps1 -Login).
+$aiExplain = $null
+if ($Explain) {
+    $explainable = @($findings.ToArray() | Where-Object {
+            @('CRITICAL', 'HIGH', 'MEDIUM') -contains $_.Severity
+        })
+    if ($explainable.Count -gt 0) {
+        $explainCtx = [ordered]@{
+            findings       = $findings.ToArray()
+            cleared        = $cleared.ToArray()
+            activeChallans = @($activeChallans | Select-Object challanId, agent, workId, violation, points, status)
+            totals         = $totals
+        }
+        $aiExplain = Invoke-SarkariChat `
+            -PersonaName 'police' `
+            -UserText 'Police FIR ka Hinglish saar do: kya hua, kyun serious, agla kadam. Yaad rahe: Police challan nahi thokti - challan Court + user approval se hota hai.' `
+            -ContextText ($explainCtx | ConvertTo-Json -Depth 8 -Compress) `
+            -Model $Model `
+            -Agent 'sarkari-police'
+    }
+}
+
 if ($Json) {
     $ledgerObject = [pscustomobject]@{
         active     = $active
@@ -504,6 +548,13 @@ if ($Json) {
         contributors   = $contributorsJson
         activeChallans = $challansJson
         ledger         = $ledgerObject
+        ai             = $(if ($null -ne $aiExplain) {
+                [ordered]@{
+                    ok          = [bool]$aiExplain.Ok
+                    model       = [string]$aiExplain.Model
+                    explanation = $(if ($aiExplain.Ok) { [string]$aiExplain.Content } else { [string]$aiExplain.Short })
+                }
+            } else { $null })
     }
     $result | ConvertTo-Json -Depth 8
     if ($criticalCount -gt 0) { exit 2 }
@@ -598,6 +649,22 @@ if ($criticalCount -gt 0) {
 }
 Write-Host '  Police never issues challans. Court + user approval required.' -ForegroundColor DarkGray
 Write-Host ''
+
+if ($Explain) {
+    if ($aiExplain -and $aiExplain.Ok) {
+        Write-Host 'AI FIR SAAR (persona: thanedar - advisory only)' -ForegroundColor Magenta
+        Write-Host '--------------------------------------------------------' -ForegroundColor DarkGray
+        foreach ($line in ($aiExplain.Content -split "`r?`n")) {
+            if ($line.Trim()) { Write-Host ("  " + $line) -ForegroundColor White }
+        }
+        Write-Host '--------------------------------------------------------' -ForegroundColor DarkGray
+    } elseif ($aiExplain) {
+        Write-Host ("AI FIR SAAR nahi bana: {0}" -f $aiExplain.Short) -ForegroundColor Yellow
+    } else {
+        Write-Host 'AI FIR SAAR: sirf tabhi bulaya jata hai jab CRITICAL/HIGH/MEDIUM finding ho.' -ForegroundColor DarkGray
+    }
+    Write-Host ''
+}
 
 if ($criticalCount -gt 0) { exit 2 }
 if ($highCount -gt 0) { exit 1 }

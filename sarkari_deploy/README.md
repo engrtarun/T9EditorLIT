@@ -107,8 +107,15 @@ kaam alag, sabka system prompt alag"):
 | `sarkariPuterjs.ps1`     | the login counter: `-Login` (browser opens, paste token) / `-Status` / `-Logout` / `-Rotate` / `-ListModels` / `-Consent` |
 | `sarkariBrain.ps1`       | the shared engine - **dot-source only**; token load, redaction, 24 KB cap, retry, `chat/completions`, ai-log |
 | `sarkariHelp.ps1`        | the tutor persona ("help") - `sarkariHelp.ps1 "<sawal>"`, `-Error <logfile>`, `-Lesson`, `-NoAi` |
+| `sarkariPolice.ps1`      | FIR explainer - `-Explain` + `-Model`: AI reads the findings JSON, gives Hinglish FIR-saar; zero findings = no AI call at all |
+| `sarkariCourt.ps1`       | challan drafter - `-Draft`: nyay-clerk persona builds a challan DRAFT (JSON + kyun + against-side). **No file is written**; the real challan still needs `-IssueChallanForWorkId` + user approval |
+| `sarkariVakil.ps1`       | defense drafter - `-Draft`: vakil persona drafts a Safai Nama (grounds + statement + evidence checklist) against the newest `-ChallanId`/active challan. **No plea is filed**; the printed filing command stays manual |
 | `prompts/constitution.md`| the kanoon every persona gets injected above their own prompt        |
 | `prompts/help.md`        | the sheriff-of-tutor persona file                                    |
+| `prompts/police.md`      | the thanedar (explain, never punish) persona file                    |
+| `prompts/court.md`       | the nyay-clerk (draft, never issue) persona file                     |
+| `prompts/vakil.md`       | the defense advocate (draft, never file; truth-first) persona file   |
+| `tools/model-probe.ps1`  | one-shot probe: which models are ACTUALLY free on this account       |
 
 Setup, the whole thing:
 
@@ -133,11 +140,20 @@ list):
   FBI/ledger karte hain, AI ka nahi.
 - **ai-log is metadata only** - `records\ai\ai-log.jsonl` (gitignored):
   when, which persona, which model, how long. Prompts/answers never.
-- **Personas are advisory** - `help` today; Police `-Explain`, Court/Vakil
-  `-Draft`, and an `sarkariOverseer.ps1` digest are later phases. Nothing
-  the AI says is executed; commands are typed by humans/agents that
-  understood them.
+- **Personas are advisory** - Police `-Explain` (FIR-saar), Court `-Draft`
+  and Vakil `-Draft` (safai draft) are live. Phase-3 leftover: an
+  `sarkariOverseer.ps1` digest. Nothing the AI says is executed; commands
+  are typed by humans/agents that understood them.
 
 Model: free-tier default `gpt-4o-mini`; override with `SARKARI_AI_MODEL`
 env or `-Model <id>` (`sarkariPuterjs.ps1 -ListModels` shows what Puter
 currently holds).
+
+**The 402 ground reality (2026-10-23):** `tools\model-probe.ps1` probed
+**all 1020 models** Puter lists and **every single one answered HTTP 402**
+on a fresh free login - Puter's "free tier" needs account credits for
+chat today. The layer still ships and works because AI is advisory everywhere:
+every persona call has a local fallback, exit codes never depend on the AI,
+and the error the AI gate prints is the true one (`PAYMENT_REQUIRED`) with
+the fix (`-ListModels`, `-Model <id>`, or account credits). If any model
+goes free later, only `SARKARI_AI_MODEL` needs to move.

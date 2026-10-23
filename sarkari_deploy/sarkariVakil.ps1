@@ -21,7 +21,10 @@ param(
     [string]$PleaGrounds = '',
     [switch]$AttachTelemetry,
     [switch]$RequestHearing,
-    [switch]$Interactive
+    [switch]$Interactive,
+    # DRAFT mode: safai ka draft AI vakil persona se - koi plea FILE nahi
+    # hoti; agent/user khud asli filing command chalate hain.
+    [switch]$Draft
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,6 +35,9 @@ $ChallanDir = Join-Path $SarkariDir 'records\challans'
 $PleaDir = Join-Path $SarkariDir 'records\pleas'
 $TelemetryDir = Join-Path $SarkariDir 'records\telemetry'
 New-Item -ItemType Directory -Force -Path $PleaDir | Out-Null
+
+# AI engine (dot-source module) - sirf -Draft iska istemal karta hai.
+. (Join-Path $PSScriptRoot 'sarkariBrain.ps1')
 
 function Show-VakilBanner {
     Write-Host "`n"
@@ -155,6 +161,121 @@ function Submit-SafaiNama {
     return $pleaRecord
 }
 
+function Invoke-VakilDraftMode {
+    # -Draft: safai ka DRAFT - AI vakil persona ke saath.
+    # KUCH BHI FILE NAHI HOTA (na plea, na hearing, na telemetry copy).
+    # Filing waisi hi pasina wali command se hogi jo neeche print hoti hai.
+    #
+    # Note: TelemetryDir pe New-Item main script nahi karta (filing se pehle
+    # khali hai) - isliye yahan sab visits SilentlyContinue/bound-checked.
+    $challan = $null
+    if ($ChallanId) {
+        $f = Join-Path $ChallanDir ("$ChallanId" + '.json')
+        if (Test-Path -LiteralPath $f -PathType Leaf) {
+            $challan = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json
+        }
+    } else {
+        $candidates = @(
+            Get-ChildItem -Path $ChallanDir -Filter 'CHALLAN-*.json' -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 3
+        )
+        foreach ($cand in $candidates) {
+            try {
+                $c = Get-Content -Path $cand.FullName -Raw | ConvertFrom-Json
+                if ([string]$c.status -eq 'ACTIVE_PENALTY') { $challan = $c; break }
+            } catch { }
+        }
+    }
+    if (-not $challan) {
+        Write-Host 'USAGE (vakil draft): -Draft ke saath target chaiye:' -ForegroundColor Yellow
+        Write-Host '  pwsh -File sarkari_deploy\sarkariVakil.ps1 -Draft -ChallanId <challan-id>' -ForegroundColor Gray
+        Write-Host '  (chhad do to sabse naya ACTIVE_PENALTY challan target hota hai - abhi koi nahi mila)' -ForegroundColor DarkGray
+        exit 0
+    }
+    $challanIdUsed = [string]$challan.challanId
+    $punishedAgent = [string]$challan.agent
+
+    # Priors: challan wale agent ke doosre non-pardoned challans
+    # (HONEST_MISTAKE_FIRST_OFFENSE sirf priors=0 par chalta hai).
+    $priorChallans = @(
+        Get-ChildItem -Path $ChallanDir -Filter 'CHALLAN-*.json' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                try { Get-Content -Path $_.FullName -Raw | ConvertFrom-Json } catch { $null }
+            } |
+            Where-Object {
+                $_ -and
+                [string]$_.challanId -ne $challanIdUsed -and
+                [string]$_.agent -eq $punishedAgent -and
+                [string]$_.status -ne 'PARDONED'
+            }
+    )
+
+    # Telemetry proof ka sach: court sirf records\telemetry ke andar ki file
+    # pakadta hai - bahar ka path reject. Agent ko iska sach batana zaroori.
+    $telemetryFiles = @(
+        Get-ChildItem -Path $TelemetryDir -Filter '*.json' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 5
+    )
+
+    $agentHint = if ($AgentName) { $AgentName } elseif ($env:T9_AGENT) { [string]$env:T9_AGENT } else { '(AGENT NAME REQUIRED - vakil khud identity mat banayega)' }
+
+    Write-Host ''
+    Write-Host '========================================================' -ForegroundColor Cyan
+    Write-Host '  SARKARI VAKIL - SAFAI DRAFT (koi plea file NAHI hui)' -ForegroundColor Cyan
+    Write-Host '========================================================' -ForegroundColor Cyan
+    Write-Host ("  Challan:     {0}  ({1} pts, {2})" -f $challanIdUsed, $challan.points, $challan.violation) -ForegroundColor Yellow
+    Write-Host ("  Agent:       {0}" -f $agentHint) -ForegroundColor White
+    Write-Host ("  Priors:      {0} non-pardoned" -f $priorChallans.Count) -ForegroundColor DarkGray
+    Write-Host ("  Telemetry:   {0} file(s) records\telemetry me" -f $telemetryFiles.Count) -ForegroundColor DarkGray
+
+    $ctx = [ordered]@{
+        challan        = [ordered]@{
+            challanId   = $challanIdUsed
+            agent       = $punishedAgent
+            workId      = [string]$challan.workId
+            violation   = [string]$challan.violation
+            points      = [int]$challan.points
+            status      = [string]$challan.status
+            description = [string]$challan.description
+        }
+        priors         = @($priorChallans | Select-Object challanId, violation, points, status)
+        priorCount     = $priorChallans.Count
+        telemetryFiles = @($telemetryFiles | ForEach-Object { $_.Name })
+        note           = 'AI sirf SAFAI DRAFT banata hai; plea file sarkariVakil.ps1 ke asli filing command se banti hai (user/agent chalayega).'
+    }
+    $r = Invoke-SarkariChat `
+        -PersonaName 'vakil' `
+        -UserText 'Is challan ke against Safai Nama ka DRAFT banao (grounds + safai statement + evidence checklist). Sach par dabe rahe - jhooth ki coaching nahi.' `
+        -ContextText ($ctx | ConvertTo-Json -Depth 6 -Compress) `
+        -Agent 'sarkari-vakil'
+
+    Write-Host ''
+    if ($r.Ok) {
+        Write-Host 'AI SAFAI DRAFT (vakil persona - advisory)' -ForegroundColor Magenta
+        foreach ($line in ($r.Content -split "`r?`n")) {
+            if ($line.Trim()) { Write-Host ("  " + $line) -ForegroundColor White }
+        }
+    } else {
+        Write-Host ("AI vakil upasthit nahi: {0}" -f $r.Short) -ForegroundColor Yellow
+        Write-Host 'Local fallback - khud bharo (ye rule kanoon ka hai):' -ForegroundColor DarkGray
+        Write-Host '  Telemetry grounds (ANTIVIRUS/OOM) => records\telemetry me proof file HONI CHAHIYE, warna PARDONED nahi hota.' -ForegroundColor DarkGray
+        Write-Host '  HONEST_MISTAKE_FIRST_OFFENSE => priors 0 hote tabhi REDUCED; priors >0 par reject.' -ForegroundColor DarkGray
+    }
+
+    Write-Host ''
+    Write-Host 'Asli filing command (agent/user khud chalaye - consent kaam user ka):' -ForegroundColor Yellow
+    Write-Host ('  pwsh -File sarkari_deploy\sarkariVakil.ps1 -ChallanId {0} -AgentName "{1}" -PleaGrounds <ground> -SafaiStatement "<apna sach>" -AttachTelemetry -RequestHearing' -f $challanIdUsed, $agentHint) -ForegroundColor Gray
+    Write-Host '  (hearing user ki approval se hoti hai: sarkariCourt.ps1 -JudgePleaId <pleaId> -ApprovePlea)' -ForegroundColor DarkGray
+    Write-Host ''
+    exit 0
+}
+
 if ($MyInvocation.InvocationName -ne '.') {
+    if ($Draft) {
+        Invoke-VakilDraftMode
+        exit 0
+    }
     $null = Submit-SafaiNama
 }

@@ -26,7 +26,10 @@ param(
     [string]$JudgePleaId = '',
     # A plea is not a self-service pardon. The script can prepare a record,
     # but a human must pass this switch after reading the evidence.
-    [switch]$ApprovePlea
+    [switch]$ApprovePlea,
+    # DRAFT mode: challan record ka sirf dikhawa - AI nyay-clerk persona ke
+    # saath. Koi file nahi likhi jati; asli challan aaj bhi -IssueChallan se.
+    [switch]$Draft
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,6 +41,9 @@ $PleaDir = Join-Path $SarkariDir 'records\pleas'
 $TelemetryDir = Join-Path $SarkariDir 'records\telemetry'
 New-Item -ItemType Directory -Force -Path $ChallanDir | Out-Null
 New-Item -ItemType Directory -Force -Path $PleaDir | Out-Null
+
+# AI engine (dot-source module) - sirf -Draft mode iska use karta hai.
+. (Join-Path $PSScriptRoot 'sarkariBrain.ps1')
 
 function Issue-SarkariChallan {
     [CmdletBinding()]
@@ -260,6 +266,107 @@ function Invoke-JudgeReview([string]$PleaId) {
     $pColor = if ($newPoints -eq 0) { 'Green' } else { 'Yellow' }
     Write-Host "      Updated Penalty:    $newPoints Points" -ForegroundColor $pColor
     Write-Host "========================================================`n" -ForegroundColor Cyan
+}
+
+function Invoke-CourtDraftMode {
+    # -Draft: challan ka DRAFT - AI nyay-clerk persona ke saath.
+    # KUCH BHI FILE NAHI HOTA: asli challan aaj bhi -IssueChallanForWorkId
+    # se banta hai; bina user approval ke kuch banta hi nahi.
+    if (-not $IssueChallanForWorkId -or -not $ViolationType) {
+        Write-Host 'USAGE (draft mode):' -ForegroundColor Yellow
+        Write-Host '  pwsh -File sarkari_deploy\sarkariCourt.ps1 -Draft `' -ForegroundColor Gray
+        Write-Host '      -IssueChallanForWorkId <workId> -ViolationType <category> `' -ForegroundColor Gray
+        Write-Host '      -AgentName "<agent>" -Details "<1-2 line ka sach>"' -ForegroundColor Gray
+        Write-Host ''
+        Write-Host 'Sanctioned categories: PYTHON_BANNED_VIOLATION(100), FALSE_SCOPE_MISMATCH(40),' -ForegroundColor DarkGray
+        Write-Host '  CANARY_STARTUP_PANIC(35), LEASE_SQUATTING_HANG(25), BUILD_SYNTAX_ERROR(15)' -ForegroundColor DarkGray
+        exit 0
+    }
+
+    # Points table ka mirror - Issue-SarkariChallan wahi table rakhta hai
+    # (refactor nahi kiya kyunki asli record usi function se banta hai).
+    $points = switch ($ViolationType) {
+        'PYTHON_BANNED_VIOLATION' { 100 }
+        'FALSE_SCOPE_MISMATCH'    { 40 }
+        'CANARY_STARTUP_PANIC'    { 35 }
+        'LEASE_SQUATTING_HANG'    { 25 }
+        'BUILD_SYNTAX_ERROR'      { 15 }
+        default                   { 20 }
+    }
+
+    # Priors: is agent ke pehle ke non-pardoned challans (judge ka pahla sawal).
+    $priorChallans = @(
+        Get-ChildItem -Path $ChallanDir -Filter 'CHALLAN-*.json' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                try { Get-Content -Path $_.FullName -Raw | ConvertFrom-Json } catch { $null }
+            } |
+            Where-Object {
+                $_ -and
+                [string]$_.agent -eq [string]$AgentName -and
+                [string]$_.workId -ne [string]$IssueChallanForWorkId -and
+                [string]$_.status -ne 'PARDONED'
+            }
+    )
+
+    $agentLabel = if ($AgentName) { $AgentName } else { '(AgentName abhi nahi diya)' }
+    $detailsLabel = if ($Details) { $Details } else { '(Details khali hai - user bharega)' }
+
+    Write-Host ''
+    Write-Host '========================================================' -ForegroundColor Cyan
+    Write-Host '  SARKARI COURT - CHALLAN DRAFT (koi file nahi likhi gayi)' -ForegroundColor Cyan
+    Write-Host '========================================================' -ForegroundColor Cyan
+    Write-Host ("  WorkId:      {0}" -f $IssueChallanForWorkId) -ForegroundColor Gray
+    Write-Host ("  Violation:   {0}" -f $ViolationType) -ForegroundColor Yellow
+    Write-Host ("  Proposed:    {0} points" -f $points) -ForegroundColor Yellow
+    Write-Host ("  Agent:       {0}" -f $agentLabel) -ForegroundColor White
+    Write-Host ("  Priors:      {0} non-pardoned" -f $priorChallans.Count) -ForegroundColor DarkGray
+
+    $ctx = [ordered]@{
+        workId         = $IssueChallanForWorkId
+        violation      = $ViolationType
+        proposedPoints = $points
+        agent          = $agentLabel
+        details        = $detailsLabel
+        priorCount     = $priorChallans.Count
+        priorChallans  = @($priorChallans | Select-Object challanId, agent, violation, points, status)
+        rule           = 'AI sirf DRAFT banata hai; challan file sirf -IssueChallanForWorkId + user approval se banti hai.'
+    }
+    $r = Invoke-SarkariChat `
+        -PersonaName 'court' `
+        -UserText 'Is evidence ke hisaab se challan ka DRAFT banao (JSON + kyun + against side bhi). Yaad rakho: tum nyay-clerk ho, challan khud issue nahi karte.' `
+        -ContextText ($ctx | ConvertTo-Json -Depth 6 -Compress) `
+        -Agent 'sarkari-court'
+
+    Write-Host ''
+    if ($r.Ok) {
+        Write-Host 'AI DRAFT (nyay-clerk persona - advisory)' -ForegroundColor Magenta
+        foreach ($line in ($r.Content -split "`r?`n")) {
+            if ($line.Trim()) { Write-Host ("  " + $line) -ForegroundColor White }
+        }
+    } else {
+        Write-Host ("AI clerk upasthit nahi: {0}" -f $r.Short) -ForegroundColor Yellow
+        Write-Host 'Local draft (AI ke bina - file PHIR BHI NAHI likhi gayi):' -ForegroundColor DarkGray
+        $fallback = [ordered]@{
+            note        = 'DRAFT ONLY - asli challan -IssueChallanForWorkId se banta hai'
+            workId      = $IssueChallanForWorkId
+            agent       = $agentLabel
+            violation   = $ViolationType
+            points      = $points
+            description = $detailsLabel
+            priors      = $priorChallans.Count
+        }
+        $fallback | ConvertTo-Json -Depth 4 | ForEach-Object { Write-Host ("  " + $_) }
+    }
+
+    Write-Host ''
+    Write-Host 'Asli challan (untak user approval chahiye):' -ForegroundColor Yellow
+    Write-Host ('  pwsh -File sarkari_deploy\sarkariCourt.ps1 -IssueChallanForWorkId {0} -ViolationType {1} -AgentName "{2}" -Details "{3}"' -f $IssueChallanForWorkId, $ViolationType, $AgentName, ($Details -replace '"', "'")) -ForegroundColor Gray
+    Write-Host ''
+}
+
+if ($Draft) {
+    Invoke-CourtDraftMode
+    exit 0
 }
 
 if ($Docket) {
