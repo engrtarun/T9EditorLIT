@@ -15,6 +15,7 @@
   import { menu } from '../../stores/menu.svelte';
   import type { MenuItem } from '../../types';
   import { fmtSize } from '../../utils';
+  import { firstFrameUrl } from '../../media';
 
   /**
    * "My media" — Clipchamp's left panel.
@@ -314,7 +315,7 @@
                 {:else if e.asset.url}
                   <!-- svelte-ignore a11y_media_has_caption -->
                   <video
-                    src={e.asset.url}
+                    src={firstFrameUrl(e.asset.url)}
                     muted
                     playsinline
                     preload="metadata"

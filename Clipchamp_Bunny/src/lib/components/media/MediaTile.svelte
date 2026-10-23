@@ -3,6 +3,7 @@
   import ContextMenu from '../ContextMenu.svelte';
   import type { MenuItem } from '../../types';
   import { assetUrl } from '../../ipc';
+  import { firstFrameUrl } from '../../media';
 
   /**
    * Clipchamp's media tile, 1:1 with the `asset` DOM:
@@ -76,7 +77,7 @@
     {:else if entry.asset.url}
       <!-- svelte-ignore a11y_media_has_caption -->
       <video
-        src={entry.asset.url}
+        src={firstFrameUrl(entry.asset.url)}
         muted
         playsinline
         preload="metadata"

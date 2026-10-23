@@ -219,8 +219,9 @@ class ProjectStore {
     // this in `loadFromBackend`; without it the browser's "My media" panel
     // was empty while the timeline showed the very same recording.
     if (!media.byPath(baked.url)) {
-      const entry = media.addPath(baked.url, baked.name, baked.sizeBytes);
+      const entry = media.addPath(baked.url, baked.name, baked.sizeBytes, baked.url);
       media.probed(entry.asset.id, {
+        url: baked.url,
         durationSecs: baked.durationSecs,
         width: baked.width,
         height: baked.height,
@@ -229,7 +230,10 @@ class ProjectStore {
         videoCodec: baked.videoCodec,
         audioCodec: baked.audioCodec,
         sampleRate: baked.sampleRate,
-        channels: baked.channels
+        channels: baked.channels,
+        durationLabel: `${Math.floor(baked.durationSecs / 60)}:${String(
+          Math.floor(baked.durationSecs % 60)
+        ).padStart(2, '0')}`
       });
       media.markInUse(entry.asset.id);
     }
@@ -290,22 +294,25 @@ class ProjectStore {
     }
 
     // Make sure the source is in the library too, so its media tile (and the
-    // menu on it) exists.
-    if (!media.byPath(canonical)) {
-      const entry = media.addPath(canonical, this.media.name, info.sizeBytes);
-      media.probed(entry.asset.id, {
-        durationSecs: info.durationSecs,
-        width: info.width ?? 0,
-        height: info.height ?? 0,
-        fps: info.fps ?? 0,
-        sizeBytes: info.sizeBytes,
-        videoCodec: info.videoCodec ?? 'unknown',
-        audioCodec: info.audioCodec,
-        durationLabel: `${Math.floor(info.durationSecs / 60)}:${String(
-          Math.floor(info.durationSecs % 60)
-        ).padStart(2, '0')}`
-      });
-    }
+    // menu on it) exists. An import already registered a bare entry (path +
+    // name, no URL yet), so patch that one instead of skipping it - otherwise
+    // a freshly imported file would keep a URL-less tile and look blank.
+    const existing = media.byPath(canonical);
+    const entry =
+      existing ?? media.addPath(canonical, this.media.name, info.sizeBytes, this.media.url);
+    media.probed(entry.asset.id, {
+      url: this.media.url,
+      durationSecs: info.durationSecs,
+      width: info.width ?? 0,
+      height: info.height ?? 0,
+      fps: info.fps ?? 0,
+      sizeBytes: info.sizeBytes,
+      videoCodec: info.videoCodec ?? 'unknown',
+      audioCodec: info.audioCodec,
+      durationLabel: `${Math.floor(info.durationSecs / 60)}:${String(
+        Math.floor(info.durationSecs % 60)
+      ).padStart(2, '0')}`
+    });
 
     const [wave, thumbs] = await Promise.all([
       extractWaveform(canonical).catch(() => null),

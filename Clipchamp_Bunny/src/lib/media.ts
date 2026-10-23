@@ -31,3 +31,16 @@ export async function loadThumbnails(): Promise<ThumbnailStrip> {
 export function thumbUrl(strip: ThumbnailStrip, index: number): string {
   return assetUrl(`${strip.dir}/thumb_${String(index + 1).padStart(5, '0')}.jpg`);
 }
+
+/**
+ * The library tile's poster.
+ *
+ * A `<video preload="metadata">` alone stays black: the browser has the
+ * duration but has not decoded a frame yet. The `#t=` media fragment makes it
+ * seek 100 ms in and paint that frame - no extra file, no extra decode, and it
+ * works for a file whose filmstrip has never been generated.
+ */
+export function firstFrameUrl(url: string): string {
+  if (!url || url.includes('#')) return url;
+  return `${url}#t=0.1`;
+}

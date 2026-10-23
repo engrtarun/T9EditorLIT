@@ -34,13 +34,20 @@ export interface MediaEntry {
 class MediaStore {
   entries = $state<MediaEntry[]>([]);
 
-  /** Register a file that is already on disk. */
-  addPath(path: string, name: string, sizeBytes = 0): MediaEntry {
+  /**
+   * Register a file that is already on disk.
+   *
+   * `url` is the streamable counterpart of `path` (`asset://` under Tauri, the
+   * public `/assets/...` path in the browser). Without it the tile has nothing
+   * for its `<video>` to stream, so it fell back to the grey placeholder and
+   * the library looked blank even though the media was there.
+   */
+  addPath(path: string, name: string, sizeBytes = 0, url = ''): MediaEntry {
     const entry: MediaEntry = {
       asset: {
         id: crypto.randomUUID(),
         name,
-        url: '',
+        url,
         durationSecs: 0,
         width: 0,
         height: 0,
