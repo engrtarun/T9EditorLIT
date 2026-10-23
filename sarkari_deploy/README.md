@@ -95,3 +95,49 @@ Two kinds of leftover, and both of them block the queue:
 The second one is the nastier of the two: an `active` order holds the only
 deploy slot, and only the _first_ order in the queue can take it, so
 everyone waits until the lease runs out on its own.
+
+## The AI layer (Phase 0+1): Puter login desk, Brain, Sahayak
+
+The sarkari family now has an optional AI helper on **Puter's free tier**.
+One engine, one log, one kanoon - separate persona file per role ("sabka
+kaam alag, sabka system prompt alag"):
+
+| File                    | Kaam                                                                 |
+| ----------------------- | -------------------------------------------------------------------- |
+| `sarkariPuterjs.ps1`     | the login counter: `-Login` (browser opens, paste token) / `-Status` / `-Logout` / `-Rotate` / `-ListModels` / `-Consent` |
+| `sarkariBrain.ps1`       | the shared engine - **dot-source only**; token load, redaction, 24 KB cap, retry, `chat/completions`, ai-log |
+| `sarkariHelp.ps1`        | the tutor persona ("help") - `sarkariHelp.ps1 "<sawal>"`, `-Error <logfile>`, `-Lesson`, `-NoAi` |
+| `prompts/constitution.md`| the kanoon every persona gets injected above their own prompt        |
+| `prompts/help.md`        | the sheriff-of-tutor persona file                                    |
+
+Setup, the whole thing:
+
+```powershell
+pwsh -File sarkari_deploy\sarkariPuterjs.ps1 -Login
+pwsh -File sarkari_deploy\sarkariHelp.ps1 "naya agent hu - kahan se shuru?"
+```
+
+Rules the layer is built on (read `prompts/constitution.md` for the full
+list):
+
+- **Token stays out of the repo** - DPAPI-encrypted file at
+  `%LOCALAPPDATA%\T9EditorLIT\puter\token.dpapi`, CurrentUser scope.
+  CI/agents use `PUTER_AUTH_TOKEN` env override instead.
+- **Consent before any cloud call** - the repo text goes to Puter's cloud
+  on the user's own account (free tier). One `consent.flag`, one time.
+- **Secrets never travel** - Brain redacts `ghp_`/`sk-`/`AKIA`/
+  `password=...` shapes before sending; the token itself never enters a
+  prompt.
+- **AI off = everything still works** - no token, no consent, or `-NoAi`:
+  scripts fall back to local knowledge and say so honestly. Gate ka kaam
+  FBI/ledger karte hain, AI ka nahi.
+- **ai-log is metadata only** - `records\ai\ai-log.jsonl` (gitignored):
+  when, which persona, which model, how long. Prompts/answers never.
+- **Personas are advisory** - `help` today; Police `-Explain`, Court/Vakil
+  `-Draft`, and an `sarkariOverseer.ps1` digest are later phases. Nothing
+  the AI says is executed; commands are typed by humans/agents that
+  understood them.
+
+Model: free-tier default `gpt-4o-mini`; override with `SARKARI_AI_MODEL`
+env or `-Model <id>` (`sarkariPuterjs.ps1 -ListModels` shows what Puter
+currently holds).
