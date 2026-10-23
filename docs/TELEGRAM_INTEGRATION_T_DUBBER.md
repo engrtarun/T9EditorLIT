@@ -147,14 +147,15 @@ When implementing **Chunk 5**, follow these exact steps:
 
 Implemented in `go/internal/vault`, offline-tested:
 
-| Piece                | Where         | Notes                                                           |
-| -------------------- | ------------- | --------------------------------------------------------------- |
-| 1.9 GB split planner | `vault.go`    | 5 GB → 3 parts, exact tiling, no overflow past the 2 GB ceiling |
-| Streaming SHA-256    | `digest.go`   | 512 KB buffer per part, independent handle per range            |
-| Resume manifest      | `manifest.go` | Rewritten after each part; a changed digest invalidates it      |
-| Connection pool      | `telegram.go` | `client.Pool(n)` — n sockets, one auth key, n parts in flight   |
-| QR authorisation     | `login.go`    | No phone number, no code, 2FA handled or reported               |
-| Peer resolution      | `target.go`   | @username, t.me link, invite link, `-100…` id, `me`             |
+| Piece                | Where                        | Notes                                                                                                                                                                                                    |
+| -------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.9 GB split planner | `vault.go`                   | 5 GB → 3 parts, exact tiling, no overflow past the 2 GB ceiling                                                                                                                                          |
+| Streaming SHA-256    | `digest.go`                  | 512 KB buffer per part, independent handle per range                                                                                                                                                     |
+| Resume manifest      | `manifest.go`                | Rewritten after each part; a changed digest invalidates it                                                                                                                                               |
+| Connection pool      | `telegram.go`                | `client.Pool(n)` — n sockets, one auth key, n parts in flight                                                                                                                                            |
+| QR authorisation     | `login.go`                   | No phone number, no code, 2FA handled or reported                                                                                                                                                        |
+| Peer resolution      | `target.go`                  | @username, t.me link, invite link, `-100…` id, `me`                                                                                                                                                      |
+| Restore (read half)  | `restore.go` + `telegram.go` | manifest-driven `FetchParts`: gotd `downloader` streams, every part digest-proven, temp files joined in order; per-restore resume record; `GET /v1/vault/manifests` menu + `POST /v1/vault/download` job |
 
 **Verified by tests:** the split, the digests, resume behaviour including the
 changed-file case, concurrent hashing, progress accounting, and every refusal

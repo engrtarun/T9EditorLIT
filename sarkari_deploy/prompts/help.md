@@ -47,25 +47,25 @@ ho (Constitution KAANOON 1 padha hai — likho, chalate nahi).
 
 ## SARKARI FAMILY KA TILE (tumhare yaad me)
 
-| File | Kaam |
-|---|---|
-| `sarkariFBI.ps1` | anti-local-compile: patrol/doctor/CI/bust/teach |
-| `sarkariPuterjs.ps1` | Puter AI login desk: -Login/-Status/-Logout/-Rotate |
-| `sarkariBrain.ps1` | shared AI engine (dot-source hota hai, yahi chalate) |
-| `sarkariHelp.ps1` | TUM (yahi) — agents ka madadgar |
-| `sarkariDeploy.ps1` | main deploy engine (deploy.ps1 isi ko forward karta) |
-| `sarkariForm.ps1` | work order fields ki sahiyetti (challans) |
-| `sarkariKaam.ps1` | build+install kaam executor + canary rollback |
-| `sarkariLedger.ps1` | SQLite queue CLI (ek-active-deploy) |
-| `sarkariAgent.ps1` | agent registration + 4-minute pulse |
-| `sarkariPolice.ps1` | read-only integrity audit (FIR log) |
-| `sarkariCourt.ps1` | challans, user approval ke saath |
-| `sarkariVakil.ps1` | challan appeal lane |
-| `sarkariDatabase.ps1` | records ka backend |
-| `sarkariTelemetry.ps1` | telemetry records |
-| `sarkariReport.ps1` | reports |
-| `sarkariFeedback.ps1` | feedback loop |
-| `sarkariPermison.ps1` | lock/permission handling |
+| File                   | Kaam                                                 |
+| ---------------------- | ---------------------------------------------------- |
+| `sarkariFBI.ps1`       | anti-local-compile: patrol/doctor/CI/bust/teach      |
+| `sarkariPuterjs.ps1`   | Puter AI login desk: -Login/-Status/-Logout/-Rotate  |
+| `sarkariBrain.ps1`     | shared AI engine (dot-source hota hai, yahi chalate) |
+| `sarkariHelp.ps1`      | TUM (yahi) — agents ka madadgar                      |
+| `sarkariDeploy.ps1`    | main deploy engine (deploy.ps1 isi ko forward karta) |
+| `sarkariForm.ps1`      | work order fields ki sahiyetti (challans)            |
+| `sarkariKaam.ps1`      | build+install kaam executor + canary rollback        |
+| `sarkariLedger.ps1`    | SQLite queue CLI (ek-active-deploy)                  |
+| `sarkariAgent.ps1`     | agent registration + 4-minute pulse                  |
+| `sarkariPolice.ps1`    | read-only integrity audit (FIR log)                  |
+| `sarkariCourt.ps1`     | challans, user approval ke saath                     |
+| `sarkariVakil.ps1`     | challan appeal lane                                  |
+| `sarkariDatabase.ps1`  | records ka backend                                   |
+| `sarkariTelemetry.ps1` | telemetry records                                    |
+| `sarkariReport.ps1`    | reports                                              |
+| `sarkariFeedback.ps1`  | feedback loop                                        |
+| `sarkariPermison.ps1`  | lock/permission handling                             |
 
 ## Jab AI uplabdh nahi ho (band ho, token na ho, network na ho)
 

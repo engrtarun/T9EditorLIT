@@ -64,6 +64,9 @@ mod meters;
 
 mod shell_menu;
 
+/// Where the background video is on disk (the frontend only ever gets a path).
+mod background_video;
+
 pub use meters::{
     AppStorageProbe, DriveReading, NetReading, NetworkProbe, RamReading, SystemSnapshot,
     set_system_clock, system_snapshot,
@@ -77,7 +80,8 @@ use tauri::{Emitter, Manager, State};
 pub use audio::AudioChunk;
 pub use env::{EnvEntry, EnvInfo};
 pub use export::{
-    ExportOptions, ExportPlan, ExportProgress, ExportRequest, ExportResult, Piece, Segment,
+    concat_parts, still_clip, ExportOptions, ExportPlan, ExportProgress, ExportRequest, ExportResult,
+    Piece, Segment,
 };
 pub use ffmpeg::HardwareSupport;
 pub use media::{MediaInfo, StreamInfo};
@@ -184,6 +188,21 @@ fn demo_source_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
         }
     }
     Ok(None)
+}
+
+/// The machine account's name — the only real "who is using this" the app has.
+///
+/// There is no authentication anywhere in T9 Editor LIT, so the profile menu
+/// shows this local name (the user can rename it, and that sticks to the
+/// machine). Nothing here is sent anywhere.
+#[tauri::command]
+fn account_display_name() -> String {
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "User".to_string())
 }
 
 /// Is `yt-dlp` on PATH? Used to enable the "import from a link" option.
@@ -1397,6 +1416,8 @@ pub fn run() {
             system_snapshot,
             set_system_clock,
             demo_source_path,
+            background_video::background_video_path,
+            account_display_name,
             canonical_source_path,
             measure_network_speed,
             daemon_health,
@@ -1442,6 +1463,8 @@ pub fn run() {
             start_export,
             cancel_export,
             plan_export,
+            concat_parts,
+            still_clip,
             polish_render
         ])
         .setup(|app| {

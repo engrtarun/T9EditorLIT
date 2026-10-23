@@ -1,174 +1,143 @@
 <script lang="ts">
   /**
-   * The dashboard's top bar.
+   * The dashboard's top bar — a transparent strip over the background video.
    *
-   * Clipchamp's header, minus everything that belongs to a *project* (the
-   * project dropdown, the cloud toggle) — on the dashboard there is no project
-   * open yet. What is left is the brand, the search box and the two buttons
-   * that are always there.
+   * It holds exactly what the reference layout holds: the brand, the section
+   * tabs and the profile avatar, at the top edge of the window. Nothing else.
+   * The search box, the system meters, the cloud menu, the update button and
+   * the settings / help icons all lived here before and are gone: every one
+   * of them is reachable from the editor bar or the profile popover, and none
+   * of them belonged over the footage. The middle of the frame stays empty.
+   *
+   * The three sections (Home · T9 Cloud · Trash) used to be a 9-dot launcher
+   * whose menu repeated them *and* a 248 px sidebar. Both are gone: the tabs
+   * are the navigation now, exactly one click, with the live trash count where
+   * the eye already is.
    */
   import { app } from '../../stores/app.svelte';
-  import { greeting } from '../../stores/greeting.svelte';
-  import { layout } from '../../stores/layout.svelte';
-  import { menu } from '../../stores/menu.svelte';
-  import CloudMenu from '../CloudMenu.svelte';
-  import SystemMeter from '../SystemMeter.svelte';
-  import UpdateButton from '../UpdateButton.svelte';
+  import { i18n } from '../../stores/i18n.svelte';
+  import { appearance } from '../../stores/appearance.svelte';
+  import ProfileMenu from '../ProfileMenu.svelte';
   import BrandMark from './BrandMark.svelte';
-  import type { MenuItem } from '../../types';
 
-  /** The search text lives in the dashboard — it filters the project list. */
-  let { query = $bindable('') }: { query?: string } = $props();
+  /** `trashCount` comes down from the dashboard, which already holds the bin. */
+  let { trashCount = 0 }: { trashCount?: number } = $props();
 
-  const SECTIONS: MenuItem[] = [
-    { id: 'home', label: 'Home', icon: 'spark' },
-    { id: 'videos', label: 'Your videos', icon: 'folder' },
-    { id: 'trash', label: 'Trash', icon: 'trash' }
-  ];
+  const TABS = ['home', 'cloud', 'trash'] as const;
+  type Tab = (typeof TABS)[number];
 
-  function openLauncher(e: MouseEvent) {
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    menu.show(SECTIONS, Math.round(r.left), Math.round(r.bottom + 4), (id) => {
-      app.goHome(id as 'home' | 'videos' | 'trash');
-    });
-  }
+  const label: Record<Tab, string> = {
+    home: 'nav.home',
+    cloud: 'nav.cloud',
+    trash: 'nav.trash'
+  };
 
-  /** The TD avatar is the language switch: English or Hinglish (default). */
-  function openLanguage(e: MouseEvent) {
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    menu.show(
-      [
-        { id: 'hi', label: 'Hinglish (default)' },
-        { id: 'en', label: 'English' },
-        { id: 'settings', label: 'Settings…', icon: 'key' }
-      ],
-      Math.round(r.right - 168),
-      Math.round(r.bottom + 6),
-      (id) => {
-        if (id === 'settings') layout.settingsOpen = true;
-        else greeting.setLang(id === 'en' ? 'en' : 'hi');
-      }
-    );
-  }
+  /* ------------------------------------------- the rotating "T9 Cloud" label
+   * The cloud tab is the one animated label in the bar: it slowly cycles
+   * T9 Cloud → AI APIs → T9 Connections → Fast Setup and back, a 600 ms
+   * cross-fade with a 6 px settle, holding ~2 s on each phrase so it stays
+   * readable. The phrases are stacked in a single grid cell, so the tab's
+   * width is reserved at the *widest* phrase and nothing to its right ever
+   * shifts. The button keeps a plain `aria-label="T9 Cloud"` and the stack is
+   * `aria-hidden`, so screen readers hear the real section name once, not four
+   * decorative words. Reduced Motion (app setting or Windows) freezes it on
+   * the first phrase — the loop is decoration, so it is the first thing to go.
+   */
+  const ROTATE_MS = 2600; // ~2 s readable + the 600 ms transition
+
+  const cloudPhrases = $derived([
+    i18n.t('cloud.rot1'),
+    i18n.t('cloud.rot2'),
+    i18n.t('cloud.rot3'),
+    i18n.t('cloud.rot4')
+  ]);
+
+  let rotIndex = $state(0);
+  let rotTimer: ReturnType<typeof setInterval> | undefined;
+
+  const motionOff = $derived(
+    appearance.motion === 'reduced' ||
+      (typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches)
+  );
+
+  $effect(() => {
+    // Recompute the loop whenever motion preference or language changes.
+    if (motionOff || cloudPhrases.length === 0) {
+      rotIndex = 0;
+      return;
+    }
+    rotIndex = 0;
+    rotTimer = setInterval(() => {
+      rotIndex = (rotIndex + 1) % cloudPhrases.length;
+    }, ROTATE_MS);
+    return () => {
+      if (rotTimer) clearInterval(rotTimer);
+    };
+  });
 </script>
 
 <header
   data-focus="header"
   tabindex="-1"
-  class="flex h-12 shrink-0 items-center gap-3 border-b border-nc-line bg-nc-panel pr-3 pl-2 select-none outline-none"
+  class="t9-over-video flex h-12 shrink-0 items-center gap-2.5 pr-3 pl-2 select-none outline-none"
 >
-  <!-- app launcher (9 dots) -->
-  <button
-    onclick={openLauncher}
-    class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-nc-mut transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
-    title="Go to"
-    aria-haspopup="menu"
-  >
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-      <circle cx="3" cy="3" r="1.4" /><circle cx="8" cy="3" r="1.4" /><circle
-        cx="13"
-        cy="3"
-        r="1.4"
-      />
-      <circle cx="3" cy="8" r="1.4" /><circle cx="8" cy="8" r="1.4" /><circle
-        cx="13"
-        cy="8"
-        r="1.4"
-      />
-      <circle cx="3" cy="13" r="1.4" /><circle cx="8" cy="13" r="1.4" /><circle
-        cx="13"
-        cy="13"
-        r="1.4"
-      />
-    </svg>
-  </button>
-
   <!-- brand -->
-  <div class="flex shrink-0 items-center gap-2">
+  <div class="flex shrink-0 items-center gap-2 pr-1">
     <BrandMark size={28} />
     <span class="font-brand text-[16px] leading-none tracking-[0.02em]">
       T9 Editor <span class="text-nc-brand">LIT</span>
     </span>
   </div>
 
-  <!-- search: the box keeps its size, only the border reacts -->
-  <div class="flex flex-1 justify-center">
-    <label class="relative block w-full max-w-[420px]">
-      <svg
-        width="15"
-        height="15"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-nc-mut-2"
-        aria-hidden="true"
+  <!-- section tabs: the navigation, kept at the top-left corner -->
+  <nav class="flex shrink-0 items-center gap-1" aria-label={i18n.t('nav.sections')}>
+    {#each TABS as id (id)}
+      <button
+        onclick={() => app.goHome(id)}
+        class="relative rounded-md px-2.5 py-1 text-[13px] font-medium transition-colors duration-150
+               {app.section === id ? 'text-white' : 'text-white/70 hover:text-white'}"
+        aria-current={app.section === id ? 'page' : undefined}
+        aria-label={id === 'cloud' ? i18n.t('nav.cloud') : undefined}
       >
-        <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
-      </svg>
-      <input
-        type="search"
-        bind:value={query}
-        placeholder="Search your projects"
-        aria-label="Search your projects"
-        class="h-9 w-full rounded-lg border border-nc-line bg-nc-bg pr-3 pl-9 text-[13px] text-nc-txt
-               transition-colors duration-150 outline-none placeholder:text-nc-mut-2
-               focus:border-nc-brand/70"
-      />
-    </label>
+        {#if id === 'cloud'}
+          <!--
+            The rotating label. All four phrases live in ONE grid cell, so the
+            tab is as wide as the longest phrase and nothing to its right moves
+            as the words cross-fade. `aria-hidden` because the button already
+            carries a stable aria-label above.
+          -->
+          <span class="relative inline-grid" aria-hidden="true">
+            {#each cloudPhrases as phrase, i (i)}
+              <span
+                class="t9-label-rotate col-start-1 row-start-1 whitespace-nowrap"
+                data-on={i === rotIndex ? '' : undefined}
+              >
+                {phrase}
+              </span>
+            {/each}
+          </span>
+        {:else}
+          {i18n.t(label[id])}
+        {/if}
+        {#if id === 'trash' && trashCount > 0}
+          <span
+            class="ml-1 rounded-full bg-nc-red px-1.5 py-0.5 text-[10px] leading-none font-bold text-white"
+          >
+            {trashCount}
+          </span>
+        {/if}
+        {#if app.section === id}
+          <span class="t9-underline-in absolute inset-x-1 -bottom-1 h-0.5 rounded-full bg-nc-brand"
+          ></span>
+        {/if}
+      </button>
+    {/each}
+  </nav>
+
+  <!-- everything between the tabs and the avatar is deliberately empty -->
+
+  <!-- avatar = the profile popover (Edit profile · App settings · Language · Help & About) -->
+  <div class="ml-auto shrink-0">
+    <ProfileMenu />
   </div>
-
-  <!-- RAM / this app / network: the same honesty meter as the editor -->
-  <SystemMeter />
-
-  <!-- cloud / providers -->
-  <CloudMenu />
-
-  <!-- a newer build is waiting: offer the restart -->
-  <UpdateButton />
-
-  <!-- settings -->
-  <button
-    onclick={() => (layout.settingsOpen = true)}
-    class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-nc-mut transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
-    title="Settings"
-    aria-label="Settings"
-  >
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.7"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="3" />
-      <path
-        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 3a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
-      />
-    </svg>
-  </button>
-
-  <!-- help -->
-  <button
-    onclick={() => (layout.helpOpen = true)}
-    class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-[15px] font-medium text-nc-mut transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
-    title="Help · keyboard shortcuts (Ctrl + /)"
-    aria-label="Help"
-  >
-    ?
-  </button>
-
-  <!-- avatar = language switch (English / Hinglish) -->
-  <button
-    onclick={openLanguage}
-    class="ml-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-nc-brand text-[10px] font-bold text-white transition-[filter] duration-150 hover:brightness-110"
-    title="Language · {greeting.lang === 'en' ? 'English' : 'Hinglish'}"
-    aria-label="Choose language"
-    aria-haspopup="menu"
-  >
-    TD
-  </button>
 </header>

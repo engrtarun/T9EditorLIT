@@ -102,20 +102,20 @@ The sarkari family now has an optional AI helper on **Puter's free tier**.
 One engine, one log, one kanoon - separate persona file per role ("sabka
 kaam alag, sabka system prompt alag"):
 
-| File                    | Kaam                                                                 |
-| ----------------------- | -------------------------------------------------------------------- |
-| `sarkariPuterjs.ps1`     | the login counter: `-Login` (browser opens, paste token) / `-Status` / `-Logout` / `-Rotate` / `-ListModels` / `-Consent` |
-| `sarkariBrain.ps1`       | the shared engine - **dot-source only**; token load, redaction, 24 KB cap, retry, `chat/completions`, ai-log |
-| `sarkariHelp.ps1`        | the tutor persona ("help") - `sarkariHelp.ps1 "<sawal>"`, `-Error <logfile>`, `-Lesson`, `-NoAi` |
-| `sarkariPolice.ps1`      | FIR explainer - `-Explain` + `-Model`: AI reads the findings JSON, gives Hinglish FIR-saar; zero findings = no AI call at all |
-| `sarkariCourt.ps1`       | challan drafter - `-Draft`: nyay-clerk persona builds a challan DRAFT (JSON + kyun + against-side). **No file is written**; the real challan still needs `-IssueChallanForWorkId` + user approval |
-| `sarkariVakil.ps1`       | defense drafter - `-Draft`: vakil persona drafts a Safai Nama (grounds + statement + evidence checklist) against the newest `-ChallanId`/active challan. **No plea is filed**; the printed filing command stays manual |
-| `prompts/constitution.md`| the kanoon every persona gets injected above their own prompt        |
-| `prompts/help.md`        | the sheriff-of-tutor persona file                                    |
-| `prompts/police.md`      | the thanedar (explain, never punish) persona file                    |
-| `prompts/court.md`       | the nyay-clerk (draft, never issue) persona file                     |
-| `prompts/vakil.md`       | the defense advocate (draft, never file; truth-first) persona file   |
-| `tools/model-probe.ps1`  | one-shot probe: which models are ACTUALLY free on this account       |
+| File                      | Kaam                                                                                                                                                                                                                   |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sarkariPuterjs.ps1`      | the login counter: `-Login` (browser opens, paste token) / `-Status` / `-Logout` / `-Rotate` / `-ListModels` / `-Consent`                                                                                              |
+| `sarkariBrain.ps1`        | the shared engine - **dot-source only**; token load, redaction, 24 KB cap, retry, `chat/completions`, ai-log                                                                                                           |
+| `sarkariHelp.ps1`         | the tutor persona ("help") - `sarkariHelp.ps1 "<sawal>"`, `-Error <logfile>`, `-Lesson`, `-NoAi`                                                                                                                       |
+| `sarkariPolice.ps1`       | FIR explainer - `-Explain` + `-Model`: AI reads the findings JSON, gives Hinglish FIR-saar; zero findings = no AI call at all                                                                                          |
+| `sarkariCourt.ps1`        | challan drafter - `-Draft`: nyay-clerk persona builds a challan DRAFT (JSON + kyun + against-side). **No file is written**; the real challan still needs `-IssueChallanForWorkId` + user approval                      |
+| `sarkariVakil.ps1`        | defense drafter - `-Draft`: vakil persona drafts a Safai Nama (grounds + statement + evidence checklist) against the newest `-ChallanId`/active challan. **No plea is filed**; the printed filing command stays manual |
+| `prompts/constitution.md` | the kanoon every persona gets injected above their own prompt                                                                                                                                                          |
+| `prompts/help.md`         | the sheriff-of-tutor persona file                                                                                                                                                                                      |
+| `prompts/police.md`       | the thanedar (explain, never punish) persona file                                                                                                                                                                      |
+| `prompts/court.md`        | the nyay-clerk (draft, never issue) persona file                                                                                                                                                                       |
+| `prompts/vakil.md`        | the defense advocate (draft, never file; truth-first) persona file                                                                                                                                                     |
+| `tools/model-probe.ps1`   | one-shot probe: which models are ACTUALLY free on this account                                                                                                                                                         |
 
 Setup, the whole thing:
 

@@ -42,6 +42,26 @@ export function demoSourcePath(): Promise<string | null> {
 }
 
 /**
+ * On-disk path of the background video (`leatTokyo.mp4`).
+ *
+ * Only the **path** crosses IPC — the webview streams the file through
+ * Tauri's `asset://` protocol with HTTP range requests, so the video is never
+ * read into memory as a whole. `null` means the file is nowhere to be found
+ * and the UI should fall back to its static background.
+ */
+export function backgroundVideoPath(): Promise<string | null> {
+  return invoke<string | null>('background_video_path').catch(() => null);
+}
+
+/**
+ * The local Windows account name — the only real "who is using this app"
+ * data that exists (there is no authentication in T9 Editor LIT).
+ */
+export function accountDisplayName(): Promise<string> {
+  return invoke<string>('account_display_name').catch(() => '');
+}
+
+/**
  * The one spelling of a path that always identifies the same file.
  *
  * The transcript table is keyed by path, so the *string* has to be stable. A
@@ -71,7 +91,11 @@ export async function pickVideos(): Promise<string[]> {
     multiple: true,
     directory: false,
     filters: [
-      { name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'] },
+      { name: 'Media', extensions: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'] },
+      {
+        name: 'Images',
+        extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif']
+      },
       { name: 'Audio', extensions: ['mp3', 'wav', 'm4a', 'aac', 'flac'] }
     ]
   });
@@ -550,6 +574,11 @@ export interface ExportOptions {
   format: string;
   /** `source` (default) · `480p` · `720p` · `1080p` · `4k`. */
   resolution: string;
+  /**
+   * Multi-clip sequence canvas: render onto exactly this frame (H.264, 30 fps,
+   * AAC 48 kHz stereo) so the parts can be joined with a stream copy.
+   */
+  canvas?: [number, number] | null;
   /** MP3 bitrate, in kbps: 128 · 192 · 256 · 320. */
   bitrateKbps: number;
   /** MP3 sample rate, in Hz: 44100 · 48000. */
@@ -656,6 +685,42 @@ async function browserExport(request: ExportRequest): Promise<ExportResult> {
 
 export function cancelExport(): Promise<void> {
   return invoke('cancel_export');
+}
+
+/**
+ * Stitch independently rendered parts into one file — the last step of a
+ * multi-clip export.
+ *
+ * Every part is rendered by the normal engine (the exact pipeline a
+ * single-clip export uses), so this only has to join files that already share
+ * codec, resolution and audio layout. Parts are removed on success; a failed
+ * join leaves them in place so the next attempt can reuse them.
+ */
+export function concatParts(
+  parts: string[],
+  output: string,
+  cleanup = true
+): Promise<ExportResult> {
+  if (!isTauri()) throw new Error('multi-clip export runs in the desktop app');
+  return invoke<ExportResult>('concat_parts', { parts, output, cleanup });
+}
+
+/**
+ * Turn a still image into a short clip with silent audio.
+ *
+ * A picture has no duration and no audio stream, so it cannot go through the
+ * cut engine. This gives it the same H.264/AAC shape as the video parts, which
+ * keeps the final concat a plain stream copy.
+ */
+export function stillClip(
+  image: string,
+  seconds: number,
+  output: string,
+  width: number,
+  height: number
+): Promise<ExportResult> {
+  if (!isTauri()) throw new Error('image clips export in the desktop app');
+  return invoke<ExportResult>('still_clip', { image, seconds, output, width, height });
 }
 
 export function planExport(request: ExportRequest): Promise<{

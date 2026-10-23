@@ -2,7 +2,7 @@
   import { project } from '../stores/project.svelte';
   import { layout } from '../stores/layout.svelte';
   import { app } from '../stores/app.svelte';
-  import { greeting } from '../stores/greeting.svelte';
+  import { i18n } from '../stores/i18n.svelte';
   import CloudMenu from './CloudMenu.svelte';
   import SystemMeter from './SystemMeter.svelte';
   import ContextMenu from './ContextMenu.svelte';
@@ -13,6 +13,7 @@
   import { toast } from '../stores/toast.svelte';
   import UpdateButton from './UpdateButton.svelte';
   import BrandMark from './dashboard/BrandMark.svelte';
+  import ProfileMenu from './ProfileMenu.svelte';
 
   /** Clipchamp's project-name menu (captured in the .ipynb DOM extract). */
   let renaming = $state(false);
@@ -53,24 +54,6 @@
       }
     });
   }
-
-  /** The TD avatar is the language switch: English or Hinglish (default). */
-  function openLanguage(e: MouseEvent) {
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    menu.show(
-      [
-        { id: 'hi', label: 'Hinglish (default)' },
-        { id: 'en', label: 'English' },
-        { id: 'settings', label: 'Settings…', icon: 'key' }
-      ],
-      Math.round(r.right - 168),
-      Math.round(r.bottom + 6),
-      (id) => {
-        if (id === 'settings') layout.settingsOpen = true;
-        else greeting.setLang(id === 'en' ? 'en' : 'hi');
-      }
-    );
-  }
 </script>
 
 <!-- TOP BAR — structure copied 1:1 from Clipchamp (measured on the OBS capture):
@@ -87,8 +70,8 @@
       // re-reads SQLite — otherwise a fast Home click shows a stale card.
       void project.flush().then(() => app.goHome('home'))}
     class="grid h-8 w-8 place-items-center rounded-md text-nc-mut transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
-    title="Home"
-    aria-label="Home"
+    title={i18n.t('bar.home')}
+    aria-label={i18n.t('bar.home')}
   >
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
       <circle cx="3" cy="3" r="1.4" /><circle cx="8" cy="3" r="1.4" /><circle
@@ -132,7 +115,7 @@
     <button
       onclick={toggleProj}
       class="ml-1 flex items-center gap-1.5 rounded-md bg-nc-panel-2 px-2.5 py-1 text-[13px] font-medium hover:bg-nc-line"
-      title="Project menu"
+      title={i18n.t('bar.projectMenu')}
       aria-haspopup="menu"
     >
       <span class="max-w-[190px] truncate">{project.name}</span>
@@ -157,8 +140,8 @@
   <button
     onclick={() => (layout.settingsOpen = true)}
     class="grid h-8 w-8 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-    title="Settings"
-    aria-label="Settings"
+    title={i18n.t('bar.settings')}
+    aria-label={i18n.t('bar.settings')}
   >
     <svg
       width="16"
@@ -179,19 +162,12 @@
   <button
     onclick={() => (layout.helpOpen = true)}
     class="grid h-8 w-8 place-items-center rounded-md text-[15px] font-medium text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-    title="Help · keyboard shortcuts (Ctrl + /)"
+    title={i18n.t('bar.help')}
+    aria-label={i18n.t('bar.helpShort')}
   >
     ?
   </button>
 
-  <!-- avatar = language switch (English / Hinglish) -->
-  <button
-    onclick={openLanguage}
-    class="ml-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-nc-brand text-[10px] font-bold text-white transition-[filter] duration-150 hover:brightness-110"
-    title="Language · {greeting.lang === 'en' ? 'English' : 'Hinglish'}"
-    aria-label="Choose language"
-    aria-haspopup="menu"
-  >
-    TD
-  </button>
+  <!-- avatar = the profile popover (Edit profile · App settings · Language · Help & About) -->
+  <ProfileMenu />
 </header>

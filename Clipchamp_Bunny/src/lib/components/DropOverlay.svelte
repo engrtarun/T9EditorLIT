@@ -5,13 +5,14 @@
 
   /**
    * App-wide drag & drop. Drop a video anywhere in the window and it is
-   * imported, probed and made the project source — the Clipchamp behaviour of
-   * "drag & drop media from your device to import".
+   * imported into **My media** - the Clipchamp behaviour of "drag & drop media
+   * from your device to import". It only becomes a new project when none is
+   * open; otherwise it waits in the library for the timeline.
    *
    * On the desktop this goes through Tauri's own drag-drop event, because
    * **only** that gives the real filesystem path. The browser's `dataTransfer`
    * hands over a blob with no path behind it, and a blob cannot be probed by
-   * FFmpeg or written to SQLite — it would have been a fake asset.
+   * FFmpeg or written to SQLite - it would have been a fake asset.
    */
   let dragging = $state(false);
   let over = $state(false);
@@ -54,18 +55,17 @@
     if (!files?.length) return;
 
     const usable = [...files].filter(
-      (f) => f.type.startsWith('video/') || f.type.startsWith('audio/')
+      (f) =>
+        f.type.startsWith('video/') || f.type.startsWith('audio/') || f.type.startsWith('image/')
     );
     if (!usable.length) return;
 
-    // A dropped file that arrives mid-edit starts a new project.
+    // Import fills My media. It only becomes a new project when none is open,
+    // and only then is the import screen worth showing - with a project open
+    // the library tile is already on screen.
+    const hadProject = !!project.media;
     await project.importDropped(usable);
-
-    if (mode.current === 'ingest') {
-      // stay here — the pipeline is already visible
-    } else {
-      mode.set('ingest');
-    }
+    if (!hadProject) mode.set('ingest');
   }
 
   // The desktop path: Tauri hands us the real paths of the dropped files.
@@ -88,8 +88,9 @@
           } else if (payload.type === 'drop') {
             dragging = false;
             over = false;
+            const hadProject = !!project.media;
             void project.importPaths(payload.paths);
-            if (mode.current !== 'ingest') mode.set('ingest');
+            if (!hadProject) mode.set('ingest');
           }
         });
         if (alive) unlisten = stop;

@@ -20,12 +20,16 @@ package vault
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +37,7 @@ import (
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
@@ -140,6 +145,7 @@ type Telegram struct {
 var (
 	_ Uploader     = (*Telegram)(nil)
 	_ LoginStarter = (*Telegram)(nil)
+	_ Fetcher      = (*Telegram)(nil)
 )
 
 // Status is what the UI needs to decide whether a backup can even be attempted.
@@ -933,4 +939,309 @@ func partSpan(parts []Part) int64 {
 		}
 	}
 	return n
+}
+
+// ── the read path (vault restore) ───────────────────────────────────────
+//
+// Downloads are the mirror of UploadParts: one pool for the run, one worker
+// per connection, one part in flight per worker. Flood waits are honoured by
+// gotd's reader; a CDN redirect is refused with a clear sentence, because the
+// parts this vault uploads never go to Telegram's CDN zone — only files
+// brought in from elsewhere can be in one.
+
+// FetchParts streams the given parts back down into destDir.
+//
+// Everything that makes a 1.9 GB download survivable happens here: the pool is
+// one per run, cancellation arrives through Close (a hung-up HTTP client must
+// not throw away 1.9 GB of finished streaming), and every part is verified
+// against the digest the upload recorded before it is called restored.
+func (t *Telegram) FetchParts(
+	ctx context.Context,
+	chatID string,
+	m Manifest,
+	fetch []int,
+	destDir string,
+	base int64,
+	report func(Progress),
+) error {
+	if t == nil || len(fetch) == 0 {
+		return nil
+	}
+
+	client, err := t.connect(ctx)
+	if err != nil {
+		return err
+	}
+	if !t.Authorised() {
+		return ErrNotAuthorised
+	}
+
+	peer, err := t.peer(ctx, client, chatID)
+	if err != nil {
+		return err
+	}
+
+	// One pool for the whole run, exactly like the upload path: connections
+	// are the scarce resource.
+	pool, err := client.Pool(int64(t.opts.Connections))
+	if err != nil {
+		return fmt.Errorf("opening the connection pool: %w", err)
+	}
+	defer pool.Close()
+	api := tg.NewClient(pool)
+
+	name, err := RestoreName(m.Source)
+	if err != nil {
+		return err
+	}
+	store, err := openRestoreManifest(t.opts.SessionDir, &m, destDir, name)
+	if err != nil {
+		return err
+	}
+
+	rt := newRestoreProgress(report, m.SourceSize, len(m.Parts), t.opts.Connections)
+	rt.assumed(base)
+	rt.setPhase(PhaseDownloading)
+
+	// The caller's context must not cancel a download that is already
+	// streaming 1.9 GB. Cancellation arrives through Close.
+	workCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancel()
+
+	var (
+		mu     sync.Mutex
+		failed error
+		queue  = make(chan int)
+	)
+
+	workers := t.opts.Connections
+	if workers > len(fetch) {
+		workers = len(fetch)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// The queue delivers a row position in m.Parts; the worker
+			// consumes it directly, so a resume list like [1,2] stays a
+			// resume list and never re-indexes itself.
+			for row := range queue {
+				if workCtx.Err() != nil {
+					return
+				}
+				part := m.Parts[row]
+
+				temp, perr := RestoreTempPath(destDir, name, part.Index)
+				if perr != nil {
+					mu.Lock()
+					if failed == nil {
+						failed = perr
+					}
+					mu.Unlock()
+					continue
+				}
+
+				ferr := t.fetchPart(workCtx, api, peer, part, temp, rt)
+				if ferr != nil {
+					mu.Lock()
+					if failed == nil {
+						failed = fmt.Errorf("part %d/%d: %w", part.Index+1, len(m.Parts), ferr)
+					}
+					mu.Unlock()
+					continue
+				}
+				store.recordDone(part.Index)
+			}
+		}()
+	}
+
+	go func() {
+		defer close(queue)
+		for _, pos := range fetch {
+			select {
+			case queue <- pos:
+			case <-workCtx.Done():
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	if failed != nil {
+		store.fail(failed.Error())
+		return failed
+	}
+	return nil
+}
+
+// fetchPart streams one stored part from the vault chat to a temp file and
+// proves it against the manifest's digest.
+//
+// Everything streams: the chunk buffer belongs to gotd's downloader, the
+// digest accumulates as the bytes pass through, and the temp file is deleted
+// at the first sign of anything other than exact, matching bytes.
+func (t *Telegram) fetchPart(
+	ctx context.Context,
+	api *tg.Client,
+	peer resolvedPeer,
+	part ManifestPart,
+	tempPath string,
+	rt *restoreProgress,
+) error {
+	doc, err := messageDocument(ctx, api, peer, part.MessageID)
+	if err != nil {
+		return err
+	}
+	if doc.Size != part.Size {
+		return fmt.Errorf(
+			"vault message %d holds %s but the manifest expects %s — the part may have been replaced in the chat",
+			part.MessageID, humanBytes(doc.Size), humanBytes(part.Size))
+	}
+
+	loc := &tg.InputDocumentFileLocation{
+		ID:            doc.ID,
+		AccessHash:    doc.AccessHash,
+		FileReference: doc.FileReference,
+	}
+
+	f, err := os.Create(tempPath)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", filepath.Base(tempPath), err)
+	}
+
+	rt.partStarted(part.Index, part.Size, part.Name)
+
+	stream := &digestWriter{w: f, h: sha256.New()}
+
+	_, err = downloader.NewDownloader().
+		WithPartSize(UploadPartBytes).
+		Download(api, loc).
+		Stream(ctx, stream)
+
+	// The final part of an exact-multiple size relies on one extra RPC
+	// answering empty; a short stream is therefore a truncated download and
+	// is judged only by the byte count plus the digest.
+	if err == nil && stream.n != part.Size {
+		err = fmt.Errorf("Telegram stopped streaming after %s of %s",
+			humanBytes(stream.n), humanBytes(part.Size))
+	}
+	if err != nil {
+		var redirect *downloader.RedirectError
+		if errors.As(err, &redirect) {
+			err = fmt.Errorf("this part lives on Telegram's CDN zone, which the daemon cannot read back from yet: %w", err)
+		}
+	} else {
+		got := hex.EncodeToString(stream.h.Sum(nil))
+		if !strings.EqualFold(got, part.SHA256) {
+			err = fmt.Errorf("digest mismatch after download: Telegram's bytes read %s…, manifest says %s…",
+				shortSHA(got), shortSHA(part.SHA256))
+		}
+	}
+
+	if cerr := f.Close(); cerr != nil && err == nil {
+		err = fmt.Errorf("closing %s: %w", filepath.Base(tempPath), cerr)
+	}
+	if err != nil {
+		_ = os.Remove(tempPath)
+		rt.partFailed(part)
+		return err
+	}
+
+	rt.partStored(part)
+	return nil
+}
+
+// digestWriter counts bytes and hashes while they pass through, so a part is
+// proven in the same pass that writes it — no second full read.
+type digestWriter struct {
+	w io.Writer
+	h hash.Hash
+	n int64
+}
+
+func (d *digestWriter) Write(p []byte) (int, error) {
+	n, err := d.w.Write(p)
+	if n > 0 {
+		d.h.Write(p[:n]) // a crypto hash never refuses bytes
+		d.n += int64(n)
+	}
+	return n, err
+}
+
+// messageDocument resolves one stored message into its document.
+//
+// Channels answer through channels.getMessages; a user chat ("me", Saved
+// Messages) or a plain chat answers through messages.getMessages — the two
+// RPC families are not interchangeable, and picking by peer type is the rule
+// Telegram's schema follows.
+func messageDocument(ctx context.Context, api *tg.Client, peer resolvedPeer, messageID int) (*tg.Document, error) {
+	fail := func(reason string) error {
+		return fmt.Errorf("vault message %d: %s", messageID, reason)
+	}
+
+	inputID := []tg.InputMessageClass{&tg.InputMessageID{ID: messageID}}
+	var messages []tg.MessageClass
+
+	switch p := peer.input.(type) {
+	case *tg.InputPeerChannel:
+		res, err := api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash},
+			ID:      inputID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("reading vault message %d: %w", messageID, err)
+		}
+		messages = messagesOf(res)
+	case *tg.InputPeerChannelFromMessage:
+		return nil, fmt.Errorf(
+			"vault message %d: restore needs the chat addressed as a username, link or id, not %T",
+			messageID, p)
+	default:
+		res, err := api.MessagesGetMessages(ctx, inputID)
+		if err != nil {
+			return nil, fmt.Errorf("reading vault message %d: %w", messageID, err)
+		}
+		messages = messagesOf(res)
+	}
+
+	for _, mc := range messages {
+		msg, ok := mc.(*tg.Message)
+		if !ok || msg.ID != messageID {
+			continue
+		}
+		media, ok := msg.Media.(*tg.MessageMediaDocument)
+		if !ok || media.Document == nil {
+			return nil, fail("does not carry a document — the part may have been replaced or re-captioned")
+		}
+		switch d := media.Document.(type) {
+		case *tg.Document:
+			return d, nil
+		case *tg.DocumentEmpty:
+			return nil, fail("document was deleted")
+		default:
+			return nil, fmt.Errorf("vault message %d: unexpected document type %T", messageID, media.Document)
+		}
+	}
+
+	return nil, fail("was not found — it may have been deleted from the chat")
+}
+
+// messagesOf pulls the message list out of whichever container the fetch call
+// answered with. A not-modified answer means the caller's request was
+// unusual, not that the message moved, so the caller's "not found" verdict
+// stands.
+func messagesOf(res tg.MessagesMessagesClass) []tg.MessageClass {
+	switch r := res.(type) {
+	case *tg.MessagesMessages:
+		return r.Messages
+	case *tg.MessagesMessagesSlice:
+		return r.Messages
+	case *tg.MessagesChannelMessages:
+		return r.Messages
+	default:
+		return nil
+	}
 }

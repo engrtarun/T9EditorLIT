@@ -45,6 +45,18 @@
   --color-nc-gold-dim: #2f5fc0;
 }
 
+:root {
+  /* Interface typography preset — headings only (see the base layer below).
+     The appearance store re-declares it on <html> when the user picks one. */
+  --font-heading: var(--font-sans);
+
+  /* Interface text size: the multiplier every literal `font-size` and
+     `line-height` in the stylesheet is multiplied by (see
+     tools/text-scale-plugin.ts). 1 = default, 0.9 = Small, 1.15 = Large.
+     Text only — no coordinate system in the app learns a new unit. */
+  --t9-text-scale: 1;
+}
+
 @layer base {
   * {
     box-sizing: border-box;
@@ -84,6 +96,45 @@
   :focus-visible {
     outline: 2px solid var(--color-nc-brand);
     outline-offset: 1px;
+  }
+
+  /**
+   * Interface typography.
+   *
+   * The preset (`--font-heading`) moves headings between Segoe UI, a serif
+   * and Bahnschrift. Body text never changes — a decorative face on every
+   * line is how a preset turns into an accessibility problem. The wordmark
+   * keeps `font-brand`, and a class always wins over this element rule.
+   */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  legend {
+    font-family: var(--font-heading);
+  }
+
+  /**
+   * Pressed, not just hovered.
+   *
+   * One rule for the whole app: a control dims a hair under the mouse button.
+   * It is `:active`, so it exists only while the pointer is down — no state
+   * to manage in components, and every new button gets it for free.
+   */
+  button:not(:disabled):active,
+  [role='button']:not([aria-disabled='true']):active {
+    filter: brightness(0.92);
+  }
+
+  /**
+   * Text sitting straight on the background video gets a thin shadow so it
+   * stays readable on a bright frame. Panels never need it (they paint their
+   * own background), which is why this is opt-in per surface.
+   */
+  .t9-over-video {
+    text-shadow: 0 1px 3px rgb(0 0 0 / 55%);
   }
 
   /**
@@ -155,6 +206,24 @@
     overflow-y: auto;
     overscroll-behavior: contain;
   }
+
+  /**
+   * Scrolling without a visible scrollbar.
+   *
+   * The dashboard scrolls *over the background video*, and a grey bar down
+   * the right edge is the one chrome element that has no business there.
+   * Wheel, trackpad, keyboard and `scrollIntoView` all still work — only the
+   * painted scrollbar is suppressed.
+   */
+  .nc-scroll-none {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+  }
+
+  .nc-scroll-none::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* =========================================================
@@ -190,6 +259,21 @@
   }
 }
 
+/**
+ * The section underline drawing itself in — a 180 ms scaleX from the centre.
+ * Transform only, so switching tabs never re-lays-out the bar.
+ */
+@keyframes t9-underline-in {
+  from {
+    opacity: 0;
+    transform: scaleX(0.35);
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
 /** Project cards arriving one after another (the stagger lives on `--i`). */
 @keyframes t9-card-in {
   from {
@@ -215,6 +299,11 @@
 
 .t9-slide-in {
   animation: t9-slide-in 200ms ease-out both;
+}
+
+.t9-underline-in {
+  transform-origin: center;
+  animation: t9-underline-in 180ms ease-out both;
 }
 
 /**
@@ -324,4 +413,164 @@
     transition-delay: 0ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* =========================================================
+   PROFILE POPOVER + SETTINGS PANEL MOTION — 120–200 ms, no exceptions.
+
+   The popover opens with a fade and a 6 px settle (160 ms) and closes on a
+   quick fade (130 ms). Sections of the settings panel arrive with the same
+   idea at 180 ms. Nothing loops, nothing bounces, nothing moves while the
+   user is not clicking — and both blocks below are switched off entirely by
+   the OS ("animations off") or by Settings → Motion → Reduced Motion.
+   ========================================================= */
+
+@keyframes t9-pop-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes t9-pop-out {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, -4px, 0);
+  }
+}
+
+@keyframes t9-panel-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 4px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.t9-pop-in {
+  animation: t9-pop-in 160ms cubic-bezier(0.16, 0.84, 0.44, 1) both;
+}
+
+.t9-pop-out {
+  animation: t9-pop-out 130ms ease-in both;
+}
+
+.t9-panel-in {
+  animation: t9-panel-in 180ms ease-out both;
+}
+
+/**
+ * THE ROTATING NAV LABEL ("T9 Cloud → AI APIs → T9 Connections → Fast Setup").
+ *
+ * The old version was a bare opacity + 6 px slide on `ease-out` — a hard fade
+ * that "pricked" the eye, because an opacity swap with no softening reads as a
+ * pop and ease-out snaps at the end. This is the refined dissolve used by
+ * polished product UIs (Linear / Vercel / Stripe): a **soft blur-out / blur-in**
+ * on a decelerating curve, so the outgoing word melts away while the incoming
+ * word sharpens into place — there is no hard edge to catch on.
+ *
+ *   · `filter: blur()` on the way out and in hides the abrupt opacity step,
+ *     which is the single biggest reason the plain fade felt harsh.
+ *   · `cubic-bezier(0.22, 1, 0.36, 1)` (easeOutQuart) decelerates smoothly and
+ *     lands without the ease-out snap.
+ *   · A tiny scale (0.98 → 1) replaces the jumpy vertical slide — motion the
+ *     eye reads as "settling" rather than "jumping".
+ *   · ~650 ms with `will-change` for GPU compositing: smooth and cheap. The
+ *     phrases are stacked in one grid cell, so nothing around it shifts.
+ *
+ * Reduced Motion (OS query above, or the app setting) collapses the transition
+ * to a single frame and the loop is frozen on the first phrase — states stay,
+ * only the movement goes.
+ */
+.t9-label-rotate {
+  transition:
+    opacity 650ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 650ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 650ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform, filter;
+  /* resting (hidden) state: dissolved, softly out of focus, barely scaled down */
+  opacity: 0;
+  transform: translate3d(0, 2px, 0) scale(0.98);
+  filter: blur(5px);
+}
+
+.t9-label-rotate[data-on] {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  filter: blur(0);
+}
+
+/* =========================================================
+   SETTINGS → MOTION PREFERENCE.
+
+   The same collapse as the OS query above, driven by the app's own setting so
+   Reduced Motion works even when Windows has animations on. States stay
+   exactly as they are; only the movement goes away.
+   ========================================================= */
+
+html[data-motion='reduced'] *,
+html[data-motion='reduced'] *::before,
+html[data-motion='reduced'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-delay: 0ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  transition-delay: 0ms !important;
+  scroll-behavior: auto !important;
+}
+
+html[data-motion='reduced'] .t9-skeleton::after {
+  content: none;
+}
+
+/* =========================================================
+   INTERFACE DENSITY — Compact tightens the small controls only.
+
+   Each selector pairs an `html[data-density]` attribute with one utility
+   class, which is a (0,2,1) selector: it beats the plain (0,1,0) utility it
+   overrides, so nothing has to be rewritten inside components. The larger
+   paddings (`py-4` on the dashboard CTA, for instance) are deliberately left
+   alone — "compact" means tighter rows and controls, not a squeezed layout.
+   ========================================================= */
+
+html[data-density='compact'] .py-1 {
+  padding-block: 3px;
+}
+html[data-density='compact'] .py-1\.5 {
+  padding-block: 4px;
+}
+html[data-density='compact'] .py-2 {
+  padding-block: 5px;
+}
+html[data-density='compact'] .py-2\.5 {
+  padding-block: 6px;
+}
+html[data-density='compact'] .px-3 {
+  padding-inline: 9px;
+}
+html[data-density='compact'] .p-4 {
+  padding: 12px;
+}
+html[data-density='compact'] .p-6 {
+  padding: 16px;
+}
+html[data-density='compact'] .gap-2 {
+  gap: 4px;
+}
+html[data-density='compact'] .gap-3 {
+  gap: 6px;
+}
+html[data-density='compact'] .gap-4 {
+  gap: 10px;
 }

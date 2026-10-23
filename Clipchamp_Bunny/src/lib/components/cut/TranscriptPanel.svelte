@@ -63,6 +63,9 @@
   };
 
   function jump(line: TranscriptLine) {
+    // A transcript line belongs to the main source: previewing an extra clip
+    // would seek the wrong video, so jump back to the main cut first.
+    project.activateClip(null);
     project.cursor = project.lines.findIndex((l) => l.id === line.id);
     player.seek(line.startSec);
   }

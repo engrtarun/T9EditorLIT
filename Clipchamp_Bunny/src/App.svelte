@@ -11,6 +11,7 @@
   import CutMode from './lib/components/modes/CutMode.svelte';
   import ExportMode from './lib/components/modes/ExportMode.svelte';
   import HomeDashboard from './lib/components/dashboard/HomeDashboard.svelte';
+  import BackgroundVideo from './lib/components/BackgroundVideo.svelte';
   import { mode } from './lib/stores/mode.svelte';
   import { app } from './lib/stores/app.svelte';
   import { player } from './lib/stores/player.svelte';
@@ -65,6 +66,9 @@
 
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    // The profile popover owns the keyboard while it is open — including its
+    // own Escape. Nothing here may steal an Arrow key from it.
+    if (layout.profileOpen) return;
     if (layout.helpOpen && e.key !== 'Escape') return;
     if (layout.settingsOpen && e.key !== 'Escape') return;
     if (layout.settingsOpen && e.key === 'Escape') {
@@ -145,7 +149,15 @@
       zoomFit();
       return;
     }
+    // An extra clip has no transcript: playback and seeking still work, but
+    // every transcript edit key must do nothing while one is being previewed.
+    const onExtra = inCut && !!project.activeClip;
+
     if (hit('cutHere', e)) {
+      if (onExtra) {
+        toast.push('info', 'Extra clip me transcript nahi hai — cut sirf main clip me hota hai');
+        return;
+      }
       if (project.cutAtPlayhead(player.currentTime)) {
         player.seek(project.snapTime(player.currentTime));
         toast.push('cut', `✂ Cut here · ${fmtTime(player.currentTime)}`);
@@ -208,6 +220,7 @@
       return;
     }
     if (hit('delete', e)) {
+      if (onExtra) return;
       const n = project.targets().length;
       project.cutTargets();
       project.step(1);
@@ -215,26 +228,39 @@
       return;
     }
     if (hit('seekBack', e)) {
-      player.seek(project.skipBy(player.currentTime, -settings.seekStepSec));
+      const step = -settings.seekStepSec;
+      const clip = project.activeClip;
+      player.seek(
+        clip
+          ? Math.max(clip.inSec, player.currentTime + step)
+          : project.skipBy(player.currentTime, step)
+      );
       return;
     }
     if (hit('seekForward', e)) {
-      player.seek(project.skipBy(player.currentTime, settings.seekStepSec));
+      const step = settings.seekStepSec;
+      const clip = project.activeClip;
+      player.seek(
+        clip
+          ? Math.min(clip.outSec, player.currentTime + step)
+          : project.skipBy(player.currentTime, step)
+      );
       return;
     }
     if (hit('nextLine', e)) {
-      if (!inCut) return;
+      if (!inCut || onExtra) return;
       const line = project.step(1);
       if (line) player.seek(line.startSec);
       return;
     }
     if (hit('prevLine', e)) {
-      if (!inCut) return;
+      if (!inCut || onExtra) return;
       const line = project.step(-1);
       if (line) player.seek(line.startSec);
       return;
     }
     if (hit('split', e)) {
+      if (onExtra) return;
       if (project.splitAt(player.currentTime)) {
         player.seek(project.snapTime(player.currentTime));
         toast.push('split', `✂ Split at ${fmtTime(player.currentTime)}`);
@@ -244,7 +270,7 @@
       return;
     }
     if (hit('cut', e)) {
-      if (!inCut) return;
+      if (!inCut || onExtra) return;
       const line = project.lines[project.cursor];
       if (line) {
         project.toggleLine(line.id);
@@ -254,7 +280,7 @@
       return;
     }
     if (hit('keep', e)) {
-      if (!inCut) return;
+      if (!inCut || onExtra) return;
       const line = project.lines[project.cursor];
       if (line) {
         project.setLine(line.id, 'keep');
@@ -265,13 +291,13 @@
     }
 
     // Shift+X then an arrow moves the line
-    if (e.shiftKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'x') {
+    if (!onExtra && e.shiftKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'x') {
       e.preventDefault();
       setChord('x');
       return;
     }
     // Z / C then an arrow trims the start / end of the line (plain un-modified keys only)
-    if (!e.ctrlKey && !e.shiftKey && !e.altKey) {
+    if (!onExtra && !e.ctrlKey && !e.shiftKey && !e.altKey) {
       if (e.key.toLowerCase() === 'z') {
         e.preventDefault();
         setChord('z');
@@ -297,7 +323,16 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="flex h-full flex-col bg-nc-bg text-nc-txt">
+<!--
+  The background video is a fixed layer BEHIND the whole interface — the root
+  wrapper stays transparent on purpose so the footage shows through, while
+  every panel keeps painting its own surface (that is what Panel Appearance
+  controls). `body` keeps the brand background as the fallback when the video
+  is missing.
+-->
+<BackgroundVideo />
+
+<div class="flex h-full flex-col text-nc-txt">
   <!--
     Two screens, one of them mounted at a time.
 

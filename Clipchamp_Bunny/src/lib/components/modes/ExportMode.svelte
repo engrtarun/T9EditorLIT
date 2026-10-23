@@ -3,12 +3,15 @@
   import { toast } from '../../stores/toast.svelte';
   import {
     cancelExport,
+    concatParts,
     defaultDbPath,
     isTauri,
     onExportProgress,
     pickOutput,
-    startExport
+    startExport,
+    stillClip
   } from '../../ipc';
+  import type { ExportOptions, ExportResult } from '../../ipc';
   import { fmtHuman, fmtSize } from '../../utils';
   import {
     BITRATES,
@@ -72,6 +75,8 @@
   /** True once the user types a name of their own — the default stops following. */
   let outputTouched = $state(false);
   let running = $state(false);
+  /** True once the user cancels — the part loop stops before the next clip. */
+  let aborted = false;
   let percent = $state(0);
   let stage = $state('');
   let message = $state('');
@@ -88,8 +93,25 @@
     project.orderedSegments.map((s) => ({ start: s.startSec, end: s.endSec }))
   );
 
+  /** Extra clips on the timeline, appended after the main cut. */
+  const extraClips = $derived(project.clips);
+
+  /**
+   * A project with extra clips is exported as a **sequence**: the main cut is
+   * rendered first, then each extra clip (or still), and the parts are joined.
+   * One clip is the ordinary single-source engine, untouched.
+   */
+  const multiClip = $derived(project.clips.length > 0);
+
+  /** Progress offset/width for the part currently rendering. */
+  let progressBase = 0;
+  let progressSpan = 100;
+
   /** How much audio the export carries: the kept part, or the whole recording. */
   const audioSecs = $derived(applyCuts ? project.keptSec : project.durationSec);
+
+  /** What the final file actually plays: the main cut, then every extra clip. */
+  const finalSecs = $derived(project.keptSec + project.extrasDuration);
 
   /** The frame a rescaled video would land on — `null` when nothing changes. */
   const frame = $derived(
@@ -115,10 +137,24 @@
   const browserCanExport = $derived(format === 'mp3');
 
   const canRun = $derived(
-    format === 'gif'
-      ? !gifTooLong && segments.length > 0
-      : segments.length > 0 && (isTauri() ? !!project.sourcePath : browserCanExport)
+    multiClip
+      ? isTauri() && !!project.sourcePath && segments.length > 0
+      : format === 'gif'
+        ? !gifTooLong && segments.length > 0
+        : segments.length > 0 && (isTauri() ? !!project.sourcePath : browserCanExport)
   );
+
+  /**
+   * A multi-clip sequence always comes out as MP4.
+   *
+   * GIF and MP3 parts cannot be joined with a stream copy, and re-encoding the
+   * whole sequence again just to make a GIF is not an export - it is a second
+   * render. So the format locks to video for as long as extras are on the
+   * timeline; removing them unlocks it again.
+   */
+  $effect(() => {
+    if (multiClip && format !== 'video') format = 'video';
+  });
 
   function defaultOutputName() {
     return defaultFileName(project.name, format);
@@ -138,6 +174,82 @@
       output = picked;
       outputTouched = true;
     }
+  }
+
+  /**
+   * Render the whole timeline: the main cut, then every extra clip.
+   *
+   * Each part goes through the normal single-source engine - the main cut is
+   * exactly the export this app has always produced. An extra clip is a short
+   * in/out range of its own file, and a still becomes a silent H.264 clip. All
+   * parts share one frame size so the final join is a plain stream copy.
+   */
+  async function runSequence(
+    out: string,
+    options: ExportOptions,
+    source: string,
+    dbPath: string | null
+  ): Promise<ExportResult> {
+    const total = 1 + project.clips.length;
+    // `source` would let every clip keep its own size, and a concat needs one
+    // frame. A concrete preset (1080p by default) makes the parts match.
+    const res: ResolutionId = resolution === 'source' ? '1080p' : resolution;
+    const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
+    const frame = targetFrame(res, project.media?.width ?? 0, project.media?.height ?? 0) ?? {
+      width: even(project.media?.width || 1920),
+      height: even(project.media?.height || 1080)
+    };
+    const partOptions: ExportOptions = {
+      ...options,
+      mode: 'encode',
+      format: 'video',
+      resolution: res,
+      // The parts come from different files: one letterboxed frame, one fps,
+      // one audio layout, or the final join cannot be a stream copy.
+      canvas: [frame.width, frame.height]
+    };
+    const base = out.replace(/\.[^.]+$/, '');
+
+    progressBase = 0;
+    progressSpan = 100 / total;
+    const main = await startExport({
+      source,
+      segments,
+      output: `${base}.part0.mp4`,
+      options: partOptions,
+      dbPath
+    });
+    if (aborted) throw new Error('export cancelled');
+    const parts: string[] = [main.output];
+
+    for (let i = 0; i < project.clips.length; i++) {
+      const clip = project.clips[i];
+      const part = `${base}.part${i + 1}.mp4`;
+      progressBase = ((i + 1) / total) * 100;
+      progressSpan = 100 / total;
+      message = `${clip.name} render ho raha hai…`;
+      if (clip.kind === 'image') {
+        await stillClip(clip.path, clip.outSec - clip.inSec, part, frame.width, frame.height);
+      } else {
+        await startExport({
+          source: clip.path,
+          // An extra clip is exported whole: its transcript does not exist, so
+          // there is nothing to cut inside it.
+          segments: [{ start: clip.inSec, end: clip.outSec }],
+          output: part,
+          options: partOptions,
+          dbPath
+        });
+      }
+      if (aborted) throw new Error('export cancelled');
+      parts.push(part);
+    }
+
+    progressBase = 0;
+    progressSpan = 100;
+    stage = 'concat';
+    message = `${parts.length} clips jode ja rahe hain…`;
+    return concatParts(parts, out);
   }
 
   async function run() {
@@ -161,15 +273,20 @@
       toast.push('warn', `GIF sirf ${GIF_MAX_SECS} second tak ka hota hai`);
       return;
     }
+    if (multiClip && !isTauri()) {
+      toast.push('info', 'Multi-clip export desktop app me chalta hai');
+      return;
+    }
 
     running = true;
+    aborted = false;
     percent = 0;
     result = null;
     warnings = [];
-    toast.push('info', 'Export shuru…');
+    toast.push('info', multiClip ? 'Sequence export shuru…' : 'Export shuru…');
 
     const unlisten = await onExportProgress((p) => {
-      percent = p.percent;
+      percent = Math.min(99, progressBase + (p.percent / 100) * progressSpan);
       stage = p.stage;
       message = p.message;
     });
@@ -179,31 +296,39 @@
       const out = output || defaultOutputName();
       output = out;
 
-      const res = await startExport({
-        source: source ?? project.media?.url ?? '',
-        segments,
-        output: out,
-        options: {
-          mode: engine,
-          alignToleranceMs: 40,
-          quality,
-          format,
-          resolution,
-          bitrateKbps: bitrate,
-          sampleRate,
-          channels,
-          normalize,
-          applyCuts,
-          title: project.name
-        },
-        dbPath
-      });
+      const options: ExportOptions = {
+        mode: engine,
+        alignToleranceMs: 40,
+        quality,
+        format,
+        resolution,
+        bitrateKbps: bitrate,
+        sampleRate,
+        channels,
+        normalize,
+        applyCuts,
+        title: project.name
+      };
+
+      progressBase = 0;
+      progressSpan = 100;
+      const res = multiClip
+        ? await runSequence(out, options, source ?? '', dbPath)
+        : await startExport({
+            source: source ?? project.media?.url ?? '',
+            segments,
+            output: out,
+            options,
+            dbPath
+          });
+      if (aborted) return;
       result = res;
       warnings = res.warnings ?? [];
       percent = 100;
       toast.push('info', `Export done · ${fmtSize(res.sizeBytes)}`);
     } catch (e) {
-      toast.push('warn', `Export failed: ${e instanceof Error ? e.message : e}`);
+      if (aborted) toast.push('info', 'Export cancelled');
+      else toast.push('warn', `Export failed: ${e instanceof Error ? e.message : e}`);
     } finally {
       unlisten();
       running = false;
@@ -211,6 +336,7 @@
   }
 
   function cancel() {
+    aborted = true;
     void cancelExport();
     running = false;
     toast.push('info', 'Export cancelled');
@@ -223,6 +349,14 @@
     <span class="rounded bg-nc-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-nc-mut">
       {segments.length} segment{segments.length === 1 ? '' : 's'}
     </span>
+    {#if multiClip}
+      <span
+        class="rounded bg-nc-brand/15 px-1.5 py-0.5 font-mono text-[10px] text-nc-brand"
+        title="Extra clips on the timeline are appended after the main cut"
+      >
+        + {extraClips.length} clip{extraClips.length === 1 ? '' : 's'}
+      </span>
+    {/if}
     <div class="flex-1"></div>
     {#if !isTauri()}
       <span class="text-[10px] text-nc-mut-2">
@@ -241,7 +375,7 @@
         </div>
         <div class="rounded-xl border border-nc-brand/40 bg-nc-brand/5 p-4">
           <p class="text-[10px] tracking-widest text-nc-brand">FINAL</p>
-          <p class="mt-1 font-mono text-xl text-nc-brand">{fmtHuman(project.keptSec)}</p>
+          <p class="mt-1 font-mono text-xl text-nc-brand">{fmtHuman(finalSecs)}</p>
         </div>
         <div class="rounded-xl border border-nc-red/40 bg-nc-red/5 p-4">
           <p class="text-[10px] tracking-widest text-nc-red">KACHRA CUT 🔥</p>
@@ -254,12 +388,17 @@
         <h3 class="mb-2 text-[10px] font-bold tracking-widest text-nc-mut">FORMAT</h3>
         <div class="grid gap-2 sm:grid-cols-3">
           {#each FORMATS as f (f.id)}
+            {@const locked = multiClip && f.id !== 'video'}
             <button
               onclick={() => (format = f.id)}
+              disabled={locked}
+              title={locked ? 'Multi-clip sequence ek hi MP4 me join hota hai' : f.note}
               class="rounded-lg border px-3 py-2.5 text-left transition-colors
-                     {format === f.id
-                ? 'border-nc-brand bg-nc-brand/5'
-                : 'border-nc-line bg-nc-panel hover:border-nc-line-2'}"
+                     {locked
+                ? 'cursor-not-allowed border-nc-line bg-nc-panel opacity-40'
+                : format === f.id
+                  ? 'border-nc-brand bg-nc-brand/5'
+                  : 'border-nc-line bg-nc-panel hover:border-nc-line-2'}"
             >
               <span class="flex items-center gap-2">
                 <span
@@ -276,6 +415,13 @@
             </button>
           {/each}
         </div>
+        {#if multiClip}
+          <p class="mt-2 text-[11px] leading-relaxed text-nc-mut">
+            Timeline pe <b class="text-nc-brand">{extraClips.length}</b> extra clip
+            {extraClips.length === 1 ? 'hai' : 'hain'} — poora sequence ek MP4 me jayega. Main cut pehle,
+            phir har clip; aakhir me ek stream-copy join.
+          </p>
+        {/if}
       </section>
 
       <!-- resolution (video only) -->
@@ -305,6 +451,12 @@
               </button>
             {/each}
           </div>
+          {#if multiClip && resolution === 'source'}
+            <p class="mt-2 text-[10px] text-nc-brand">
+              Multi-clip join ke liye source ki jagah 1080p use hoga — sab parts ka frame same rehna
+              zaroori hai.
+            </p>
+          {/if}
           {#if frame}
             <p class="mt-2 font-mono text-[10px] text-nc-mut-2">
               {project.media?.width}×{project.media?.height} → {frame.width}×{frame.height} · poori video

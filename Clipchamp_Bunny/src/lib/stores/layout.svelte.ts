@@ -29,6 +29,15 @@ class LayoutStore {
   helpOpen = $state(false);
   /** The settings dialog (gear icon). */
   settingsOpen = $state(false);
+  /** Which settings tab the dialog opens on (the profile menu jumps to About). */
+  settingsTab = $state<'general' | 'language' | 'appearance' | 'about'>('general');
+  /**
+   * The profile popover in the top bar.
+   *
+   * While it is open the editor's global shortcuts stand down — an Arrow key
+   * must move between menu items, not nudge the playhead behind the popover.
+   */
+  profileOpen = $state(false);
 
   setTranscriptWidth(px: number) {
     this.transcriptWidth = Math.max(240, Math.min(560, Math.round(px)));

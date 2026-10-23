@@ -80,6 +80,11 @@ pub struct ExportOptions {
     /// produced — upscaling a 480p recording to 4K would cost a lot of time
     /// and buy nothing.
     pub resolution: String,
+    /// Render onto **one exact frame** for a multi-clip sequence: H.264,
+    /// 30 fps, yuv420p, AAC 48 kHz stereo. The parts of a sequence come from
+    /// different files and are joined with a stream copy, so every one of
+    /// them has to agree on the codec, the frame and the audio layout.
+    pub canvas: Option<[u32; 2]>,
     /// MP3 bitrate in kbps: 128 · 192 (default) · 256 · 320.
     pub bitrate_kbps: u32,
     /// MP3 sample rate in Hz: 44100 (default) · 48000.
@@ -104,6 +109,7 @@ impl Default for ExportOptions {
             quality: "high".to_string(),
             format: "video".to_string(),
             resolution: "source".to_string(),
+            canvas: None,
             bitrate_kbps: 192,
             sample_rate: 44100,
             channels: 2,
@@ -169,6 +175,9 @@ pub struct ExportPlan {
     /// The FFmpeg scale filter the re-encoded pieces carry, when the export
     /// was asked for a smaller frame than the source has.
     pub scale: Option<String>,
+    /// The sequence canvas every piece was rendered onto, when one was asked
+    /// for. The parts of a multi-clip export have to share it exactly.
+    pub canvas: Option<[u32; 2]>,
     pub warnings: Vec<String>,
 }
 
@@ -592,7 +601,23 @@ pub fn build_plan(
     // it costs a lot of time and buys nothing.
     let mut scale: Option<String> = None;
     let mut scale_factor = 1.0f64;
-    if let Some(target) = target_resolution(&req.options.resolution) {
+    // A sequence part is rendered onto a fixed canvas. The parts come from
+    // different files, and the concat demuxer only accepts one frame size,
+    // one codec and one audio layout - so a sequence never keeps the source
+    // shape, even when it is already the right height.
+    let canvas = req.options.canvas.map(|[w, h]| (even_dim(w), even_dim(h)));
+    if let Some((cw, ch)) = canvas {
+        scale = Some(canvas_filter(cw, ch));
+        effective_mode = "encode".to_string();
+        if let (Some(w), Some(h)) = (info.width, info.height) {
+            if w > 0 && h > 0 {
+                scale_factor = (cw as f64 * ch as f64) / (w as f64 * h as f64);
+            }
+        }
+        warnings.push(format!(
+            "sequence canvas {cw}x{ch}: every clip is letterboxed and re-encoded"
+        ));
+    } else if let Some(target) = target_resolution(&req.options.resolution) {
         let (w, h) = (info.width.unwrap_or(0), info.height.unwrap_or(0));
         if w > 0 && h > 0 {
             let short = w.min(h);
@@ -634,7 +659,13 @@ pub fn build_plan(
     if needs_encode {
         // Stay in the source's codec family when it has one; otherwise the
         // whole timeline is rendered as h264 for compatibility.
-        let family = family_of(info.video_codec.as_deref().unwrap_or("")).unwrap_or("h264");
+        // A sequence is always h264: the parts are joined with a stream copy,
+        // and a still clip is h264 no matter what the source was.
+        let family = if req.options.canvas.is_some() {
+            "h264"
+        } else {
+            family_of(info.video_codec.as_deref().unwrap_or("")).unwrap_or("h264")
+        };
         let (primary, fallback) = pick_encoder(family)?;
         let primary_is_hardware = primary
             .as_deref()
@@ -668,7 +699,13 @@ pub fn build_plan(
         }
     }
 
-    let (audio_copy, audio_warnings) = audio_copied(info, Path::new(&req.output));
+    // A sequence canvas forces AAC: a stream copy would mix 44.1 kHz packets
+    // from one clip with 48 kHz packets from the next.
+    let (audio_copy, audio_warnings) = if canvas.is_some() {
+        (false, Vec::new())
+    } else {
+        audio_copied(info, Path::new(&req.output))
+    };
     warnings.extend(audio_warnings);
 
     let output_duration_secs = outcome.pieces.iter().map(|p| p.duration_secs).sum();
@@ -697,6 +734,7 @@ pub fn build_plan(
         quality: req.options.quality.clone(),
         resolution: req.options.resolution.clone(),
         scale,
+        canvas: canvas.map(|(w, h)| [w, h]),
         warnings,
         pieces: outcome.pieces,
     })
@@ -711,6 +749,7 @@ impl ExportOptions {
             quality: self.quality.clone(),
             format: self.format.clone(),
             resolution: self.resolution.clone(),
+            canvas: self.canvas,
             bitrate_kbps: self.bitrate_kbps,
             sample_rate: self.sample_rate,
             channels: self.channels,
@@ -748,6 +787,20 @@ pub fn scale_filter(target: u32, width: u32, height: u32) -> String {
     } else {
         format!("scale={target}:-2:flags=lanczos")
     }
+}
+
+/// Round a requested canvas dimension to an even number (H.264 chroma needs it).
+pub fn even_dim(v: u32) -> u32 {
+    (v.max(2) / 2) * 2
+}
+
+/// The scale filter a **sequence canvas** uses: letterbox to exactly `w`×`h`,
+/// square pixels, 30 fps, 8-bit 4:2:0. This is the same shape `still_clip`
+/// produces, so a still and a video part can be joined with a stream copy.
+pub fn canvas_filter(w: u32, h: u32) -> String {
+    format!(
+        "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"
+    )
 }
 
 /// The frame the scale filter produces, for the size estimate.
@@ -791,6 +844,7 @@ fn piece_args(
     encoder: Option<&str>,
     quality: &str,
     scale: Option<&str>,
+    canvas: Option<(u32, u32)>,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
@@ -819,6 +873,16 @@ fn piece_args(
     args.push("-i".into());
     args.push(source.to_string_lossy().into_owned());
 
+    // A part rendered for a sequence always carries an audio track: the concat
+    // demuxer needs the same streams in every file, so a silent clip gets a
+    // silent stereo track instead of no track at all.
+    if canvas.is_some() && !has_audio {
+        args.push("-f".into());
+        args.push("lavfi".into());
+        args.push("-i".into());
+        args.push("anullsrc=channel_layout=stereo:sample_rate=48000".into());
+    }
+
     args.push("-t".into());
     args.push(time_arg(piece.duration_secs));
     args.push("-map".into());
@@ -826,6 +890,9 @@ fn piece_args(
     if has_audio {
         args.push("-map".into());
         args.push("0:a:0".into());
+    } else if canvas.is_some() {
+        args.push("-map".into());
+        args.push("1:a:0".into());
     }
 
     match piece.kind {
@@ -853,7 +920,7 @@ fn piece_args(
 
     // Audio treatment is global — every piece must carry the same codec or the
     // concat demuxer would have to stitch AAC into PCM.
-    if has_audio {
+    if has_audio || canvas.is_some() {
         args.push("-c:a".into());
         if audio_copied {
             args.push("copy".into());
@@ -861,6 +928,15 @@ fn piece_args(
             args.push("aac".into());
             args.push("-b:a".into());
             args.push("192k".into());
+            if canvas.is_some() {
+                // One sample rate and one channel layout for the whole
+                // sequence, or a 44.1 kHz clip would play at the wrong pitch
+                // after a 48 kHz one.
+                args.push("-ar".into());
+                args.push("48000".into());
+                args.push("-ac".into());
+                args.push("2".into());
+            }
         }
     }
 
@@ -1347,16 +1423,24 @@ fn run_piece(
     base: f64,
     total_dur: f64,
 ) -> Result<crate::ffmpeg::StreamOutput, String> {
+    // A canvas part is 8-bit 4:2:0 no matter what the source was: a 10-bit
+    // source would otherwise make one part undecodable next to the others.
+    let pix_fmt = if plan.canvas.is_some() {
+        Some("yuv420p")
+    } else {
+        info.pix_fmt.as_deref()
+    };
     let args = piece_args(
         source,
         piece,
         file,
         info.has_audio,
         plan.audio_copied,
-        info.pix_fmt.as_deref(),
+        pix_fmt,
         encoder,
         &plan.quality,
         plan.scale.as_deref(),
+        plan.canvas.map(|[w, h]| (w, h)),
     );
     let piece_dur = piece.duration_secs.max(0.001);
     let mut last_out = 0.0f64;
@@ -1391,6 +1475,202 @@ fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
+/// Stitch independently rendered parts into the final file.
+///
+/// A multi-clip project runs the normal engine once per clip (the main cut,
+/// then every extra clip), because that keeps the whole tested single-source
+/// pipeline intact. What is left is a plain concat-demuxer join - the same
+/// step the engine already ends with.
+#[tauri::command]
+pub async fn concat_parts(
+    parts: Vec<String>,
+    output: String,
+    cleanup: Option<bool>,
+) -> Result<ExportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || concat_parts_blocking(parts, output, cleanup))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn concat_parts_blocking(
+    parts: Vec<String>,
+    output: String,
+    cleanup: Option<bool>,
+) -> Result<ExportResult, String> {
+    if parts.len() < 2 {
+        return Err("concat needs at least two parts".into());
+    }
+    let paths: Vec<PathBuf> = parts.iter().map(PathBuf::from).collect();
+    for p in &paths {
+        if !p.exists() {
+            return Err(format!("part missing: {}", p.display()));
+        }
+    }
+
+    let out = PathBuf::from(&output);
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!("could not create output folder {}: {e}", parent.display())
+            })?;
+        }
+    }
+    let work = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .join(".t9concat");
+    std::fs::create_dir_all(&work)
+        .map_err(|e| format!("could not prepare work folder {}: {e}", work.display()))?;
+    let list = work.join("list.txt");
+    std::fs::write(&list, concat_list_text(&paths))
+        .map_err(|e| format!("could not write concat list: {e}"))?;
+
+    // The parts were rendered by the same engine with the same options, so the
+    // first one tells us whether the join carries audio.
+    let has_audio = MediaInfo::probe(&paths[0])
+        .map(|i| i.has_audio)
+        .unwrap_or(true);
+    let args = concat_args(&list, has_audio, &out);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let result = run_streaming("ffmpeg", &args, Some(cancel), |_| {})?;
+    if result.cancelled {
+        return Err("export cancelled".to_string());
+    }
+    if result.status != 0 {
+        return Err(format!(
+            "concat failed (exit {}): {}",
+            result.status,
+            result.stderr_tail.trim()
+        ));
+    }
+
+    if cleanup.unwrap_or(true) {
+        for p in &paths {
+            let _ = std::fs::remove_file(p);
+        }
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    let size_bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+    let duration_secs = MediaInfo::probe(&out)
+        .map(|i| i.duration_secs)
+        .unwrap_or(0.0);
+    Ok(ExportResult {
+        output: out.to_string_lossy().into_owned(),
+        duration_secs,
+        size_bytes,
+        piece_count: paths.len(),
+        encoder: None,
+        warnings: Vec::new(),
+    })
+}
+
+/// Render a still image into a short clip with silent audio.
+///
+/// An image has no duration and no audio stream, so it cannot go through the
+/// cut engine. This turns it into the same H.264/AAC shape as the rest of the
+/// sequence, so the final concat stays a plain stream copy.
+#[tauri::command]
+pub async fn still_clip(
+    image: String,
+    seconds: f64,
+    output: String,
+    width: u32,
+    height: u32,
+) -> Result<ExportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        still_clip_blocking(image, seconds, output, width, height)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn still_clip_blocking(
+    image: String,
+    seconds: f64,
+    output: String,
+    width: u32,
+    height: u32,
+) -> Result<ExportResult, String> {
+    let img = PathBuf::from(&image);
+    if !img.exists() {
+        return Err(format!("image not found: {image}"));
+    }
+    let out = PathBuf::from(&output);
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!("could not create output folder {}: {e}", parent.display())
+            })?;
+        }
+    }
+    let secs = seconds.clamp(0.1, 600.0);
+    let w = (width.max(2) / 2) * 2;
+    let h = (height.max(2) / 2) * 2;
+    let scale = format!(
+        "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"
+    );
+    let args: Vec<String> = vec![
+        "-hide_banner".into(),
+        "-nostdin".into(),
+        "-y".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-loop".into(),
+        "1".into(),
+        "-t".into(),
+        format!("{secs:.3}"),
+        "-i".into(),
+        img.to_string_lossy().into_owned(),
+        "-f".into(),
+        "lavfi".into(),
+        "-t".into(),
+        format!("{secs:.3}"),
+        "-i".into(),
+        "anullsrc=channel_layout=stereo:sample_rate=48000".into(),
+        "-vf".into(),
+        scale,
+        "-c:v".into(),
+        "libx264".into(),
+        "-preset".into(),
+        "veryfast".into(),
+        "-crf".into(),
+        "20".into(),
+        "-pix_fmt".into(),
+        "yuv420p".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "128k".into(),
+        "-shortest".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        out.to_string_lossy().into_owned(),
+    ];
+    let cancel = Arc::new(AtomicBool::new(false));
+    let result = run_streaming("ffmpeg", &args, Some(cancel), |_| {})?;
+    if result.cancelled {
+        return Err("export cancelled".to_string());
+    }
+    if result.status != 0 {
+        return Err(format!(
+            "still clip failed (exit {}): {}",
+            result.status,
+            result.stderr_tail.trim()
+        ));
+    }
+    let size_bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+    Ok(ExportResult {
+        output: out.to_string_lossy().into_owned(),
+        duration_secs: secs,
+        size_bytes,
+        piece_count: 1,
+        encoder: Some("libx264".into()),
+        warnings: Vec::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1406,6 +1686,7 @@ mod tests {
             quality: "high".to_string(),
             format: "video".to_string(),
             resolution: "source".to_string(),
+            canvas: None,
             bitrate_kbps: 192,
             sample_rate: 48000,
             channels: 2,
@@ -1619,6 +1900,7 @@ mod tests {
             Some("h264_qsv"),
             "high",
             None,
+            None,
         );
         let joined = args.join(" ");
         assert!(joined.contains("-ss 3.000000"), "{joined}");
@@ -1629,6 +1911,53 @@ mod tests {
         assert!(joined.contains("-global_quality 22"), "{joined}");
         assert!(joined.contains("-pix_fmt yuv420p"), "{joined}");
         assert!(joined.ends_with("C:\\out\\piece_0000.mkv"), "{joined}");
+    }
+
+    #[test]
+    fn a_canvas_piece_is_one_shape_with_audio_even_when_the_source_is_silent() {
+        let piece = Piece {
+            index: 0,
+            segment_index: 0,
+            start: 0.0,
+            end: 5.0,
+            kind: PieceKind::Encode,
+            duration_secs: 5.0,
+        };
+        let args = piece_args(
+            Path::new("v.mp4"),
+            &piece,
+            Path::new("part1.mp4"),
+            false,
+            false,
+            Some("yuv420p"),
+            Some("libx264"),
+            "high",
+            Some("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"),
+            Some((1920, 1080)),
+        );
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"),
+            "a silent part still needs a track: {joined}"
+        );
+        assert!(joined.contains("-map 1:a:0"), "{joined}");
+        assert!(joined.contains("-c:a aac"), "{joined}");
+        assert!(joined.contains("-ar 48000 -ac 2"), "{joined}");
+    }
+
+    #[test]
+    fn the_canvas_filter_letterboxes_and_pins_the_frame_rate() {
+        let f = canvas_filter(1920, 1080);
+        assert!(
+            f.contains("scale=1920:1080:force_original_aspect_ratio=decrease"),
+            "{f}"
+        );
+        assert!(f.contains("pad=1920:1080"), "{f}");
+        assert!(f.contains("setsar=1"), "{f}");
+        assert!(f.contains("fps=30"), "{f}");
+        assert!(f.contains("format=yuv420p"), "{f}");
+        assert_eq!(even_dim(1081), 1080);
+        assert_eq!(even_dim(1), 2);
     }
 
     #[test]
@@ -1650,6 +1979,7 @@ mod tests {
             None,
             None,
             "high",
+            None,
             None,
         );
         let joined = args.join(" ");

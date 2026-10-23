@@ -14,8 +14,8 @@ export type AppView = 'home' | 'editor';
 class AppStore {
   view = $state<AppView>('home');
 
-  /** The dashboard's three sections. */
-  section = $state<'home' | 'videos' | 'trash'>('home');
+  /** The dashboard's three sections. `cloud` is the T9 Cloud setup page. */
+  section = $state<'home' | 'cloud' | 'trash'>('home');
 
   /**
    * The app's real version.
@@ -30,7 +30,7 @@ class AppStore {
     this.view = 'editor';
   }
 
-  goHome(section: 'home' | 'videos' | 'trash' = 'home'): void {
+  goHome(section: 'home' | 'cloud' | 'trash' = 'home'): void {
     this.section = section;
     this.view = 'home';
   }

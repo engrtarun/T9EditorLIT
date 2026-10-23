@@ -14,6 +14,12 @@ const (
 	JobCorrect    JobKind = "correct"
 	JobAnalyze    JobKind = "analyze"
 	JobVault      JobKind = "vault"
+
+	// JobRestore is the read half of the vault: the daemon streams a backed-up
+	// file back out of Telegram, verifies part by part against the digests
+	// the upload recorded, and joins the parts into one file on disk. It
+	// reports the same VaultProgress payload an upload uses.
+	JobRestore JobKind = "restore"
 )
 
 // JobState is the lifecycle of a job. Anything terminal will not change again.
@@ -181,7 +187,7 @@ type Job struct {
 // Vault jobs prefer bytes: their unit is 1.9 GB per part, so counting parts
 // would show 33% for a quarter of an hour and then jump to done.
 func (j *Job) Progress() float64 {
-	if j.Kind == JobVault && j.VaultProgress != nil && j.VaultProgress.BytesTotal > 0 {
+	if (j.Kind == JobVault || j.Kind == JobRestore) && j.VaultProgress != nil && j.VaultProgress.BytesTotal > 0 {
 		return float64(j.VaultProgress.BytesDone) / float64(j.VaultProgress.BytesTotal)
 	}
 	if j.Total <= 0 {
@@ -215,6 +221,10 @@ type VaultResult struct {
 	PartCount   int    `json:"part_count"`
 	TotalBytes  int64  `json:"total_bytes"`
 	CompletedAt int64  `json:"completed_unix"`
+
+	// Destination is the on-disk path of the restored file, set only by
+	// vault download jobs. An upload leaves it empty.
+	Destination string `json:"destination,omitempty"`
 }
 
 // Health is the payload of GET /healthz.

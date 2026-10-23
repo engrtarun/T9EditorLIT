@@ -1,6 +1,12 @@
 import './app.css';
 import { mount } from 'svelte';
 import App from './App.svelte';
+// Side-effect imports on purpose: each store applies itself to <html> the
+// moment it is constructed, so the very first paint already carries the saved
+// accent, density, panel look, motion preference and language. Nothing flashes
+// in the default theme and then switches.
+import './lib/stores/appearance.svelte';
+import './lib/stores/i18n.svelte';
 import { layout } from './lib/stores/layout.svelte';
 import { cloud } from './lib/stores/cloud.svelte';
 import { app } from './lib/stores/app.svelte';

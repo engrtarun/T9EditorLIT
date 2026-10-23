@@ -2,9 +2,9 @@ import type {
   KeepState,
   LineFlag,
   MediaAsset,
+  ProjectClip,
   SilenceRange,
   ThumbnailStrip,
-  TimelineClip,
   TranscriptLine,
   WaveformData
 } from '../types';
@@ -22,6 +22,7 @@ import {
 } from '../segments';
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 import { media } from './media.svelte';
+import { player } from './player.svelte';
 import { runAnalysis, runCorrection, runTranscription, toLineFlag } from '../pipeline';
 import {
   assetUrl,
@@ -101,6 +102,26 @@ function applySplitText(left: TranscriptLine, right: TranscriptLine, at: number)
   right.words = tail;
 }
 
+/**
+ * What a file is, from its name — the timeline needs this before the engine
+ * has probed anything, and an image has no duration of its own.
+ */
+export function clipKind(name: string, url = ''): ProjectClip['kind'] {
+  const ext = (name || url).split(/[?#]/)[0].split('.').pop()?.toLowerCase() ?? '';
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'].includes(ext)) return 'image';
+  return 'video';
+}
+
+/**
+ * Audio-only files are not timeline clips: the sequence is a video, and a
+ * part with no picture cannot be joined with the rest. They still import into
+ * My media (so the audio-only export can use them).
+ */
+export function isAudioOnly(name: string, url = ''): boolean {
+  const ext = (name || url).split(/[?#]/)[0].split('.').pop()?.toLowerCase() ?? '';
+  return ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'wma'].includes(ext);
+}
+
 class ProjectStore {
   /**
    * The project name.
@@ -111,7 +132,19 @@ class ProjectStore {
   name = $state('');
   media = $state<MediaAsset | null>(null);
   lines = $state<TranscriptLine[]>([]);
-  clips = $state<TimelineClip[]>([]);
+  /**
+   * Extra clips appended after the main cut — the rest of the project's media.
+   *
+   * The main source is **not** in this list: it owns the transcript, waveform
+   * and filmstrip, and every edit control keeps working on it exactly as
+   * before. Extras are played and exported as-is, in the order added.
+   *
+   * This is what "one project, many assets" means here: a list of references
+   * (path + in/out), never file bytes.
+   */
+  clips = $state<ProjectClip[]>([]);
+  /** Which clip the preview shows: `null` means the main source. */
+  activeClipId = $state<string | null>(null);
   /** Clip ids whose audio is muted (Clipchamp's speaker button on the clip). */
   mutedSegments = $state<string[]>([]);
   /** Whole tracks hidden by the eye/Hide control. */
@@ -237,6 +270,7 @@ class ProjectStore {
       });
       media.markInUse(entry.asset.id);
     }
+    this.restoreClips();
     this.restoreUiState();
     this.ready = true;
   }
@@ -330,6 +364,7 @@ class ProjectStore {
       this.loadError = e instanceof Error ? e.message : String(e);
       this.lines = [];
     }
+    this.restoreClips();
     this.restoreUiState();
 
     // Remember the project, so the next launch opens this very file. The clock
@@ -619,6 +654,8 @@ class ProjectStore {
   /** Switching files must not leak the previous project's order or mutes. */
   private resetEditState() {
     this.lines = [];
+    this.clips = [];
+    this.activeClipId = null;
     this.waveform = null;
     this.thumbnails = null;
     this.cursor = 0;
@@ -631,6 +668,8 @@ class ProjectStore {
     this.past = [];
     this.future = [];
     this.splitSeq = 0;
+    player.currentTime = 0;
+    player.playing = false;
   }
 
   private scheduleAutosave() {
@@ -742,6 +781,211 @@ class ProjectStore {
   sourceAt = (editSec: number): number | null =>
     sourceAt(this.orderedSegments, this.segmentOffsets, editSec);
 
+  /* ------------------------------------------------------- project sequence
+     The main cut is a sequence in its own right; extra clips are appended
+     after it. Every global position on the bottom timeline goes through
+     `sequenceAt` / `globalTimeAt`, so the playhead, the seek and the preview
+     all agree about which clip a second belongs to. */
+
+  /** The clip the preview is showing, or `null` for the main source. */
+  get activeClip(): ProjectClip | null {
+    return this.clips.find((c) => c.id === this.activeClipId) ?? null;
+  }
+
+  /** How long one extra clip lasts on the timeline. */
+  clipLength(c: ProjectClip): number {
+    return Math.max(0.1, c.outSec - c.inSec);
+  }
+
+  /** Total length of the extra clips. */
+  get extrasDuration(): number {
+    return this.clips.reduce((n, c) => n + this.clipLength(c), 0);
+  }
+
+  /** Where every extra clip sits on the bottom timeline. */
+  extrasLayout = $derived.by(() => {
+    const out: Array<{ clip: ProjectClip; start: number; end: number }> = [];
+    let at = this.editDuration;
+    for (const clip of this.clips) {
+      const end = at + this.clipLength(clip);
+      out.push({ clip, start: at, end });
+      at = end;
+    }
+    return out;
+  });
+
+  /** Whole project length: the main cut plus every extra clip. */
+  get sequenceDuration(): number {
+    return this.editDuration + this.extrasDuration;
+  }
+
+  /** Bottom-timeline position maps to the clip that owns it (null = main). */
+  sequenceAt(editSec: number): { clip: ProjectClip | null; localSec: number } | null {
+    if (editSec < this.editDuration) {
+      const src = this.sourceAt(Math.max(0, editSec));
+      return src == null ? null : { clip: null, localSec: src };
+    }
+    for (const r of this.extrasLayout) {
+      if (editSec < r.end) {
+        return {
+          clip: r.clip,
+          localSec: r.clip.inSec + Math.max(0, editSec - r.start)
+        };
+      }
+    }
+    return null;
+  }
+
+  /** Where the playhead sits on the whole project timeline. */
+  globalTimeAt(clipId: string | null, localSec: number): number {
+    if (!clipId) {
+      const at = this.editTimeAt(localSec);
+      if (at != null) return at;
+      // Inside a cut: hold the end of the segment the playhead has passed,
+      // rather than snapping the marker to the start of the project.
+      let last = 0;
+      for (const s of this.orderedSegments) {
+        if (s.startSec >= localSec) break;
+        const off = this.segmentOffsets.get(s.id);
+        if (off) last = off.start + Math.max(0, Math.min(localSec, s.endSec) - s.startSec);
+      }
+      return last;
+    }
+    const r = this.extrasLayout.find((x) => x.clip.id === clipId);
+    if (!r) return 0;
+    const inside = Math.min(Math.max(localSec - r.clip.inSec, 0), this.clipLength(r.clip));
+    return r.start + inside;
+  }
+
+  /** Id of the clip after `activeClipId`, or null at the end of the project. */
+  nextClipId(): string | null {
+    if (!this.activeClipId) return this.clips[0]?.id ?? null;
+    const i = this.clips.findIndex((c) => c.id === this.activeClipId);
+    return this.clips[i + 1]?.id ?? null;
+  }
+
+  /** Show one clip in the preview (null = back to the main cut). */
+  activateClip(id: string | null) {
+    if ((this.activeClipId ?? null) === (id ?? null)) return;
+    this.activeClipId = id;
+    this.selectedIds = [];
+    this.cursor = 0;
+    if (id) {
+      const clip = this.clips.find((c) => c.id === id);
+      player.seek(clip?.inSec ?? 0);
+    } else {
+      // Back to the main cut: its first kept frame, not the top of the file.
+      player.seek(this.sourceAt(0) ?? 0);
+    }
+  }
+
+  /**
+   * Put a library asset on the timeline and return the clip it became.
+   *
+   * Returns null when the asset cannot be a clip (still probing, audio-only,
+   * or already the project's main source - adding that one twice would show
+   * the same video before and after the cut).
+   */
+  addToTimeline(assetId: string): ProjectClip | null {
+    const entry = media.get(assetId);
+    if (!entry) return null;
+    if (isAudioOnly(entry.asset.name, entry.asset.url)) return null;
+    const kind = clipKind(entry.asset.name, entry.asset.url);
+    if (entry.path && this.sourcePath && entry.path === this.sourcePath) return null;
+    // The browser has no path; its equivalent identity is the streamed URL.
+    if (this.media && entry.asset.url && entry.asset.url === this.media.url) return null;
+    const duration = entry.asset.durationSecs || (kind === 'image' ? 5 : 0);
+    if (entry.phase === 'loading' || duration <= 0) return null;
+    const url = entry.asset.url || (entry.path ? assetUrl(entry.path) : '');
+    if (!url) return null;
+
+    const clip: ProjectClip = {
+      id: crypto.randomUUID(),
+      path: entry.path ?? url,
+      url,
+      name: entry.asset.name,
+      kind,
+      durationSecs: duration,
+      inSec: 0,
+      outSec: kind === 'image' ? Math.min(5, duration) || 5 : duration
+    };
+    this.clips = [...this.clips, clip];
+    this.saveClips();
+    return clip;
+  }
+
+  /** Take one clip off the timeline (the main cut cannot be removed). */
+  removeClip(id: string) {
+    const before = this.clips.length;
+    this.clips = this.clips.filter((c) => c.id !== id);
+    if (this.clips.length === before) return;
+    if (this.activeClipId === id) {
+      this.activeClipId = null;
+      player.seek(this.sourceAt(0) ?? 0);
+    }
+    this.saveClips();
+  }
+
+  /** Reorder an extra clip. `delta` is -1 (left) / +1 (right). */
+  moveClip(id: string, delta: number) {
+    const i = this.clips.findIndex((c) => c.id === id);
+    const to = i + delta;
+    if (i < 0 || to < 0 || to >= this.clips.length) return;
+    const next = [...this.clips];
+    const [clip] = next.splice(i, 1);
+    next.splice(to, 0, clip);
+    this.clips = next;
+    this.saveClips();
+  }
+
+  /* Extra clips are project state, not transcript rows: a short list of
+     paths lives in localStorage, keyed by the project, so reopening the
+     project brings its media back. The transcript itself stays in SQLite. */
+  private clipsKey(): string | null {
+    const id = this.sourcePath ?? this.media?.name;
+    return id ? `t9.projectClips:${id}` : null;
+  }
+
+  private saveClips() {
+    const key = this.clipsKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(this.clips));
+    } catch {
+      /* private mode / quota - the timeline still works this session */
+    }
+  }
+
+  private restoreClips() {
+    const key = this.clipsKey();
+    if (!key) return;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const data = JSON.parse(raw) as ProjectClip[];
+      if (!Array.isArray(data)) return;
+      this.clips = data.filter(
+        (c): c is ProjectClip =>
+          !!c &&
+          typeof c.id === 'string' &&
+          typeof c.path === 'string' &&
+          typeof c.url === 'string' &&
+          typeof c.name === 'string' &&
+          typeof c.durationSecs === 'number' &&
+          typeof c.inSec === 'number' &&
+          typeof c.outSec === 'number'
+      );
+    } catch {
+      /* corrupt entry - start without extras rather than block the project */
+    }
+  }
+
+  /** The clip that holds a given media path, if it is on the timeline. */
+  clipForPath(path: string | null): ProjectClip | null {
+    if (!path) return null;
+    return this.clips.find((c) => c.path === path || c.url === path) ?? null;
+  }
+
   /** Move a segment to a new position in the final video. */
   moveSegment(fromId: string, toIndex: number) {
     const order = this.orderedSegments.map((s) => s.id);
@@ -823,32 +1067,92 @@ class ProjectStore {
   }
 
   /**
-   * Import one or more files from disk. The **last** one becomes the current
-   * project â€” bringing a new file in while editing starts a new project, which
-   * is what a file manager user expects.
+   * Import one or more files from disk.
+   *
+   * Clipchamp's rule: importing fills **My media**. It never replaces the
+   * project you are working on - an import while a project is open adds the
+   * files to the library, and the timeline changes only when the user drags
+   * one in (or presses its + button). Only when no project is open at all does
+   * the last imported file become the one being edited.
    */
   async importPaths(paths: string[]) {
     if (!paths.length) return;
+    const fresh: Array<{ path: string; id: string }> = [];
     for (const p of paths) {
       const name = p.split(/[\\/]/).pop() ?? p;
-      media.addPath(p, name);
+      const entry = media.byPath(p) ?? media.addPath(p, name, 0, assetUrl(p));
+      fresh.push({ path: p, id: entry.asset.id });
     }
-    const last = paths[paths.length - 1];
-    const entry = media.byPath(last);
-    if (entry) await this.openLibraryEntry(entry.asset.id);
+
+    // Probe every new file, so each tile has a real duration, size and a
+    // streamable URL. Before this loop only the **opened** file was probed,
+    // which is why an import that did not become the project sat at "…"
+    // with a blank poster forever.
+    for (const { path, id } of fresh) {
+      const entry = media.get(id);
+      if (!entry || (entry.phase === 'ready' && entry.asset.url)) continue;
+      const kind = clipKind(entry.asset.name);
+      if (kind === 'image') {
+        // A still has no duration in the file; five seconds is the clip the
+        // timeline gets, and nothing is decoded until it is shown.
+        media.probed(id, { url: assetUrl(path), durationSecs: 5, durationLabel: '0:05' });
+        continue;
+      }
+      if (!isTauri()) continue;
+      try {
+        const info = await probeMedia(path);
+        const secs = Math.max(0, Math.floor(info.durationSecs));
+        media.probed(id, {
+          url: assetUrl(path),
+          durationSecs: info.durationSecs,
+          width: info.width ?? 0,
+          height: info.height ?? 0,
+          fps: info.fps ?? 0,
+          sizeBytes: info.sizeBytes,
+          videoCodec: info.videoCodec ?? 'unknown',
+          audioCodec: info.audioCodec,
+          durationLabel: `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
+        });
+      } catch (e) {
+        media.entries = media.entries.map((x) =>
+          x.asset.id === id ? { ...x, phase: 'failed' as const, progress: 0 } : x
+        );
+        logAppEvent('error', 'import', `${path}: ${String(e)}`);
+      }
+    }
+
+    // No project open: the last file becomes the one being edited, which is
+    // what "open a file" expects from the dashboard.
+    if (!this.media) {
+      const last = fresh[fresh.length - 1];
+      if (last) await this.openLibraryEntry(last.id);
+    }
   }
 
   /** User-dropped files in the browser (no filesystem path). */
   async importBlobs(files: File[]) {
     if (!files.length) return;
+    const opened = !!this.media;
+    let first: MediaAsset | null = null;
     for (const f of files) {
-      if (!f.type.startsWith('video/') && !f.type.startsWith('audio/')) continue;
+      const isImage = f.type.startsWith('image/');
+      if (!f.type.startsWith('video/') && !f.type.startsWith('audio/') && !isImage) continue;
       const url = URL.createObjectURL(f);
       const entry = media.add(f, url);
-      this.media = entry.asset;
-      this.name = f.name.replace(/\.[^.]+$/, '');
+      media.probed(entry.asset.id, {
+        url,
+        durationSecs: isImage ? 5 : 0,
+        durationLabel: isImage ? '0:05' : '…'
+      });
+      first ??= entry.asset;
     }
-    for (const other of media.entries) media.markUnused(other.asset.id);
+    // With a project open this is a library import, not a new project.
+    if (!opened && first) {
+      this.media = first;
+      this.name = first.name.replace(/\.[^.]+$/, '');
+      this.restoreClips();
+      for (const other of media.entries) media.markUnused(other.asset.id);
+    }
   }
 
   /**

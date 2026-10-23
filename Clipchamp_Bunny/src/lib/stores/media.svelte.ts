@@ -135,11 +135,21 @@ class MediaStore {
       );
       if (p < 1) setTimeout(tick, 120);
       else {
-        this.entries = this.entries.map((e) =>
-          e.asset.id === id
-            ? { ...e, asset: { ...e.asset, durationSecs: 274, width: 1920, height: 1080, fps: 60 } }
-            : e
-        );
+        this.entries = this.entries.map((e) => {
+          if (e.asset.id !== id) return e;
+          // A picture already carries its own 5 s clip length; a video has
+          // nothing yet in browser mode, so the mock fills in a real duration.
+          const asset =
+            e.asset.durationSecs > 0
+              ? e.asset
+              : { ...e.asset, durationSecs: 274, width: 1920, height: 1080, fps: 60 };
+          const secs = Math.floor(asset.durationSecs);
+          return {
+            ...e,
+            asset,
+            durationLabel: `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
+          };
+        });
       }
     };
     setTimeout(tick, 200);

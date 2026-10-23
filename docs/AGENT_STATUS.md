@@ -321,3 +321,73 @@ the client URL did NOT carry the literal `/audio/transcriptions` suffix
 **Shipping note:** delivered as a LOCAL COMMIT only — `git push` was not run
 (the mandatory worklog rule). The daemon reaches the desktop through the next
 `-Ci` deploy; `tools/go-build-id.ps1` recomputes its hash automatically.
+
+---
+
+## 2026-10-23 - Agent backend-finish - Telegram vault RESTORE (the read half)
+
+**Task:** the repo's last backend TODO - "Telegram vault -> media library"
+(MEMORY.md seam table): the daemon stored five-gigabyte backups but had no way
+to bring one back out of Telegram.
+
+**Status:** Complete, verified offline (`gofmt -l` clean, `go vet` clean,
+go test green; see the pass note below). Delivered as LOCAL COMMIT only -
+no push, per the worklog rule.
+
+**Design (mirrors the upload, and trusts nothing but a digest):**
+
+- `vault.Restore(ctx, manifest, destDir)`: preflight -> fetch -> join. The
+  upload's manifest (digests + message ids) is the whole input contract.
+- `telegram.FetchParts` implements the new `vault.Fetcher` interface
+  (compile-time proof in telegram.go): one `client.Pool(n)` per run, one
+  worker per connection, each part streamed through gotd's `downloader`
+  (512 KB chunks, FLOOD_WAIT honoured) into `.t9restore-<name>.<idx>.tmp`
+  beside the destination; bytes counted and SHA-256'd in the same pass
+  (no second read). A short stream, a digest mismatch, or a CDN
+  `RedirectError` deletes the temp file and refuses with a sentence.
+- Per-restore resume record `restore-*.json`, rewritten after every verified
+  part - an interruption costs one part, like uploads. A temp file survives a
+  resume only when exact size AND a fresh digest both pass - the join then
+  concatenates parts in order with a 256 KB buffer and demands the final size
+  equal the manifest's source size, else the file is removed. The destination
+  is never touched until every byte is proven.
+- Progress on the existing VaultProgress payload with new phases
+  verifying -> downloading -> joining -> done; byte total stays monotonic
+  (the preflight's verified bytes are handed to the transport as base).
+
+**New HTTP seam (guards the dependency, not a config flag):**
+
+- `GET /v1/vault/manifests` - the restore menu: completed uploads, newest
+  first; an empty list, not an error, before Telegram is configured.
+- `POST /v1/vault/download` body `{"source_path","dest_dir"}` -> 202 job of
+  kind `restore`; 404 for a source the vault never backed up; 503 without a
+  transport or session; the chat comes from the manifest, not
+  TELEGRAM_TARGET_CHAT; a browser hang-up cannot kill a running download
+  (`context.WithoutCancel`, same rule as uploads).
+
+**Files owned:**
+
+- `go/internal/vault/restore.go` (new) - planner, restore store, stored
+  backups listing, restore progress tracker, `PrepareManifest` for tests.
+- `go/internal/vault/telegram.go` - `FetchParts` + `fetchPart` +
+  `messageDocument` (channels.getMessages vs messages.getMessages by peer
+  type) + `digestWriter`.
+- `go/internal/vault/restore_test.go` (new) - 13 offline tests: two round
+  trips with byte equality and progress phases, both resume rules, digest /
+  truncation / rot-at-join refusals, incomplete vault, no-fetcher refusal,
+  idempotency, overwrite refusal, name sanitising, the restore menu.
+- `go/internal/api/vault_restore.go` (new) + two routes in server.go +
+  `finishRestore` in store.go.
+- `go/internal/api/vault_restore_test.go` (new) - 6 endpoint tests: empty
+  menu before Telegram exists, prepared manifest listed, field guards
+  (400), unauthorised 503, unknown source 404, 202 job of kind restore that
+  fails honestly on a transport without the capability.
+- `go/internal/model/model.go` - `JobRestore`, `VaultResult.Destination`
+  (omitempty), `Percent` covers restore jobs.
+- `docs/TELEGRAM_INTEGRATION_T_DUBBER.md` - restore row in the status table.
+- `Clipchamp_Bunny/docs/MEMORY.md` - seam row flipped to backend-done.
+
+**Not verified online:** a real-account download (measured throughput, the
+CDN refusal against a live redirect) - same honesty line as every other
+vault row. The UI "restore into library" button is frontend work, not this
+lane.

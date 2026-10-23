@@ -20,16 +20,16 @@
    */
   import { app } from '../../stores/app.svelte';
   import { layout } from '../../stores/layout.svelte';
-  import { greeting } from '../../stores/greeting.svelte';
+  import { i18n } from '../../stores/i18n.svelte';
   import { mode } from '../../stores/mode.svelte';
   import { project } from '../../stores/project.svelte';
   import { toast } from '../../stores/toast.svelte';
   import { menu } from '../../stores/menu.svelte';
   import DashboardTopBar from './DashboardTopBar.svelte';
   import ProjectCard from './ProjectCard.svelte';
+  import T9CloudSetup from './T9CloudSetup.svelte';
   import Skeleton from '../Skeleton.svelte';
   import SkeletonBlock from '../SkeletonBlock.svelte';
-  import SystemFooter from '../SystemFooter.svelte';
   import {
     assetUrl,
     clearCustomThumbnail,
@@ -58,18 +58,12 @@
   import { settings } from '../../stores/settings.svelte';
   import {
     ago,
-    fmtBytes,
     fmtDuration,
-    SORT_LABEL,
     sortProjects,
     type ProjectCard as Card,
     type SortKey
   } from '../../dashboard';
   import type { MenuItem } from '../../types';
-
-  // One greeting per app open. The store caches and guards repeats, so this
-  // line never waits for the network.
-  greeting.init();
 
   /* ------------------------------------------------------------- state */
 
@@ -77,37 +71,23 @@
   let cards = $state<Card[]>([]);
   let bin = $state<RustTrashItem[]>([]);
   let loading = $state(true);
-  let query = $state('');
+  /** Ordering only — the reference layout offers no sort or view switcher. */
   let sort = $state<SortKey>('recent');
-  let view = $state<'grid' | 'list'>('grid');
+  /** The dashboard's small transparent search box: filters by project name. */
+  let query = $state('');
   /** The project whose name is being edited inline. */
   let renamingId = $state<string | null>(null);
   let renameDraft = $state('');
 
-  const SECTIONS = [
-    {
-      id: 'home',
-      label: 'Home',
-      icon: 'M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z'
-    },
-    {
-      id: 'videos',
-      label: 'Your videos',
-      icon: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'
-    },
-    {
-      id: 'trash',
-      label: 'Trash',
-      icon: 'M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-9 0 1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13'
-    }
-  ] as const;
-
-  /** The list the user actually sees: searched, then ordered. */
+  /** The list the user actually sees: filtered by the search box, then ordered. */
   const visible = $derived(
-    sortProjects(
-      cards.filter((c) => c.project.name.toLowerCase().includes(query.trim().toLowerCase())),
-      sort
-    )
+    (() => {
+      const q = query.trim().toLowerCase();
+      const base = q
+        ? cards.filter((c) => c.project.name.toLowerCase().includes(q))
+        : cards;
+      return sortProjects(base, sort);
+    })()
   );
 
   /* ------------------------------------------------------------ loading */
@@ -468,17 +448,6 @@
     }));
   }
 
-  function openSortMenu(e: MouseEvent) {
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const items: MenuItem[] = (Object.keys(SORT_LABEL) as SortKey[]).map((k) => ({
-      id: k,
-      label: SORT_LABEL[k]
-    }));
-    menu.show(items, Math.round(r.right - 160), Math.round(r.bottom + 4), (id) => {
-      sort = id as SortKey;
-    });
-  }
-
   /* --------------------------------------------------------------- bin */
 
   async function restore(item: RustTrashItem) {
@@ -521,343 +490,234 @@
   }
 </script>
 
-<!-- ============================================================ dashboard -->
-<div class="t9-fade-in flex h-full min-h-0 flex-col bg-nc-bg text-nc-txt">
-  <DashboardTopBar bind:query />
+<!-- ============================================================
+     dashboard — transparent, over the background video.
+
+     There is no sidebar: the three sections moved into the top bar's tabs, so
+     this screen is a strip of chrome at the top, its content, and the status
+     bar at the bottom. Nothing floats in the middle of the frame — the
+     footage keeps the centre of the window, and every word that sits straight
+     on it carries `.t9-over-video`'s thin shadow instead of a box.
+-->
+<div class="t9-fade-in flex h-full min-h-0 flex-col text-nc-txt">
+  <DashboardTopBar trashCount={bin.length} />
 
   <div class="flex min-h-0 flex-1">
-    <!-- ------------------------------------------------------- sidebar -->
-    <nav
-      class="flex w-[248px] shrink-0 flex-col gap-1 border-r border-nc-line bg-nc-panel p-2"
-      aria-label="Dashboard sections"
-    >
-      {#each SECTIONS as s (s.id)}
-        <button
-          onclick={() => (app.section = s.id)}
-          aria-current={app.section === s.id ? 'page' : undefined}
-          class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13.5px]
-                 transition-colors duration-150
-                 {app.section === s.id
-            ? 'bg-nc-brand/12 font-medium text-nc-txt'
-            : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
-        >
-          <svg
-            width="17"
-            height="17"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.7"
-            stroke-linejoin="round"
-            aria-hidden="true"
-            class="shrink-0 transition-colors duration-150 {app.section === s.id
-              ? 'text-nc-brand'
-              : 'text-nc-mut-2'}"
-          >
-            <path d={s.icon} />
-          </svg>
-          <span class="flex-1">{s.label}</span>
-          {#if s.id === 'trash' && bin.length}
-            <span class="rounded bg-nc-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-nc-mut">
-              {bin.length}
-            </span>
-          {/if}
-        </button>
-      {/each}
-
-      <div class="mt-auto flex items-center gap-2 px-3 py-2">
-        <span class="font-brand text-[13px] leading-none tracking-[0.04em] text-nc-brand">LIT</span>
-        <span class="text-[11px] text-nc-mut-2">v{app.version}</span>
-      </div>
-    </nav>
-
     <!-- ---------------------------------------------------------- main -->
     <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-      <main class="nc-scroll min-h-0 flex-1">
-        <div class="mx-auto max-w-[1360px] px-7 py-6">
-          {#if app.section === 'home'}
-            <!-- greeting -->
-            <h1
-              class="t9-fade-in max-w-[980px] text-[27px] font-bold tracking-tight text-nc-txt"
-              style="animation-delay:60ms"
-              title={greeting.text}
-            >
-              {greeting.text}
-            </h1>
-            <p class="t9-fade-in mt-1 text-[13px] text-nc-mut" style="animation-delay:100ms">
-              Pick up where you left off.
-            </p>
-
-            <!-- ------------------------------------------------ the CTAs -->
-            <div
-              class="t9-fade-in mt-5 flex max-w-[760px] flex-col overflow-hidden rounded-xl bg-nc-brand sm:flex-row"
-              style="animation-delay:140ms"
-            >
-              <button
-                onclick={createNew}
-                class="flex flex-1 items-center gap-4 px-5 py-4 text-left
-                       transition-[filter,translate] duration-150 ease-out
-                       hover:-translate-y-px hover:brightness-110 active:scale-[0.98]"
-              >
-                <span
-                  class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/25 text-[22px] leading-none text-white"
-                  >+</span
+      <main class="nc-scroll-none min-h-0 flex-1">
+        {#if app.section === 'cloud'}
+          <T9CloudSetup />
+        {:else}
+          <div class="mx-auto flex min-h-full max-w-[1360px] flex-col px-7 py-6">
+            {#if app.section === 'home'}
+              <!--
+              The reference screen's whole headline act, in the bottom-left
+              corner: one heading, one button, nothing else. The block owns a
+              viewport-sized min-height and bottom-aligns inside it, so the
+              headline always lands ~71 % down the window (y≈668 in the
+              reference, 935 px tall) no matter how long the project list
+              grows — the middle of the frame stays the video's, the
+              "Recent projects" rule sits right on the fold, and scrolling is
+              what brings the cards up.
+            -->
+              <div class="flex min-h-[73vh] flex-col justify-end pb-7">
+                <h1
+                  class="t9-fade-in t9-over-video max-w-[980px] text-[30px] font-bold tracking-tight text-nc-txt"
+                  style="animation-delay:60ms"
                 >
-                <span class="min-w-0">
-                  <span class="block text-[15px] font-semibold text-white">Create a new video</span>
-                  <span class="block text-[12px] text-white/85">Start with a blank project</span>
-                </span>
-              </button>
-
-              <span class="hidden w-px bg-white/25 sm:block"></span>
-
-              <button
-                onclick={importMedia}
-                class="flex items-center justify-center gap-2.5 px-6 py-4 text-[14px] font-medium text-white
-                       transition-[filter,translate] duration-150 ease-out
-                       hover:-translate-y-px hover:brightness-110 active:scale-[0.98]"
-              >
-                <svg
-                  width="17"
-                  height="17"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.9"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 20h16" />
-                </svg>
-                Import media
-              </button>
-            </div>
-          {/if}
-
-          <!-- ------------------------------------------------ the project list -->
-          {#if app.section === 'trash'}
-            <div class="flex flex-wrap items-end justify-between gap-3">
-              <div class="min-w-0">
-                <h1 class="text-[27px] font-bold tracking-tight text-nc-txt">Trash</h1>
-                <p class="mt-1 text-[13px] text-nc-mut">
-                  Yahan sirf app ka record rakha hai — video file hamesha disk pe safe rehta hai.
-                </p>
-              </div>
-              <div
-                class="flex shrink-0 items-center gap-2 rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-1.5 text-[11px] text-nc-mut"
-              >
-                <span>
-                  Auto-delete:
-                  <b class="text-nc-txt">
-                    {settings.trashNever ? 'kabhi nahi' : `${settings.trashRetentionDays} din`}
-                  </b>
-                </span>
+                  {i18n.t('dash.create')}
+                </h1>
                 <button
-                  onclick={() => (layout.settingsOpen = true)}
-                  class="rounded-md border border-nc-line bg-nc-panel px-2 py-0.5 text-[11px] font-medium text-nc-txt transition-colors hover:border-nc-brand/50 hover:text-nc-brand"
+                  onclick={createNew}
+                  class="t9-fade-in mt-4 inline-flex items-center gap-2 self-start rounded-[10px] border border-white/30 bg-black/35 px-4 py-2.5
+                       text-[14.5px] font-normal text-white transition-[filter,translate,border-color] duration-150 ease-out
+                       hover:-translate-y-px hover:border-white/45 hover:brightness-110 active:scale-[0.98]"
+                  style="animation-delay:120ms"
                 >
-                  Change
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                  {i18n.t('dash.newProject')}
                 </button>
               </div>
-            </div>
-          {:else if app.section === 'videos'}
-            <h1 class="text-[27px] font-bold tracking-tight text-nc-txt">Your videos</h1>
-            <p class="mt-1 text-[13px] text-nc-mut">Har project jo aapne kabhi khola.</p>
-          {/if}
+            {/if}
 
-          <section class="mt-7">
+            <!-- ------------------------------------------------ the project list -->
             {#if app.section === 'trash'}
-              <!-- the bin -->
-              {#if bin.length === 0}
-                <div
-                  class="grid place-items-center rounded-xl border-2 border-dashed border-nc-line px-6 py-14 text-center"
-                >
-                  <div>
-                    <svg
-                      width="30"
-                      height="30"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.4"
-                      stroke-linecap="round"
-                      class="mx-auto text-nc-mut-2"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-9 0 1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"
-                      />
-                    </svg>
-                    <p class="mt-3 text-[13px] font-medium text-nc-txt">Trash khaali hai</p>
-                    <p class="mt-1 text-[12px] text-nc-mut-2">Koi project remove nahi kiya gaya.</p>
-                  </div>
+              <div class="flex flex-wrap items-end justify-between gap-3">
+                <div class="t9-over-video min-w-0">
+                  <h1 class="text-[27px] font-bold tracking-tight text-nc-txt">
+                    {i18n.t('nav.trash')}
+                  </h1>
+                  <p class="mt-1 text-[13px] text-nc-mut">{i18n.t('dash.trashDesc')}</p>
                 </div>
-              {:else}
-                <ul
-                  class="divide-y divide-nc-line overflow-hidden rounded-xl border border-nc-line bg-nc-panel"
+                <div
+                  class="flex shrink-0 items-center gap-2 rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-1.5 text-[11px] text-nc-mut"
                 >
-                  {#each bin as item, i (item.sourcePath)}
-                    <li
-                      class="t9-card-in flex items-center gap-3 px-3 py-2.5 transition-colors duration-150 hover:bg-nc-panel-2"
-                      style="--i:{Math.min(i, 8)}"
-                    >
-                      <div
-                        class="grid h-10 w-16 shrink-0 place-items-center rounded border border-nc-line bg-nc-bg text-nc-mut-2"
-                      >
-                        <svg
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="1.5"
-                          aria-hidden="true"
-                        >
-                          <rect x="3" y="5" width="18" height="14" rx="2" />
-                          <path d="M10 9l5 3-5 3z" />
-                        </svg>
-                      </div>
-                      <div class="min-w-0 flex-1">
-                        <div class="truncate text-[13px] font-medium text-nc-txt">{item.name}</div>
-                        <div class="truncate text-[11px] text-nc-mut-2">
-                          Deleted {ago(item.deletedAt)} · {fmtDuration(item.durationSecs)}
-                          {#if !settings.trashNever}
-                            · {settings.daysLeft(item.deletedAt) === 0
-                              ? 'expires today'
-                              : `expires in ${settings.daysLeft(item.deletedAt)} ${settings.daysLeft(item.deletedAt) === 1 ? 'day' : 'days'}`}
-                          {/if}
-                        </div>
-                      </div>
-                      <button
-                        onclick={() => restore(item)}
-                        class="rounded-lg border border-nc-line px-3 py-1.5 text-[12px] text-nc-txt
-                               transition-colors duration-150 hover:border-nc-brand/50 hover:text-nc-brand"
-                      >
-                        Restore
-                      </button>
-                      <button
-                        onclick={(e) => openBinMenu(item, e)}
-                        class="grid h-7 w-7 place-items-center rounded-md text-nc-mut
-                               transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
-                        title="More options"
-                        aria-label="More options for {item.name}"
-                        aria-haspopup="menu"
-                      >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                          <circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle
-                            cx="19"
-                            cy="12"
-                            r="1.6"
-                          />
-                        </svg>
-                      </button>
-                    </li>
-                  {/each}
-                </ul>
-              {/if}
-            {:else}
-              <div class="mb-3 flex items-center justify-between gap-3">
-                <h2 class="text-[17px] font-semibold text-nc-txt">Your videos</h2>
-
-                <div class="flex items-center gap-2">
-                  <!-- sort -->
+                  <span>
+                    {i18n.t('dash.autoDelete')}:
+                    <b class="text-nc-txt">
+                      {settings.trashNever
+                        ? i18n.t('set.trash.autoNever')
+                        : i18n.t('set.trash.days', { n: settings.trashRetentionDays })}
+                    </b>
+                  </span>
                   <button
-                    onclick={openSortMenu}
-                    class="flex items-center gap-2 rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-1.5
-                           text-[12.5px] text-nc-txt transition-colors duration-150 hover:border-nc-line-2"
-                    aria-haspopup="menu"
+                    onclick={() => {
+                      layout.settingsTab = 'general';
+                      layout.settingsOpen = true;
+                    }}
+                    class="rounded-md border border-nc-line bg-nc-panel px-2 py-0.5 text-[11px] font-medium text-nc-txt transition-colors hover:border-nc-brand/50 hover:text-nc-brand"
                   >
-                    <svg
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.9"
-                      stroke-linecap="round"
-                      class="text-nc-mut"
-                      aria-hidden="true"
-                    >
-                      <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
-                    </svg>
-                    {SORT_LABEL[sort]}
-                    <svg
-                      width="11"
-                      height="11"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                      class="text-nc-mut-2"
-                      aria-hidden="true"
-                    >
-                      <path d="M7 10l5 5 5-5z" />
-                    </svg>
+                    {i18n.t('dash.change')}
                   </button>
-
-                  <!-- grid / list -->
-                  <div class="flex overflow-hidden rounded-lg border border-nc-line">
-                    <button
-                      onclick={() => (view = 'grid')}
-                      class="grid h-8 w-9 place-items-center transition-colors duration-150
-                             {view === 'grid'
-                        ? 'bg-nc-brand/15 text-nc-brand'
-                        : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
-                      aria-label="Grid view"
-                      aria-pressed={view === 'grid'}
-                    >
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <rect x="3" y="3" width="8" height="8" rx="1.5" /><rect
-                          x="13"
-                          y="3"
-                          width="8"
-                          height="8"
-                          rx="1.5"
-                        /><rect x="3" y="13" width="8" height="8" rx="1.5" /><rect
-                          x="13"
-                          y="13"
-                          width="8"
-                          height="8"
-                          rx="1.5"
-                        />
-                      </svg>
-                    </button>
-                    <button
-                      onclick={() => (view = 'list')}
-                      class="grid h-8 w-9 place-items-center border-l border-nc-line transition-colors duration-150
-                             {view === 'list'
-                        ? 'bg-nc-brand/15 text-nc-brand'
-                        : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
-                      aria-label="List view"
-                      aria-pressed={view === 'list'}
-                    >
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <rect x="3" y="5" width="18" height="2.4" rx="1.2" /><rect
-                          x="3"
-                          y="10.8"
-                          width="18"
-                          height="2.4"
-                          rx="1.2"
-                        /><rect x="3" y="16.6" width="18" height="2.4" rx="1.2" />
-                      </svg>
-                    </button>
-                  </div>
                 </div>
               </div>
+            {/if}
 
-              {#if loading}
-                <!--
+            <section class="mt-7">
+              {#if app.section === 'trash'}
+                <!-- the bin -->
+                {#if bin.length === 0}
+                  <div
+                    class="grid place-items-center rounded-xl border-2 border-dashed border-nc-line px-6 py-14 text-center"
+                  >
+                    <div>
+                      <svg
+                        width="30"
+                        height="30"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.4"
+                        stroke-linecap="round"
+                        class="mx-auto text-nc-mut-2"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-9 0 1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"
+                        />
+                      </svg>
+                      <p class="mt-3 text-[13px] font-medium text-nc-txt">
+                        {i18n.t('dash.trashEmpty')}
+                      </p>
+                      <p class="mt-1 text-[12px] text-nc-mut-2">{i18n.t('dash.trashEmptySub')}</p>
+                    </div>
+                  </div>
+                {:else}
+                  <ul
+                    class="divide-y divide-nc-line overflow-hidden rounded-xl border border-nc-line bg-nc-panel"
+                  >
+                    {#each bin as item, i (item.sourcePath)}
+                      <li
+                        class="t9-card-in flex items-center gap-3 px-3 py-2.5 transition-colors duration-150 hover:bg-nc-panel-2"
+                        style="--i:{Math.min(i, 8)}"
+                      >
+                        <div
+                          class="grid h-10 w-16 shrink-0 place-items-center rounded border border-nc-line bg-nc-bg text-nc-mut-2"
+                        >
+                          <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            aria-hidden="true"
+                          >
+                            <rect x="3" y="5" width="18" height="14" rx="2" />
+                            <path d="M10 9l5 3-5 3z" />
+                          </svg>
+                        </div>
+                        <div class="min-w-0 flex-1">
+                          <div class="truncate text-[13px] font-medium text-nc-txt">
+                            {item.name}
+                          </div>
+                          <div class="truncate text-[11px] text-nc-mut-2">
+                            Deleted {ago(item.deletedAt)} · {fmtDuration(item.durationSecs)}
+                            {#if !settings.trashNever}
+                              · {settings.daysLeft(item.deletedAt) === 0
+                                ? 'expires today'
+                                : `expires in ${settings.daysLeft(item.deletedAt)} ${settings.daysLeft(item.deletedAt) === 1 ? 'day' : 'days'}`}
+                            {/if}
+                          </div>
+                        </div>
+                        <button
+                          onclick={() => restore(item)}
+                          class="rounded-lg border border-nc-line px-3 py-1.5 text-[12px] text-nc-txt
+                               transition-colors duration-150 hover:border-nc-brand/50 hover:text-nc-brand"
+                        >
+                          {i18n.t('dash.restore')}
+                        </button>
+                        <button
+                          onclick={(e) => openBinMenu(item, e)}
+                          class="grid h-7 w-7 place-items-center rounded-md text-nc-mut
+                               transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
+                          title={i18n.t('dash.more')}
+                          aria-label={i18n.t('dash.moreFor', { name: item.name })}
+                          aria-haspopup="menu"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                            <circle cx="5" cy="12" r="1.6" /><circle
+                              cx="12"
+                              cy="12"
+                              r="1.6"
+                            /><circle cx="19" cy="12" r="1.6" />
+                          </svg>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              {:else}
+                <!-- the reference layout's section rule, now carrying a small,
+                     deliberately quiet search field. It must NOT glow or shine
+                     over the footage — that is what ruins the frame — so it is
+                     a hairline border on near-nothing, brightening only a
+                     touch on focus. Shaped like a small Google-style pill and
+                     kept compact so it reads as a whisper, not a widget. It
+                     filters the grid below by name. -->
+                <div class="t9-over-video mb-4 flex items-center gap-5">
+                  <h2 class="shrink-0 text-[17px] font-semibold text-nc-txt">
+                    {i18n.t('dash.recent')}
+                  </h2>
+                  <label class="relative flex w-[230px] shrink-0 items-center">
+                    <svg
+                      class="pointer-events-none absolute left-2.5 h-3 w-3 text-nc-mut-2"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" />
+                    </svg>
+                    <input
+                      type="search"
+                      bind:value={query}
+                      placeholder={i18n.t('dash.searchPlaceholder')}
+                      aria-label={i18n.t('dash.searchPlaceholder')}
+                      class="w-full rounded-full border border-white/12 bg-white/[0.04] py-0.5 pr-2.5 pl-7
+                             text-[12px] text-nc-txt placeholder:text-nc-mut-2
+                             transition-colors duration-150
+                             focus:border-white/25 focus:bg-white/[0.07] focus:outline-none"
+                    />
+                  </label>
+                </div>
+
+                {#if loading}
+                  <!--
                   Skeleton first, data second.
 
                   The layout the user is about to get is already on screen, so
@@ -865,8 +725,7 @@
                   instead of a blank wait. `<Skeleton>` owns the single
                   composited sweep; these blocks only reserve the real shape.
                 -->
-                <Skeleton label="Projects load ho rahe hain…">
-                  {#if view === 'grid'}
+                  <Skeleton label={i18n.t('dash.loading')}>
                     <ul
                       class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
                       aria-hidden="true"
@@ -881,156 +740,103 @@
                         </li>
                       {/each}
                     </ul>
+                  </Skeleton>
+                {:else if visible.length === 0}
+                  <!-- Two different empties, honestly told: a search that
+                       matched nothing is NOT the same as having no projects. -->
+                  {#if query.trim() && cards.length > 0}
+                    <div
+                      class="grid place-items-center rounded-xl border-2 border-dashed border-nc-line px-6 py-14 text-center"
+                    >
+                      <div>
+                        <svg
+                          width="30"
+                          height="30"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.4"
+                          stroke-linecap="round"
+                          class="mx-auto text-nc-mut-2"
+                          aria-hidden="true"
+                        >
+                          <circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" />
+                        </svg>
+                        <p class="mt-3 text-[13px] font-medium text-nc-txt">
+                          {i18n.t('dash.noMatches')}
+                        </p>
+                        <p class="mt-1 text-[12px] text-nc-mut-2">
+                          {i18n.t('dash.noMatchesSub')}
+                        </p>
+                      </div>
+                    </div>
                   {:else}
-                    <ul
-                      class="divide-y divide-nc-line overflow-hidden rounded-xl border border-nc-line bg-nc-panel"
-                      aria-hidden="true"
-                    >
-                      {#each Array(6) as _, i}
-                        <li class="flex items-center gap-3 px-3 py-2">
-                          <SkeletonBlock class="h-10 w-16 shrink-0 rounded border border-nc-line" />
-                          <div class="min-w-0 flex-1">
-                            <SkeletonBlock shape="line" class="w-[38%]" />
-                            <SkeletonBlock shape="line" class="mt-1.5 h-2.5 w-[24%] opacity-70" />
-                          </div>
-                          <SkeletonBlock shape="line" class="h-2.5 w-8 opacity-70" />
-                        </li>
-                      {/each}
-                    </ul>
-                  {/if}
-                </Skeleton>
-              {:else if visible.length === 0}
-                <div
-                  class="grid place-items-center rounded-xl border-2 border-dashed border-nc-line px-6 py-14 text-center"
-                >
-                  <div>
-                    <svg
-                      width="30"
-                      height="30"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.4"
-                      stroke-linecap="round"
-                      class="mx-auto text-nc-mut-2"
-                      aria-hidden="true"
-                    >
-                      <path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 20h16" />
-                    </svg>
-                    <p class="mt-3 text-[13px] font-medium text-nc-txt">
-                      {query.trim() ? 'Kuch nahi mila' : 'Abhi koi project nahi hai'}
-                    </p>
-                    <p class="mt-1 text-[12px] text-nc-mut-2">
-                      {query.trim()
-                        ? 'Search hatao ya naya project banao.'
-                        : 'Import media se shuru karo — ya "Create a new video" se ek blank project.'}
-                    </p>
-                    {#if !query.trim()}
+                  <div
+                    class="grid place-items-center rounded-xl border-2 border-dashed border-nc-line px-6 py-14 text-center"
+                  >
+                    <div>
+                      <svg
+                        width="30"
+                        height="30"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.4"
+                        stroke-linecap="round"
+                        class="mx-auto text-nc-mut-2"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 20h16" />
+                      </svg>
+                      <p class="mt-3 text-[13px] font-medium text-nc-txt">
+                        {i18n.t('dash.noProjects')}
+                      </p>
+                      <p class="mt-1 text-[12px] text-nc-mut-2">
+                        {i18n.t('dash.noProjectsSub')}
+                      </p>
                       <div class="mt-4 flex items-center justify-center gap-3">
                         <button
                           onclick={importMedia}
                           class="rounded-lg bg-nc-brand px-4 py-2 text-[12.5px] font-semibold text-nc-bg
-                                 transition-[filter] duration-150 hover:brightness-110"
+                               transition-[filter] duration-150 hover:brightness-110"
                         >
-                          Import media
+                          {i18n.t('dash.import')}
                         </button>
                         {#if isTauri()}
                           <button
                             onclick={openDemo}
                             class="rounded-lg border border-nc-line px-4 py-2 text-[12.5px] text-nc-mut
-                                   transition-colors duration-150 hover:border-nc-line-2 hover:text-nc-txt"
+                                 transition-colors duration-150 hover:border-nc-line-2 hover:text-nc-txt"
                           >
-                            …ya demo recording kholo
+                            {i18n.t('dash.openDemo')}
                           </button>
                         {/if}
                       </div>
-                    {/if}
+                    </div>
                   </div>
-                </div>
-              {:else if view === 'grid'}
-                <ul class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {#each visible as c, i (c.project.id)}
-                    <ProjectCard
-                      card={c}
-                      index={i}
-                      renaming={renamingId === c.project.id}
-                      onopen={() => openProject(c)}
-                      onmenu={(e) => openCardMenu(c, e)}
-                      onrenamechange={(v) => (renameDraft = v)}
-                      onrenamecommit={() => void commitRename()}
-                      onrenamecancel={() => (renamingId = null)}
-                      onpostererror={() => posterFailed(c)}
-                    />
-                  {/each}
-                </ul>
-              {:else}
-                <ul
-                  class="divide-y divide-nc-line overflow-hidden rounded-xl border border-nc-line bg-nc-panel"
-                >
-                  {#each visible as c, i (c.project.id)}
-                    <li
-                      class="t9-card-in flex items-center gap-3 px-3 py-2 transition-colors duration-150 hover:bg-nc-panel-2"
-                      style="--i:{Math.min(i, 8)}"
-                    >
-                      <button
-                        onclick={() => openProject(c)}
-                        class="h-10 w-16 shrink-0 overflow-hidden rounded border border-nc-line bg-nc-bg"
-                        aria-label="Open {c.project.name}"
-                      >
-                        {#if c.posterUrl}
-                          <img
-                            src={c.posterUrl}
-                            alt=""
-                            loading="lazy"
-                            decoding="async"
-                            class="h-full w-full object-cover"
-                          />
-                        {/if}
-                      </button>
-                      <div class="min-w-0 flex-1">
-                        <div class="truncate text-[13px] font-medium text-nc-txt">
-                          {c.project.name}
-                        </div>
-                        <div class="truncate text-[11px] text-nc-mut-2">
-                          Edited {ago(c.project.lastOpened)}
-                          {#if c.sizeBytes > 0}· {fmtBytes(c.sizeBytes)}{/if}
-                        </div>
-                      </div>
-                      <span class="font-mono text-[11px] text-nc-mut-2">
-                        {fmtDuration(c.project.durationSecs)}
-                      </span>
-                      <button
-                        onclick={(e) => openCardMenu(c, e)}
-                        class="grid h-7 w-7 place-items-center rounded-md text-nc-mut
-                               transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
-                        title="More options"
-                        aria-label="More options for {c.project.name}"
-                        aria-haspopup="menu"
-                      >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                          <circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle
-                            cx="19"
-                            cy="12"
-                            r="1.6"
-                          />
-                        </svg>
-                      </button>
-                    </li>
-                  {/each}
-                </ul>
+                  {/if}
+                {:else}
+                  <ul class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {#each visible as c, i (c.project.id)}
+                      <ProjectCard
+                        card={c}
+                        index={i}
+                        renaming={renamingId === c.project.id}
+                        onopen={() => openProject(c)}
+                        onmenu={(e) => openCardMenu(c, e)}
+                        onrenamechange={(v) => (renameDraft = v)}
+                        onrenamecommit={() => void commitRename()}
+                        onrenamecancel={() => (renamingId = null)}
+                        onpostererror={() => posterFailed(c)}
+                      />
+                    {/each}
+                  </ul>
+                {/if}
               {/if}
-            {/if}
-          </section>
-        </div>
+            </section>
+          </div>
+        {/if}
       </main>
-
-      <!-- --------------------------------------------------- status bar -->
-      <footer
-        class="flex h-9 shrink-0 items-center border-t border-nc-line bg-nc-panel px-4"
-        title="Live system meters — RAM, disk and network, read from the OS once a second"
-      >
-        <SystemFooter />
-      </footer>
     </div>
   </div>
 </div>

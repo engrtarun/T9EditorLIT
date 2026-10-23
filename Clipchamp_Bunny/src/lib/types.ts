@@ -185,6 +185,29 @@ export interface TimelineClip {
   label: string;
 }
 
+/**
+ * One asset placed on a project's timeline.
+ *
+ * This is what "multiple media in one project" means here: the project holds a
+ * short, ordered list of **references** (path + in/out), never file bytes. The
+ * main source keeps its transcript and cut; every clip in this list is
+ * appended after that cut and plays/exports exactly as it is.
+ */
+export interface ProjectClip {
+  id: string;
+  /** Filesystem path on the desktop, or the public URL in the browser. */
+  path: string;
+  /** Streamable URL for `<video>` / `<img>`. */
+  url: string;
+  name: string;
+  /** `image` clips are shown for a fixed 5 s slice, like Clipchamp's stills. */
+  kind: 'video' | 'image';
+  durationSecs: number;
+  /** Trim inside the clip, in source seconds. */
+  inSec: number;
+  outSec: number;
+}
+
 export interface ProjectState {
   name: string;
   media: MediaAsset | null;

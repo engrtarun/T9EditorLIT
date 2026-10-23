@@ -85,6 +85,7 @@ telegram.session*
 .DS_Store
 Thumbs.db
 desktop.ini
+HKCU/
 
 # ---------- Logs & Temp ----------
 *.log

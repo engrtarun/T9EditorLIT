@@ -89,6 +89,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/vault/status", s.handleVaultStatus)
 	s.mux.HandleFunc("POST /v1/vault/upload", s.handleVaultUpload)
 
+	// The read half: the restore menu, and the job that streams a backup
+	// back onto disk. The chat is taken from the upload's manifest.
+	s.mux.HandleFunc("GET /v1/vault/manifests", s.handleVaultManifests)
+	s.mux.HandleFunc("POST /v1/vault/download", s.handleVaultDownload)
+
 	s.mux.HandleFunc("GET /v1/jobs/{id}", s.handleJob)
 
 	// Honest network throughput probe. Replaces the single-socket fetch() that

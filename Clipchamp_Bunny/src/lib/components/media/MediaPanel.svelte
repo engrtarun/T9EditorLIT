@@ -1,6 +1,6 @@
 <script lang="ts">
   import { media } from '../../stores/media.svelte';
-  import { project } from '../../stores/project.svelte';
+  import { project, clipKind, isAudioOnly } from '../../stores/project.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { toast } from '../../stores/toast.svelte';
   import {
@@ -13,6 +13,7 @@
     assetUrl
   } from '../../ipc';
   import { menu } from '../../stores/menu.svelte';
+  import MenuIcon from '../MenuIcon.svelte';
   import type { MenuItem } from '../../types';
   import { fmtSize } from '../../utils';
   import { firstFrameUrl } from '../../media';
@@ -22,8 +23,8 @@
    *
    * Import comes from three places: the **file manager** (several files at
    * once), a **link** (YouTube and anything `yt-dlp` understands), or the
-   * **Telegram vault**. A file that arrives while a project is open becomes a
-   * new project; the library keeps the old one so it can be reopened.
+   * **Telegram vault**. Importing only fills this library; a file reaches the
+   * timeline by drag & drop or by its + button, exactly like Clipchamp.
    */
   let renamingId = $state<string | null>(null);
   let draft = $state('');
@@ -53,12 +54,59 @@
   ];
 
   const FILE_ITEMS: MenuItem[] = [
+    { id: 'add', label: 'Add to timeline', icon: 'plus' },
+    { id: 'open', label: 'Open as its own project', icon: 'folder' },
+    { id: 'div-0', label: '', divider: true },
     { id: 'rename', label: 'Rename', icon: 'rename' },
     { id: 'thumb', label: 'Upload thumbnail', icon: 'image' },
     { id: 'locate', label: 'Open file location', icon: 'folder' },
     { id: 'div', label: '', divider: true },
     { id: 'remove', label: 'Remove from library', icon: 'trash', danger: true }
   ];
+
+  /**
+   * Put a library asset on the project timeline.
+   *
+   * This is the whole "one project, many assets" path: the project keeps a
+   * reference to the file, never its bytes, and the main cut is untouched.
+   */
+  function addToTimeline(id: string) {
+    const e = media.get(id);
+    if (!e) return;
+    // No project yet? The tile is how you start one.
+    if (!project.media) {
+      void project.openLibraryEntry(id);
+      return;
+    }
+    if (e.path && project.sourcePath === e.path) {
+      toast.push('info', 'Yeh clip project ka main source hai');
+      return;
+    }
+    if (e.phase === 'loading') {
+      toast.push('info', 'File abhi probe ho rahi hai — thoda ruko');
+      return;
+    }
+    if (isAudioOnly(e.asset.name, e.asset.url)) {
+      toast.push('info', 'Audio-only clip abhi timeline me nahi lagta — video ya image chuno');
+      return;
+    }
+    const clip = project.addToTimeline(id);
+    if (!clip) {
+      toast.push('warn', 'Yeh asset timeline me nahi lag sakta');
+      return;
+    }
+    project.activateClip(clip.id);
+    toast.push('info', `+ ${clip.name} timeline me add ho gaya`);
+  }
+
+  /** Drag a tile onto the timeline. The timeline reads this exact MIME type. */
+  function onDragStart(e: DragEvent, id: string) {
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    dt.setData('application/x-t9-asset', id);
+    dt.setData('text/plain', id);
+    dt.effectAllowed = 'copy';
+  }
 
   async function importFromFiles() {
     const paths = await pickVideos();
@@ -95,7 +143,7 @@
       linkOpen = false;
       linkUrl = '';
       await project.importPaths([path]);
-      toast.push('info', 'Download ho gaya — naya project khul gaya');
+      toast.push('info', 'Download ho gaya — My media me add ho gaya');
     } catch (e) {
       toast.push('warn', `Download failed: ${e instanceof Error ? e.message : e}`);
     }
@@ -130,7 +178,11 @@
   function pickFile(id: string, choice: string) {
     const e = media.get(id);
     if (!e) return;
-    if (choice === 'rename') {
+    if (choice === 'add') {
+      addToTimeline(id);
+    } else if (choice === 'open') {
+      void project.openLibraryEntry(id);
+    } else if (choice === 'rename') {
       draft = e.asset.name;
       renamingId = id;
     } else if (choice === 'thumb') {
@@ -285,17 +337,23 @@
       {:else}
         <ul class="space-y-2">
           {#each media.entries as e (e.asset.id)}
+            {@const kind = clipKind(e.asset.name, e.asset.url)}
+            {@const onTimeline = !!project.clipForPath(e.path ?? e.asset.url)}
             <li
               class="group relative cursor-pointer"
               role="option"
               aria-selected={e.inUse}
               tabindex="0"
+              draggable={e.phase !== 'loading'}
+              ondragstart={(ev) => onDragStart(ev, e.asset.id)}
               aria-label="{e.asset.name}, {e.durationLabel}, {e.inUse
                 ? 'Current project'
-                : 'In library'}"
-              onclick={() => project.openLibraryEntry(e.asset.id)}
+                : onTimeline
+                  ? 'On timeline'
+                  : 'In library'}"
+              onclick={() => addToTimeline(e.asset.id)}
               onkeydown={(ev) => {
-                if (ev.key === 'Enter') project.openLibraryEntry(e.asset.id);
+                if (ev.key === 'Enter') addToTimeline(e.asset.id);
               }}
             >
               <div
@@ -313,15 +371,24 @@
                     style="opacity:{e.phase === 'loading' ? 0.6 : 1}"
                   />
                 {:else if e.asset.url}
-                  <!-- svelte-ignore a11y_media_has_caption -->
-                  <video
-                    src={firstFrameUrl(e.asset.url)}
-                    muted
-                    playsinline
-                    preload="metadata"
-                    class="h-full w-full object-cover"
-                    style="opacity:{e.phase === 'loading' ? 0.6 : 1}"
-                  ></video>
+                  {#if kind === 'image'}
+                    <img
+                      src={e.asset.url}
+                      alt=""
+                      class="h-full w-full object-cover"
+                      style="opacity:{e.phase === 'loading' ? 0.6 : 1}"
+                    />
+                  {:else}
+                    <!-- svelte-ignore a11y_media_has_caption -->
+                    <video
+                      src={firstFrameUrl(e.asset.url)}
+                      muted
+                      playsinline
+                      preload="metadata"
+                      class="h-full w-full object-cover"
+                      style="opacity:{e.phase === 'loading' ? 0.6 : 1}"
+                    ></video>
+                  {/if}
                 {:else}
                   <div class="grid h-full w-full place-items-center text-nc-mut-2">
                     <svg
@@ -350,6 +417,19 @@
                     </div>
                   </div>
                 {/if}
+
+                <!-- Add to timeline: the same action as dragging the tile -->
+                <button
+                  onclick={(ev) => {
+                    ev.stopPropagation();
+                    addToTimeline(e.asset.id);
+                  }}
+                  class="absolute top-1 right-8 grid h-6 w-6 place-items-center rounded bg-black/70 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-nc-brand hover:text-nc-bg"
+                  title="Add to timeline"
+                  aria-label="Add {e.asset.name} to timeline"
+                >
+                  <MenuIcon name="plus" size={13} />
+                </button>
 
                 <!-- More options -->
                 <button
@@ -399,6 +479,11 @@
                       />
                     </svg>
                   </span>
+                {:else if onTimeline}
+                  <span
+                    class="mt-0.5 shrink-0 rounded bg-nc-brand/20 px-1 font-mono text-[8px] leading-3 text-nc-brand"
+                    title="Timeline me hai">TL</span
+                  >
                 {/if}
               </div>
               <p class="font-mono text-[9px] text-nc-mut-2">

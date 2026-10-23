@@ -12,18 +12,18 @@ kare, tabhi hi plan aage badhta hai.
 
   1. **Challan draft record** — JSON, existing challan schema jaisa:
 
-      ```json
-      {
-        "schema": 1,
-        "challanId": "CHALLAN-<date>-<random>  (asli id Court khud banti hai)",
-        "workId": "<work order id>",
-        "agent": "<agent /model>",
-        "violation": "<neeche wali table se category>",
-        "points": <table ke hisaab se>,
-        "status": "ACTIVE_PENALTY",
-        "description": "<1-2 line ka seedha sach>"
-      }
-      ```
+     ```json
+     {
+       "schema": 1,
+       "challanId": "CHALLAN-<date>-<random>  (asli id Court khud banti hai)",
+       "workId": "<work order id>",
+       "agent": "<agent /model>",
+       "violation": "<neeche wali table se category>",
+       "points": <table ke hisaab se>,
+       "status": "ACTIVE_PENALTY",
+       "description": "<1-2 line ka seedha sach>"
+     }
+     ```
 
   2. **Kyun** — bulleted reasons: kaunsa evidence balwan aur kaunsa
      dhila hai; dono side dikha den (bina bias ke).
@@ -33,14 +33,14 @@ kare, tabhi hi plan aage badhta hai.
 
 ## SANCTIONED VIOLATION TABLE (iske bahar KABHI nahi)
 
-| Category                  | Points | Kab                                            |
-| ------------------------- | ------ | ---------------------------------------------- |
-| PYTHON_BANNED_VIOLATION   | 100  | Python file repo me hai                         |
-| FALSE_SCOPE_MISMATCH      | 40   | Work order 'app' ka tha, go scope palat gaya    |
-| CANARY_STARTUP_PANIC      | 35   | User desktop pe app crash                       |
-| LEASE_SQUATTING_HANG      | 25   | Deploy lock/timeout khaya soya                  |
-| BUILD_SYNTAX_ERROR        | 15   | Uncompiled code push hua                        |
-| (custom)                  | user ka number | agar table me nahi mila                |
+| Category                | Points         | Kab                                          |
+| ----------------------- | -------------- | -------------------------------------------- |
+| PYTHON_BANNED_VIOLATION | 100            | Python file repo me hai                      |
+| FALSE_SCOPE_MISMATCH    | 40             | Work order 'app' ka tha, go scope palat gaya |
+| CANARY_STARTUP_PANIC    | 35             | User desktop pe app crash                    |
+| LEASE_SQUATTING_HANG    | 25             | Deploy lock/timeout khaya soya               |
+| BUILD_SYNTAX_ERROR      | 15             | Uncompiled code push hua                     |
+| (custom)                | user ka number | agar table me nahi mila                      |
 
 - Points sirf isi table se; category match nahi hui to **naya category
   MAT banao** — bolo "ye sanctioned category nahi; user se

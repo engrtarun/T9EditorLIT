@@ -181,6 +181,32 @@ func (s *jobStore) finishVault(id, chat string, parts []vault.Part, ids []int, t
 	})
 }
 
+// finishRestore records a restore outcome: where the file landed and what it
+// took to put it back.
+//
+// Destination carries the path the app adds to the media library; an upload
+// leaves it empty. MessageIDs stay nil — the ids belong to the upload that
+// created this manifest, not to any send this job made.
+func (s *jobStore) finishRestore(id, chat string, totalBytes int64, dest string, partCount int) {
+	s.mutate(id, func(j *model.Job) {
+		j.VaultResult = &model.VaultResult{
+			ChatID:      chat,
+			PartCount:   partCount,
+			TotalBytes:  totalBytes,
+			Destination: dest,
+			CompletedAt: time.Now().Unix(),
+		}
+		if j.VaultProgress != nil {
+			j.VaultProgress.Phase = "done"
+			j.VaultProgress.BytesDone = totalBytes
+			j.VaultProgress.PartsDone = partCount
+		}
+		j.Completed = j.Total
+		j.State = model.StateDone
+		j.Updated = time.Now().Unix()
+	})
+}
+
 func (s *jobStore) get(id string) (model.Job, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

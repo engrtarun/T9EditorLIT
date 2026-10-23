@@ -301,7 +301,7 @@ Daemon kahan se dhoondha jaata hai: app ke saath (installed layout), phir
 | **`HomeDashboard` → `driveSpace`** | Rust `drive_space` — drive ka free/total | ✅ **wired** |
 | **`HomeDashboard` → trash** | Rust `trash_project` / `restore_project` / `load_trash` / `purge_trash` | ✅ **wired** |
 | **Go `Segment.Words`** | word timings daemon se | ✅ **DONE** — `model.Word`, `groqWord`, `segmentsFromWords()` |
-| **Telegram vault → media library** | daemon se file download karke library me daalna | ❌ **TODO** |
+| **Telegram vault → media library** | daemon se file download karke library me daalna | 🟡 **backend DONE** — daemon me restore poora hai: `GET /v1/vault/manifests` (menu) + `POST /v1/vault/download` (202 job; per-part digest-verify, resume record, temp files `destDir` me) — `go/internal/vault/restore.go` + `telegram.go FetchParts`; UI ka import call lena baaki |
 | **Setup card "Save & Test"** | daemon `POST /v1/keys/probe` — body ka key ek models-list call se prove hota hai, log/echo kabhi nahi; empty key daemon ke configured key ka re-check | ✅ **wired** (test coverage: 401/429/500/400 + key never echoed) |
 
 ### Telegram vault ke liye `.env` me ye **khali** hain
@@ -534,7 +534,7 @@ cd Clipchamp_Bunny && node tools/generate-media.mjs
 
 ## 8. Bacha hai
 
-- [ ] **Telegram vault → media library** (download karke import)
+- [ ] **Telegram vault → media library** (download karke import) — daemon half ✅ (restore job + `GET /v1/vault/manifests` / `POST /v1/vault/download`); UI ka import call baaki
 - [ ] **Bachay hue huaam** ko split karte waqt text edit karne ka UI (inline rename on a split half)
 - [ ] **Polish mode** (text/zoom/music) — deferred, app ke do kaam se bahar hai
 - [ ] Root ka **bakwas UI** delete karna (`src/lib/components/clipchamp/**`)

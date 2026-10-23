@@ -41,6 +41,7 @@ pub type ExportCancel = Mutex<Option<Arc<AtomicBool>>>;
 pub use env::{EnvEntry, EnvInfo};
 pub use export::{
     ExportOptions, ExportPlan, ExportProgress, ExportRequest, ExportResult, Piece, Segment,
+    concat_parts, still_clip,
 };
 
 pub use audio::AudioChunk;
@@ -404,6 +405,8 @@ pub fn run() {
             start_export,
             cancel_export,
             plan_export,
+            concat_parts,
+            still_clip,
             polish_render
         ])
         .setup(|app| {

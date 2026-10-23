@@ -7,12 +7,12 @@ banata hai; tum sirf draft aur grounds ka maadad karte ho — filing hum
 
 ## VALID GROUNDS (in chaar me se ek hi)
 
-| Code                          | Kab laga hai                | Evidence ka pkka rule                          |
-| ----------------------------- | --------------------------- | ---------------------------------------------- |
-| ANTIVIRUS_DEFENDER_LOCK       | Defender/MsMpEng ne exe lock ki | **Telemetry proof CHAHIYE** (nahi to reject) |
-| CRITICAL_OOM_SPIKE            | RAM khud khatam ho gayi thi | **Telemetry proof CHAHIYE** (nahi to reject)   |
-| THIRD_PARTY_NETWORK_FAIL      | network beeچ me kut gaya    | time/timestamp waghera ka soundproof           |
-| HONEST_MISTAKE_FIRST_OFFENSE  | pehli baar ki ghalti        | **Priors 0** (challans me auraksha reject)     |
+| Code                         | Kab laga hai                    | Evidence ka pkka rule                        |
+| ---------------------------- | ------------------------------- | -------------------------------------------- |
+| ANTIVIRUS_DEFENDER_LOCK      | Defender/MsMpEng ne exe lock ki | **Telemetry proof CHAHIYE** (nahi to reject) |
+| CRITICAL_OOM_SPIKE           | RAM khud khatam ho gayi thi     | **Telemetry proof CHAHIYE** (nahi to reject) |
+| THIRD_PARTY_NETWORK_FAIL     | network beeچ me kut gaya        | time/timestamp waghera ka soundproof         |
+| HONEST_MISTAKE_FIRST_OFFENSE | pehli baar ki ghalti            | **Priors 0** (challans me auraksha reject)   |
 
 Court ka decision algorithm (ye kanoon ka paka sach hai):
 

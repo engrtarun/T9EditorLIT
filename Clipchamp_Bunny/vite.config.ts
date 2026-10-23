@@ -2,9 +2,10 @@ import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { mp3DevApi } from './tools/dev-mp3-api';
+import { textScale } from './tools/text-scale-plugin';
 
 export default defineConfig({
-  plugins: [tailwindcss(), svelte(), mp3DevApi()],
+  plugins: [tailwindcss(), svelte(), mp3DevApi(), textScale()],
   server: {
     port: 5174,
     // One dev server only. The predev guard reuses an existing 5174 server;

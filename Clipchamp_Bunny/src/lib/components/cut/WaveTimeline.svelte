@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { project } from '../../stores/project.svelte';
+  import { project, isAudioOnly } from '../../stores/project.svelte';
+  import { media } from '../../stores/media.svelte';
   import { player } from '../../stores/player.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { settings } from '../../stores/settings.svelte';
@@ -38,6 +39,8 @@
   let viewW = $state(1200);
   let scrollLeft = $state(0);
   let busy = $state(false);
+  /** True while a library tile is dragged over the video lane. */
+  let dropHover = $state(false);
 
   /* ---- clip drag state ---- */
   let dragId: string | null = $state(null);
@@ -64,8 +67,12 @@
   let ctx = $state<CtxState | null>(null);
 
   const zoom = $derived(player.zoom);
-  /** The timeline is the EDIT timeline: the final video, gapless. */
-  const editDur = $derived(project.editDuration || project.durationSec);
+  /** The timeline is the EDIT timeline: the main cut, then every extra clip. */
+  const editDur = $derived(project.sequenceDuration || project.durationSec);
+  /** Extra clips, with where each one starts on the timeline. */
+  const extras = $derived(project.extrasLayout);
+  /** Playhead on the whole project timeline (main cut + extras). */
+  const editPlayhead = $derived(project.globalTimeAt(project.activeClipId, player.currentTime));
   const contentW = $derived(Math.max(600, (editDur + 4) * zoom));
   const step = $derived(niceStep(zoom));
   const minor = $derived(step / (step >= 5 ? 5 : step >= 2 ? 4 : 2));
@@ -271,12 +278,79 @@
   });
 
   /* ---------------------------------------------------------------- actions */
+  /**
+   * Jump the playhead to a bottom-timeline position, whichever clip owns it.
+   *
+   * The main cut owns everything before `editDuration`; after it, the extra
+   * clips play back-to-back. Activating the target clip first means the
+   * preview has the right `<video src>` before it seeks.
+   */
+  function seekToEdit(editSec: number, snap = true) {
+    const at = project.sequenceAt(editSec);
+    if (!at) return;
+    const local = snap && !at.clip ? project.snapTime(at.localSec) : at.localSec;
+    project.activateClip(at.clip?.id ?? null);
+    player.seek(local);
+  }
+
+  /** Transport start: the active clip's in-point (the project start for main). */
+  function goStart() {
+    const clip = project.activeClip;
+    player.seek(clip ? clip.inSec : 0);
+  }
+
+  /**
+   * Step the playhead. On the main cut this skips over cut ranges; inside an
+   * extra clip it is a plain step clamped to the clip's own in/out points -
+   * that clip has no transcript, so there is nothing to skip.
+   */
+  function stepBy(delta: number) {
+    const clip = project.activeClip;
+    if (!clip) {
+      player.seek(project.skipBy(player.currentTime, delta));
+      return;
+    }
+    const next = player.currentTime + delta;
+    player.seek(Math.min(clip.outSec, Math.max(clip.inSec, next)));
+  }
+
   function seekFromEvent(e: MouseEvent) {
     const el = e.currentTarget as HTMLElement;
     const rect = el.getBoundingClientRect();
     const editSec = clamp((e.clientX - rect.left) / zoom, 0, editDur);
-    const source = project.sourceAt(editSec);
-    if (source != null) player.seek(project.snapTime(source));
+    seekToEdit(editSec);
+  }
+
+  /**
+   * Drop a library tile on the timeline.
+   *
+   * This is the Clipchamp gesture: drag from My media, drop on the bottom
+   * timeline, and the asset becomes a clip appended after the main cut. The
+   * project itself never changes.
+   */
+  function onLaneDrop(e: DragEvent) {
+    dropHover = false;
+    const id = e.dataTransfer?.getData('application/x-t9-asset');
+    if (!id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const entry = media.get(id);
+    if (entry && isAudioOnly(entry.asset.name, entry.asset.url)) {
+      toast.push('info', 'Audio-only clip abhi timeline me nahi lagta');
+      return;
+    }
+    const clip = project.addToTimeline(id);
+    if (!clip) {
+      toast.push('warn', 'Yeh asset timeline me nahi lag sakta');
+      return;
+    }
+    project.activateClip(clip.id);
+    toast.push('info', `+ ${clip.name} timeline me add ho gaya`);
+  }
+
+  function dragHasAsset(e: DragEvent): boolean {
+    const types = e.dataTransfer?.types;
+    return !!types && Array.from(types).includes('application/x-t9-asset');
   }
 
   /** Clicking blank timeline clears the selection, then moves the playhead. */
@@ -303,7 +377,7 @@
     'aria-label': 'Timeline',
     'aria-valuemin': 0,
     'aria-valuemax': Math.round(editDur),
-    'aria-valuenow': Math.round(player.currentTime)
+    'aria-valuenow': Math.round(editPlayhead)
   });
 
   function nudgeZoom(dir: 1 | -1) {
@@ -467,8 +541,7 @@
       const rect = el.getBoundingClientRect();
       const x = ev.clientX - rect.left + el.scrollLeft;
       const editSec = clamp(x / zoom, 0, editDur);
-      const source = project.sourceAt(editSec);
-      if (source != null) player.seek(project.snapTime(source, 0.12));
+      seekToEdit(editSec);
     };
     const up = () => {
       window.removeEventListener('pointermove', seek);
@@ -542,9 +615,6 @@
       toast.push('cut', '✕ Clip deleted — gap closed');
     }
   }
-
-  /** Playhead on the edit timeline. */
-  const editPlayhead = $derived(project.editTimeAt(player.currentTime));
 
   /** Drag the top edge: up = taller, down = shorter. Double-click resets. */
   function startHeightResize(e: PointerEvent) {
@@ -646,7 +716,7 @@
     <div class="pointer-events-none absolute inset-0 flex items-center justify-center">
       <div class="pointer-events-auto flex items-center gap-1.5">
         <button
-          onclick={() => player.seek(0)}
+          onclick={goStart}
           class="grid h-7 w-7 place-items-center rounded-full text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
           title="Go to start"
         >
@@ -655,7 +725,7 @@
           </svg>
         </button>
         <button
-          onclick={() => player.seek(project.skipBy(player.currentTime, -settings.seekStepSec))}
+          onclick={() => stepBy(-settings.seekStepSec)}
           class="grid h-7 w-7 place-items-center rounded-full text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
           title="Back {settings.seekStepLabel}s (J)"
         >
@@ -678,7 +748,7 @@
           </svg>
         </button>
         <button
-          onclick={() => player.seek(project.skipBy(player.currentTime, settings.seekStepSec))}
+          onclick={() => stepBy(settings.seekStepSec)}
           class="grid h-7 w-7 place-items-center rounded-full text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
           title="Forward {settings.seekStepLabel}s (L)"
         >
@@ -716,8 +786,8 @@
           {/if}
         </button>
         <span class="ml-1 font-mono text-[12px] text-nc-txt">
-          {fmtTime(player.currentTime)}
-          <span class="text-nc-mut-2"> / {fmtTime(project.durationSec)}</span>
+          {fmtTime(editPlayhead)}
+          <span class="text-nc-mut-2"> / {fmtTime(project.sequenceDuration)}</span>
         </span>
       </div>
     </div>
@@ -801,10 +871,20 @@
         <div
           bind:this={laneEl}
           {...aria}
-          class="relative cursor-pointer border-b border-nc-line/60 bg-nc-bg"
+          class="relative cursor-pointer border-b border-nc-line/60 bg-nc-bg {dropHover
+            ? 'ring-2 ring-inset ring-nc-brand/70'
+            : ''}"
           style="height:{VIDEO_H}px"
           onclick={onLaneClick}
           onkeydown={laneKeys}
+          ondragover={(e) => {
+            if (!dragHasAsset(e)) return;
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+            dropHover = true;
+          }}
+          ondragleave={() => (dropHover = false)}
+          ondrop={onLaneDrop}
           title="Drag a clip to reorder the final video — the transcript follows"
         >
           <canvas bind:this={filmCanvas} class="absolute inset-0 block"></canvas>
@@ -922,6 +1002,61 @@
             {/if}
           {/each}
 
+          <!-- Extra clips: assets added from My media, appended after the cut. -->
+          {#each extras as r (r.clip.id)}
+            {@const active = project.activeClipId === r.clip.id}
+            <div
+              role="button"
+              tabindex="0"
+              aria-label="{r.clip.name} — click to preview"
+              aria-pressed={active}
+              class="group absolute top-0 bottom-0 z-10 overflow-hidden rounded-[4px] border-2 transition-all
+                     {active
+                ? 'border-nc-brand ring-1 ring-nc-brand/40'
+                : 'border-white/15 hover:border-nc-brand/70'}"
+              style="left:{r.start * zoom}px;width:{Math.max(6, (r.end - r.start) * zoom)}px"
+              onpointerdown={(e) => e.stopPropagation()}
+              onclick={(e) => {
+                e.stopPropagation();
+                project.activateClip(r.clip.id);
+              }}
+              onkeydown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  project.activateClip(r.clip.id);
+                }
+              }}
+            >
+              <div
+                class="absolute inset-0 bg-gradient-to-br from-nc-brand/25 via-nc-panel-2 to-black/40"
+              ></div>
+              <div
+                class="pointer-events-none absolute inset-x-0 top-0 h-5 bg-gradient-to-b from-black/70 to-transparent"
+              ></div>
+              <div
+                class="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-black/80 to-transparent"
+              ></div>
+              <span
+                class="pointer-events-none absolute top-0.5 left-1.5 max-w-[calc(100%-2.5rem)] truncate text-[9px] font-medium text-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,.9)]"
+                >{r.clip.name}</span
+              >
+              <span
+                class="pointer-events-none absolute bottom-0.5 left-1.5 max-w-[calc(100%-2rem)] truncate font-mono text-[9px] text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,.9)]"
+                >{r.clip.kind === 'image' ? 'still' : fmtShort(r.clip.outSec - r.clip.inSec)}</span
+              >
+              <button
+                onclick={(e) => {
+                  e.stopPropagation();
+                  project.removeClip(r.clip.id);
+                  toast.push('cut', 'Clip timeline se hata diya');
+                }}
+                class="absolute top-0.5 right-0.5 z-20 grid h-4 w-4 place-items-center rounded bg-black/60 text-[10px] leading-none text-white/85 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-nc-red hover:text-white"
+                title="Remove from timeline"
+                aria-label="Remove {r.clip.name} from timeline">×</button
+              >
+            </div>
+          {/each}
+
           {#if project.isTrackHidden('video')}
             <span
               class="pointer-events-none absolute top-1 right-1 z-10 rounded bg-nc-red/80 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-white"
@@ -929,7 +1064,7 @@
             >
           {/if}
 
-          {#if segments.length === 0}
+          {#if segments.length === 0 && extras.length === 0}
             <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center">
               <div
                 class="pointer-events-auto flex items-center gap-2 rounded-md border border-nc-line-2 bg-nc-panel/95 px-3 py-1.5 text-[11px] text-nc-mut shadow-lg"
