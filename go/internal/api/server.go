@@ -94,6 +94,11 @@ func (s *Server) routes() {
 	// Honest network throughput probe. Replaces the single-socket fetch() that
 	// used to live in the webview; runs parallel connections through Go.
 	s.mux.HandleFunc("GET /v1/net/speed", s.handleNetSpeed)
+
+	// Key check behind the setup card's "Save & Test". The key under test
+	// travels in the body, is used for one models-list call, and is never
+	// logged or echoed back (api/keys_probe.go).
+	s.mux.HandleFunc("POST /v1/keys/probe", s.handleKeysProbe)
 }
 
 // ServeHTTP applies a defensive outer layer: generous body limits, panic

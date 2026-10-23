@@ -275,3 +275,49 @@ unrelated); `node --test` → 8 passed; `svelte-check` clean in my files;
 - src/lib/components/modes/CutMode.svelte � X (cut) / V (keep) shortcuts on the transcript line under the playhead.
 
 **Contracts unchanged:** default_cache_dir, extract_waveform, extract_thumbnails, store `timeline`, store `player`.
+
+---
+
+## Agent backend-finish (this session) — Go daemon: key probe wired (`POST /v1/keys/probe`)
+
+**Lane:** `go/**` only. The user asked this session to finish the other agent's
+pending backend work; the frontend WIP visible in the tree was left untouched.
+
+**Status:** Complete. `gofmt -l .` clean - `go vet ./...` clean -
+`go test ./...` green across every package (api, cloud, vault, queue, config).
+
+**What was pending:** an untracked `go/internal/cloud/probe.go` holding
+`GroqClient.Probe` / `GeminiClient.Probe` ("does this key still work?" via one
+models-list call) that nothing called, with no tests, plus a real defect: when
+the client URL did NOT carry the literal `/audio/transcriptions` suffix
+(test stub, proxy), the derivation silently fell back to the live
+`api.groq.com` host, so an override never actually took effect.
+
+**Files owned (editing):**
+
+- `go/internal/cloud/probe.go` — completing the other session's file: the
+  base-derivation fix (override respected exactly as given) plus doc updates.
+- `go/internal/api/keys_probe.go` (new) — the `POST /v1/keys/probe` handler.
+  Body key is used for one call, never logged or echoed; an empty body key
+  re-verifies the daemon's configured key; guards the dependency, not the
+  config flag (house rule).
+- `go/internal/api/keys_probe_test.go` (new) — 13 tests: body key vs
+  configured key, the 401 / 403 / 429 / 500 / 4xx verdict branches, the
+  160-character echo cut, nil-client answers, unknown / missing service,
+  GET 405, and "the response never contains the key".
+- `go/internal/api/server.go` — one additive route block (comment + `POST /v1/keys/probe`).
+- `Clipchamp_Bunny/docs/MEMORY.md` — one row in the backend-seam table.
+- `docs/AGENT_STATUS.md` — this entry.
+
+**Contract exposed (for the UI lane to plug into later):**
+
+- HTTP `POST /v1/keys/probe` body `{"service":"groq"|"gemini","key":"..."}`;
+  reply `{"ok":bool,"detail":"human sentence"}`, always 200 — only a
+  malformed body or an unknown service is a 400. A probe that reports a dead
+  key is still a successful probe.
+- Frontend has no "Save & Test" card yet; building it is a UI-agent lane, not
+  this one.
+
+**Shipping note:** delivered as a LOCAL COMMIT only — `git push` was not run
+(the mandatory worklog rule). The daemon reaches the desktop through the next
+`-Ci` deploy; `tools/go-build-id.ps1` recomputes its hash automatically.

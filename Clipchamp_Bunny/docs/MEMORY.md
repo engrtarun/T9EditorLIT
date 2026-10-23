@@ -302,6 +302,7 @@ Daemon kahan se dhoondha jaata hai: app ke saath (installed layout), phir
 | **`HomeDashboard` → trash** | Rust `trash_project` / `restore_project` / `load_trash` / `purge_trash` | ✅ **wired** |
 | **Go `Segment.Words`** | word timings daemon se | ✅ **DONE** — `model.Word`, `groqWord`, `segmentsFromWords()` |
 | **Telegram vault → media library** | daemon se file download karke library me daalna | ❌ **TODO** |
+| **Setup card "Save & Test"** | daemon `POST /v1/keys/probe` — body ka key ek models-list call se prove hota hai, log/echo kabhi nahi; empty key daemon ke configured key ka re-check | ✅ **wired** (test coverage: 401/429/500/400 + key never echoed) |
 
 ### Telegram vault ke liye `.env` me ye **khali** hain
 ```
