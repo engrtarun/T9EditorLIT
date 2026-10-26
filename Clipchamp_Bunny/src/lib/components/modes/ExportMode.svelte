@@ -28,6 +28,7 @@
     targetFrame
   } from '../../export-presets';
   import type { ExportFormat, ResolutionId } from '../../export-presets';
+  import { exportDefaults } from '../../stores/export-defaults.svelte';
 
   /**
    * MODE 3 — EXPORT.
@@ -63,7 +64,9 @@
   const QUALITIES = ['original', 'high', 'balanced', 'small'] as const;
 
   let format = $state<ExportFormat>('video');
-  let resolution = $state<ResolutionId>('source');
+  // "Advanced settings" in Create New Project sets this ahead of time; the
+  // panel's own dropdown still overrides it for one export.
+  let resolution = $state<ResolutionId>(exportDefaults.resolution);
   let engine = $state<Engine>('hybrid');
   let quality = $state<(typeof QUALITIES)[number]>('high');
   let bitrate = $state<number>(192);
@@ -160,14 +163,25 @@
     return defaultFileName(project.name, format);
   }
 
+  /**
+   * The name and folder the export starts with.
+   *
+   * The folder is the one chosen in Create New Project's advanced settings —
+   * empty means "just the file name", which is the behaviour the app had
+   * before that setting existed.
+   */
+  function defaultOutputPath() {
+    return exportDefaults.pathFor(defaultOutputName());
+  }
+
   // The default name follows the format until the user types their own.
   $effect(() => {
-    const name = defaultFileName(project.name, format);
-    if (!outputTouched) output = name;
+    const path = exportDefaults.pathFor(defaultFileName(project.name, format));
+    if (!outputTouched) output = path;
   });
 
   async function chooseOutput() {
-    const picked = await pickOutput(defaultOutputName(), [
+    const picked = await pickOutput(defaultOutputPath(), [
       { name: `${preset.label} file`, extensions: [preset.ext] }
     ]);
     if (picked) {
@@ -195,10 +209,15 @@
     // frame. A concrete preset (1080p by default) makes the parts match.
     const res: ResolutionId = resolution === 'source' ? '1080p' : resolution;
     const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
-    const frame = targetFrame(res, project.media?.width ?? 0, project.media?.height ?? 0) ?? {
-      width: even(project.media?.width || 1920),
-      height: even(project.media?.height || 1080)
-    };
+    // A project with its own shape (9:16, 1:1, …) renders every part onto that
+    // canvas, so the joined file is the shape the preview promised.
+    const canvas = project.canvasFrame;
+    const frame = canvas
+      ? { width: canvas[0], height: canvas[1] }
+      : (targetFrame(res, project.media?.width ?? 0, project.media?.height ?? 0) ?? {
+          width: even(project.media?.width || 1920),
+          height: even(project.media?.height || 1080)
+        });
     const partOptions: ExportOptions = {
       ...options,
       mode: 'encode',
@@ -293,7 +312,7 @@
 
     try {
       const dbPath = await defaultDbPath().catch(() => null);
-      const out = output || defaultOutputName();
+      const out = output || defaultOutputPath();
       output = out;
 
       const options: ExportOptions = {
@@ -302,6 +321,9 @@
         quality,
         format,
         resolution,
+        // A non-16:9 project is letterboxed onto its own canvas; 16:9 stays
+        // "keep the source", which is what makes a lossless copy possible.
+        canvas: format === 'video' ? project.canvasFrame : null,
         bitrateKbps: bitrate,
         sampleRate,
         channels,
@@ -646,7 +668,7 @@
               outputTouched = true;
               output = e.currentTarget.value;
             }}
-            placeholder={defaultOutputName()}
+            placeholder={defaultOutputPath()}
             class="min-w-0 flex-1 rounded-lg border border-nc-line bg-nc-panel px-3 py-2 font-mono text-[11px] outline-none focus:border-nc-brand/50"
           />
           <button

@@ -4,7 +4,20 @@
   import { project } from '../../stores/project.svelte';
   import { thumbUrl } from '../../media';
   import { fmtTime } from '../../utils';
+  import { framePreset } from '../../project-frame';
   import AmbientGlow from './AmbientGlow.svelte';
+
+  /**
+   * The project's shape, as chosen in "Create New Project".
+   *
+   * A vertical project must *look* vertical in the preview — the export canvas
+   * letterboxes the picture into exactly this frame, so showing 16:9 here
+   * would be a promise the exported file does not keep.
+   */
+  const frame = $derived(framePreset(project.frame));
+  const frameStyle = $derived(
+    `aspect-ratio:${frame.css};max-width:min(100%, calc((100vh - 330px) * ${frame.value}))`
+  );
 
   let videoEl: HTMLVideoElement | null = $state(null);
   let stage: HTMLDivElement | null = $state(null);
@@ -241,7 +254,7 @@
   class="relative isolate grid min-h-0 flex-1 place-items-center overflow-hidden bg-nc-bg p-4 outline-none"
 >
   {#if project.media}
-    <!-- YouTube-style Ambient Mode glow: strictly BEHIND the 16:9 player,
+    <!-- YouTube-style Ambient Mode glow: strictly BEHIND the player,
          blooming outward from behind the player edges into the stage. The
          `isolate` above keeps `mix-blend-mode: screen` inside this stage -
          the glow can never tint the media or transcript panels. -->
@@ -249,16 +262,15 @@
       class="pointer-events-none absolute inset-0 z-0 grid place-items-center"
       aria-hidden="true"
     >
-      <div
-        class="aspect-video max-h-full w-full max-w-[min(100%,calc((100vh-330px)*16/9))] scale-[1.18]"
-      >
+      <div class="max-h-full w-full scale-[1.18]" style={frameStyle}>
         <AmbientGlow video={videoEl} {poster} />
       </div>
     </div>
 
-    <!-- 16:9 frame that fits the stage, sitting in front of the ambient glow -->
+    <!-- The project's own frame, fitted to the stage, in front of the glow -->
     <div
-      class="relative z-10 aspect-video max-h-full w-full max-w-[min(100%,calc((100vh-330px)*16/9))] overflow-hidden rounded bg-black shadow-lg ring-1 ring-white/5"
+      class="relative z-10 max-h-full w-full overflow-hidden rounded bg-black shadow-lg ring-1 ring-white/5"
+      style={frameStyle}
     >
       {#if isImage && activeClip}
         <!-- A still clip: no decoder, just the picture for its clip length. -->

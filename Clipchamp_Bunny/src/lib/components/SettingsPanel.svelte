@@ -359,6 +359,49 @@
                 </button>
               </div>
             </section>
+
+            <section class="mt-4 rounded-xl border border-nc-line bg-nc-panel-2/50 p-4">
+              <div class="flex items-baseline justify-between gap-3">
+                <h3 class="text-[10px] font-bold tracking-widest text-nc-brand">
+                  {i18n.t('set.auto.title')}
+                </h3>
+                <span class="text-[11px] text-nc-mut">
+                  {settings.autoTranscribe ? i18n.t('set.auto.on') : i18n.t('set.auto.off')}
+                </span>
+              </div>
+
+              <p class="mt-2 text-[11px] leading-relaxed text-nc-mut">
+                {i18n.t('set.auto.desc')}
+              </p>
+
+              <div class="mt-3 flex items-center gap-2">
+                <button
+                  role="switch"
+                  aria-checked={settings.autoTranscribe}
+                  aria-label={i18n.t('set.auto.label')}
+                  title={i18n.t('set.auto.label')}
+                  onclick={() => {
+                    settings.setAutoTranscribe(!settings.autoTranscribe);
+                    toast.push(
+                      'info',
+                      settings.autoTranscribe ? i18n.t('set.auto.on') : i18n.t('set.auto.off')
+                    );
+                  }}
+                  class="relative h-5 w-9 shrink-0 rounded-full transition-colors duration-150
+                         {settings.autoTranscribe ? 'bg-nc-brand' : 'bg-nc-panel-2'}"
+                >
+                  <span
+                    class="absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white transition-transform duration-150
+                           {settings.autoTranscribe ? 'translate-x-4' : ''}"
+                  ></span>
+                </button>
+                <span class="text-[12px] text-nc-txt">{i18n.t('set.auto.label')}</span>
+              </div>
+
+              <p class="mt-2 text-[10.5px] leading-snug text-nc-mut-2">
+                {i18n.t('set.auto.hint')}
+              </p>
+            </section>
           {:else if layout.settingsTab === 'language'}
             <section class="rounded-xl border border-nc-line bg-nc-panel-2/50 p-4">
               <h3 class="text-[10px] font-bold tracking-widest text-nc-brand">

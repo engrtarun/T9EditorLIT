@@ -16,6 +16,9 @@ const TRASH_DAYS_KEY = 't9-editor-lit.trashDays';
 /** LocalStorage key for the transport skip step. */
 const SEEK_STEP_KEY = 't9-editor-lit.seekStep';
 
+/** LocalStorage key for "call the AI transcript API on import". */
+const AUTO_TRANSCRIBE_KEY = 't9-editor-lit.autoTranscribe';
+
 /** The window the user asked for: a binned project is recoverable for 12 days. */
 export const TRASH_DAYS_DEFAULT = 12;
 
@@ -50,6 +53,14 @@ class SettingsStore {
 
   /** Seconds the transport buttons and `J` / `L` move the playhead. */
   seekStepSec = $state(SEEK_STEP_DEFAULT);
+
+  /**
+   * Whether importing a clip may call the AI transcript API (Groq Whisper +
+   * Gemini) on its own. `false` (the default) means the transcript is only
+   * produced when the user asks for it in the editor — a plain cut project
+   * never spends an API call.
+   */
+  autoTranscribe = $state(false);
 
   /** `5` -> `"5"`, `0.5` -> `"0.5"` — titles and the transport icon. */
   get seekStepLabel(): string {
@@ -95,10 +106,17 @@ class SettingsStore {
     this.setSeekStep(SEEK_STEP_DEFAULT);
   }
 
+  /** Turn the on-import API call on or off. */
+  setAutoTranscribe(on: boolean): void {
+    this.autoTranscribe = on;
+    this.persist();
+  }
+
   private persist(): void {
     try {
       localStorage.setItem(TRASH_DAYS_KEY, String(this.trashRetentionDays));
       localStorage.setItem(SEEK_STEP_KEY, String(this.seekStepSec));
+      localStorage.setItem(AUTO_TRANSCRIBE_KEY, this.autoTranscribe ? '1' : '0');
     } catch {
       /* private mode */
     }
@@ -110,6 +128,9 @@ class SettingsStore {
       if (raw !== null) this.trashRetentionDays = coerceDays(raw);
       const step = localStorage.getItem(SEEK_STEP_KEY);
       if (step !== null) this.seekStepSec = coerceStep(step);
+      const auto = localStorage.getItem(AUTO_TRANSCRIBE_KEY);
+      // Absent = off: asking before an API call is the safe default.
+      this.autoTranscribe = auto === '1';
     } catch {
       /* private mode */
     }

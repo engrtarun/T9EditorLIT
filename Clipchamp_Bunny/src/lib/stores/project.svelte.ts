@@ -9,6 +9,7 @@ import type {
   WaveformData
 } from '../types';
 import { MOCK_LINES } from '../mock';
+import { framePreset, type ProjectFrame } from '../project-frame';
 import {
   buildSegments,
   computeOffsets,
@@ -24,6 +25,7 @@ import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 import { media } from './media.svelte';
 import { player } from './player.svelte';
 import { runAnalysis, runCorrection, runTranscription, toLineFlag } from '../pipeline';
+import { settings } from './settings.svelte';
 import {
   assetUrl,
   canonicalSourcePath,
@@ -180,6 +182,30 @@ class ProjectStore {
   /** Filesystem path of the source, when running under Tauri. */
   sourcePath = $state<string | null>(null);
 
+  /**
+   * The project's shape — the format card chosen when it was created.
+   *
+   * `16:9` means "keep the source's own frame"; every other ratio is a real
+   * export canvas (see `project-frame.ts`). It is remembered per source path,
+   * because a ratio belongs to *this project*, not to the app: opening a
+   * vertical project must not turn the next horizontal one vertical.
+   */
+  frame = $state<ProjectFrame>('16:9');
+
+  /** The canvas the exporter should render onto, or `null` for the source shape. */
+  get canvasFrame(): [number, number] | null {
+    return framePreset(this.frame).canvas;
+  }
+
+  /**
+   * Name and ratio chosen in "Create New Project", before any file is loaded.
+   *
+   * The first file that arrives must not replace them with its own filename —
+   * the user named this project on purpose.
+   */
+  private pendingName: string | null = null;
+  private pendingFrame: ProjectFrame | null = null;
+
   durationSec = $derived(this.media?.durationSecs ?? 0);
 
   /**
@@ -242,6 +268,16 @@ class ProjectStore {
     ]);
     this.media = baked;
     this.name = baked.name.replace(/\.[^.]+$/, '');
+    // The panel's chosen name / shape win over the demo's own, so the browser
+    // preview behaves like the desktop app for a project created a moment ago.
+    if (this.pendingName) {
+      this.name = this.pendingName;
+      this.pendingName = null;
+    }
+    // No pending shape means this demo is its own project: 16:9, not whatever
+    // the previous project happened to be.
+    this.frame = this.pendingFrame ?? '16:9';
+    this.pendingFrame = null;
     // The browser has no path — the dev server's export endpoint reads the
     // baked asset by its URL.
     setSourceUrl(baked.url);
@@ -273,6 +309,78 @@ class ProjectStore {
     this.restoreClips();
     this.restoreUiState();
     this.ready = true;
+  }
+
+  /**
+   * A project that does not exist yet: the Create Project panel already knows
+   * its name and shape.
+   *
+   * They are held as *pending* until a file arrives, because a project with no
+   * media has nothing to write to SQLite — and the first import would otherwise
+   * rename the project after the file the user happened to pick.
+   */
+  applyNewProject(name: string, frame: ProjectFrame): void {
+    const next = name.trim();
+    this.pendingName = next || null;
+    this.pendingFrame = frame;
+    this.frame = frame;
+    if (next) this.name = next;
+  }
+
+  /** Forget a name/ratio that was waiting for a file that never arrived. */
+  discardPending(): void {
+    this.pendingName = null;
+    this.pendingFrame = null;
+  }
+
+  /**
+   * Start from nothing — the Create Project panel's promise of a *new* project.
+   *
+   * Without this, "New project → This PC" on a machine that already had a
+   * project open would import into that project's library instead of opening
+   * the file the user just chose. The old project is flushed to SQLite first,
+   * exactly like `loadFromBackend` does before it switches files.
+   */
+  async startNew(name: string, frame: ProjectFrame): Promise<void> {
+    await this.flush();
+    this.resetEditState();
+    this.media = null;
+    this.sourcePath = null;
+    this.loadError = null;
+    this.ready = false;
+    this.name = '';
+    this.applyNewProject(name, frame);
+  }
+
+  /** Change the shape of the open project, and remember it for this file. */
+  setFrame(frame: ProjectFrame): void {
+    this.frame = frame;
+    this.pendingFrame = frame;
+    this.writeFrame(frame);
+  }
+
+  /** localStorage key for one project's shape. */
+  private frameKey(path: string): string {
+    return `t9-editor-lit.frame.${path}`;
+  }
+
+  private readFrame(path: string): ProjectFrame | null {
+    try {
+      const raw = localStorage.getItem(this.frameKey(path));
+      return raw && framePreset(raw).id === raw ? (raw as ProjectFrame) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private writeFrame(frame: ProjectFrame): void {
+    const path = this.sourcePath;
+    if (!path) return;
+    try {
+      localStorage.setItem(this.frameKey(path), frame);
+    } catch {
+      /* private mode — the shape just is not remembered */
+    }
   }
 
   /**
@@ -319,6 +427,16 @@ class ProjectStore {
     // and stamp "opened now" only for a deliberate open, never for a resume.
     const stored = await this.storedProject(canonical);
     if (stored?.row?.name) this.name = stored.row.name;
+    // A project created from the panel keeps the name the user typed, and the
+    // shape they picked, even though neither has been written anywhere yet.
+    if (this.pendingName) {
+      this.name = this.pendingName;
+      this.pendingName = null;
+    }
+    const storedFrame = this.readFrame(canonical);
+    this.frame = this.pendingFrame ?? storedFrame ?? '16:9';
+    this.pendingFrame = null;
+    this.writeFrame(this.frame);
     if (touch && stored?.row) {
       try {
         await updateProjectOpened(stored.db, canonical, Math.floor(Date.now() / 1000));
@@ -447,10 +565,12 @@ class ProjectStore {
   /**
    * The transcript for a source â€” **SQLite first, cloud only on a miss**.
    *
-   * The rule that matters: the API is called **once**, when the user imports a
-   * clip. The result is written to the `transcripts` table, and every later
-   * session reads it straight off the disk. Re-opening a project never touches
-   * the network.
+   * The rule that matters: the cloud API is **never** called behind the user's
+   * back. On a cache miss this returns nothing unless `settings.autoTranscribe`
+   * is on; the transcript panel's button is the manual path either way. The
+   * result is written to the `transcripts` table, so every later session reads
+   * it straight off the disk and the network is paid once per source, not per
+   * open. Re-opening a project never touches the network.
    */
   async ensureTranscript(sourcePath: string, durationSecs: number): Promise<TranscriptLine[]> {
     const db = await defaultDbPath();
@@ -471,7 +591,40 @@ class ProjectStore {
       }));
     }
 
-    // 2. First time for this source: run the pipeline once, then persist.
+    // 2. No cache, and the user has not asked for a transcript: stop here.
+    //    A plain cut project must never spend an API call on its own.
+    if (!settings.autoTranscribe) {
+      this.pipeline = null;
+      return [];
+    }
+
+    // 3. First time for this source, with permission: run once, then persist.
+    return this.runPipeline(sourcePath);
+  }
+
+  /**
+   * Produce the transcript **because the user asked for it** — the button in
+   * the transcript panel. Deliberately ignores the auto flag: the click *is*
+   * the permission. The result is persisted like any other transcript, so the
+   * next open of this source is served from SQLite and the cloud is not paid
+   * twice.
+   */
+  async generateTranscript(): Promise<void> {
+    if (this.pipeline) return;
+    const source = this.sourcePath;
+    if (!source) return;
+    try {
+      this.lines = await this.runPipeline(source);
+      this.loadError = null;
+    } catch (e) {
+      this.loadError = e instanceof Error ? e.message : String(e);
+      this.lines = [];
+    }
+  }
+
+  /** The one cloud pass: split -> Whisper -> correct -> Gemini flags -> SQLite. */
+  private async runPipeline(sourcePath: string): Promise<TranscriptLine[]> {
+    const db = await defaultDbPath();
     this.pipeline = { stage: 'Splitting audioâ€¦', fraction: 0.05 };
     const chunks = await extractAudioChunks(sourcePath);
 
@@ -1150,6 +1303,12 @@ class ProjectStore {
     if (!opened && first) {
       this.media = first;
       this.name = first.name.replace(/\.[^.]+$/, '');
+      if (this.pendingName) {
+        this.name = this.pendingName;
+        this.pendingName = null;
+      }
+      this.frame = this.pendingFrame ?? this.frame;
+      this.pendingFrame = null;
       this.restoreClips();
       for (const other of media.entries) media.markUnused(other.asset.id);
     }

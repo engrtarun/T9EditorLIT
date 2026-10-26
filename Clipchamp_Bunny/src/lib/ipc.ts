@@ -168,13 +168,51 @@ export async function pickVideos(): Promise<string[]> {
 }
 
 /**
+ * Browser stand-in for the native media picker.
+ *
+ * A web page cannot know a file's path, so this hands back the `File` objects
+ * themselves and the project store imports them as blobs. It exists so the
+ * dev preview can use "This PC" without a Rust engine — the desktop build
+ * always has real paths and never calls it.
+ */
+export function pickMediaFiles(): Promise<File[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = 'video/*,audio/*,image/*';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    const done = (files: File[]) => {
+      input.remove();
+      resolve(files);
+    };
+    input.addEventListener('change', () => done(Array.from(input.files ?? [])));
+    input.addEventListener('cancel', () => done([]));
+    input.click();
+  });
+}
+
+/**
+ * Open the native folder picker — used for the export folder default.
+ *
+ * Browser mode returns `null`: a web page cannot hand back a real directory
+ * path it could write to, and pretending otherwise would only produce a
+ * setting that does nothing.
+ */
+export async function pickFolder(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const picked = await open({ multiple: false, directory: true });
+  return typeof picked === 'string' ? picked : null;
+}
+
+/**
  * Open the native file picker for a **picture** — the poster a user wants to
  * put on a library entry.
  *
  * The browser has no dialog plugin, so browser mode returns `null` and the
  * caller keeps the frame the app picked itself.
- */
-export async function pickImage(): Promise<string | null> {
+ */ export async function pickImage(): Promise<string | null> {
   if (!isTauri()) return null;
   const picked = await open({
     multiple: false,

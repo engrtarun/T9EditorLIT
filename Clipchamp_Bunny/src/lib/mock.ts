@@ -411,3 +411,44 @@ export const DUMMY_PROJECTS: DummyProject[] = [
     thumbIndex: 60
   }
 ];
+
+/**
+ * Dummy trash entries for the browser dev mode.
+ *
+ * Same idea as {@link DUMMY_PROJECTS} but for the bin: the desktop always reads
+ * the real trashed rows out of SQLite, the browser has no SQLite, so the Trash
+ * screen falls back to these. Pointing at the same dummy projects keeps the
+ * poster/story consistent with the dashboard fallback.
+ */
+export interface DummyTrashItem {
+  id: string;
+  name: string;
+  durationSecs: number;
+  sizeBytes: number;
+  /** How long ago it was trashed, in seconds. */
+  deletedAgoSecs: number;
+}
+
+export const DUMMY_BIN: DummyTrashItem[] = [
+  {
+    id: 'dummy-3',
+    name: 'JavaScript Lecture 06',
+    durationSecs: 1_115,
+    sizeBytes: 48_234_496,
+    deletedAgoSecs: 43_200
+  },
+  {
+    id: 'dummy-6',
+    name: 'Vlog Edit 01',
+    durationSecs: 863,
+    sizeBytes: 44_957_696,
+    deletedAgoSecs: 86_400
+  },
+  {
+    id: 'dummy-8',
+    name: 'Product X',
+    durationSecs: 265,
+    sizeBytes: 9_633_792,
+    deletedAgoSecs: 172_800
+  }
+];

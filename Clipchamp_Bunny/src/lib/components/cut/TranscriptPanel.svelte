@@ -2,6 +2,7 @@
   import { project } from '../../stores/project.svelte';
   import { player } from '../../stores/player.svelte';
   import { layout } from '../../stores/layout.svelte';
+  import { isTauri } from '../../ipc';
   import { fmtShort } from '../../utils';
   import type { LineFlag, TranscriptLine } from '../../types';
 
@@ -239,7 +240,57 @@
     <div style="height:{padBottom}px"></div>
 
     {#if view.length === 0}
-      <p class="p-6 text-center text-xs text-nc-mut">Is filter me koi line nahi hai.</p>
+      <!--
+        No lines at all (as opposed to "this filter is empty"): the import
+        never asked the cloud for a transcript. Offer it — the user's click
+        is the permission; nothing is called on its own.
+      -->
+      {#if project.pipeline}
+        <!-- the user pressed the button: show the real progress, live -->
+        <div class="p-6 text-center">
+          <p class="text-xs leading-relaxed text-nc-mut">{project.pipeline.stage}</p>
+          <div
+            class="mx-auto mt-3 h-1 w-full max-w-[200px] overflow-hidden rounded-full bg-nc-panel-2"
+          >
+            <div
+              class="h-full rounded-full bg-nc-brand transition-[width] duration-200"
+              style="width:{Math.max(4, Math.round(project.pipeline.fraction * 100))}%"
+            ></div>
+          </div>
+        </div>
+      {:else if project.lines.length === 0}
+        <!--
+          No lines at all (as opposed to "this filter is empty"): the import
+          never asked the cloud for a transcript. Offer it — the user's click
+          is the permission; nothing is called on its own.
+        -->
+        <div class="p-6 text-center">
+          <p class="text-xs leading-relaxed text-nc-mut">
+            Is video ka transcript abhi generate nahi hua.
+            {#if isTauri()}
+              Button dabao — tabhi API call hogi.{/if}
+          </p>
+          {#if project.loadError}
+            <p class="mt-2 text-[11px] leading-relaxed text-nc-red">{project.loadError}</p>
+          {/if}
+          {#if isTauri()}
+            <button
+              onclick={() => void project.generateTranscript()}
+              class="mt-3 rounded-lg bg-nc-brand px-3 py-1.5 text-[12.5px] font-semibold
+                     text-white transition-[filter] duration-150 hover:brightness-110"
+            >
+              Transcript generate karo
+            </button>
+            <p class="mt-2 text-[10.5px] text-nc-mut-2">
+              Ek baar ban gaya to SQLite me save — dobara API nahi lagegi.
+            </p>
+          {:else}
+            <p class="mt-2 text-[10.5px] text-nc-mut-2">Transcript ke liye desktop app use karo.</p>
+          {/if}
+        </div>
+      {:else}
+        <p class="p-6 text-center text-xs text-nc-mut">Is filter me koi line nahi hai.</p>
+      {/if}
     {/if}
   </div>
 </aside>

@@ -28,6 +28,7 @@
   import DashboardTopBar from './DashboardTopBar.svelte';
   import ProjectCard from './ProjectCard.svelte';
   import T9CloudSetup from './T9CloudSetup.svelte';
+  import CreateProjectModal from './CreateProjectModal.svelte';
   import Skeleton from '../Skeleton.svelte';
   import SkeletonBlock from '../SkeletonBlock.svelte';
   import {
@@ -53,7 +54,7 @@
   } from '../../ipc';
   import type { RustProject, RustTrashItem } from '../../ipc';
   import { loadMediaInfo, loadThumbnails } from '../../media';
-  import { DUMMY_PROJECTS } from '../../mock';
+  import { DUMMY_BIN, DUMMY_PROJECTS } from '../../mock';
   import { purgeExpiredTrash } from '../../ipc';
   import { settings } from '../../stores/settings.svelte';
   import {
@@ -78,6 +79,8 @@
   /** The project whose name is being edited inline. */
   let renamingId = $state<string | null>(null);
   let renameDraft = $state('');
+  /** The "Create New Project" panel is open. */
+  let createOpen = $state(false);
 
   /** The list the user actually sees: filtered by the search box, then ordered. */
   const visible = $derived(
@@ -212,8 +215,30 @@
     }
   }
 
+  async function browserBinFallback(): Promise<RustTrashItem[]> {
+    if (isTauri()) return [];
+    const baked = await loadMediaInfo().catch(() => null);
+    if (!baked) return [];
+    const now = Math.floor(Date.now() / 1000);
+    // Browser dev mode has no SQLite bin either, so the Trash screen stands in
+    // with a few dummy trashed projects — same shape as the real bin rows, same
+    // baked-recording identity as the dummy cards above.
+    return DUMMY_BIN.map((d) => ({
+      id: d.id,
+      name: d.name,
+      sourcePath: `${baked.url}#${d.id}`,
+      durationSecs: d.durationSecs,
+      deletedAt: now - d.deletedAgoSecs
+    }));
+  }
+
   async function loadBin() {
-    if (!dbPath) return;
+    if (!dbPath) {
+      // Browser dev mode: no SQLite backend, so the bin renders the dummy set
+      // instead of going empty — the Trash UI must be previewable too.
+      bin = await browserBinFallback();
+      return;
+    }
     await sweepTrash();
     try {
       bin = await loadTrash(dbPath);
@@ -259,6 +284,9 @@
   function openProject(c: Card) {
     if (c.opening) return;
     patch(c.project.id, (x) => ({ ...x, opening: true }));
+    // A project created a moment ago still has its chosen name / ratio pending
+    // for "the next file". Opening somebody else's project must not apply it.
+    project.discardPending();
     app.openEditor();
     mode.set('cut');
     // In the browser there is no Rust engine to probe the file, so the
@@ -277,10 +305,12 @@
       .finally(() => patch(c.project.id, (x) => ({ ...x, opening: false })));
   }
 
-  /** A blank project: the editor's Media mode, ready for a new import. */
+  /**
+   * A new project starts with a question, not a jump into the editor: name,
+   * shape, where the media comes from and (optionally) the export defaults.
+   */
   function createNew() {
-    app.openEditor();
-    mode.set('ingest');
+    createOpen = true;
   }
 
   /**
@@ -837,4 +867,7 @@
       </main>
     </div>
   </div>
+
+  <!-- The panel behind "New project" — it decides name, shape and first media. -->
+  <CreateProjectModal bind:open={createOpen} />
 </div>
