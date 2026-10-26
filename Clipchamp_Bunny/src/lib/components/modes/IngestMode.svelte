@@ -262,7 +262,7 @@
             <button
               onclick={cutAll}
               disabled={!silences.length}
-              class="flex-1 rounded-lg bg-nc-red/90 py-2 text-xs font-bold text-white hover:bg-nc-red disabled:opacity-40"
+              class="flex-1 rounded-lg bg-nc-red/45 py-2 text-xs font-bold text-white backdrop-blur-md hover:bg-nc-red/65 disabled:opacity-40"
             >
               ✕ Cut all ({silences.length})
             </button>

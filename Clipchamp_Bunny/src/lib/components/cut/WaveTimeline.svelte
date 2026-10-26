@@ -1050,7 +1050,7 @@
                   project.removeClip(r.clip.id);
                   toast.push('cut', 'Clip timeline se hata diya');
                 }}
-                class="absolute top-0.5 right-0.5 z-20 grid h-4 w-4 place-items-center rounded bg-black/60 text-[10px] leading-none text-white/85 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-nc-red hover:text-white"
+                class="absolute top-0.5 right-0.5 z-20 grid h-4 w-4 place-items-center rounded bg-black/60 text-[10px] leading-none text-white/85 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-nc-red/50 hover:text-white hover:backdrop-blur-md"
                 title="Remove from timeline"
                 aria-label="Remove {r.clip.name} from timeline">×</button
               >
@@ -1059,7 +1059,7 @@
 
           {#if project.isTrackHidden('video')}
             <span
-              class="pointer-events-none absolute top-1 right-1 z-10 rounded bg-nc-red/80 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-white"
+              class="pointer-events-none absolute top-1 right-1 z-10 rounded bg-nc-red/40 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-white backdrop-blur-md"
               >VIDEO HIDDEN</span
             >
           {/if}
@@ -1105,7 +1105,7 @@
           >
           {#if project.isTrackHidden('audio')}
             <span
-              class="pointer-events-none absolute top-1 right-1 rounded bg-nc-red/80 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-white"
+              class="pointer-events-none absolute top-1 right-1 rounded bg-nc-red/40 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-white backdrop-blur-md"
               >AUDIO HIDDEN</span
             >
           {/if}

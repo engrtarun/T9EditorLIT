@@ -298,7 +298,7 @@
       <div class="pointer-events-none absolute top-2 left-2 z-20 flex max-w-[70%] flex-col gap-1">
         {#if inCut}
           <span
-            class="w-fit rounded bg-nc-red/85 px-2 py-0.5 text-[10px] font-bold tracking-wider text-white"
+            class="w-fit rounded bg-nc-red/40 px-2 py-0.5 text-[10px] font-bold tracking-wider text-white backdrop-blur-md"
             title="Playhead is inside a cut range - preview skips it"
           >
             ✕ CUT RANGE · SKIPPED
