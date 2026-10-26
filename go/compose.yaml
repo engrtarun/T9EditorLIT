@@ -1,0 +1,49 @@
+# t9cloud — remote deployment recipe.
+#
+# NEVER run this on the dev box (AGENTS.md §13). CI validates this file with
+# `docker compose config --quiet`; a SERVER someday runs it:
+#
+#   docker compose -f go/compose.yaml up -d
+#   docker compose -f go/compose.yaml logs -f
+#
+# The daemon holds Groq / Gemini / Telegram credentials and has no
+# authentication, so the compose file exists to make the One Correct
+# Configuration hard to get wrong:
+#
+#   - the port binds 127.0.0.1 only (the comment inside go/Dockerfile is law)
+#   - secrets arrive at RUNTIME via env_file — never baked into the image;
+#     `required: false` lets CI validate this file without a real .env
+#   - the MTProto session survives restarts on a named volume (no OTP storm)
+#   - no-new-privileges + limits keep a compromised daemon contained
+
+services:
+  t9cloud:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: t9cloud:local
+    container_name: t9cloud
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - t9-telegram-session:/var/lib/t9editor/telegram
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 64m
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+volumes:
+  t9-telegram-session:

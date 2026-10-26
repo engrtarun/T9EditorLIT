@@ -565,3 +565,41 @@ already running when it was added keeps its old tool list - restart it.
 | `releases/download/ci-latest/...` | CI has not published yet    | push, then wait for the run                  |
 | `actions/artifacts`               | no token in the environment | the token is at User scope; open a new shell |
 | `actions/runs`                    | same                        | same                                         |
+
+---
+
+## 13. Docker is CI-only - it never runs on this machine
+
+> **No agent runs `docker`, `wsl` or `docker compose` on this box.**
+> Not even "just to test it". The CI job answers that question in about a
+> minute, for free, without eating the RAM the Zero-RAM directive protects.
+
+Docker Desktop is installed here (v29.8.2 + WSL2) - that changes nothing.
+Its WSL2 VM (`vmmem`) wants **1-2 GB resident**, and this box runs ~90%+
+RAM already. The full decision record lives in
+[`docs/DOCKER_DECISION.md`](docs/DOCKER_DECISION.md); the short version:
+
+| Thing                      | Docker's answer                         | Verdict                        |
+| :------------------------- | :-------------------------------------- | :----------------------------- |
+| Desktop app (Tauri)        | GUI apps do not ship in containers      | never                          |
+| Windows installer / Rust   | CI already compiles; QEMU makes it slow | never                          |
+| Media pipeline (FFmpeg)    | child processes are already isolated    | never                          |
+| **t9cloud daemon, remote** | the one real runtime for a container    | yes - on a **server**, someday |
+
+What this means for any agent:
+
+1. **The pipeline lives in CI.** The `docker` lane in
+   `.github/workflows/ci.yml` is the only sanctioned execution: hadolint
+   strict (`go/.hadolint.yaml`), image build, compose config validation and
+   a `-version` smoke run. Nothing is pushed anywhere.
+2. **Secrets never enter the image.** `go/.dockerignore` bans `.env`; the
+   compose file loads it at runtime only (`required: false` so CI can
+   validate without credentials).
+3. **Loopback is the law.** The daemon holds API keys and has no
+   authentication - ports bind `127.0.0.1`, never `0.0.0.0` (the comment in
+   `go/Dockerfile` says the same).
+4. **If Docker Desktop is ever accidentally running:** `wsl --shutdown`
+   immediately, and `~/.wslconfig` caps the VM (`memory=1GB`).
+5. **The daemon stays the exe.** `t9cloud.exe` ships via `deploy.ps1` - a
+   container is for a future remote server, not a replacement for the
+   local contract.

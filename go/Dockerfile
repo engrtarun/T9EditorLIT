@@ -29,6 +29,12 @@ RUN /out/t9cloud -version
 # ── Runtime ──────────────────────────────────────────────────────────────
 FROM alpine:3.20
 
+# Machine-readable identity. The platform this image runs on someday is a
+# server, not the dev box (docs/DOCKER_DECISION.md).
+LABEL org.opencontainers.image.title="t9cloud" \
+      org.opencontainers.image.description="T9EditorLIT cloud worker daemon (Go)" \
+      org.opencontainers.image.source="https://github.com/engrtarun/T9EditorLIT"
+
 # ca-certificates is required for outbound TLS to Groq, Gemini and Telegram.
 # wget backs the container HEALTHCHECK below.
 RUN apk add --no-cache ca-certificates wget \

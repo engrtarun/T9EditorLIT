@@ -1,0 +1,15 @@
+# Strict hadolint for go/Dockerfile.
+#
+# CI is the only place this runs — the 8 GB dev box never invokes docker
+# (AGENTS.md §13, docs/DOCKER_DECISION.md). Strictness with receipts: every
+# rule below `failure-threshold: error` fails the lane, and every `ignored`
+# entry carries a written reason. No vibes.
+
+failure-threshold: error
+
+ignored:
+  # DL3018 — pin versions in `apk add`. The runtime deps (ca-certificates,
+  # wget) are alpine-release-scoped, so hand-pinning them breaks on every
+  # alpine point update. The reproducibility that matters lives in the
+  # pinned base image (golang:1.23-alpine, alpine:3.20).
+  - DL3018

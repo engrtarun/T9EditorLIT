@@ -1,0 +1,18 @@
+# Everything the build stage does not need.
+#
+# The multi-stage Dockerfile keeps build layers out of the final image, but
+# layers carry, cache and travel. Secrets must never even ENTER the build
+# context — so .env (Groq / Gemini / Telegram credentials) is banned here.
+
+.env
+.env.*
+*.session*
+
+bin/
+coverage.out
+coverage.html
+
+.git
+.github
+docs/
+*.md
