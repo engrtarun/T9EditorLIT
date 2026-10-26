@@ -14,14 +14,16 @@
 //!    compositor, while a 720p/30 fps frame is ~1.4 MB. The limits below are
 //!    the whole performance story of this feature:
 //!
-//!        · 20 seconds of video  — a background is a mood, not a movie,
-//!        · 1280×720             — small decode surfaces, cheap scaling,
+//!        · 3 minutes of video  — a loop, not a movie (duration costs disk,
+//!                                 never RAM: one frame is decoded at a time),
+//!        · 1920×1080            — the screen's own size, ~3 MB per frame;
+//!                                 4K sources are accepted and stored here,
 //!        · ≤ 30 fps             — the dashboard does not move that fast,
 //!        · no audio             — a wallpaper that talks is a bug,
 //!        · H.264 in MP4         — the only codec WebView2 plays everywhere
 //!                                 (measured: HEVC and QuickTime report an
 //!                                 empty `canPlayType`, MKV is hit-and-miss).
-//!        · 2560 px stills       — decoded once, so a bigger image is fine.
+//!        · 3840 px stills       — decoded once, so a 4K wallpaper is fine.
 //!
 //!    A source that already fits every limit is never re-encoded: an MP4 is
 //!    copied byte-for-byte, and any other container holding H.264 is remuxed
@@ -49,16 +51,28 @@ const BG_ASSET: &str = "assets/leatTokyo.mp4";
 /* ------------------------------------------------------------------ limits */
 
 /// Longer than this and it is not a background any more.
-const MAX_SECONDS: f64 = 20.0;
-/// 720p: ~1.4 MB per decoded frame instead of ~35 MB for 4K.
-const MAX_VIDEO_W: u32 = 1280;
-const MAX_VIDEO_H: u32 = 720;
+///
+/// **Duration costs disk, not RAM.** A 3-minute loop decodes exactly one frame
+/// at a time, just like a 20-second one; what grows is the file (tens of MB)
+/// and the one-time conversion. That is why this cap is generous while the
+/// resolution cap below is not.
+const MAX_SECONDS: f64 = 180.0;
+/// 1080p: ~3 MB per decoded frame instead of ~12 MB for 4K.
+///
+/// This is the number that decides what the app costs every second it is open,
+/// so it follows the screen, not the source file: on a 1920×1080 panel at 125 %
+/// scaling the window is 1536 CSS px, i.e. 1920 device px — 1080p is exactly
+/// native, and 4K would be four times the decoder work for zero extra pixels.
+/// A 4K *source* is still accepted; it is simply stored at this size.
+const MAX_VIDEO_W: u32 = 1920;
+const MAX_VIDEO_H: u32 = 1080;
 /// 60 fps of wallpaper is pure waste on a low-power GPU.
 const MAX_FPS: f64 = 30.0;
-/// A still is decoded once, so it may be larger — but not unbounded.
-const MAX_IMAGE_EDGE: u32 = 2560;
+/// A still is decoded once, so a real 4K wallpaper is allowed here — it costs
+/// one bitmap while it is on screen, not a stream of them.
+const MAX_IMAGE_EDGE: u32 = 3840;
 /// Anything already inside every limit is copied, never re-encoded.
-const COPY_BYTES: u64 = 24 * 1024 * 1024;
+const COPY_BYTES: u64 = 160 * 1024 * 1024;
 
 /* ------------------------------------------------------------------- types */
 
@@ -434,8 +448,8 @@ fn transcode_video(
         "error".into(),
         "-nostdin".into(),
         "-y".into(),
-        // Input-side `-t`: ffmpeg stops reading after 20 s, so a two-hour 4K
-        // recording costs twenty seconds of decode, not two hours.
+        // Input-side `-t`: ffmpeg stops reading after the cap, so a two-hour 4K
+        // recording costs that much decode, not two hours of it.
         "-t".into(),
         format!("{MAX_SECONDS}"),
         "-i".into(),
@@ -456,9 +470,9 @@ fn transcode_video(
         "-pix_fmt".into(),
         "yuv420p".into(),
         "-maxrate".into(),
-        "2500k".into(),
+        "4000k".into(),
         "-bufsize".into(),
-        "5000k".into(),
+        "8000k".into(),
         "-movflags".into(),
         "+faststart".into(),
         "-progress".into(),

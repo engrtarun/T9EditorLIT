@@ -271,8 +271,8 @@ export interface ProviderState {
  *
  * Mirrors `background_video::BackgroundState` in Rust exactly (`camelCase`
  * over IPC). Only paths travel — the webview streams the file through the
- * `asset://` protocol, so a 20-second wallpaper never enters this process's
- * memory as a whole.
+ * `asset://` protocol, so a 3-minute wallpaper never enters this process's
+ * memory as a whole — only the frame being decoded.
  */
 export interface BackgroundState {
   /** `default` = the clip that ships with the app. */

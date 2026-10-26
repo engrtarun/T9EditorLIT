@@ -41,9 +41,9 @@
 
   /**
    * The picture that ships with the app — bundled in `public/assets/`, so it
-   * costs one small local file and never a network request.
+   * costs one small local file and never a network request. (WebP: 1.8 KB.)
    */
-  const DEFAULT_AVATAR = '/assets/profile-default.png';
+  const DEFAULT_AVATAR = '/assets/profile-default.webp';
 
   let trigger = $state<HTMLButtonElement | null>(null);
   let panel = $state<HTMLDivElement | null>(null);
@@ -782,6 +782,9 @@
             <span class="text-nc-mut">
               {background.custom ? background.label || i18n.t('bg.custom') : i18n.t('bg.default')}
             </span>
+            {#if background.meta}
+              <span class="text-nc-mut-2"> · {background.meta}</span>
+            {/if}
             <br />
             {i18n.t('bg.limit')}
           </p>

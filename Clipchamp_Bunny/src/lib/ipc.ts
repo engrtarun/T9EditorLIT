@@ -94,7 +94,7 @@ export async function pickBackgroundFile(kind: 'video' | 'image'): Promise<strin
  * Rust does the work (probe → copy or convert) on a worker thread and reports
  * progress on `background:progress`, so the menu can show a bar. Whatever the
  * user picked, what comes out is something the webview can play: H.264 MP4 at
- * ≤ 720p, ≤ 20 s, silent.
+ * ≤ 1080p, ≤ 3 min, silent. A 4K source is accepted and stored at screen size.
  */
 export function backgroundImport(path: string): Promise<BackgroundState> {
   return invoke<BackgroundState>('background_import', { path });

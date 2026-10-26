@@ -72,7 +72,8 @@ const en: Dict = {
   'bg.reset': 'Back to default',
   'bg.custom': 'Custom',
   'bg.default': 'Default',
-  'bg.limit': 'Video keeps 20 s at 720p, no sound — that is what keeps the app light.',
+  'bg.limit':
+    'Up to 3 min at 1080p, no sound. 4K files are accepted - they are stored at the screen size, so nothing slows down.',
   'bg.busy': 'Preparing',
   'bg.cancel': 'Cancel',
   'bg.done': 'Background updated.',
@@ -306,7 +307,8 @@ const hinglish: Dict = {
   'bg.reset': 'Default pe wapas',
   'bg.custom': 'Custom',
   'bg.default': 'Default',
-  'bg.limit': 'Video 20 second, 720p tak, bina awaaz — isi se app halka rehta hai.',
+  'bg.limit':
+    'Video 3 minute tak, 1080p, bina awaaz. 4K file bhi chalti hai - app use screen ke size me rakhta hai, isliye kuch slow nahi hota.',
   'bg.busy': 'Taiyaar ho raha hai',
   'bg.cancel': 'Cancel',
   'bg.done': 'Background badal gaya.',
@@ -537,7 +539,8 @@ const hi: Dict = {
   'bg.reset': 'डिफ़ॉल्ट पर वापस',
   'bg.custom': 'कस्टम',
   'bg.default': 'डिफ़ॉल्ट',
-  'bg.limit': 'वीडियो 20 सेकंड, 720p तक, बिना आवाज़ — इसी से ऐप हल्का रहता है.',
+  'bg.limit':
+    'वीडियो 3 मिनट तक, 1080p, बिना आवाज़। 4K फ़ाइल भी चलती है — ऐप उसे स्क्रीन के साइज़ में रखता है, इसलिए कुछ धीमा नहीं होता।',
   'bg.busy': 'तैयार हो रहा है',
   'bg.cancel': 'रद्द करें',
   'bg.done': 'बैकग्राउंड बदल गया.',

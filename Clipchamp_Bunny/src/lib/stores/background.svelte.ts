@@ -46,6 +46,11 @@ class BackgroundStore {
   poster = $state('');
   /** File name the user picked, for the menu. */
   label = $state('');
+  /** What the importer actually produced, for the menu's meta line. */
+  width = $state(0);
+  height = $state(0);
+  seconds = $state(0);
+  bytes = $state(0);
   /** Bumped whenever the file behind `src` changes. */
   rev = $state(0);
 
@@ -66,11 +71,32 @@ class BackgroundStore {
     return this.kind === 'image' ? this.src : this.poster;
   }
 
+  /**
+   * `1920×1080 · 3:00 · 43 MB` — what the importer really stored.
+   *
+   * Shown so nobody has to guess why a 4K file became 1080p: the app followed
+   * the screen, and the number is right there in the menu.
+   */
+  get meta(): string {
+    if (!this.custom || !this.width || !this.height) return '';
+    const parts = [`${this.width}×${this.height}`];
+    if (this.seconds > 0) {
+      const total = Math.round(this.seconds);
+      parts.push(`${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`);
+    }
+    if (this.bytes > 0) parts.push(`${Math.round(this.bytes / (1024 * 1024))} MB`);
+    return parts.join(' · ');
+  }
+
   apply(state: BackgroundState): void {
     this.kind = state.kind;
     this.src = state.path ? assetUrl(state.path) : '';
     this.poster = state.poster ? assetUrl(state.poster) : '';
     this.label = state.label ?? '';
+    this.width = state.width ?? 0;
+    this.height = state.height ?? 0;
+    this.seconds = state.seconds ?? 0;
+    this.bytes = state.bytes ?? 0;
     this.rev += 1;
     this.ready = true;
   }
@@ -84,6 +110,11 @@ class BackgroundStore {
       this.kind = 'default';
       this.src = PUBLIC_SRC;
       this.poster = '';
+      this.label = '';
+      this.width = 0;
+      this.height = 0;
+      this.seconds = 0;
+      this.bytes = 0;
       this.ready = true;
       this.rev += 1;
       return;
