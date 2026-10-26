@@ -265,3 +265,27 @@ export interface ProviderState {
   /** Badge on the right, e.g. the Telegram chat id or the API key mask. */
   badge?: string;
 }
+
+/**
+ * What the background layer should paint.
+ *
+ * Mirrors `background_video::BackgroundState` in Rust exactly (`camelCase`
+ * over IPC). Only paths travel — the webview streams the file through the
+ * `asset://` protocol, so a 20-second wallpaper never enters this process's
+ * memory as a whole.
+ */
+export interface BackgroundState {
+  /** `default` = the clip that ships with the app. */
+  kind: 'default' | 'video' | 'image';
+  /** Absolute path on disk, or `null` when even the bundled clip is missing. */
+  path: string | null;
+  /** First-frame still, painted before the video's first frame. */
+  poster: string | null;
+  /** The name the user picked, shown in the menu. */
+  label: string | null;
+  width: number | null;
+  height: number | null;
+  /** Length in seconds — `null` for a still. */
+  seconds: number | null;
+  bytes: number | null;
+}

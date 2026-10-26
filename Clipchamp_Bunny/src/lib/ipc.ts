@@ -18,6 +18,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type {
   AudioChunk,
+  BackgroundState,
   MemoryStats,
   MediaInfo,
   SilenceRange,
@@ -51,6 +52,69 @@ export function demoSourcePath(): Promise<string | null> {
  */
 export function backgroundVideoPath(): Promise<string | null> {
   return invoke<string | null>('background_video_path').catch(() => null);
+}
+
+/** The neutral answer when there is no desktop to ask. */
+const NO_BACKGROUND: BackgroundState = {
+  kind: 'default',
+  path: null,
+  poster: null,
+  label: null,
+  width: null,
+  height: null,
+  seconds: null,
+  bytes: null
+};
+
+/**
+ * What the background layer should paint right now.
+ *
+ * `default` is the clip that ships with the app; `video`/`image` mean the user
+ * pointed it at their own file, which lives in the app's own data folder.
+ * Only paths cross IPC — never bytes.
+ */
+export function backgroundState(): Promise<BackgroundState> {
+  return invoke<BackgroundState>('background_state').catch(() => NO_BACKGROUND);
+}
+
+/** The native picker, filtered to what can actually become a wallpaper. */
+export async function pickBackgroundFile(kind: 'video' | 'image'): Promise<string | null> {
+  if (!isTauri()) return null;
+  const filters =
+    kind === 'video'
+      ? [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'webm', 'm4v', 'avi', 'wmv', 'mpg'] }]
+      : [{ name: 'Wallpaper', extensions: ['jpg', 'jpeg', 'png', 'webp', 'avif', 'gif', 'bmp'] }];
+  const picked = await open({ multiple: false, directory: false, filters });
+  return typeof picked === 'string' ? picked : null;
+}
+
+/**
+ * Turn a picked file into the background.
+ *
+ * Rust does the work (probe → copy or convert) on a worker thread and reports
+ * progress on `background:progress`, so the menu can show a bar. Whatever the
+ * user picked, what comes out is something the webview can play: H.264 MP4 at
+ * ≤ 720p, ≤ 20 s, silent.
+ */
+export function backgroundImport(path: string): Promise<BackgroundState> {
+  return invoke<BackgroundState>('background_import', { path });
+}
+
+/** Back to the clip that ships with the app. */
+export function backgroundReset(): Promise<BackgroundState> {
+  return invoke<BackgroundState>('background_reset');
+}
+
+/** Stop a conversion that is still running. */
+export function backgroundCancel(): Promise<void> {
+  return invoke<void>('background_cancel').catch(() => {});
+}
+
+/** Conversion progress: 0–100 plus the stage the importer is in. */
+export function onBackgroundProgress(
+  cb: (p: { pct: number; stage: string }) => void
+): Promise<() => void> {
+  return listen<{ pct: number; stage: string }>('background:progress', (e) => cb(e.payload));
 }
 
 /**

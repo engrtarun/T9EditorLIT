@@ -26,6 +26,7 @@
   import { layout } from '../stores/layout.svelte';
   import { i18n, UI_LANGS, type UiLang } from '../stores/i18n.svelte';
   import { toast } from '../stores/toast.svelte';
+  import { background } from '../stores/background.svelte';
   import { accountDisplayName } from '../ipc';
 
   /** One popover width for the whole component — measured in CSS px. */
@@ -36,13 +37,20 @@
   const CLOSE_MS = 130;
 
   const NAME_KEY = 't9-editor-lit.displayName';
+  const PHOTO_KEY = 't9-editor-lit.avatar';
+
+  /**
+   * The picture that ships with the app — bundled in `public/assets/`, so it
+   * costs one small local file and never a network request.
+   */
+  const DEFAULT_AVATAR = '/assets/profile-default.png';
 
   let trigger = $state<HTMLButtonElement | null>(null);
   let panel = $state<HTMLDivElement | null>(null);
 
   let open = $state(false);
   let closing = $state(false);
-  let page = $state<'main' | 'language' | 'edit'>('main');
+  let page = $state<'main' | 'language' | 'background' | 'edit'>('main');
 
   /** Anchor position, in the coordinate space `position: fixed` resolves in. */
   let left = $state(0);
@@ -51,6 +59,15 @@
   let name = $state('');
   let draft = $state('');
   let nameError = $state('');
+
+  /** The user's own picture (a small data URL), null = the shipped default. */
+  let photo = $state<string | null>(null);
+  /** Set when the default picture itself fails to load → fall back to initials. */
+  let defaultBroken = $state(false);
+  let photoInput = $state<HTMLInputElement | null>(null);
+
+  /** What the avatar shows: user photo → default photo → initials. */
+  const avatarSrc = $derived(photo ?? (defaultBroken ? null : DEFAULT_AVATAR));
 
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -246,6 +263,124 @@
     });
   }
 
+  /* ------------------------------------------------------------- photo */
+
+  /**
+   * Turn the picked file into a 256 px square JPEG data URL.
+   *
+   * The photo lives in localStorage next to the name, so it must be tiny —
+   * a raw phone picture is megabytes and would not fit (and must not be held
+   * in RAM anyway). Canvas does the shrink, the big original is released the
+   * moment this resolves.
+   */
+  function shrinkToAvatar(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const SIZE = 256;
+        const side = Math.min(img.naturalWidth, img.naturalHeight);
+        const sx = (img.naturalWidth - side) / 2;
+        const sy = (img.naturalHeight - side) / 2;
+        const canvas = document.createElement('canvas');
+        canvas.width = SIZE;
+        canvas.height = SIZE;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          URL.revokeObjectURL(url);
+          reject(new Error('no 2d context'));
+          return;
+        }
+        ctx.drawImage(img, sx, sy, side, side, 0, 0, SIZE, SIZE);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('image failed to load'));
+      };
+      img.src = url;
+    });
+  }
+
+  async function pickPhoto(e: Event): Promise<void> {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.push('warn', i18n.t('profile.photoBad'));
+      return;
+    }
+    try {
+      const data = await shrinkToAvatar(file);
+      photo = data;
+      try {
+        localStorage.setItem(PHOTO_KEY, data);
+      } catch {
+        // Quota/private mode: the photo still shows for this session.
+      }
+      toast.push('info', i18n.t('profile.photoSet'));
+    } catch {
+      toast.push('warn', i18n.t('profile.photoBad'));
+    }
+  }
+
+  function removePhoto(): void {
+    photo = null;
+    defaultBroken = false;
+    try {
+      localStorage.removeItem(PHOTO_KEY);
+    } catch {
+      /* private mode */
+    }
+    toast.push('info', i18n.t('profile.photoReset'));
+  }
+
+  /* ----------------------------------------------------------- background */
+
+  /** Open the wallpaper submenu. */
+  function openBackground(): void {
+    page = 'background';
+    void tick().then(() => {
+      place();
+      focusItem(0);
+    });
+  }
+
+  /** Back to the top level of the popover. */
+  function backToMain(): void {
+    page = 'main';
+    void tick().then(() => {
+      place();
+      focusItem(2);
+    });
+  }
+
+  /**
+   * Pick a file and let the store turn it into a background.
+   *
+   * The work happens in Rust (probe → copy or convert) and reports progress on
+   * `background:progress`, so the bar here is real. Success is decided by `rev`
+   * moving — a cancelled picker must not claim anything changed.
+   */
+  async function chooseBackground(kind: 'video' | 'image'): Promise<void> {
+    if (background.busy) return;
+    const before = background.rev;
+    await background.choose(kind);
+    await tick();
+    place();
+    if (background.rev !== before && !background.error) toast.push('info', i18n.t('bg.done'));
+  }
+
+  async function resetBackground(): Promise<void> {
+    if (background.busy) return;
+    await background.reset();
+    await tick();
+    place();
+    if (!background.custom && !background.error) toast.push('info', i18n.t('bg.done'));
+  }
+
   /* --------------------------------------------------------------- mount */
 
   $effect(() => {
@@ -283,6 +418,18 @@
         if (!name) name = 'T9';
       });
   });
+
+  // Load the stored picture (once); null means "show the shipped default".
+  $effect(() => {
+    if (photo !== null) return;
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(PHOTO_KEY);
+    } catch {
+      /* private mode */
+    }
+    if (stored) photo = stored;
+  });
 </script>
 
 <svelte:window onkeydown={onWindowKey} />
@@ -297,10 +444,19 @@
   aria-label={i18n.t('profile.open')}
   title={i18n.t('profile.open')}
 >
-  <span
-    class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-nc-brand text-[10px] font-bold text-white"
-    aria-hidden="true">{initials}</span
-  >
+  {#if avatarSrc}
+    <img
+      src={avatarSrc}
+      alt={i18n.t('profile.picture', { name })}
+      class="h-7 w-7 shrink-0 rounded-full object-cover ring-1 ring-white/15"
+      onerror={() => (defaultBroken = true)}
+    />
+  {:else}
+    <span
+      class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-nc-brand text-[10px] font-bold text-white"
+      aria-hidden="true">{initials}</span
+    >
+  {/if}
   <svg
     width="11"
     height="11"
@@ -329,10 +485,19 @@
         {#if page === 'main'}
           <!-- identity: avatar, name, and the chevron that collapses the menu -->
           <div class="flex items-center gap-2.5 px-2 pt-1.5 pb-2.5">
-            <span
-              class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-nc-brand text-[12px] font-bold text-white"
-              aria-hidden="true">{initials}</span
-            >
+            {#if avatarSrc}
+              <img
+                src={avatarSrc}
+                alt={i18n.t('profile.picture', { name })}
+                class="h-9 w-9 shrink-0 rounded-full object-cover ring-1 ring-white/15"
+                onerror={() => (defaultBroken = true)}
+              />
+            {:else}
+              <span
+                class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-nc-brand text-[12px] font-bold text-white"
+                aria-hidden="true">{initials}</span
+              >
+            {/if}
             <span
               class="min-w-0 flex-1 truncate text-[14px] leading-tight font-semibold text-nc-txt"
             >
@@ -363,7 +528,7 @@
           <button
             role="menuitem"
             tabindex="-1"
-            onclick={() => then(openEdit)}
+            onclick={openEdit}
             class="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] text-nc-txt
                    transition-colors duration-150 hover:bg-nc-panel-2 focus-visible:bg-nc-panel-2"
           >
@@ -407,6 +572,45 @@
               />
             </svg>
             {i18n.t('profile.settings')}
+          </button>
+
+          <button
+            role="menuitem"
+            tabindex="-1"
+            onclick={openBackground}
+            class="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] text-nc-txt
+                   transition-colors duration-150 hover:bg-nc-panel-2 focus-visible:bg-nc-panel-2"
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="shrink-0 text-nc-mut"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4.5" width="18" height="15" rx="2.2" />
+              <circle cx="8.7" cy="9.7" r="1.5" />
+              <path d="M3.4 17.4l4.6-4.4 3.6 3.3 3-2.6 6 5.3" />
+            </svg>
+            <span class="min-w-0 flex-1 truncate">
+              {i18n.t('profile.background')} ·
+              {background.custom ? background.label || i18n.t('bg.custom') : i18n.t('bg.default')}
+            </span>
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              class="shrink-0 text-nc-mut-2"
+              aria-hidden="true"
+            >
+              <path d="M9 6l6 6-6 6z" />
+            </svg>
           </button>
 
           <button
@@ -549,8 +753,175 @@
             </svg>
             {i18n.t('profile.back')}
           </button>
+        {:else if page === 'background'}
+          <!--
+            Background: the clip that ships with the app, or a file the user
+            picks. The conversion is Rust's job (see background_video.rs), so
+            this panel only shows state — never bytes.
+          -->
+          <div class="px-2 pt-1.5 pb-2 text-[11px] font-bold tracking-widest text-nc-brand">
+            {i18n.t('bg.title')}
+          </div>
+
+          <div
+            class="mx-1.5 mb-2 h-[72px] overflow-hidden rounded-lg border border-nc-line bg-nc-bg"
+          >
+            {#if background.preview}
+              <img src={background.preview} class="h-full w-full object-cover" alt="" />
+            {:else}
+              <div
+                class="h-full w-full"
+                style="background:
+                  radial-gradient(120% 90% at 78% 18%, rgb(77 141 255 / 0.18), transparent 62%),
+                  linear-gradient(160deg, #15171b 0%, #1a1d24 55%, #141620 100%)"
+              ></div>
+            {/if}
+          </div>
+
+          <p class="mb-2 px-1.5 text-[10.5px] leading-snug text-nc-mut-2">
+            <span class="text-nc-mut">
+              {background.custom ? background.label || i18n.t('bg.custom') : i18n.t('bg.default')}
+            </span>
+            <br />
+            {i18n.t('bg.limit')}
+          </p>
+
+          {#if background.busy}
+            <div class="mx-1.5 mb-2">
+              <div class="h-1 w-full overflow-hidden rounded-full bg-nc-panel-2">
+                <div
+                  class="h-full rounded-full bg-nc-brand transition-[width] duration-200"
+                  style="width:{Math.max(4, Math.round(background.pct))}%"
+                ></div>
+              </div>
+              <div class="mt-1 flex items-center justify-between text-[10.5px] text-nc-mut-2">
+                <span>{i18n.t('bg.busy')} {Math.round(background.pct)}%</span>
+                <button
+                  type="button"
+                  onclick={() => void background.cancel()}
+                  class="text-nc-mut transition-colors duration-150 hover:text-nc-txt"
+                >
+                  {i18n.t('bg.cancel')}
+                </button>
+              </div>
+            </div>
+          {/if}
+
+          <button
+            role="menuitem"
+            tabindex="-1"
+            onclick={() => void chooseBackground('video')}
+            class="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] text-nc-txt
+                   transition-colors duration-150 hover:bg-nc-panel-2 focus-visible:bg-nc-panel-2
+                   {background.busy ? 'opacity-50' : ''}"
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="shrink-0 text-nc-mut"
+              aria-hidden="true"
+            >
+              <rect x="3" y="5" width="18" height="14" rx="2" />
+              <path d="M8 5v14M16 5v14M3 12h18" />
+            </svg>
+            {i18n.t('bg.video')}
+          </button>
+
+          <button
+            role="menuitem"
+            tabindex="-1"
+            onclick={() => void chooseBackground('image')}
+            class="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] text-nc-txt
+                   transition-colors duration-150 hover:bg-nc-panel-2 focus-visible:bg-nc-panel-2
+                   {background.busy ? 'opacity-50' : ''}"
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="shrink-0 text-nc-mut"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4.5" width="18" height="15" rx="2.2" />
+              <circle cx="8.7" cy="9.7" r="1.5" />
+              <path d="M3.4 17.4l4.6-4.4 3.6 3.3 3-2.6 6 5.3" />
+            </svg>
+            {i18n.t('bg.image')}
+          </button>
+
+          {#if background.custom}
+            <div class="mx-1.5 my-1 border-t border-nc-line"></div>
+            <button
+              role="menuitem"
+              tabindex="-1"
+              onclick={() => void resetBackground()}
+              class="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] text-nc-mut
+                     transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt focus-visible:bg-nc-panel-2"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                class="shrink-0"
+                aria-hidden="true"
+              >
+                <path d="M4 6.5a8 8 0 1 1-1.2 7.6" />
+                <path d="M4 3.5v3.2h3.2" />
+              </svg>
+              {i18n.t('bg.reset')}
+            </button>
+          {/if}
+
+          {#if background.error}
+            <p class="mx-1.5 mt-1.5 text-[10.5px] leading-snug text-nc-red">
+              {background.error === 'browser'
+                ? i18n.t('bg.desktopOnly')
+                : i18n.t('bg.failed', { reason: background.error })}
+            </p>
+          {/if}
+
+          <div class="mx-1.5 my-1 border-t border-nc-line"></div>
+
+          <button
+            role="menuitem"
+            tabindex="-1"
+            onclick={backToMain}
+            class="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] text-nc-mut
+                   transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt focus-visible:bg-nc-panel-2"
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M15 6l-6 6 6 6" />
+            </svg>
+            {i18n.t('profile.back')}
+          </button>
         {:else}
-          <!-- Edit profile: a real, local rename — no account, no upload. -->
+          <!-- Edit profile: a real, local rename + picture — no account, no upload. -->
           <form
             class="px-2 pt-1.5 pb-2"
             onsubmit={(e) => {
@@ -558,6 +929,54 @@
               saveName();
             }}
           >
+            <!-- picture: the current one, a picker under it, and a way back -->
+            <div class="mb-3 flex items-center gap-3">
+              {#if avatarSrc}
+                <img
+                  src={avatarSrc}
+                  alt={i18n.t('profile.picture', { name })}
+                  class="h-12 w-12 shrink-0 rounded-full object-cover ring-1 ring-white/15"
+                  onerror={() => (defaultBroken = true)}
+                />
+              {:else}
+                <span
+                  class="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-nc-brand text-[15px] font-bold text-white"
+                  aria-hidden="true">{initials}</span
+                >
+              {/if}
+              <div class="min-w-0 flex-1">
+                <button
+                  type="button"
+                  role="menuitem"
+                  tabindex="-1"
+                  onclick={() => photoInput?.click()}
+                  class="w-full rounded-lg border border-nc-line px-2.5 py-1.5 text-left text-[12.5px]
+                         text-nc-txt transition-colors duration-150 hover:bg-nc-panel-2"
+                >
+                  {i18n.t('profile.photoPick')}
+                </button>
+                {#if photo}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabindex="-1"
+                    onclick={removePhoto}
+                    class="mt-1 w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px]
+                           text-nc-mut transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
+                  >
+                    {i18n.t('profile.photoResetBtn')}
+                  </button>
+                {/if}
+              </div>
+              <input
+                bind:this={photoInput}
+                type="file"
+                accept="image/*"
+                class="hidden"
+                onchange={(e) => void pickPhoto(e)}
+              />
+            </div>
+
             <label
               class="block text-[11px] font-bold tracking-widest text-nc-brand"
               for="profile-name"
