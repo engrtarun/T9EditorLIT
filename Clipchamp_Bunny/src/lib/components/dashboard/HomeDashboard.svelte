@@ -29,6 +29,7 @@
   import ProjectCard from './ProjectCard.svelte';
   import T9CloudSetup from './T9CloudSetup.svelte';
   import CreateProjectModal from './CreateProjectModal.svelte';
+  import DangerNotice from './DangerNotice.svelte';
   import Skeleton from '../Skeleton.svelte';
   import SkeletonBlock from '../SkeletonBlock.svelte';
   import {
@@ -502,12 +503,21 @@
     }
   }
 
-  async function emptyBin() {
+  let dangerOpen = $state(false);
+  let dangerCount = $state(0);
+
+  function emptyBin() {
     if (bin.length === 0) return;
-    const n = bin.length;
-    // Warning first — emptying is destructive, and the user must allow it.
-    const ok = window.confirm(i18n.t('dash.emptyTrashWarn', { n }));
-    if (!ok) return;
+    // The plain window.confirm is gone - the Empty Trash button now opens
+    // the animated DANGER ZONE notice (DangerNotice.svelte), and nothing
+    // is destroyed until the user throws themselves into that red screen
+    // and presses the striped button themselves.
+    dangerCount = bin.length;
+    dangerOpen = true;
+  }
+
+  /** The notice's YES - the real purge, exactly the old body. */
+  async function doEmptyBin() {
     if (!dbPath) {
       // Browser dev mode: no backend to purge against, just drop the dummy rows.
       bin = [];
@@ -904,4 +914,5 @@
 
   <!-- The panel behind "New project" — it decides name, shape and first media. -->
   <CreateProjectModal bind:open={app.newProjectOpen} />
+  <DangerNotice bind:open={dangerOpen} count={dangerCount} onconfirm={doEmptyBin} />
 </div>
