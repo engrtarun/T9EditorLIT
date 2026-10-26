@@ -376,8 +376,8 @@
       {:else}
         <p class="text-sm font-semibold">Overtime nahi karna hai.</p>
         <p class="mt-2 text-xs leading-relaxed text-nc-mut">
-          Koi video nahi khuli. Apni video load karne ke liye
-          <b class="text-nc-brand">Media</b> mode pe jao.
+          Koi video nahi khuli. Left ke <b class="text-nc-brand">My media</b> panel me
+          <b class="text-nc-brand">Import media</b> dabao, ya Dashboard se naya project banao.
         </p>
       {/if}
     </div>
