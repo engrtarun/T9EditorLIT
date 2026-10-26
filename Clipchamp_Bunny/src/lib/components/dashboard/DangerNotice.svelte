@@ -69,7 +69,9 @@
           stroke-linejoin="round"
           aria-hidden="true"
         >
-          <path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0Z" />
+          <path
+            d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0Z"
+          />
           <path d="M12 9v4" />
           <path d="M12 17h.01" />
         </svg>
@@ -80,7 +82,9 @@
         <p class="mt-1 text-[13px] text-nc-mut">You are about to empty the Trash.</p>
 
         <p class="mt-4 text-[14px] leading-relaxed text-nc-txt">
-          <span class="danger-count mx-1 inline-block rounded-md border border-nc-red/50 px-2 py-0.5">
+          <span
+            class="danger-count mx-1 inline-block rounded-md border border-nc-red/50 px-2 py-0.5"
+          >
             {count}
           </span>
           deleted item{count === 1 ? '' : 's'} will be gone
@@ -113,11 +117,14 @@
   /* Everything runs on the compositor: opacity + transform only. */
 
   .danger-scrim {
-    animation: danger-scrim-in 260ms ease-out both, danger-scrim-pulse 1.6s ease-in-out 260ms infinite;
+    animation:
+      danger-scrim-in 260ms ease-out both,
+      danger-scrim-pulse 1.6s ease-in-out 260ms infinite;
   }
 
   .danger-card {
-    animation: danger-shake-in 520ms cubic-bezier(0.22, 1.2, 0.36, 1) both,
+    animation:
+      danger-shake-in 520ms cubic-bezier(0.22, 1.2, 0.36, 1) both,
       danger-glow 1.6s ease-in-out 300ms infinite;
   }
 
