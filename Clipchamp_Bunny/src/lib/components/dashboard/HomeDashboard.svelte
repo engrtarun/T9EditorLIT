@@ -83,9 +83,7 @@
   const visible = $derived(
     (() => {
       const q = query.trim().toLowerCase();
-      const base = q
-        ? cards.filter((c) => c.project.name.toLowerCase().includes(q))
-        : cards;
+      const base = q ? cards.filter((c) => c.project.name.toLowerCase().includes(q)) : cards;
       return sortProjects(base, sort);
     })()
   );
@@ -771,49 +769,49 @@
                       </div>
                     </div>
                   {:else}
-                  <div
-                    class="grid place-items-center rounded-xl border-2 border-dashed border-nc-line px-6 py-14 text-center"
-                  >
-                    <div>
-                      <svg
-                        width="30"
-                        height="30"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.4"
-                        stroke-linecap="round"
-                        class="mx-auto text-nc-mut-2"
-                        aria-hidden="true"
-                      >
-                        <path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 20h16" />
-                      </svg>
-                      <p class="mt-3 text-[13px] font-medium text-nc-txt">
-                        {i18n.t('dash.noProjects')}
-                      </p>
-                      <p class="mt-1 text-[12px] text-nc-mut-2">
-                        {i18n.t('dash.noProjectsSub')}
-                      </p>
-                      <div class="mt-4 flex items-center justify-center gap-3">
-                        <button
-                          onclick={importMedia}
-                          class="rounded-lg bg-nc-brand px-4 py-2 text-[12.5px] font-semibold text-nc-bg
-                               transition-[filter] duration-150 hover:brightness-110"
+                    <div
+                      class="grid place-items-center rounded-xl border-2 border-dashed border-nc-line px-6 py-14 text-center"
+                    >
+                      <div>
+                        <svg
+                          width="30"
+                          height="30"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.4"
+                          stroke-linecap="round"
+                          class="mx-auto text-nc-mut-2"
+                          aria-hidden="true"
                         >
-                          {i18n.t('dash.import')}
-                        </button>
-                        {#if isTauri()}
+                          <path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 20h16" />
+                        </svg>
+                        <p class="mt-3 text-[13px] font-medium text-nc-txt">
+                          {i18n.t('dash.noProjects')}
+                        </p>
+                        <p class="mt-1 text-[12px] text-nc-mut-2">
+                          {i18n.t('dash.noProjectsSub')}
+                        </p>
+                        <div class="mt-4 flex items-center justify-center gap-3">
                           <button
-                            onclick={openDemo}
-                            class="rounded-lg border border-nc-line px-4 py-2 text-[12.5px] text-nc-mut
-                                 transition-colors duration-150 hover:border-nc-line-2 hover:text-nc-txt"
+                            onclick={importMedia}
+                            class="rounded-lg bg-nc-brand px-4 py-2 text-[12.5px] font-semibold text-nc-bg
+                               transition-[filter] duration-150 hover:brightness-110"
                           >
-                            {i18n.t('dash.openDemo')}
+                            {i18n.t('dash.import')}
                           </button>
-                        {/if}
+                          {#if isTauri()}
+                            <button
+                              onclick={openDemo}
+                              class="rounded-lg border border-nc-line px-4 py-2 text-[12.5px] text-nc-mut
+                                 transition-colors duration-150 hover:border-nc-line-2 hover:text-nc-txt"
+                            >
+                              {i18n.t('dash.openDemo')}
+                            </button>
+                          {/if}
+                        </div>
                       </div>
                     </div>
-                  </div>
                   {/if}
                 {:else}
                   <ul class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
