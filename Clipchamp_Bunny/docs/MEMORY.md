@@ -62,7 +62,7 @@ C:\Users\pocot\Music\T9EditorLIT\
 │   │                            dashboard\{HomeDashboard,DashboardTopBar,ProjectCard,BrandMark}
 │   │                            cut\{VideoPreview,TranscriptPanel,WaveTimeline}
 │   │                            media\{MediaPanel,MediaTile}
-│   │                            modes\{IngestMode,CutMode,ExportMode}
+│   │                            modes\{CutMode,ExportMode}
 │   ├── src-tauri\              ← Tauri shell; engine root se #[path] se share hota hai
 │   ├── public\assets\          ← baked demo media (waveform.json, thumbs/, media.json)
 │   ├── tools\generate-media.mjs ← demo media baker (real FFmpeg commands)
@@ -179,8 +179,10 @@ Pehle app seedha editor kholta tha (last project). Ab:
 1. `app.view = 'home'` → **HomeDashboard** — ek hi SQLite query (`load_projects`)
    se project list, turant paint.
 2. Card pe click → `project.loadFromBackend(path)` + `mode.set('cut')` → editor.
-3. "Create a new video" → editor ka **Media mode** (blank project).
-4. "Import media" → file picker → naya project → editor.
+3. "Create a new video" → **Create New Project** panel (dashboard pe): naam,
+   format, media source, aur Advanced me export folder + dead-air cut.
+   Panel hi `mode.set('cut')` karta hai — alag Media/Ingest page ab nahi hai.
+4. "Import media" → file picker → naya project → editor (Cut).
 5. Editor ka top-bar 9-dot button → wapas dashboard.
 
 **Startup me project load NAHI hota** (`project.init()` ab `main.ts` se hat gaya).

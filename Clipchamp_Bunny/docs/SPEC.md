@@ -197,8 +197,10 @@ and `resource_Clipchamp/singleFiles/openclipchamp.html` (SingleFile DOM, menu bg
 **Deliberate deviations from Clipchamp (all ours, none accidental):**
 1. Transcript panel on the right of the canvas (resizable, default 340px) — core feature.
 2. Nanami gold instead of Clipchamp purple. Gold marks cuts/keeps/accent only.
-3. `Ingest / 7:3 Cut / Polish / Export` rail instead of Clipchamp's panel switcher —
-   each entry is a separate RAM island.
+3. `7:3 Cut / Export` rail instead of Clipchamp's panel switcher — each entry is
+   a separate RAM island. (The old `Ingest` page is gone: importing, the project
+   shape and the dead-air pass all happen in the Create New Project panel, and
+   "My media" lives inside Cut.)
 4. Overtime Saved chip in the top bar.
 5. Cloud button opens **our** provider menu (Telegram/Gemini/Groq/Local) instead of Microsoft's.
 
@@ -231,7 +233,7 @@ Clipchamp_Bunny/
     cut/VideoPreview.svelte <- Phantom Cut skip + ⛶ fullscreen
     cut/TranscriptPanel.svelte <- virtual scroll (30 rows in DOM, any length)
     cut/WaveTimeline.svelte    <- tool row · ruler · T/Video/Audio lanes
-    modes/{Ingest,Cut,Polish,Export}Mode.svelte
+    modes/{Cut,Export}Mode.svelte
 ```
 
 ---
