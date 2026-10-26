@@ -1,12 +1,11 @@
 import type { Mode } from '../types';
 
-const ORDER: Mode[] = ['ingest', 'cut', 'polish', 'export'];
+const ORDER: Mode[] = ['cut', 'polish', 'export'];
 
 export const MODE_LABEL: Record<Mode, string> = {
-  ingest: '1 · Ingest',
-  cut: '2 · 7:3 Cut',
-  polish: '3 · Polish',
-  export: '4 · Export'
+  cut: 'Cut',
+  polish: 'Polish',
+  export: 'Export'
 };
 
 class ModeStore {

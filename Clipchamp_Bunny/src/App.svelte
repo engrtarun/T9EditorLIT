@@ -7,7 +7,6 @@
   import SettingsPanel from './lib/components/SettingsPanel.svelte';
   import Toasts from './lib/components/Toasts.svelte';
   import ContextMenu from './lib/components/ContextMenu.svelte';
-  import IngestMode from './lib/components/modes/IngestMode.svelte';
   import CutMode from './lib/components/modes/CutMode.svelte';
   import ExportMode from './lib/components/modes/ExportMode.svelte';
   import HomeDashboard from './lib/components/dashboard/HomeDashboard.svelte';
@@ -355,9 +354,7 @@
           <ModeRail />
 
           <main class="flex min-h-0 min-w-0 flex-1 flex-col">
-            {#if mode.current === 'ingest'}
-              <IngestMode />
-            {:else if mode.current === 'cut'}
+            {#if mode.current === 'cut'}
               <CutMode />
             {:else}
               <ExportMode />

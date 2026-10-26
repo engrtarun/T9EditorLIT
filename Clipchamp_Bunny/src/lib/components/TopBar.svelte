@@ -51,7 +51,8 @@
           toast.push(ok ? 'info' : 'warn', ok ? 'File location opened' : 'Source path unknown')
         );
       } else if (id === 'new') {
-        mode.set('ingest');
+        // The panel lives on the dashboard, so this goes there and opens it.
+        app.openNewProject();
       }
     });
   }

@@ -1,7 +1,7 @@
 /** Core domain types for T9 Editor LIT. Mirrors what the Rust side will return later. */
 
-/** The four zero-RAM modes. Only one is ever mounted at a time. */
-export type Mode = 'ingest' | 'cut' | 'polish' | 'export';
+/** The zero-RAM modes. Only one is ever mounted at a time. */
+export type Mode = 'cut' | 'polish' | 'export';
 
 /** Why the cloud brain flagged a line — drives the waveform colour. */
 export type LineFlag = 'none' | 'fumble' | 'repeat' | 'wrong-example' | 'silence';

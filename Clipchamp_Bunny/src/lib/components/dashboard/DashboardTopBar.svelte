@@ -18,6 +18,7 @@
   import { i18n } from '../../stores/i18n.svelte';
   import { appearance } from '../../stores/appearance.svelte';
   import ProfileMenu from '../ProfileMenu.svelte';
+  import UpdateButton from '../UpdateButton.svelte';
   import BrandMark from './BrandMark.svelte';
   import WindowControls from '../WindowControls.svelte';
 
@@ -139,6 +140,9 @@
   <!-- everything between the tabs and the avatar is deliberately empty, and it
        is the window's drag handle: grab here to move, double-click to maximize -->
   <div class="h-full flex-1" data-tauri-drag-region></div>
+
+  <!-- a staged build, if the deploy put one beside this running exe -->
+  <UpdateButton />
 
   <!-- avatar = the profile popover (Edit profile · App settings · Language · Help & About) -->
   <div class="shrink-0 pr-3">

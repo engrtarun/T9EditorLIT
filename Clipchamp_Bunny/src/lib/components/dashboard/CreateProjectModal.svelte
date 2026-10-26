@@ -57,11 +57,43 @@
   let busy = $state(false);
   let error = $state('');
 
-  /** The last step of every path: leave the dashboard, open the editor ready for media. */
+  /**
+   * Dead air — the one tool the old Media page owned.
+   *
+   * The scan itself is FFmpeg `silencedetect` on the source, and the cut marks
+   * every transcript line that overlaps a silent span. Doing it at import time
+   * is honest: the threshold is chosen once, and nothing is cut behind the
+   * user's back because the toggle starts off.
+   */
+  let deadAir = $state(false);
+  let deadAirSecs = $state(3.0);
+
+  /** The last step of every path: leave the dashboard, open the editor. */
   function enterEditor(): void {
     open = false;
     app.openEditor();
-    mode.set('ingest');
+    mode.set('cut');
+  }
+
+  /**
+   * Run the dead-air pass on the project that was just imported.
+   *
+   * Desktop only (the scan is a Rust/FFmpeg command) and only when the user
+   * asked for it. A scan failure is reported, never fatal: the import already
+   * succeeded and the media is open.
+   */
+  async function cutDeadAir(): Promise<void> {
+    if (!deadAir || !isTauri() || !project.sourcePath) return;
+    try {
+      const n = await project.autoCutSilence(deadAirSecs);
+      if (n > 0) {
+        toast.push('cut', `${n} lines cut — ${deadAirSecs.toFixed(1)}s+ ki khamoshi hata di`);
+      } else {
+        toast.push('info', `Koi ${deadAirSecs.toFixed(1)}s+ khamoshi nahi mili`);
+      }
+    } catch (e) {
+      toast.push('warn', `Dead air scan failed: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   /** A brand-new project with no file behind it yet. */
@@ -95,6 +127,7 @@
         await project.loadFromBackend(paths[0]);
         if (paths.length > 1) await project.importPaths(paths.slice(1));
         if (typed) await project.rename(typed);
+        await cutDeadAir();
         toast.push('info', `${paths.length} file import ho gayi`);
       } else {
         const files = await pickMediaFiles();
@@ -130,6 +163,7 @@
       enterEditor();
       await project.loadFromBackend(path);
       if (typed) await project.rename(typed);
+      await cutDeadAir();
       toast.push('info', 'Download ho gaya');
     } catch (e) {
       error = `${i18n.t('new.failed')}: ${e instanceof Error ? e.message : e}`;
@@ -165,7 +199,8 @@
     open = false;
   }
 
-  // Every open starts clean: no name from the previous project, no error, 16:9.
+  // Every open starts clean: no name from the previous project, no error, 16:9,
+  // and dead-air cutting off — a silent, content-removing default is a trap.
   $effect(() => {
     if (!open) return;
     name = '';
@@ -175,6 +210,8 @@
     linkOpen = false;
     linkUrl = '';
     advanced = false;
+    deadAir = false;
+    deadAirSecs = 3.0;
     busy = false;
     error = '';
     const t = setTimeout(() => nameEl?.focus(), 40);
@@ -771,6 +808,51 @@
                     <option value={r.id}>{r.label} — {r.note}</option>
                   {/each}
                 </select>
+              </div>
+
+              <!--
+                Dead air — rescued from the old Media page.
+                The scan runs on the imported file with FFmpeg `silencedetect`;
+                the result marks transcript lines that fall inside a pause.
+                Off by default: cutting content without being asked is worse
+                than leaving a pause in.
+              -->
+              <div class="min-w-0 border-t border-nc-line pt-3 sm:col-span-2">
+                <label class="flex cursor-pointer items-center gap-2.5 select-none">
+                  <input
+                    type="checkbox"
+                    bind:checked={deadAir}
+                    class="h-3.5 w-3.5 accent-nc-brand"
+                  />
+                  <span class="text-[11.5px] font-medium text-nc-txt">
+                    {i18n.t('new.deadAir')}
+                  </span>
+                  {#if !isTauri()}
+                    <span class="text-[10px] text-nc-mut-2">(desktop)</span>
+                  {/if}
+                </label>
+                <p class="mt-1 text-[10.5px] leading-relaxed text-nc-mut-2">
+                  {i18n.t('new.deadAirHint')}
+                </p>
+                {#if deadAir}
+                  <div class="mt-2 flex items-center gap-3">
+                    <label for="new-dead-air" class="text-[11px] text-nc-mut">
+                      {i18n.t('new.deadAirPause')}
+                    </label>
+                    <input
+                      id="new-dead-air"
+                      type="range"
+                      min="0.5"
+                      max="10"
+                      step="0.5"
+                      bind:value={deadAirSecs}
+                      class="flex-1 accent-nc-brand"
+                    />
+                    <span class="w-10 text-right font-mono text-[11.5px] text-nc-txt">
+                      {deadAirSecs.toFixed(1)}s
+                    </span>
+                  </div>
+                {/if}
               </div>
             </div>
           {/if}

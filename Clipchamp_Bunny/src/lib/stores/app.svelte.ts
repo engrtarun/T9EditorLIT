@@ -18,6 +18,16 @@ class AppStore {
   section = $state<'home' | 'cloud' | 'trash'>('home');
 
   /**
+   * The "Create New Project" panel is open.
+   *
+   * It lives on the dashboard (that is where a project starts), but "New
+   * project" has to work from the editor's project menu too — so the flag is
+   * here, not inside `HomeDashboard`, and opening it from anywhere goes home
+   * first.
+   */
+  newProjectOpen = $state(false);
+
+  /**
    * The app's real version.
    *
    * Read from the running binary, not hardcoded: a version number in the
@@ -33,6 +43,13 @@ class AppStore {
   goHome(section: 'home' | 'cloud' | 'trash' = 'home'): void {
     this.section = section;
     this.view = 'home';
+  }
+
+  /** Ask for a new project — the dashboard shows the panel. */
+  openNewProject(): void {
+    this.view = 'home';
+    this.section = 'home';
+    this.newProjectOpen = true;
   }
 }
 

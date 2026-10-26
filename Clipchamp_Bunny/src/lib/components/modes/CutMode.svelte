@@ -28,7 +28,7 @@
   <PreviewBar />
 
   <div class="flex min-h-0 flex-1">
-    <!-- Left: "My media" â€” the same library panel as the Media mode -->
+    <!-- Left: "My media" â€” the one library panel, now that the Media page is gone -->
     <MediaPanel />
 
     <!-- Left box -->

@@ -5,18 +5,11 @@
      Ours is the same shape, but each entry is a separate RAM island — switching
      destroys the previous mode's component tree.
 
-     Only two, and each maps to a real job:
-       Media → import, probe, and strip the dead air
-       Cut   → read the transcript, cut the fumbles
-     Export lives on the preview bar's purple button, like Clipchamp. */
-  const ITEMS = [
-    {
-      id: 'ingest',
-      label: 'Media',
-      icon: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'
-    },
-    { id: 'cut', label: 'Cut', icon: 'M6 4v16M18 4v16M6 12h12' }
-  ] as const;
+     The old "Media" page is gone: importing and the dead-air pass moved into
+     the Create Project panel, and "My media" already lives inside Cut. What is
+     left is Cut, where the real work happens. Export stays on the preview
+     bar's purple button, like Clipchamp. */
+  const ITEMS = [{ id: 'cut', label: 'Cut', icon: 'M6 4v16M18 4v16M6 12h12' }] as const;
 </script>
 
 <!-- LEFT RAIL — 58px, icon + label, rounded pill on active (Clipchamp metrics) -->

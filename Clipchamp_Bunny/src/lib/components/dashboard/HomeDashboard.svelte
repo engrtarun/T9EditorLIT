@@ -79,8 +79,6 @@
   /** The project whose name is being edited inline. */
   let renamingId = $state<string | null>(null);
   let renameDraft = $state('');
-  /** The "Create New Project" panel is open. */
-  let createOpen = $state(false);
 
   /** The list the user actually sees: filtered by the search box, then ordered. */
   const visible = $derived(
@@ -310,7 +308,7 @@
    * shape, where the media comes from and (optionally) the export defaults.
    */
   function createNew() {
-    createOpen = true;
+    app.openNewProject();
   }
 
   /**
@@ -339,7 +337,9 @@
     const paths = await pickVideos();
     if (!paths.length) return;
     app.openEditor();
-    mode.set('ingest');
+    // The imported file becomes the project (or joins an open one's library);
+    // Cut is where both are visible, now that the Media page is gone.
+    mode.set('cut');
     try {
       await project.importPaths(paths);
       toast.push('info', `${paths.length} file import ho gayi`);
@@ -498,6 +498,29 @@
     }
   }
 
+  async function emptyBin() {
+    if (bin.length === 0) return;
+    const n = bin.length;
+    // Warning first — emptying is destructive, and the user must allow it.
+    const ok = window.confirm(i18n.t('dash.emptyTrashWarn', { n }));
+    if (!ok) return;
+    if (!dbPath) {
+      // Browser dev mode: no backend to purge against, just drop the dummy rows.
+      bin = [];
+      toast.push('info', i18n.t('dash.emptyTrashDone'));
+      return;
+    }
+    for (const item of bin) {
+      try {
+        await purgeTrash(dbPath, item.sourcePath);
+      } catch {
+        /* one bad row must not stop the rest */
+      }
+    }
+    bin = [];
+    toast.push('info', i18n.t('dash.emptyTrashDone'));
+  }
+
   function openBinMenu(item: RustTrashItem, e: MouseEvent) {
     e.stopPropagation();
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -592,6 +615,13 @@
                 <div
                   class="flex shrink-0 items-center gap-2 rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-1.5 text-[11px] text-nc-mut"
                 >
+                  <button
+                    onclick={emptyBin}
+                    disabled={bin.length === 0}
+                    class="rounded-md border border-nc-red/40 bg-nc-panel px-2 py-0.5 text-[11px] font-medium text-nc-txt transition-colors duration-150 hover:border-nc-red hover:text-nc-red disabled:opacity-40"
+                  >
+                    {i18n.t('dash.emptyTrash')}
+                  </button>
                   <span>
                     {i18n.t('dash.autoDelete')}:
                     <b class="text-nc-txt">
@@ -869,5 +899,5 @@
   </div>
 
   <!-- The panel behind "New project" — it decides name, shape and first media. -->
-  <CreateProjectModal bind:open={createOpen} />
+  <CreateProjectModal bind:open={app.newProjectOpen} />
 </div>

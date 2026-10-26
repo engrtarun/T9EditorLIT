@@ -559,7 +559,7 @@ class ProjectStore {
     }
   }
 
-  /** Live pipeline state, shown in the Media mode while the cloud works. */
+  /** Live pipeline state, shown in the transcript panel while the cloud works. */
   pipeline = $state<{ stage: string; fraction: number } | null>(null);
 
   /**

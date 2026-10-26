@@ -281,7 +281,7 @@
         return;
       }
     } else if (!source) {
-      toast.push('warn', 'Pehle video load karo (Media mode)');
+      toast.push('warn', 'Pehle video load karo');
       return;
     }
     if (!segments.length) {

@@ -61,11 +61,11 @@
     if (!usable.length) return;
 
     // Import fills My media. It only becomes a new project when none is open,
-    // and only then is the import screen worth showing - with a project open
+    // and only then does the editor need to switch to Cut - with a project open
     // the library tile is already on screen.
     const hadProject = !!project.media;
     await project.importDropped(usable);
-    if (!hadProject) mode.set('ingest');
+    if (!hadProject) mode.set('cut');
   }
 
   // The desktop path: Tauri hands us the real paths of the dropped files.
@@ -90,7 +90,7 @@
             over = false;
             const hadProject = !!project.media;
             void project.importPaths(payload.paths);
-            if (!hadProject) mode.set('ingest');
+            if (!hadProject) mode.set('cut');
           }
         });
         if (alive) unlisten = stop;
