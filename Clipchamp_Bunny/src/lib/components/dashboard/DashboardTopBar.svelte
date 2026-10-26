@@ -19,6 +19,7 @@
   import { appearance } from '../../stores/appearance.svelte';
   import ProfileMenu from '../ProfileMenu.svelte';
   import BrandMark from './BrandMark.svelte';
+  import WindowControls from '../WindowControls.svelte';
 
   /** `trashCount` comes down from the dashboard, which already holds the bin. */
   let { trashCount = 0 }: { trashCount?: number } = $props();
@@ -79,7 +80,8 @@
 <header
   data-focus="header"
   tabindex="-1"
-  class="t9-over-video flex h-12 shrink-0 items-center gap-2.5 pr-3 pl-2 select-none outline-none"
+  class="t9-over-video flex h-12 shrink-0 items-center gap-2.5 pr-0 pl-2 select-none outline-none"
+  data-tauri-drag-region
 >
   <!-- brand -->
   <div class="flex shrink-0 items-center gap-2 pr-1">
@@ -121,7 +123,7 @@
         {/if}
         {#if id === 'trash' && trashCount > 0}
           <span
-            class="ml-1 rounded-full bg-nc-red px-1.5 py-0.5 text-[10px] leading-none font-bold text-white"
+            class="ml-1 rounded-full bg-nc-red/45 px-1.5 py-0.5 text-[10px] leading-none font-bold text-white backdrop-blur-md"
           >
             {trashCount}
           </span>
@@ -134,10 +136,15 @@
     {/each}
   </nav>
 
-  <!-- everything between the tabs and the avatar is deliberately empty -->
+  <!-- everything between the tabs and the avatar is deliberately empty, and it
+       is the window's drag handle: grab here to move, double-click to maximize -->
+  <div class="h-full flex-1" data-tauri-drag-region></div>
 
   <!-- avatar = the profile popover (Edit profile · App settings · Language · Help & About) -->
-  <div class="ml-auto shrink-0">
+  <div class="shrink-0 pr-3">
     <ProfileMenu />
   </div>
+
+  <!-- caption buttons: in the bar, flush to the window corner -->
+  <WindowControls />
 </header>

@@ -14,6 +14,7 @@
   import UpdateButton from './UpdateButton.svelte';
   import BrandMark from './dashboard/BrandMark.svelte';
   import ProfileMenu from './ProfileMenu.svelte';
+  import WindowControls from './WindowControls.svelte';
 
   /** Clipchamp's project-name menu (captured in the .ipynb DOM extract). */
   let renaming = $state(false);
@@ -61,7 +62,8 @@
 <header
   data-focus="header"
   tabindex="-1"
-  class="flex h-10 shrink-0 items-center gap-2 border-b border-nc-line bg-nc-panel pr-2 pl-1.5 select-none outline-none"
+  class="flex h-10 shrink-0 items-center gap-2 border-b border-nc-line bg-nc-panel pr-0 pl-1.5 select-none outline-none"
+  data-tauri-drag-region
 >
   <!-- app launcher (9 dots) — the way back to the dashboard -->
   <button
@@ -128,7 +130,7 @@
   <!-- cloud / local toggle → backup & AI providers -->
   <CloudMenu />
 
-  <div class="flex-1"></div>
+  <div class="flex-1" data-tauri-drag-region></div>
 
   <!-- a newer build is installed: offer the restart -->
   <UpdateButton />
@@ -169,5 +171,10 @@
   </button>
 
   <!-- avatar = the profile popover (Edit profile · App settings · Language · Help & About) -->
-  <ProfileMenu />
+  <div class="pr-2">
+    <ProfileMenu />
+  </div>
+
+  <!-- caption buttons: in the bar, flush to the window corner -->
+  <WindowControls />
 </header>

@@ -67,6 +67,10 @@ mod shell_menu;
 /// Where the background video is on disk (the frontend only ever gets a path).
 mod background_video;
 
+/// Rounded corners + no 1 px frame on the undecorated window (Windows only).
+#[cfg(target_os = "windows")]
+mod window_chrome;
+
 pub use meters::{
     AppStorageProbe, DriveReading, NetReading, NetworkProbe, RamReading, SystemSnapshot,
     set_system_clock, system_snapshot,
@@ -1471,6 +1475,12 @@ pub fn run() {
             #[cfg(debug_assertions)]
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title("T9 Editor LIT — dev")?;
+            }
+            // The window is undecorated, so the rounded corners and the missing
+            // hairline frame come from DWM, not from the OS title bar.
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                window_chrome::apply(&window);
             }
             // The update helper cannot edit JSON. Once the swap has happened,
             // turn `mode: staged` into `mode: installed` so the marker and
