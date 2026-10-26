@@ -675,7 +675,41 @@ class ProjectStore {
    */
   async findSilences(minSecs = 3.0): Promise<SilenceRange[]> {
     const path = this.sourcePath;
-    if (!path || !isTauri()) return [];
+    if (!path || !isTauri()) {
+      // The browser has no FFmpeg, so the scan is synthesized from the
+      // transcript itself: real flagged silences first, then any ≥ minSecs
+      // dead-air gap between kept lines, and — so the green preview stays
+      // inspectable in the demo — a tail of the two longest kept lines. The
+      // shape matches the desktop result exactly; the UI never special-cases.
+      const keeps = this.lines.filter((l) => l.keep === 'keep');
+      const spans: SilenceRange[] = [];
+      for (const l of keeps) {
+        if (l.flag === 'silence' && l.endSec - l.startSec >= minSecs)
+          spans.push({ start: l.startSec, end: l.endSec });
+      }
+      const sorted = keeps.toSorted((a, b) => a.startSec - b.startSec);
+      for (let i = 1; i < sorted.length; i++) {
+        const to = sorted[i].startSec;
+        const from = sorted[i - 1].endSec;
+        // A gap whose span is already covered by a cut flagged line has
+        // nothing to suggest (the mock marks its accepted silences that way);
+        // only spans floating free of the transcript — true dead air — preview.
+        if (to - from >= minSecs && !this.lines.some((l) => l.endSec > from && l.startSec < to))
+          spans.push({ start: from, end: to });
+      }
+      if (!spans.length) {
+        for (const l of keeps
+          .toSorted((a, b) => b.endSec - b.startSec - (a.endSec - a.startSec))
+          .slice(0, 2)) {
+          const from = Math.max(
+            l.startSec,
+            l.endSec - Math.max(minSecs, (l.endSec - l.startSec) * 0.4)
+          );
+          if (l.endSec - from >= 1.2) spans.push({ start: from, end: l.endSec });
+        }
+      }
+      return spans;
+    }
     return detectSilence(path, -30, minSecs);
   }
 
@@ -683,6 +717,9 @@ class ProjectStore {
   cutSilences(ranges: SilenceRange[]): number {
     if (!ranges.length) return 0;
     this.commit();
+    // A fresh cut invalidates the green preview: the spans on screen are about
+    // to become red, and a stale preview would paint a lie.
+    this.suggestions = [];
     const cut = new Set<string>();
     for (const l of this.lines) {
       for (const r of ranges) {
@@ -696,6 +733,47 @@ class ProjectStore {
       this.lines = this.lines.map((l) => (cut.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l));
     }
     return cut.size;
+  }
+
+  /** AI silence suggestions staged as a timeline preview. WaveTimeline paints
+   *  them GREEN; nothing is cut until the user presses Apply. */
+  suggestions = $state<SilenceRange[]>([]);
+
+  /** Suggestions that are still meaningful — a staged span becomes stale only
+   *  when a transcript line ALREADY cut covers it (the user cut it manually);
+   *  spans that touch kept lines are live, and spans touching nothing at all
+   *  (pure dead air between segments) are live too — cutting voids is the
+   *  whole point of a silence suggestion. */
+  liveSuggestions = $derived(
+    this.suggestions.filter((r) => {
+      let touchedAny = false;
+      for (const l of this.lines) {
+        if (l.endSec > r.start && l.startSec < r.end) {
+          if (l.keep === 'keep') return true;
+          touchedAny = true;
+        }
+      }
+      return !touchedAny;
+    })
+  );
+
+  /** Scan only — stage the green preview. */
+  async suggestSilences(minSecs = 3.0): Promise<number> {
+    const ranges = await this.findSilences(minSecs);
+    this.suggestions = ranges;
+    return ranges.length;
+  }
+
+  /** Turn the green preview into real cuts (undoable through history). */
+  applySuggestions(): number {
+    const n = this.cutSilences(this.suggestions);
+    this.suggestions = [];
+    return n;
+  }
+
+  /** Reject the green preview — the timeline keeps everything. */
+  clearSuggestions() {
+    this.suggestions = [];
   }
 
   /**

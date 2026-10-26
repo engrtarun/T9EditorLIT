@@ -218,21 +218,34 @@
     ctx.fillRect(0, mid, w, 1);
   }
 
-  /** The source minimap: the whole original video, red where it is cut. */
+  /** The source minimap: the whole original video, drawn at the width the
+   *  lanes actually scroll (contentW, zoom-synced). The scale used to be a
+   *  hard-coded 2 px/sec — a 22000-px timeline got a 400-px strip, so every
+   *  cut past the first ~300 s was invisible: "kuch bhi hide ho gaya". */
   function drawMinimap() {
     const c = miniCanvas;
     if (!c) return;
-    const w = Math.max(600, project.durationSec * 2);
+    const w = contentW;
     c.width = w;
     c.height = MINIMAP_H;
     const ctx = c.getContext('2d');
     if (!ctx) return;
+    const dur = project.durationSec || 1;
+    const scale = w / dur;
     ctx.fillStyle = '#1a1c26';
     ctx.fillRect(0, 0, w, MINIMAP_H);
+    // AI suggestions first — a staged span paints GREEN and disappears the
+    // moment either side of the deal changes (applied, rejected, or the user
+    // cut the span manually). Red is painted after, so an already-cut region
+    // always reads as its final state.
+    ctx.fillStyle = 'rgba(61, 214, 140, 0.8)';
+    for (const r of project.liveSuggestions) {
+      ctx.fillRect(r.start * scale, 0, Math.max(1, (r.end - r.start) * scale), MINIMAP_H);
+    }
+    ctx.fillStyle = 'rgba(229, 72, 77, 0.75)';
     for (const l of project.lines) {
       if (l.keep === 'keep') continue;
-      ctx.fillStyle = 'rgba(229,72,77,.75)';
-      ctx.fillRect(l.startSec * 2, 0, Math.max(1, (l.endSec - l.startSec) * 2), MINIMAP_H);
+      ctx.fillRect(l.startSec * scale, 0, Math.max(1, (l.endSec - l.startSec) * scale), MINIMAP_H);
     }
   }
 
@@ -245,6 +258,8 @@
     void segments;
     void offsets;
     void project.splitMarkPositions;
+    void project.suggestions; // green preview repaints the moment it changes
+    void project.durationSec; // and when the loaded source length changes
     void LANES_H; // lane heights are drag-resizable — redraw on resize
     drawWave();
     drawVideoLane();
@@ -398,21 +413,39 @@
     }
   }
 
-  /** Clipchamp's "AI suggestions" — auto-cut the long silences. */
-  async function autoCut() {
+  /** Clipchamp's "AI suggestions" — detect long silences and stage them as a
+   *  GREEN preview on the timeline. Nothing is cut until the user presses
+   *  Apply beside the legend: a suggestion must be SEEN before it can take
+   *  clips away. */
+  async function autoSuggest() {
     if (busy) return;
     busy = true;
     toast.push('info', 'AI: scanning for silences…');
     try {
-      const n = await project.autoCutSilence(3.0);
+      const n = await project.suggestSilences(3.0);
       toast.push(
-        n ? 'cut' : 'info',
-        n ? `✕ ${n} lines cut (silence ≥ 3s)` : 'AI: koi 3s+ silence nahi mili'
+        'info',
+        n ? `${n} silence suggestions — green bands timeline pe` : 'AI: koi 3s+ silence nahi mili'
       );
     } catch (e) {
       toast.push('warn', `AI scan failed: ${e instanceof Error ? e.message : e}`);
     }
     busy = false;
+  }
+
+  /** The green preview becomes real cuts. */
+  function applySuggestions() {
+    const n = project.applySuggestions();
+    toast.push(
+      n ? 'cut' : 'info',
+      n ? `✕ ${n} lines cut (silence ≥ 3s)` : 'Koi suggestion apply nahi hui'
+    );
+  }
+
+  /** Throw the green preview away without touching anything. */
+  function rejectSuggestions() {
+    project.clearSuggestions();
+    toast.push('info', 'Suggestions hata di — kuch cut nahi hua');
   }
 
   /* --------------------------------------------------------------- selection */
@@ -654,10 +687,10 @@
   <div class="relative flex h-[30px] shrink-0 items-center gap-1 border-b border-nc-line px-2">
     <div class="flex items-center gap-0.5">
       <button
-        onclick={autoCut}
+        onclick={autoSuggest}
         disabled={busy}
         class="grid h-7 w-7 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt disabled:opacity-40"
-        title="AI suggestions — auto-cut silences longer than 3 s"
+        title="AI suggestions — scan silences ≥ 3s, green preview dikhata hai; Apply se cut hote hain"
       >
         <svg
           width="15"
@@ -793,6 +826,32 @@
     </div>
 
     <div class="ml-auto flex items-center gap-1.5">
+      {#if project.liveSuggestions.length}
+        <div
+          class="flex items-center gap-1 rounded-md border border-nc-green/40 bg-nc-green/10 px-1.5 py-0.5"
+        >
+          <span class="text-[9px] font-medium text-nc-green">
+            AI: {project.liveSuggestions.length} suggestion{project.liveSuggestions.length === 1
+              ? ''
+              : 's'}
+          </span>
+          <button
+            onclick={applySuggestions}
+            class="rounded bg-nc-green/20 px-1.5 py-0.5 text-[9px] font-bold text-nc-green transition-colors hover:bg-nc-green/30"
+            title="Apply — green spans ban jaate hain red cuts"
+          >
+            Apply
+          </button>
+          <button
+            onclick={rejectSuggestions}
+            class="rounded px-1 text-[9px] text-nc-mut transition-colors hover:text-nc-txt"
+            title="Reject — timeline untouched"
+          >
+            ✕
+          </button>
+        </div>
+        <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
+      {/if}
       <span class="flex items-center gap-1 text-[9px] text-nc-mut">
         <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-brand"></i>keep
       </span>
@@ -801,6 +860,9 @@
       </span>
       <span class="flex items-center gap-1 text-[9px] text-nc-mut">
         <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-mut-2"></i>khamoshi
+      </span>
+      <span class="flex items-center gap-1 text-[9px] text-nc-mut">
+        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-green"></i>suggest
       </span>
       <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
       <button
@@ -836,9 +898,14 @@
       class="nc-scroll min-h-0 overflow-x-auto overflow-y-hidden"
     >
       <div class="relative" style="width:{contentW}px">
-        <!-- SOURCE MINIMAP — the whole original, red where it was cut -->
+        <!-- SOURCE MINIMAP — the whole original, green = AI suggestion,
+             red = cut. Stretched across the scroll width so nothing hides. -->
         <div class="relative border-b border-nc-line/60" style="height:{MINIMAP_H}px">
-          <canvas bind:this={miniCanvas} class="block" style="height:{MINIMAP_H}px"></canvas>
+          <canvas
+            bind:this={miniCanvas}
+            class="block"
+            style="width:{contentW}px;height:{MINIMAP_H}px"
+          ></canvas>
           <span
             class="pointer-events-none absolute left-1 top-0 text-[7px] leading-[7px] tracking-wider text-nc-mut-2/70"
             >SOURCE</span
