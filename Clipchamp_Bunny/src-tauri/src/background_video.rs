@@ -310,6 +310,10 @@ struct Media {
     codec: String,
     fps: f64,
     seconds: f64,
+    /// `color_transfer` as ffprobe reports it — `smpte2084` (HDR10) and
+    /// `arib-std-b67` (HLG) mean the clip needs tone mapping before it can sit
+    /// behind an SDR desktop without looking washed out.
+    transfer: String,
 }
 
 fn parse_rate(text: &str) -> Option<f64> {
@@ -317,6 +321,11 @@ fn parse_rate(text: &str) -> Option<f64> {
     let num: f64 = num.parse().ok()?;
     let den: f64 = den.parse().ok()?;
     (den > 0.0 && num > 0.0).then(|| num / den)
+}
+
+/// PQ (HDR10) and HLG — the two transfers a phone or a modern camera writes.
+fn is_hdr(transfer: &str) -> bool {
+    matches!(transfer, "smpte2084" | "arib-std-b67")
 }
 
 fn probe(path: &Path) -> Result<Media, String> {
@@ -352,6 +361,12 @@ fn probe(path: &Path) -> Result<Media, String> {
         .and_then(parse_rate)
         .unwrap_or(0.0);
 
+    let transfer = video
+        .get("color_transfer")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
+
     let seconds = doc
         .get("format")
         .and_then(|f| f.get("duration"))
@@ -371,6 +386,7 @@ fn probe(path: &Path) -> Result<Media, String> {
         codec,
         fps,
         seconds,
+        transfer,
     })
 }
 
@@ -426,7 +442,17 @@ fn emit(app: &tauri::AppHandle, pct: f64, stage: &'static str) {
     );
 }
 
-/// Video → H.264 MP4, at most 20 s, ≤ 720p, ≤ 30 fps, silent.
+/// HDR (PQ or HLG) → SDR, in linear light.
+///
+/// A phone records HDR by default, and a PQ clip played straight on an SDR
+/// desktop comes out grey and flat — worse, the tags survive the encode, so the
+/// webview keeps treating SDR pixels as HDR. This chain converts through linear
+/// light and tone maps into BT.709, which is what the rest of the app assumes.
+/// Measured on a synthetic PQ clip: average luma 126 (washed) → 119 (correct),
+/// output tagged `bt709/bt709`.
+const TONEMAP: &str = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
+
+/// Video → H.264 MP4, at most 3 min, ≤ 1080p, ≤ 30 fps, silent, SDR.
 fn transcode_video(
     app: &tauri::AppHandle,
     src: &Path,
@@ -442,78 +468,97 @@ fn transcode_video(
         "scale={box_w}:{box_h}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1"
     );
 
-    let mut args: Vec<String> = vec![
-        "-hide_banner".into(),
-        "-loglevel".into(),
-        "error".into(),
-        "-nostdin".into(),
-        "-y".into(),
-        // Input-side `-t`: ffmpeg stops reading after the cap, so a two-hour 4K
-        // recording costs that much decode, not two hours of it.
-        "-t".into(),
-        format!("{MAX_SECONDS}"),
-        "-i".into(),
-        src.to_string_lossy().into_owned(),
-        "-an".into(),
-        "-sn".into(),
-        "-dn".into(),
-        "-vf".into(),
-        scale,
-        "-c:v".into(),
-        "libx264".into(),
-        "-preset".into(),
-        "veryfast".into(),
-        "-crf".into(),
-        "26".into(),
-        "-profile:v".into(),
-        "high".into(),
-        "-pix_fmt".into(),
-        "yuv420p".into(),
-        "-maxrate".into(),
-        "4000k".into(),
-        "-bufsize".into(),
-        "8000k".into(),
-        "-movflags".into(),
-        "+faststart".into(),
-        "-progress".into(),
-        "pipe:1".into(),
-        "-nostats".into(),
-    ];
-    if media.fps > MAX_FPS + 0.5 {
-        args.push("-r".into());
-        args.push("30".into());
+    // The tone-mapped chain is tried first for HDR sources, and the plain one is
+    // the fallback: a file that *claims* PQ but decodes badly must still end up
+    // as a background rather than as an error.
+    let mut chains = vec![scale.clone()];
+    if is_hdr(&media.transfer) {
+        chains.insert(0, format!("{TONEMAP},{scale}"));
     }
-    args.push(dst.to_string_lossy().into_owned());
 
     let total = media.seconds.clamp(1.0, MAX_SECONDS);
     let flag = cancel_flag();
-    flag.store(false, Ordering::SeqCst);
+    let mut failure = String::new();
 
-    let mut last = -10.0_f64;
-    let handle = app.clone();
-    let out = crate::ffmpeg::run_streaming("ffmpeg", &args, Some(flag), |line| {
-        let micros = line
-            .strip_prefix("out_time_us=")
-            .or_else(|| line.strip_prefix("out_time_ms="))
-            .and_then(|v| v.trim().parse::<f64>().ok());
-        if let Some(us) = micros {
-            let pct = us / 1_000_000.0 / total * 100.0;
-            if pct - last >= 1.5 {
-                last = pct;
-                emit(&handle, pct, "convert");
-            }
+    for chain in chains {
+        flag.store(false, Ordering::SeqCst);
+        let _ = std::fs::remove_file(dst);
+
+        let mut args: Vec<String> = vec![
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-nostdin".into(),
+            "-y".into(),
+            // Input-side `-t`: ffmpeg stops reading after the cap, so a two-hour
+            // 4K recording costs that much decode, not two hours of it.
+            "-t".into(),
+            format!("{MAX_SECONDS}"),
+            "-i".into(),
+            src.to_string_lossy().into_owned(),
+            "-an".into(),
+            "-sn".into(),
+            "-dn".into(),
+            "-vf".into(),
+            chain,
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            "veryfast".into(),
+            "-crf".into(),
+            "26".into(),
+            "-profile:v".into(),
+            "high".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-maxrate".into(),
+            "4000k".into(),
+            "-bufsize".into(),
+            "8000k".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+            "-progress".into(),
+            "pipe:1".into(),
+            "-nostats".into(),
+        ];
+        if media.fps > MAX_FPS + 0.5 {
+            args.push("-r".into());
+            args.push("30".into());
         }
-    })?;
+        args.push(dst.to_string_lossy().into_owned());
 
-    if out.cancelled {
-        return Err("cancelled".to_string());
+        let mut last = -10.0_f64;
+        let handle = app.clone();
+        let out = crate::ffmpeg::run_streaming("ffmpeg", &args, Some(Arc::clone(&flag)), |line| {
+            let micros = line
+                .strip_prefix("out_time_us=")
+                .or_else(|| line.strip_prefix("out_time_ms="))
+                .and_then(|v| v.trim().parse::<f64>().ok());
+            if let Some(us) = micros {
+                let pct = us / 1_000_000.0 / total * 100.0;
+                if pct - last >= 1.5 {
+                    last = pct;
+                    emit(&handle, pct, "convert");
+                }
+            }
+        })?;
+
+        if out.cancelled {
+            return Err("cancelled".to_string());
+        }
+        if out.success() {
+            return Ok(());
+        }
+        failure = out
+            .stderr_tail
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("ffmpeg refused the file")
+            .to_string();
     }
-    if !out.success() {
-        let tail = out.stderr_tail.trim();
-        let detail = tail.lines().last().unwrap_or("ffmpeg refused the file");
-        return Err(format!("could not convert that video: {detail}"));
-    }
-    Ok(())
+
+    Err(format!("could not convert that video: {failure}"))
 }
 
 /// One still frame, so the menu has a preview and the video has a poster.
@@ -597,10 +642,12 @@ fn import_video(
     let bytes = std::fs::metadata(src).map(|m| m.len()).unwrap_or(0);
 
     // Everything a wallpaper needs is already in this file: H.264, small,
-    // short, light. Whether it can be reused depends only on the *container*,
-    // because WebView2 decides how to demux from the MIME type the path
-    // produces (`.mov` is `video/quicktime`, which it reports as unsupported).
-    let fits = media.codec == "h264"
+    // short, light, SDR. Whether it can be reused depends only on the
+    // *container*, because WebView2 decides how to demux from the MIME type the
+    // path produces (`.mov` is `video/quicktime`, which it reports as
+    // unsupported).
+    let fits = !is_hdr(&media.transfer)
+        && media.codec == "h264"
         && media.width <= MAX_VIDEO_W
         && media.height <= MAX_VIDEO_H
         && media.seconds > 0.0
@@ -642,6 +689,8 @@ fn import_video(
         codec: "h264".to_string(),
         fps: media.fps,
         seconds: media.seconds.min(MAX_SECONDS),
+        // We just wrote it ourselves, in BT.709.
+        transfer: "bt709".to_string(),
     });
 
     // Everything is ready; only now does the old background stop being used.
@@ -701,37 +750,50 @@ fn import_image(
         (name, media.width, media.height)
     } else {
         // Anything the webview cannot paint (or that is simply too big) becomes
-        // a JPEG at most 2560 px on the long edge — decoded once, cheap to keep.
-        let vf = if media.width >= media.height {
+        // a JPEG at most 3840 px on the long edge — decoded once, cheap to keep.
+        let plain = if media.width >= media.height {
             let w = MAX_IMAGE_EDGE.min(media.width).max(2);
             format!("scale={w}:-2")
         } else {
             let h = MAX_IMAGE_EDGE.min(media.height).max(2);
             format!("scale=-2:{h}")
         };
+        // HDR stills (AVIF and friends) get the same tone map a video would.
+        let mut filters = vec![plain.clone()];
+        if is_hdr(&media.transfer) {
+            filters.insert(0, format!("{TONEMAP},{plain}"));
+        }
+
         let target = dir.join("incoming.jpg");
-        let _ = std::fs::remove_file(&target);
         let source = src.to_string_lossy().into_owned();
-        let out = crate::ffmpeg::run(
-            "ffmpeg",
-            &[
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
-                "-y",
-                "-i",
-                &source,
-                "-frames:v",
-                "1",
-                "-vf",
-                &vf,
-                "-q:v",
-                "3",
-                &target.to_string_lossy().into_owned(),
-            ],
-        )?;
-        if !out.success() || !target.is_file() {
+        let mut written = false;
+        for vf in filters {
+            let _ = std::fs::remove_file(&target);
+            let out = crate::ffmpeg::run(
+                "ffmpeg",
+                &[
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-nostdin",
+                    "-y",
+                    "-i",
+                    &source,
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    &vf,
+                    "-q:v",
+                    "3",
+                    &target.to_string_lossy().into_owned(),
+                ],
+            )?;
+            if out.success() && target.is_file() {
+                written = true;
+                break;
+            }
+        }
+        if !written {
             let _ = std::fs::remove_file(&target);
             return Err("that image could not be read".to_string());
         }
@@ -741,6 +803,7 @@ fn import_image(
             codec: "mjpeg".to_string(),
             fps: 0.0,
             seconds: 0.0,
+            transfer: "bt709".to_string(),
         });
         let name = unique_name("current", "jpg");
         std::fs::rename(&target, dir.join(&name))
