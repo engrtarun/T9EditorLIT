@@ -199,8 +199,8 @@
     }
   }
 
-  async function sweepTrash() {
-    if (!dbPath) return;
+  async function sweepTrash(): Promise<number> {
+    if (!dbPath) return 0;
     try {
       const removed = await purgeExpiredTrash(dbPath, settings.trashRetentionDays);
       if (removed > 0)
@@ -208,8 +208,10 @@
           'info',
           `${removed} purana trash record auto-delete ho gaya — video files safe hain.`
         );
+      return removed;
     } catch {
       /* purge is best-effort; never block the bin view */
+      return 0;
     }
   }
 
@@ -269,8 +271,10 @@
   // runs on launch, so items that expire mid-session disappear without a restart.
   $effect(() => {
     const iv = setInterval(() => {
-      void sweepTrash().then(() => {
-        if (app.section === 'trash') void loadBin();
+      void sweepTrash().then((removed) => {
+        // Only re-read the bin when something was actually purged — in browser
+        // dev mode the sweep no-ops, and re-loading must not resurrect dummy rows.
+        if (removed > 0 && app.section === 'trash') void loadBin();
       });
     }, 60_000);
     return () => clearInterval(iv);
