@@ -588,10 +588,11 @@ RAM already. The full decision record lives in
 
 What this means for any agent:
 
-1. **The pipeline lives in CI.** The `docker` lane in
-   `.github/workflows/ci.yml` is the only sanctioned execution: hadolint
-   strict (`go/.hadolint.yaml`), image build, compose config validation and
-   a `-version` smoke run. Nothing is pushed anywhere.
+1. **The pipeline lives in CI.** The `docker` job in
+   `.github/workflows/sarkari-artifact.yml` is the only sanctioned
+   execution: hadolint strict (`go/.hadolint.yaml`), image build, compose
+   config validation and a `-version` smoke run. Nothing is pushed
+   anywhere.
 2. **Secrets never enter the image.** `go/.dockerignore` bans `.env`; the
    compose file loads it at runtime only (`required: false` so CI can
    validate without credentials).

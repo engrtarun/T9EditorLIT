@@ -32,13 +32,13 @@ get it from the installer the sarkari pipeline deploys. Docker helps
 
 ## 2. What exists (and where)
 
-| File                       | Role                                                                              |
-| :------------------------- | :-------------------------------------------------------------------------------- |
-| `go/Dockerfile`            | 2-stage build (`golang:1.23-alpine` → `alpine:3.20`), non-root, healthcheck       |
-| `go/.dockerignore`         | keeps `.env`, sessions, git metadata **out of the build context**                 |
-| `go/.hadolint.yaml`        | strict lint config; `error` threshold, every ignore has a reason                  |
-| `go/compose.yaml`          | remote-run recipe: loopback-only port, runtime `env_file`, session volume, limits |
-| `.github/workflows/ci.yml` | the `docker` job — **the only sanctioned docker execution in the repo**           |
+| File                                     | Role                                                                                                                         |
+| :--------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------- |
+| `go/Dockerfile`                          | 2-stage build (`golang:1.23-alpine` → `alpine:3.20`), non-root, healthcheck                                                  |
+| `go/.dockerignore`                       | keeps `.env`, sessions, git metadata **out of the build context**                                                            |
+| `go/.hadolint.yaml`                      | strict lint config; `error` threshold, every ignore has a reason                                                             |
+| `go/compose.yaml`                        | remote-run recipe: loopback-only port, runtime `env_file`, session volume, limits                                            |
+| `.github/workflows/sarkari-artifact.yml` | the `docker` job - **the only sanctioned docker execution in the repo** (runs beside the artifact job on every push to main) |
 
 CI deliberately does **not** use Docker for compiling the Go daemon
 (`go-build` job: plain `GOOS/GOARCH` cross-compilation, CGO off — the
@@ -46,7 +46,10 @@ Dockerfile's own history notes QEMU made that path slower).
 
 ## 3. The CI job (lint → build → compose-validate → smoke)
 
-Runs on GitHub's runner **only** when `go/**` or `ci.yml` changes:
+Runs on the ubuntu runner **on every push to main** (this is the workflow
+every push already runs), beside the Windows artifact job - so a red lint
+can never block the artifact's publication, and the artifact job never
+touches docker:
 
 1. **hadolint, strict** — `go/.hadolint.yaml`; a red lint fails the lane and
    the `gate` job passes that red on to branch protection.

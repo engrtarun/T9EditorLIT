@@ -277,3 +277,37 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 30
+
+  # ── Lane: the container image — CI's only docker touchpoint ───────────
+  # DOCKER IS CI-ONLY (AGENTS.md §13, docs/DOCKER_DECISION.md). This job is
+  # the ONLY sanctioned docker execution in the repository: no agent ever
+  # builds or runs the image on the 8 GB dev box, where Docker Desktop's
+  # WSL2 VM would eat the RAM the zero-RAM directive protects. It lives in
+  # THIS workflow (not ci.yml) because every push to main runs here.
+  #
+  # It runs beside the artifact job on its own lane, so a red lint can
+  # never block publishing (the deploy reads the release assets, not the
+  # run status) - and the artifact job has everything the image needs
+  # checked at the same time: the lint is strict, the build proves the
+  # file, the compose validation proves the deployment recipe, and the
+  # smoke run proves the binary answers. Nothing is pushed anywhere.
+  docker:
+    name: "Docker (CI-only: lint + build + smoke)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint the Dockerfile (strict)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: go/Dockerfile
+          config: go/.hadolint.yaml
+
+      - name: Build the image
+        run: docker build -t t9cloud:ci -f go/Dockerfile go/
+
+      - name: Validate compose (config only - never run here)
+        run: docker compose -f go/compose.yaml config --quiet
+
+      - name: Smoke - the binary answers its version
+        run: docker run --rm t9cloud:ci -version
