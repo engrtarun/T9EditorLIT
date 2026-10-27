@@ -242,6 +242,13 @@
     for (const r of project.liveSuggestions) {
       ctx.fillRect(r.start * scale, 0, Math.max(1, (r.end - r.start) * scale), MINIMAP_H);
     }
+    // Text-level suggestions get their own colour: a fumble or a retake is a
+    // different kind of evidence from a silent gap, and the user must be able
+    // to tell which is which before pressing Apply.
+    ctx.fillStyle = 'rgba(245, 158, 11, 0.85)';
+    for (const s of project.liveQualitySuggestions) {
+      ctx.fillRect(s.startSec * scale, 0, Math.max(1, (s.endSec - s.startSec) * scale), MINIMAP_H);
+    }
     ctx.fillStyle = 'rgba(229, 72, 77, 0.75)';
     for (const l of project.lines) {
       if (l.keep === 'keep') continue;
@@ -259,6 +266,7 @@
     void offsets;
     void project.splitMarkPositions;
     void project.suggestions; // green preview repaints the moment it changes
+    void project.qualitySuggestions; // and so does the amber one
     void project.durationSec; // and when the loaded source length changes
     void LANES_H; // lane heights are drag-resizable — redraw on resize
     drawWave();
@@ -416,19 +424,28 @@
     }
   }
 
-  /** Clipchamp's "AI suggestions" — detect long silences and stage them as a
-   *  GREEN preview on the timeline. Nothing is cut until the user presses
-   *  Apply beside the legend: a suggestion must be SEEN before it can take
-   *  clips away. */
+  /** Clipchamp's "AI suggestions" — find long silences **and** the transcript
+   *  lines that are a fumble or a second take, and stage both as a preview.
+   *  Nothing is cut until the user presses Apply beside the legend: a
+   *  suggestion must be SEEN before it can take clips away.
+   *
+   *  The waveform alone is not enough — an `umm` false start or a retake has
+   *  no silence in it at all, so `suggestQuality()` reads the words too. */
   async function autoSuggest() {
     if (busy) return;
     busy = true;
-    toast.push('info', 'AI: scanning for silences…');
+    toast.push('info', 'AI: scanning silences + transcript…');
     try {
-      const n = await project.suggestSilences(3.0);
+      const silences = await project.suggestSilences(3.0);
+      const lines = project.suggestQuality();
+      const parts: string[] = [];
+      if (silences) parts.push(`${silences} silence`);
+      if (lines) parts.push(`${lines} fumble/repeat`);
       toast.push(
         'info',
-        n ? `${n} silence suggestions — green bands timeline pe` : 'AI: koi 3s+ silence nahi mili'
+        parts.length
+          ? `${parts.join(' + ')} suggestions — green silence, amber lines`
+          : 'AI: na 3s+ silence mili, na koi fumble/repeat line'
       );
     } catch (e) {
       toast.push('warn', `AI scan failed: ${e instanceof Error ? e.message : e}`);
@@ -436,18 +453,24 @@
     busy = false;
   }
 
-  /** The green preview becomes real cuts. */
+  /** The staged preview becomes real cuts. */
   function applySuggestions() {
-    const n = project.applySuggestions();
+    const silences = project.applySuggestions();
+    const lines = project.applyQualitySuggestions();
+    const n = silences + lines;
+    const what: string[] = [];
+    if (silences) what.push(`${silences} silence`);
+    if (lines) what.push(`${lines} fumble/repeat`);
     toast.push(
       n ? 'cut' : 'info',
-      n ? `✕ ${n} lines cut (silence ≥ 3s)` : 'Koi suggestion apply nahi hui'
+      n ? `✕ ${what.join(' + ')} cut` : 'Koi suggestion apply nahi hui'
     );
   }
 
-  /** Throw the green preview away without touching anything. */
+  /** Throw the staged preview away without touching anything. */
   function rejectSuggestions() {
     project.clearSuggestions();
+    project.clearQualitySuggestions();
     toast.push('info', 'Suggestions hata di — kuch cut nahi hua');
   }
 
@@ -726,7 +749,7 @@
         onclick={autoSuggest}
         disabled={busy}
         class="grid h-7 w-7 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt disabled:opacity-40"
-        title="AI suggestions — scan silences ≥ 3s, green preview dikhata hai; Apply se cut hote hain"
+        title="AI suggestions — silences ≥ 3s + fumble/repeat lines; green/amber preview, Apply se cut hote hain"
       >
         <svg
           width="15"
@@ -862,19 +885,34 @@
     </div>
 
     <div class="ml-auto flex items-center gap-1.5">
-      {#if project.liveSuggestions.length}
+      {#if project.liveSuggestions.length || project.liveQualitySuggestions.length}
         <div
-          class="flex items-center gap-1 rounded-md border border-nc-green/40 bg-nc-green/10 px-1.5 py-0.5"
+          class="flex items-center gap-1 rounded-md border px-1.5 py-0.5
+                 {project.liveQualitySuggestions.length && !project.liveSuggestions.length
+            ? 'border-amber-400/40 bg-amber-400/10'
+            : 'border-nc-green/40 bg-nc-green/10'}"
+          title={project.liveQualitySuggestions
+            .slice(0, 4)
+            .map((s) => s.reason)
+            .join(' · ')}
         >
-          <span class="text-[9px] font-medium text-nc-green">
-            AI: {project.liveSuggestions.length} suggestion{project.liveSuggestions.length === 1
-              ? ''
-              : 's'}
-          </span>
+          {#if project.liveSuggestions.length}
+            <span class="text-[9px] font-medium text-nc-green">
+              {project.liveSuggestions.length} silence
+            </span>
+          {/if}
+          {#if project.liveQualitySuggestions.length}
+            <span class="text-[9px] font-medium text-amber-300">
+              {project.liveQualitySuggestions.length} line{project.liveQualitySuggestions
+                .length === 1
+                ? ''
+                : 's'}
+            </span>
+          {/if}
           <button
             onclick={applySuggestions}
-            class="rounded bg-nc-green/20 px-1.5 py-0.5 text-[9px] font-bold text-nc-green transition-colors hover:bg-nc-green/30"
-            title="Apply — green spans ban jaate hain red cuts"
+            class="rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-bold text-nc-txt transition-colors hover:bg-white/20"
+            title="Apply — staged spans ban jaate hain red cuts"
           >
             Apply
           </button>
@@ -899,6 +937,9 @@
       </span>
       <span class="flex items-center gap-1 text-[9px] text-nc-mut">
         <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-green"></i>suggest
+      </span>
+      <span class="flex items-center gap-1 text-[9px] text-nc-mut">
+        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-amber-400"></i>AI fumble
       </span>
       <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
       <button

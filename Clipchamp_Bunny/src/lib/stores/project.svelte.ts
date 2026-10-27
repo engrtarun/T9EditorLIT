@@ -24,6 +24,7 @@ import {
   timelineDuration as timelineDurationOf
 } from '../segments';
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
+import { detectQualitySuggestions, type QualitySuggestion } from '../suggestions';
 import { media } from './media.svelte';
 import { player } from './player.svelte';
 import { runAnalysis, runCorrection, runTranscription, toLineFlag } from '../pipeline';
@@ -868,6 +869,51 @@ class ProjectStore {
     return this.cutSilences(ranges);
   }
 
+  /**
+   * The other half of the same product idea: a fumble or a second take leaves
+   * no silence behind, so the waveform cannot see it. `suggestions.ts` reads
+   * the transcript and stages the lines it believes are a mistake.
+   *
+   * Kept apart from `suggestions` (green silence spans) on purpose: the two
+   * are different evidence, the UI paints them differently, and a staged line
+   * is applied by **id**, never by overlap - a neighbour that merely touches
+   * the edge must not be swept in.
+   */
+  qualitySuggestions = $state<QualitySuggestion[]>([]);
+
+  /** Staged lines that are still worth cutting - applying or restoring a line
+   *  drops it out of the preview instead of leaving a stale band behind. */
+  liveQualitySuggestions = $derived(
+    this.qualitySuggestions.filter((s) => {
+      const line = this.lines.find((l) => l.id === s.lineId);
+      return !!line && line.keep === 'keep';
+    })
+  );
+
+  /** Scan only — stage the amber preview. Nothing is cut here. */
+  suggestQuality(): number {
+    const found = detectQualitySuggestions(this.lines);
+    this.qualitySuggestions = found;
+    return found.length;
+  }
+
+  /** Turn the amber preview into cuts, one transcript line at a time. */
+  applyQualitySuggestions(): number {
+    const ids = new Set(this.liveQualitySuggestions.map((s) => s.lineId));
+    this.qualitySuggestions = [];
+    if (!ids.size) return 0;
+    this.commit();
+    this.lines = this.lines.map((l) =>
+      ids.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l
+    );
+    return ids.size;
+  }
+
+  /** Reject the amber preview — the transcript keeps every word. */
+  clearQualitySuggestions() {
+    this.qualitySuggestions = [];
+  }
+
   /** Persist the current transcript + cut decisions to SQLite. */
   async persist() {
     const path = this.sourcePath;
@@ -1200,7 +1246,9 @@ class ProjectStore {
     if (editSec < this.timelineDuration) {
       const raw = this.sourceAt(Math.max(0, editSec));
       if (raw == null) return null;
-      const inCut = this.cutRanges.some(([a, b]) => raw >= a && raw < b);
+      // Applied mode snaps a click on a cut block to its edge; raw preview
+      // lands *inside* the block, because watching cut material is the point.
+      const inCut = !player.previewRaw && this.cutRanges.some(([a, b]) => raw >= a && raw < b);
       return { clip: null, localSec: inCut ? this.nearestKeptSource(raw) : raw };
     }
     for (const r of this.extrasLayout) {
@@ -1431,8 +1479,12 @@ class ProjectStore {
   /**
    * Phantom Cut â€” returns the corrected playback time if `sec` falls inside a cut range.
    * The <video> loop calls this on every timeupdate; nothing is re-encoded here.
+   *
+   * Raw preview (`player.previewRaw`) turns the skip off: cut material plays
+   * exactly as recorded, so the user can watch what an edit *removed*.
    */
   skipCuts = (sec: number): number => {
+    if (player.previewRaw) return sec;
     for (const [a, b] of this.cutRanges) {
       if (sec >= a && sec < b) return b;
     }
@@ -1450,6 +1502,7 @@ class ProjectStore {
   skipBy(fromSec: number, delta: number): number {
     const end = this.durationSec || Infinity;
     let t = Math.min(Math.max(fromSec + delta, 0), end);
+    if (player.previewRaw) return Math.max(t, 0);
     for (const [a, b] of this.cutRanges) {
       if (t >= a && t < b) {
         t = delta >= 0 ? b : a;
