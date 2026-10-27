@@ -20,8 +20,7 @@ import {
   moveInOrder,
   orderLines,
   orderSegments,
-  sourceAt,
-  timelineDuration as timelineDurationOf
+  sourceAt
 } from '../segments';
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 import { media } from './media.svelte';
@@ -105,43 +104,6 @@ function applySplitText(left: TranscriptLine, right: TranscriptLine, at: number)
     .trim();
   left.words = head;
   right.words = tail;
-}
-
-/**
- * Read cut spans back out of JSON (localStorage / an undo snapshot).
- *
- * `JSON.parse` hands back `number[][]`, not tuples, and a corrupted entry
- * must not be able to poison the timeline — anything that is not a real
- * forward range is dropped.
- */
-function toCutSpans(value: unknown): Array<[number, number]> {
-  if (!Array.isArray(value)) return [];
-  const out: Array<[number, number]> = [];
-  for (const raw of value) {
-    if (!Array.isArray(raw) || raw.length < 2) continue;
-    const a = Number(raw[0]);
-    const b = Number(raw[1]);
-    if (Number.isFinite(a) && Number.isFinite(b) && b > a) out.push([a, b]);
-  }
-  return out;
-}
-
-/** Take `[a, b]` out of a span list, keeping the parts either side. */
-function subtractSpan(
-  spans: ReadonlyArray<readonly [number, number]>,
-  a: number,
-  b: number
-): Array<[number, number]> {
-  const out: Array<[number, number]> = [];
-  for (const [x, y] of spans) {
-    if (y <= a || x >= b) {
-      out.push([x, y]);
-      continue;
-    }
-    if (x < a) out.push([x, a]);
-    if (y > b) out.push([b, y]);
-  }
-  return out;
 }
 
 /**
