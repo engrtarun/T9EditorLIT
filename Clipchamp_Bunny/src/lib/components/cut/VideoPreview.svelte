@@ -125,6 +125,19 @@
   function advance() {
     const next = project.nextClipId();
     if (!next) {
+      // Loop: rewind to the start of whatever just finished and keep
+      // rolling. The check can lose the race to `ended` (the last
+      // timeupdate may never land between mainEnd and duration), so if the
+      // element already stopped itself, restart playback explicitly.
+      // Image clips tick on an interval, so they stop at the end as before.
+      if (player.loop && (!activeClip || activeClip.kind === 'video')) {
+        player.seek(activeClip ? activeClip.inSec : (project.orderedSegments[0]?.startSec ?? 0));
+        const v = videoEl;
+        if (v && (v.paused || v.ended)) {
+          void v.play().catch(() => (player.playing = false));
+        }
+        return;
+      }
       if (activeClip) player.currentTime = activeClip.outSec;
       resume = false;
       switching = false;

@@ -257,34 +257,34 @@
   }
 </script>
 
-<aside
-  class="relative flex min-h-0 shrink-0 flex-col
-         {collapsed ? 'w-[44px]' : 'border-r border-nc-line bg-nc-panel'}"
-  style={collapsed ? undefined : `width:${layout.mediaWidth}px`}
->
-  <div class="flex h-10 shrink-0 items-center justify-between px-2.5">
-    {#if !collapsed}
+<!-- Closed = GONE: the panel leaves the DOM entirely (the old build kept a
+     44px strip alive after closing). The left rail's "My media" entry is
+     what opens it again — no in-panel reopen button needed. -->
+{#if !collapsed}
+  <aside
+    class="relative flex min-h-0 shrink-0 flex-col border-r border-nc-line bg-nc-panel"
+    style={`width:${layout.mediaWidth}px`}
+  >
+    <div class="flex h-10 shrink-0 items-center justify-between px-2.5">
       <h2 class="text-[13px] font-semibold">My media</h2>
-    {/if}
-    <button
-      onclick={() => layout.setSourcePanelCollapsed(!layout.sourcePanelCollapsed)}
-      class="grid h-7 w-7 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-      title={collapsed ? 'Expand panel (Ctrl+Alt+2)' : 'Collapse panel (Ctrl+Alt+2)'}
-    >
-      <svg
-        width="15"
-        height="15"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.7"
+      <button
+        onclick={() => layout.setSourcePanelCollapsed(!layout.sourcePanelCollapsed)}
+        class="grid h-7 w-7 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+        title={collapsed ? 'Expand panel (Ctrl+Alt+2)' : 'Collapse panel (Ctrl+Alt+2)'}
       >
-        <rect x="3" y="5" width="18" height="14" rx="2" /><path d="M9 5v14" />
-      </svg>
-    </button>
-  </div>
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.7"
+        >
+          <rect x="3" y="5" width="18" height="14" rx="2" /><path d="M9 5v14" />
+        </svg>
+      </button>
+    </div>
 
-  {#if !collapsed}
     <!-- Import split button: main = file manager, caret = the three sources -->
     <div class="px-2.5 pb-2.5">
       <div class="flex">
@@ -510,9 +510,7 @@
         </ul>
       {/if}
     </div>
-  {/if}
 
-  {#if !collapsed}
     <!-- right-edge separator — drag to widen, double-click resets to 248px -->
     <div
       role="separator"
@@ -523,8 +521,8 @@
       ondblclick={() => layout.resetMediaWidth()}
       class="absolute inset-y-0 right-0 w-[3px] cursor-col-resize bg-nc-line transition-colors hover:bg-nc-brand/60"
     ></div>
-  {/if}
-</aside>
+  </aside>
+{/if}
 
 {#if linkOpen}
   <!-- link import dialog -->

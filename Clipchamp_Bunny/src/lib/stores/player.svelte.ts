@@ -5,6 +5,10 @@ class PlayerStore {
   zoom = $state(35);
   /** Magnet on the timeline — snaps the playhead to line boundaries. */
   snap = $state(true);
+  /** Preview loop — when the project runs out of media it rewinds to its
+   *  first kept second and keeps playing, instead of stopping. Nothing is
+   *  re-encoded; the toggle lives on the preview bar's Size pill. */
+  loop = $state(false);
 
   /** Registered <video> element. Held weakly-ish: cleared on mode teardown. */
   el: HTMLVideoElement | null = null;
@@ -49,6 +53,10 @@ class PlayerStore {
       if (this.playing) void this.el.play().catch(() => (this.playing = false));
       else this.el.pause();
     }
+  }
+
+  toggleLoop() {
+    this.loop = !this.loop;
   }
 
   nudge(deltaSec: number) {
