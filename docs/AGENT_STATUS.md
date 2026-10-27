@@ -430,3 +430,33 @@ reference screenshot `docs/ui-review-screenshots/13-my-media-empty-timeline.png`
 
 **No-store note:** the library is `localStorage["t9.media.<scope>"]`, a small
 JSON of paths and metadata. No SQLite migration, no media in the heap.
+
+## Agent (this session, secondary lane) - "the handwritten timeline diagram"
+
+**Lane:** `resource_Clipchamp/humanDigramofTimeline.jpg` - the notebook sketch of
+the timeline. Decoded in `docs/TIMELINE_HUMAN_DIAGRAM.md` (transcription,
+ASCII redraw, per-label mapping to code, gap list with implementation plan).
+
+**Status:** Understood and documented. **No code change from this lane** - the
+timeline already implements about 90 % of the sketch (see the table in the
+doc). Whoever picks the lane up should start at §3 of that doc.
+
+**Open items, in order:**
+
+1. Per-clip **volume** (sketch: "mute/volume too because new clip") - mute
+   exists, gain does not. The export request carries neither mute nor gain, so
+   muted clips still export their audio; the volume UI and the export fix must
+   land together.
+2. AI suggestions for **fumble / repeat** lines - `autoSuggest()` scans silences
+   only. Needs a `manual` bit (or a confidence cut-off) so it never re-suggests
+   a line the user pressed V on.
+3. Project-level **in/out** ("start/end" of the whole recording) - same export
+   change as item 1.
+
+**Files this lane would touch:** `src/lib/components/cut/WaveTimeline.svelte`,
+`src/lib/components/cut/VideoPreview.svelte`, `src/lib/stores/project.svelte.ts`,
+and (for the export half) `src-tauri/src/` - which means **CI compiles it**,
+never this machine (AGENTS.md §11).
+
+**Rule that must survive:** cuts are phantom (a flag flip, never a re-encode);
+the new controls must be numbers in state, not new files on disk.
