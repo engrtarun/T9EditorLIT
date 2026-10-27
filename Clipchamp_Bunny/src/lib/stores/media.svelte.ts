@@ -1,15 +1,22 @@
 import type { MediaAsset } from '../types';
 
 /**
- * The media library.
+ * The media library — **one project's media**, not a global pile.
  *
  * Holds **paths and metadata only** — never the file bytes. The video itself
  * is streamed by a `<video>` element from a `file://` / `asset://` URL, and
  * the engine reads it through short-lived FFmpeg children.
  *
- * A file that arrives while a project is open becomes a **new project**: the
- * library keeps the old one so it can be reopened, but the new file is what
- * gets edited.
+ * Two rules keep it honest, and both were broken before:
+ *
+ *   1. **Scope.** A library belongs to the project that is open. Opening
+ *      another project switches the library with it, so the previous project's
+ *      media can never appear in "My media" of the new one. The list is a
+ *      short JSON of paths, so it survives a restart without SQLite and
+ *      without touching the heap (the video is still streamed on demand).
+ *   2. **No self-insertion.** Adding a file to the library never puts it on
+ *      the timeline. Only an explicit drag, or the tile's + button, does that
+ *      — exactly like Clipchamp (see `docs/MEDIA_LIBRARY_TIMELINE.md`).
  */
 export interface MediaEntry {
   asset: MediaAsset;
@@ -31,8 +38,139 @@ export interface MediaEntry {
   customThumb: string | null;
 }
 
+/** Where one project's library is remembered (paths + metadata, no bytes). */
+const STORE_PREFIX = 't9.media.';
+
+/**
+ * A project that has no source file yet (created from the panel, still being
+ * filled). Its library is real for the session and becomes the project's own
+ * library the moment the user drops a clip on the timeline.
+ */
+const DRAFT_PREFIX = 'draft:';
+
+/** The subset written to localStorage. `phase` is always `ready` on disk. */
+interface StoredEntry {
+  asset: MediaAsset;
+  path: string | null;
+  durationLabel: string;
+  customThumb: string | null;
+}
+
+/**
+ * A blob URL dies with the page, and a half-probed entry has nothing to show.
+ * Neither is worth remembering.
+ */
+function storable(e: MediaEntry): boolean {
+  if (e.phase !== 'ready') return false;
+  if (e.path) return true;
+  return !!e.asset.url && !e.asset.url.startsWith('blob:');
+}
+
 class MediaStore {
   entries = $state<MediaEntry[]>([]);
+
+  /** Which project this library belongs to. `null` = no project open. */
+  private scope = $state<string | null>(null);
+
+  /** True while this library belongs to a project that has no source yet. */
+  get isDraft(): boolean {
+    return !!this.scope?.startsWith(DRAFT_PREFIX);
+  }
+
+  get hasScope(): boolean {
+    return this.scope !== null;
+  }
+
+  /**
+   * Show the library that belongs to `key`.
+   *
+   * The outgoing library is written to disk first, so switching projects never
+   * loses an import; the incoming one is read back. `carryDraft` is the one
+   * exception: a draft that just gained its source keeps the very entries the
+   * user imported into it (that is the same project, now with a file).
+   */
+  enterScope(key: string | null, opts: { carryDraft?: boolean } = {}) {
+    if (this.scope === key) return;
+    const previous = this.scope;
+    const carrying =
+      !!opts.carryDraft && this.isDraft && key !== null && !key.startsWith(DRAFT_PREFIX);
+    this.persist();
+    // A draft is never reopened: its media either moves into the project that
+    // just gained its source, or it is gone. Never leave the key behind.
+    if (previous?.startsWith(DRAFT_PREFIX)) this.dropKey(previous);
+    this.scope = key;
+    if (carrying) this.persist();
+    else this.entries = key ? this.restore(key) : [];
+  }
+
+  private dropKey(key: string) {
+    try {
+      localStorage.removeItem(STORE_PREFIX + key);
+    } catch {
+      /* private mode — nothing was stored anyway */
+    }
+  }
+
+  /** A brand-new project: an empty library of its own. */
+  startDraft(): string {
+    const key = `${DRAFT_PREFIX}${crypto.randomUUID()}`;
+    this.enterScope(key);
+    return key;
+  }
+
+  private persist() {
+    const key = this.scope;
+    if (!key) return;
+    try {
+      const data: StoredEntry[] = this.entries.filter(storable).map((e) => ({
+        asset: e.asset,
+        path: e.path,
+        durationLabel: e.durationLabel,
+        customThumb: e.customThumb
+      }));
+      if (!data.length) localStorage.removeItem(STORE_PREFIX + key);
+      else localStorage.setItem(STORE_PREFIX + key, JSON.stringify(data));
+    } catch {
+      /* private mode / quota — the library still works for this session */
+    }
+  }
+
+  private restore(key: string): MediaEntry[] {
+    try {
+      const raw = localStorage.getItem(STORE_PREFIX + key);
+      if (!raw) return [];
+      const data = JSON.parse(raw) as StoredEntry[];
+      if (!Array.isArray(data)) return [];
+      return data
+        .filter(
+          (e): e is StoredEntry =>
+            !!e &&
+            !!e.asset &&
+            typeof e.asset.id === 'string' &&
+            typeof e.asset.name === 'string' &&
+            typeof e.asset.durationSecs === 'number'
+        )
+        .map((e) => ({
+          asset: { ...e.asset },
+          path: typeof e.path === 'string' ? e.path : null,
+          phase: 'ready' as const,
+          progress: 1,
+          // Recomputed by the project store: only its own source is "in use".
+          inUse: false,
+          durationLabel: typeof e.durationLabel === 'string' ? e.durationLabel : '0:00',
+          customThumb: typeof e.customThumb === 'string' ? e.customThumb : null
+        }));
+    } catch {
+      /* corrupt entry — start clean rather than block the project */
+      return [];
+    }
+  }
+
+  /** Every mutation goes through here, so the disk copy can never trail. */
+  private set(next: MediaEntry[]) {
+    this.entries = next;
+    this.persist();
+  }
 
   /**
    * Register a file that is already on disk.
@@ -65,7 +203,7 @@ class MediaStore {
       durationLabel: '…',
       customThumb: null
     };
-    this.entries = [...this.entries, entry];
+    this.set([...this.entries, entry]);
     return entry;
   }
 
@@ -93,7 +231,7 @@ class MediaStore {
       durationLabel: '…',
       customThumb: null
     };
-    this.entries = [...this.entries, entry];
+    this.set([...this.entries, entry]);
     this.simulate(entry.asset.id);
     return entry;
   }
@@ -121,7 +259,7 @@ class MediaStore {
       durationLabel: '4:34',
       customThumb: null
     };
-    this.entries = [...this.entries, entry];
+    this.set([...this.entries, entry]);
     return entry;
   }
 
@@ -130,26 +268,30 @@ class MediaStore {
     let p = 0;
     const tick = () => {
       p = Math.min(1, p + 0.08 + Math.random() * 0.12);
-      this.entries = this.entries.map((e) =>
-        e.asset.id === id ? { ...e, progress: p, phase: p >= 1 ? 'ready' : 'loading' } : e
+      this.set(
+        this.entries.map((e) =>
+          e.asset.id === id ? { ...e, progress: p, phase: p >= 1 ? 'ready' : 'loading' } : e
+        )
       );
       if (p < 1) setTimeout(tick, 120);
       else {
-        this.entries = this.entries.map((e) => {
-          if (e.asset.id !== id) return e;
-          // A picture already carries its own 5 s clip length; a video has
-          // nothing yet in browser mode, so the mock fills in a real duration.
-          const asset =
-            e.asset.durationSecs > 0
-              ? e.asset
-              : { ...e.asset, durationSecs: 274, width: 1920, height: 1080, fps: 60 };
-          const secs = Math.floor(asset.durationSecs);
-          return {
-            ...e,
-            asset,
-            durationLabel: `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
-          };
-        });
+        this.set(
+          this.entries.map((e) => {
+            if (e.asset.id !== id) return e;
+            // A picture already carries its own 5 s clip length; a video has
+            // nothing yet in browser mode, so the mock fills in a real duration.
+            const asset =
+              e.asset.durationSecs > 0
+                ? e.asset
+                : { ...e.asset, durationSecs: 274, width: 1920, height: 1080, fps: 60 };
+            const secs = Math.floor(asset.durationSecs);
+            return {
+              ...e,
+              asset,
+              durationLabel: `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
+            };
+          })
+        );
       }
     };
     setTimeout(tick, 200);
@@ -172,35 +314,61 @@ class MediaStore {
       durationLabel: `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`,
       customThumb: null
     };
-    this.entries = [...this.entries, entry];
+    this.set([...this.entries, entry]);
     return entry;
   }
 
   /** Update an entry after the real engine has probed it. */
   probed(id: string, patch: Partial<MediaEntry['asset']> & { durationLabel?: string }) {
-    this.entries = this.entries.map((e) => {
-      if (e.asset.id !== id) return e;
-      const { durationLabel, ...asset } = patch;
-      return {
-        ...e,
-        phase: 'ready',
-        progress: 1,
-        durationLabel: durationLabel ?? e.durationLabel,
-        asset: { ...e.asset, ...asset }
-      };
-    });
+    this.set(
+      this.entries.map((e) => {
+        if (e.asset.id !== id) return e;
+        const { durationLabel, ...asset } = patch;
+        return {
+          ...e,
+          phase: 'ready',
+          progress: 1,
+          durationLabel: durationLabel ?? e.durationLabel,
+          asset: { ...e.asset, ...asset }
+        };
+      })
+    );
   }
 
   markInUse(id: string) {
-    this.entries = this.entries.map((e) => (e.asset.id === id ? { ...e, inUse: true } : e));
+    this.set(this.entries.map((e) => (e.asset.id === id ? { ...e, inUse: true } : e)));
+  }
+
+  /**
+   * Exactly one tile is "the current project" — in one write, not one per
+   * entry. Called when a project's source is known.
+   */
+  focusSource(id: string) {
+    this.set(this.entries.map((e) => ({ ...e, inUse: e.asset.id === id })));
   }
 
   markUnused(id: string) {
-    this.entries = this.entries.map((e) => (e.asset.id === id ? { ...e, inUse: false } : e));
+    this.set(this.entries.map((e) => (e.asset.id === id ? { ...e, inUse: false } : e)));
+  }
+
+  /** A probe that could not read the file: keep the tile, say so honestly. */
+  failed(id: string) {
+    this.set(
+      this.entries.map((e) =>
+        e.asset.id === id ? { ...e, phase: 'failed' as const, progress: 0 } : e
+      )
+    );
+  }
+
+  /** Rename the tile without mutating a `$state` entry in place. */
+  renamed(id: string, name: string) {
+    this.set(
+      this.entries.map((e) => (e.asset.id === id ? { ...e, asset: { ...e.asset, name } } : e))
+    );
   }
 
   remove(id: string) {
-    this.entries = this.entries.filter((e) => e.asset.id !== id);
+    this.set(this.entries.filter((e) => e.asset.id !== id));
   }
 
   /**
@@ -211,7 +379,7 @@ class MediaStore {
    * library that points at random user files breaks the moment they do.
    */
   setCustomThumb(id: string, path: string | null) {
-    this.entries = this.entries.map((e) => (e.asset.id === id ? { ...e, customThumb: path } : e));
+    this.set(this.entries.map((e) => (e.asset.id === id ? { ...e, customThumb: path } : e)));
   }
 
   get(id: string) {

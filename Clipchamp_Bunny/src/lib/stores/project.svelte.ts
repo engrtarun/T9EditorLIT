@@ -266,6 +266,10 @@ class ProjectStore {
       loadWaveform(),
       loadThumbnails()
     ]);
+    // The library belongs to the project that is open. The browser's baked
+    // recording is this project, so its URL is the scope: no other project's
+    // media can be shown here.
+    media.enterScope(baked.url);
     this.media = baked;
     this.name = baked.name.replace(/\.[^.]+$/, '');
     // The panel's chosen name / shape win over the demo's own, so the browser
@@ -304,8 +308,9 @@ class ProjectStore {
           Math.floor(baked.durationSecs % 60)
         ).padStart(2, '0')}`
       });
-      media.markInUse(entry.asset.id);
     }
+    const bakedEntry = media.byPath(baked.url);
+    if (bakedEntry) media.focusSource(bakedEntry.asset.id);
     this.restoreClips();
     this.restoreUiState();
     this.ready = true;
@@ -349,6 +354,10 @@ class ProjectStore {
     this.loadError = null;
     this.ready = false;
     this.name = '';
+    // A new project starts with an empty **My media**: the previous project's
+    // imports belong to the previous project. This is the whole reason the
+    // panel used to show "old media" after New project.
+    media.startDraft();
     this.applyNewProject(name, frame);
   }
 
@@ -390,7 +399,7 @@ class ProjectStore {
    * import, false for the silent resume at start-up (which would otherwise
    * stamp "Edited just now" on a video the user never touched this session).
    */
-  async loadFromBackend(path: string, opts: { touch?: boolean } = {}) {
+  async loadFromBackend(path: string, opts: { touch?: boolean; carryDraft?: boolean } = {}) {
     const touch = opts.touch !== false;
 
     // Whatever the previous project still has pending must be written under
@@ -402,6 +411,13 @@ class ProjectStore {
     // One spelling for the file, so the SQLite key is the same whatever the
     // working directory was when the app was launched.
     const canonical = await canonicalSourcePath(path).catch(() => path);
+    // Switch the library with the project *before* the (slow) probe: otherwise
+    // the editor would show the previous project's media while a 5 GB file is
+    // being read, and could leave it there if the probe fails.
+    // `carryDraft` is for the case where a draft (new project, no source yet)
+    // just got this file dropped on it: the imports in it belong to this
+    // project, so they are kept.
+    media.enterScope(canonical, { carryDraft: opts.carryDraft });
     const info = await probeMedia(canonical);
     this.media = {
       id: crypto.randomUUID(),
@@ -465,6 +481,8 @@ class ProjectStore {
         Math.floor(info.durationSecs % 60)
       ).padStart(2, '0')}`
     });
+    // One project, one "current" tile — restored entries start unused.
+    media.focusSource(entry.asset.id);
 
     const [wave, thumbs] = await Promise.all([
       extractWaveform(canonical).catch(() => null),
@@ -971,7 +989,16 @@ class ProjectStore {
    *
    * The maths lives in `lib/segments.ts` (pure, unit-tested).
    */
-  segments = $derived(buildSegments(this.lines));
+  segments = $derived.by(() => {
+    const segs = buildSegments(this.lines);
+    if (segs.length) return segs;
+    // No transcript yet: the source is still the project's video, so the
+    // timeline shows it as one full-length clip instead of an empty lane over
+    // a ruler. (Once a line exists the transcript owns the lane again.)
+    if (this.lines.length || !this.media) return segs;
+    const dur = this.media.durationSecs;
+    return dur > 0 ? [{ id: 'seg-source', startSec: 0, endSec: dur, lines: [] }] : segs;
+  });
 
   /** Order of the segment ids, as the user arranged them on the timeline. */
   segmentOrder = $state<string[]>([]);
@@ -1111,7 +1138,39 @@ class ProjectStore {
   }
 
   /**
-   * Put a library asset on the timeline and return the clip it became.
+   * Put a library asset on the timeline.
+   *
+   * This is the **only** door media takes onto the timeline: a drag, or the
+   * tile's + button. Importing a file never calls this (see
+   * `docs/MEDIA_LIBRARY_TIMELINE.md`).
+   *
+   * The first clip in a project that has no video yet **becomes the project's
+   * source**, so the whole Cut pipeline (transcript, waveform, phantom cut)
+   * has something to work on. Every later one is appended after the cut.
+   */
+  async placeAsset(assetId: string): Promise<'source' | 'clip' | 'blocked'> {
+    const entry = media.get(assetId);
+    if (!entry || entry.phase === 'loading') return 'blocked';
+    if (isAudioOnly(entry.asset.name, entry.asset.url)) return 'blocked';
+
+    if (!this.media) {
+      try {
+        await this.openLibraryEntry(assetId);
+      } catch (e) {
+        this.loadError = e instanceof Error ? e.message : String(e);
+        return 'blocked';
+      }
+      return this.media ? 'source' : 'blocked';
+    }
+
+    const clip = this.addToTimeline(assetId);
+    if (!clip) return 'blocked';
+    this.activateClip(clip.id);
+    return 'clip';
+  }
+
+  /**
+   * Append a library asset to the timeline as an extra clip.
    *
    * Returns null when the asset cannot be a clip (still probing, audio-only,
    * or already the project's main source - adding that one twice would show
@@ -1285,7 +1344,10 @@ class ProjectStore {
     const e = media.get(id);
     if (!e) return;
     if (e.path) {
-      await this.loadFromBackend(e.path);
+      // `carryDraft`: when this entry is the first clip of a brand-new project,
+      // the project simply gains its source — the rest of the draft's library
+      // was imported for the same project and must stay.
+      await this.loadFromBackend(e.path, { carryDraft: true });
     } else if (e.asset.url) {
       // a browser blob â€” no engine, just the streamed file
       this.media = e.asset;
@@ -1293,21 +1355,23 @@ class ProjectStore {
     } else {
       return;
     }
-    for (const other of media.entries) media.markUnused(other.asset.id);
-    media.markInUse(id);
+    media.focusSource(id);
   }
 
   /**
    * Import one or more files from disk.
    *
-   * Clipchamp's rule: importing fills **My media**. It never replaces the
-   * project you are working on - an import while a project is open adds the
-   * files to the library, and the timeline changes only when the user drags
-   * one in (or presses its + button). Only when no project is open at all does
-   * the last imported file become the one being edited.
+   * Clipchamp's rule, and the fix for "video apne aap timeline par aa gayi":
+   * importing fills **My media** and does nothing else. It never replaces the
+   * project you are working on, never picks the source by itself and never
+   * puts a clip on the timeline — that only happens when the user drags one
+   * in (or presses its + button).
    */
   async importPaths(paths: string[]) {
     if (!paths.length) return;
+    // With no project open the import still needs a library of its own (a
+    // draft), or the files would land in whichever project was open last.
+    if (!this.media && !media.isDraft) media.startDraft();
     const fresh: Array<{ path: string; id: string }> = [];
     for (const p of paths) {
       const name = p.split(/[\\/]/).pop() ?? p;
@@ -1345,26 +1409,21 @@ class ProjectStore {
           durationLabel: `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
         });
       } catch (e) {
-        media.entries = media.entries.map((x) =>
-          x.asset.id === id ? { ...x, phase: 'failed' as const, progress: 0 } : x
-        );
+        media.failed(id);
         logAppEvent('error', 'import', `${path}: ${String(e)}`);
       }
     }
 
-    // No project open: the last file becomes the one being edited, which is
-    // what "open a file" expects from the dashboard.
-    if (!this.media) {
-      const last = fresh[fresh.length - 1];
-      if (last) await this.openLibraryEntry(last.id);
-    }
+    // Nothing else. The files are in My media; the timeline stays exactly as
+    // the user left it until they drag one in.
+    this.ready = true;
   }
 
   /** User-dropped files in the browser (no filesystem path). */
-  async importBlobs(files: File[]) {
-    if (!files.length) return;
-    const opened = !!this.media;
-    let first: MediaAsset | null = null;
+  async importBlobs(files: File[]): Promise<string | null> {
+    if (!files.length) return null;
+    if (!this.media && !media.isDraft) media.startDraft();
+    let firstId: string | null = null;
     for (const f of files) {
       const isImage = f.type.startsWith('image/');
       if (!f.type.startsWith('video/') && !f.type.startsWith('audio/') && !isImage) continue;
@@ -1375,21 +1434,12 @@ class ProjectStore {
         durationSecs: isImage ? 5 : 0,
         durationLabel: isImage ? '0:05' : '…'
       });
-      first ??= entry.asset;
+      firstId ??= entry.asset.id;
     }
-    // With a project open this is a library import, not a new project.
-    if (!opened && first) {
-      this.media = first;
-      this.name = first.name.replace(/\.[^.]+$/, '');
-      if (this.pendingName) {
-        this.name = this.pendingName;
-        this.pendingName = null;
-      }
-      this.frame = this.pendingFrame ?? this.frame;
-      this.pendingFrame = null;
-      this.restoreClips();
-      for (const other of media.entries) media.markUnused(other.asset.id);
-    }
+    // Library only — a dropped file is not a project and not a timeline clip.
+    // The caller that *did* mean "this file is the project" (Create project →
+    // This PC) takes the returned id and opens it explicitly.
+    return firstId;
   }
 
   /**

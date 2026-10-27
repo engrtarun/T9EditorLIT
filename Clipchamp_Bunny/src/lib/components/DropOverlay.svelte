@@ -1,6 +1,7 @@
 <script lang="ts">
   import { project } from '../stores/project.svelte';
   import { mode } from '../stores/mode.svelte';
+  import { app } from '../stores/app.svelte';
   import { isTauri } from '../ipc';
 
   /**
@@ -60,11 +61,15 @@
     );
     if (!usable.length) return;
 
-    // Import fills My media. It only becomes a new project when none is open,
-    // and only then does the editor need to switch to Cut - with a project open
-    // the library tile is already on screen.
+    // Import fills My media. On the dashboard that media belongs to a project
+    // that does not exist yet, so it gets its own draft library instead of
+    // landing in whichever project happened to be open last. Nothing is put
+    // on the timeline: the user drags it there.
+    const onDashboard = app.view === 'home';
+    if (onDashboard) await project.startNew('', '16:9');
     const hadProject = !!project.media;
     await project.importDropped(usable);
+    if (onDashboard) app.openEditor();
     if (!hadProject) mode.set('cut');
   }
 
@@ -88,9 +93,17 @@
           } else if (payload.type === 'drop') {
             dragging = false;
             over = false;
-            const hadProject = !!project.media;
-            void project.importPaths(payload.paths);
-            if (!hadProject) mode.set('cut');
+            // Dashboard drop = media for a project that does not exist yet.
+            if (app.view === 'home') {
+              void (async () => {
+                await project.startNew('', '16:9');
+                await project.importPaths(payload.paths);
+                app.openEditor();
+                mode.set('cut');
+              })();
+            } else {
+              void project.importPaths(payload.paths);
+            }
           }
         });
         if (alive) unlisten = stop;

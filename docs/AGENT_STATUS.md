@@ -391,3 +391,42 @@ no push, per the worklog rule.
 CDN refusal against a live redirect) - same honesty line as every other
 vault row. The UI "restore into library" button is frontend work, not this
 lane.
+
+## Agent (this session) - "My media is per project; the timeline only changes on purpose"
+
+**Lane:** the media library vs. the timeline. Two reported bugs, one missing
+rule: _the library belongs to the project that is open, and media only reaches
+the timeline when the user puts it there._
+
+**Status:** Complete. `svelte-check` 0 errors / 0 warnings, `node --test`
+26/26, `prettier` clean. Verified live on localhost:5174 (empty project -> empty
+library + dashed drop lane; drop -> tile only, timeline unchanged; click ->
+select only; double-click -> becomes source with one full-length clip; opening
+another project shows only its own media; no console errors).
+
+**Why it matters:** the "old project's media" and the "video jumped onto the
+timeline by itself" reports were the same bug seen twice. Both are now covered
+by invariants written down in `docs/MEDIA_LIBRARY_TIMELINE.md`, next to the
+reference screenshot `docs/ui-review-screenshots/13-my-media-empty-timeline.png`.
+
+**Files owned:**
+
+- `Clipchamp_Bunny/src/lib/stores/media.svelte.ts` - scoped library
+  (`enterScope`, `startDraft`, `persist`/`restore`/`dropKey`, `focusSource`,
+  `renamed`, `failed`); one write path `set()`.
+- `Clipchamp_Bunny/src/lib/stores/project.svelte.ts` - `enterScope` before the
+  probe, `carryDraft`, `placeAsset` as the single door onto the timeline,
+  library-only `importPaths`/`importBlobs`, `seg-source` fallback segment.
+- `Clipchamp_Bunny/src/lib/components/media/MediaPanel.svelte` - click selects,
+  - / double-click / Enter places.
+- `Clipchamp_Bunny/src/lib/components/cut/WaveTimeline.svelte` - drop = place,
+  Clipchamp-style dashed empty lane.
+- `Clipchamp_Bunny/src/lib/components/DropOverlay.svelte` - dashboard drop makes
+  a new draft; editor drop is library-only.
+- `Clipchamp_Bunny/src/lib/components/dashboard/{HomeDashboard,CreateProjectModal}.svelte`
+  - dashboard import starts a draft; "This PC" keeps adopting the chosen file
+    as the project source (explicit, by design).
+- `docs/MEDIA_LIBRARY_TIMELINE.md` (new) + the screenshot above.
+
+**No-store note:** the library is `localStorage["t9.media.<scope>"]`, a small
+JSON of paths and metadata. No SQLite migration, no media in the heap.

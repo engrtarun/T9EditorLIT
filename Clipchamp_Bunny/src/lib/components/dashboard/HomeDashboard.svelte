@@ -341,9 +341,15 @@
   async function importMedia() {
     const paths = await pickVideos();
     if (!paths.length) return;
+    // Dashboard import = media for a brand-new project. Without this the files
+    // would join whichever project happened to be open last, and My media
+    // would show that project's old media.
+    await project.startNew('', '16:9');
+    const first = paths[0].split(/[\\/]/).pop() ?? '';
+    if (first) await project.rename(first.replace(/\.[^.]+$/, ''));
     app.openEditor();
-    // The imported file becomes the project (or joins an open one's library);
-    // Cut is where both are visible, now that the Media page is gone.
+    // The imported files land in My media only - the timeline stays empty
+    // until a clip is dragged onto it.
     mode.set('cut');
     try {
       await project.importPaths(paths);

@@ -73,7 +73,7 @@
   const extras = $derived(project.extrasLayout);
   /** Playhead on the whole project timeline (main cut + extras). */
   const editPlayhead = $derived(project.globalTimeAt(project.activeClipId, player.currentTime));
-  const contentW = $derived(Math.max(600, (editDur + 4) * zoom));
+  const contentW = $derived(Math.max(600, viewW, (editDur + 4) * zoom));
   const step = $derived(niceStep(zoom));
   const minor = $derived(step / (step >= 5 ? 5 : step >= 2 ? 4 : 2));
 
@@ -340,27 +340,30 @@
    * Drop a library tile on the timeline.
    *
    * This is the Clipchamp gesture: drag from My media, drop on the bottom
-   * timeline, and the asset becomes a clip appended after the main cut. The
-   * project itself never changes.
+   * timeline, and the asset becomes a clip. The project's main cut is only
+   * replaced when there is no main source yet - then the dropped file becomes
+   * the project's source, exactly like the tile's + button.
    */
-  function onLaneDrop(e: DragEvent) {
+  async function onLaneDrop(e: DragEvent) {
     dropHover = false;
     const id = e.dataTransfer?.getData('application/x-t9-asset');
     if (!id) return;
     e.preventDefault();
     e.stopPropagation();
     const entry = media.get(id);
-    if (entry && isAudioOnly(entry.asset.name, entry.asset.url)) {
+    if (!entry) return;
+    if (isAudioOnly(entry.asset.name, entry.asset.url)) {
       toast.push('info', 'Audio-only clip abhi timeline me nahi lagta');
       return;
     }
-    const clip = project.addToTimeline(id);
-    if (!clip) {
+    const placed = await project.placeAsset(id);
+    if (placed === 'source') {
+      toast.push('info', `${entry.asset.name} project ka main video ban gaya`);
+    } else if (placed === 'clip') {
+      toast.push('info', `+ ${entry.asset.name} timeline me add ho gaya`);
+    } else {
       toast.push('warn', 'Yeh asset timeline me nahi lag sakta');
-      return;
     }
-    project.activateClip(clip.id);
-    toast.push('info', `+ ${clip.name} timeline me add ho gaya`);
   }
 
   function dragHasAsset(e: DragEvent): boolean {
@@ -1132,20 +1135,30 @@
           {/if}
 
           {#if segments.length === 0 && extras.length === 0}
-            <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center">
+            <!-- Empty project = the Clipchamp drop target: a dashed lane that
+                 says what to do, not a mysterious blank strip. -->
+            <div
+              class="pointer-events-none absolute inset-1 z-10 grid place-items-center rounded-[4px] border-2 border-dashed transition-colors
+                     {dropHover ? 'border-nc-brand/80 bg-nc-brand/10' : 'border-nc-line-2'}"
+            >
               <div
-                class="pointer-events-auto flex items-center gap-2 rounded-md border border-nc-line-2 bg-nc-panel/95 px-3 py-1.5 text-[11px] text-nc-mut shadow-lg"
+                class="pointer-events-auto flex items-center gap-2 rounded-md bg-nc-panel/90 px-3 py-1 text-[11px] text-nc-mut"
               >
-                <span>{project.lines.length ? 'Saare clips cut ho gaye' : 'Koi clip nahi'}</span>
-                {#if project.past.length}
-                  <button
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      project.undo();
-                    }}
-                    class="rounded border border-nc-line-2 px-2 py-0.5 text-[10px] text-nc-txt hover:border-nc-brand/60 hover:text-nc-brand"
-                    >Undo</button
-                  >
+                {#if project.lines.length}
+                  <span>Saare clips cut ho gaye</span>
+                  {#if project.past.length}
+                    <button
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        project.undo();
+                      }}
+                      class="rounded border border-nc-line-2 px-2 py-0.5 text-[10px] text-nc-txt hover:border-nc-brand/60 hover:text-nc-brand"
+                      >Undo</button
+                    >
+                  {/if}
+                {:else}
+                  <span class="font-semibold text-nc-txt">Drag &amp; drop media here</span>
+                  <span class="text-nc-mut-2">· My media se clip kheencho ya + dabao</span>
                 {/if}
               </div>
             </div>

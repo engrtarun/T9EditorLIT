@@ -134,7 +134,11 @@
         if (!files.length) return;
         await project.startNew(typed, frame);
         enterEditor();
-        await project.importBlobs(files);
+        // Browser parity with the desktop: the first file is the project's
+        // video (the rest join My media), because that is what "create a
+        // project from this media" means.
+        const firstId = await project.importBlobs(files);
+        if (firstId) await project.openLibraryEntry(firstId);
         if (typed) await project.rename(typed);
         toast.push('info', `${files.length} file import ho gayi`);
       }

@@ -29,6 +29,8 @@
   let renamingId = $state<string | null>(null);
   let draft = $state('');
   let busy = $state(false);
+  /** The tile the user clicked. Selection only — it does not touch the timeline. */
+  let selectedId = $state<string | null>(null);
 
   /** The link-import dialog. */
   let linkOpen = $state(false);
@@ -65,21 +67,26 @@
   ];
 
   /**
-   * Put a library asset on the project timeline.
+   * Put a library asset on the timeline.
    *
    * This is the whole "one project, many assets" path: the project keeps a
    * reference to the file, never its bytes, and the main cut is untouched.
+   *
+   * It runs from the tile's **+** button, a double-click, a keyboard Enter or
+   * a drag onto the lane — never from a plain click. A click selects a tile;
+   * it must never be able to add a clip the user did not ask for.
    */
-  function addToTimeline(id: string) {
+  async function placeAsset(id: string) {
     const e = media.get(id);
     if (!e) return;
-    // No project yet? The tile is how you start one.
-    if (!project.media) {
-      void project.openLibraryEntry(id);
-      return;
-    }
-    if (e.path && project.sourcePath === e.path) {
-      toast.push('info', 'Yeh clip project ka main source hai');
+    selectedId = id;
+    // The main source is already on the timeline — adding it again would show
+    // the same video before and after the cut.
+    if (
+      project.media &&
+      (e.path ? e.path === project.sourcePath : e.asset.url === project.media.url)
+    ) {
+      toast.push('info', 'Yeh clip project ka main source hai — timeline par already hai');
       return;
     }
     if (e.phase === 'loading') {
@@ -90,13 +97,14 @@
       toast.push('info', 'Audio-only clip abhi timeline me nahi lagta — video ya image chuno');
       return;
     }
-    const clip = project.addToTimeline(id);
-    if (!clip) {
+    const placed = await project.placeAsset(id);
+    if (placed === 'source') {
+      toast.push('info', `${e.asset.name} project ka main video ban gaya`);
+    } else if (placed === 'clip') {
+      toast.push('info', `+ ${e.asset.name} timeline me add ho gaya`);
+    } else {
       toast.push('warn', 'Yeh asset timeline me nahi lag sakta');
-      return;
     }
-    project.activateClip(clip.id);
-    toast.push('info', `+ ${clip.name} timeline me add ho gaya`);
   }
 
   /** Drag a tile onto the timeline. The timeline reads this exact MIME type. */
@@ -179,7 +187,7 @@
     const e = media.get(id);
     if (!e) return;
     if (choice === 'add') {
-      addToTimeline(id);
+      void placeAsset(id);
     } else if (choice === 'open') {
       void project.openLibraryEntry(id);
     } else if (choice === 'rename') {
@@ -230,8 +238,7 @@
   function rename(id: string, name: string) {
     const e = media.get(id);
     if (!e) return;
-    e.asset.name = name;
-    media.entries = [...media.entries];
+    media.renamed(id, name);
     renamingId = null;
   }
 
@@ -350,15 +357,23 @@
                 ? 'Current project'
                 : onTimeline
                   ? 'On timeline'
-                  : 'In library'}"
-              onclick={() => addToTimeline(e.asset.id)}
+                  : 'In library — double-click to add to the timeline'}"
+              onclick={() => (selectedId = e.asset.id)}
+              ondblclick={() => void placeAsset(e.asset.id)}
               onkeydown={(ev) => {
-                if (ev.key === 'Enter') addToTimeline(e.asset.id);
+                if (ev.key === 'Enter' || ev.key === ' ') {
+                  ev.preventDefault();
+                  void placeAsset(e.asset.id);
+                }
               }}
             >
               <div
                 class="relative aspect-video overflow-hidden rounded-md border bg-nc-bg
-                       {e.inUse ? 'border-nc-brand' : 'border-nc-line'}"
+                       {e.inUse
+                  ? 'border-nc-brand'
+                  : selectedId === e.asset.id
+                    ? 'border-nc-brand/70 ring-1 ring-nc-brand/40'
+                    : 'border-nc-line'}"
               >
                 {#if e.customThumb}
                   <!-- The picture the user chose - the file lives in the app's
@@ -418,11 +433,11 @@
                   </div>
                 {/if}
 
-                <!-- Add to timeline: the same action as dragging the tile -->
+                <!-- Add to timeline: the explicit act. A plain click only selects. -->
                 <button
                   onclick={(ev) => {
                     ev.stopPropagation();
-                    addToTimeline(e.asset.id);
+                    void placeAsset(e.asset.id);
                   }}
                   class="absolute top-1 right-8 grid h-6 w-6 place-items-center rounded bg-black/70 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-nc-brand hover:text-nc-bg"
                   title="Add to timeline"
