@@ -215,6 +215,39 @@
     };
   });
 
+  /**
+   * TRUE fullscreen. Element fullscreen used to look fake: the frame style
+   * caps the picture with `100vh - 330px` for the normal chrome, so on a
+   * fullscreened stage the video stayed small on black. In fullscreen the
+   * picture fills the screen (`fsFrameStyle`) and a controls bar fades in —
+   * play/pause, seek, time, exit — hiding itself while playback rolls and
+   * the mouse is still.
+   */
+  let fs = $state(false);
+  let controlsVisible = $state(true);
+  let controlsTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const fsFrameStyle = $derived(
+    `aspect-ratio:${frame.css};width:min(100%, calc(100vh * ${frame.value}))`
+  );
+
+  function wakeControls() {
+    if (!fs) return;
+    controlsVisible = true;
+    if (controlsTimer) clearTimeout(controlsTimer);
+    controlsTimer = setTimeout(() => (controlsVisible = false), 2500);
+  }
+
+  $effect(() => {
+    const onFsChange = () => {
+      fs = document.fullscreenElement === stage;
+      controlsVisible = true;
+      wakeControls();
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  });
+
   function toggleFullscreen() {
     const s = stage;
     if (!s) return;
@@ -264,7 +297,15 @@
   bind:this={stage}
   data-focus="stage"
   tabindex="-1"
-  class="relative isolate grid min-h-0 flex-1 place-items-center overflow-hidden bg-nc-bg p-4 outline-none"
+  role="region"
+  aria-label="Video preview"
+  onpointermove={wakeControls}
+  class="relative isolate grid min-h-0 flex-1 place-items-center overflow-hidden bg-nc-bg outline-none
+         {fs
+    ? controlsVisible || !player.playing
+      ? 'cursor-default p-0'
+      : 'cursor-none p-0'
+    : 'p-4'}"
 >
   {#if project.media}
     <!-- YouTube-style Ambient Mode glow: strictly BEHIND the player,
@@ -275,7 +316,7 @@
       class="pointer-events-none absolute inset-0 z-0 grid place-items-center"
       aria-hidden="true"
     >
-      <div class="max-h-full w-full scale-[1.18]" style={frameStyle}>
+      <div class="max-h-full w-full scale-[1.18]" style={fs ? fsFrameStyle : frameStyle}>
         <AmbientGlow video={videoEl} {poster} />
       </div>
     </div>
@@ -283,7 +324,7 @@
     <!-- The project's own frame, fitted to the stage, in front of the glow -->
     <div
       class="relative z-10 max-h-full w-full overflow-hidden rounded bg-black shadow-lg ring-1 ring-white/5"
-      style={frameStyle}
+      style={fs ? fsFrameStyle : frameStyle}
     >
       {#if isImage && activeClip}
         <!-- A still clip: no decoder, just the picture for its clip length. -->
@@ -349,23 +390,87 @@
       </div>
     </div>
 
-    <!-- fullscreen, bottom-right of the stage -->
-    <button
-      onclick={toggleFullscreen}
-      class="absolute right-4 bottom-4 z-20 grid h-8 w-8 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-      title="Fullscreen"
-    >
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.8"
+    <!-- fullscreen — hidden while the fullscreen controls bar owns the exit -->
+    {#if !fs}
+      <button
+        onclick={toggleFullscreen}
+        class="absolute right-4 bottom-4 z-20 grid h-8 w-8 place-items-center rounded-md text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+        title="Fullscreen"
       >
-        <path d="M3 8V3h5M21 8V3h-5M3 16v5h5M21 16v5h-5" />
-      </svg>
-    </button>
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+        >
+          <path d="M3 8V3h5M21 8V3h-5M3 16v5h5M21 16v5h-5" />
+        </svg>
+      </button>
+    {/if}
+
+    {#if fs}
+      <!-- FULLSCREEN CONTROLS — play/pause, seek, time, exit. Fades out while
+           the video rolls and the mouse is still; Esc always exits. -->
+      <div
+        class="absolute inset-x-0 bottom-0 z-30 flex items-center gap-3 px-5 pb-4 pt-12 transition-opacity duration-300
+               {controlsVisible || !player.playing
+          ? 'opacity-100'
+          : 'pointer-events-none opacity-0'}"
+        style="background:linear-gradient(to top, rgba(0,0,0,.78), transparent)"
+      >
+        <button
+          onclick={() => player.toggle()}
+          class="grid h-9 w-9 place-items-center rounded-md text-white transition-colors hover:bg-white/10"
+          title="Play / pause (Space)"
+        >
+          {#if player.playing}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="5" width="4" height="14" rx="1" /><rect
+                x="14"
+                y="5"
+                width="4"
+                height="14"
+                rx="1"
+              />
+            </svg>
+          {:else}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5l11 7-11 7z" />
+            </svg>
+          {/if}
+        </button>
+        <span class="font-mono text-[11px] text-white/90">{fmtTime(player.currentTime)}</span>
+        <input
+          type="range"
+          min="0"
+          max={mainEndSec || 1}
+          step="0.01"
+          value={player.currentTime}
+          oninput={(e) => player.seek(+e.currentTarget.value)}
+          class="h-1 min-w-0 flex-1 cursor-pointer accent-[#4D8DFF]"
+          aria-label="Seek"
+        />
+        <span class="font-mono text-[11px] text-white/90">{fmtTime(mainEndSec)}</span>
+        <button
+          onclick={toggleFullscreen}
+          class="grid h-9 w-9 place-items-center rounded-md text-white transition-colors hover:bg-white/10"
+          title="Exit fullscreen (Esc)"
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+          >
+            <path d="M8 3v5H3M16 21v-5h5M3 16h5v5M21 8h-5V3" />
+          </svg>
+        </button>
+      </div>
+    {/if}
   {:else}
     <div class="max-w-md text-center">
       <div
