@@ -903,9 +903,7 @@ class ProjectStore {
     this.qualitySuggestions = [];
     if (!ids.size) return 0;
     this.commit();
-    this.lines = this.lines.map((l) =>
-      ids.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l
-    );
+    this.lines = this.lines.map((l) => (ids.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l));
     return ids.size;
   }
 

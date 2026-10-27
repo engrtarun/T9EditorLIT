@@ -5,6 +5,13 @@ class PlayerStore {
   zoom = $state(35);
   /** Magnet on the timeline — snaps the playhead to line boundaries. */
   snap = $state(true);
+  /**
+   * Preview mode toggle: `false` = **applied edits** (the Phantom Cut skips
+   * every red/grey block), `true` = **raw source** (cut material plays
+   * exactly as recorded — nothing is skipped). Nothing is re-encoded in
+   * either mode; the timeupdate loop simply stops refusing cut ranges.
+   */
+  previewRaw = $state(false);
   /** Preview loop — when the project runs out of media it rewinds to its
    *  first kept second and keeps playing, instead of stopping. Nothing is
    *  re-encoded; the toggle lives on the preview bar's Size pill. */

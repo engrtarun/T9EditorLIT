@@ -89,7 +89,9 @@
     if (player.isStaleUpdate(v.currentTime)) return;
 
     if (!activeClip) {
-      const corrected = project.skipCuts(v.currentTime);
+      // Raw preview: the user asked to see the recording as it was, cuts and
+      // all. Nothing is re-encoded - we simply stop refusing cut ranges.
+      const corrected = player.previewRaw ? v.currentTime : project.skipCuts(v.currentTime);
       if (corrected !== v.currentTime) {
         scrubbing = true;
         v.currentTime = corrected;
@@ -101,7 +103,13 @@
       }
       // With extra clips on the timeline the main cut hands over the moment
       // the last kept second plays: trailing cut material belongs to neither.
-      if (project.clips.length && mainEndSec > 0 && v.currentTime >= mainEndSec - 0.03) {
+      // Raw preview owns the whole source, so it never hands over early.
+      if (
+        !player.previewRaw &&
+        project.clips.length &&
+        mainEndSec > 0 &&
+        v.currentTime >= mainEndSec - 0.03
+      ) {
         advance();
         return;
       }
@@ -372,12 +380,21 @@
       <!-- status chip, top-left of the canvas -->
       <div class="pointer-events-none absolute top-2 left-2 z-20 flex max-w-[70%] flex-col gap-1">
         {#if inCut}
-          <span
-            class="w-fit rounded bg-nc-red/40 px-2 py-0.5 text-[10px] font-bold tracking-wider text-white backdrop-blur-md"
-            title="Playhead is inside a cut range - preview skips it"
-          >
-            ✕ CUT RANGE · SKIPPED
-          </span>
+          {#if player.previewRaw}
+            <span
+              class="w-fit rounded bg-amber-500/80 px-2 py-0.5 text-[10px] font-bold tracking-wider text-nc-bg backdrop-blur-md"
+              title="Raw preview — cut material is playing exactly as recorded"
+            >
+              ◉ RAW · CUT MATERIAL PLAYING
+            </span>
+          {:else}
+            <span
+              class="w-fit rounded bg-nc-red/40 px-2 py-0.5 text-[10px] font-bold tracking-wider text-white backdrop-blur-md"
+              title="Playhead is inside a cut range - preview skips it"
+            >
+              ✕ CUT RANGE · SKIPPED
+            </span>
+          {/if}
         {/if}
         {#if activeClip}
           <span
