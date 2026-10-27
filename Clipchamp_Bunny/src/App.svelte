@@ -42,7 +42,10 @@
   function zoomFit() {
     const el = document.querySelector('[data-focus="timeline"]');
     const w = el?.clientWidth ?? 1200;
-    player.zoom = clamp(w / Math.max(project.editDuration || 1, 1), 4, 220);
+    // The lane is drawn on the timeline axis (cut blocks included), so zoom
+    // must fit the strip, not just the kept seconds.
+    const span = project.timelineDuration || project.sequenceDuration || 1;
+    player.zoom = clamp(w / Math.max(span, 1), 4, 220);
   }
 
   function focusArea(area: 'rail' | 'panel' | 'timeline' | 'stage' | 'header') {

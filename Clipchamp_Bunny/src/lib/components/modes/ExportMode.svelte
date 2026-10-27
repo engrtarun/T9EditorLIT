@@ -91,15 +91,17 @@
   } | null>(null);
   let warnings = $state<string[]>([]);
 
-  /** The cut list, in final-video order — this is exactly what gets rendered. */
+  /** The cut list, in final-video order — kept blocks only, cut ones excluded. */
   const segments = $derived(
-    project.orderedSegments.map((s) => ({
-      start: s.startSec,
-      end: s.endSec,
-      // A muted clip is silence, not a skipped range: the filter removes the
-      // loudness while the clip keeps its place on the timeline.
-      gain: project.isSegmentMuted(s.id) ? 0 : project.segmentGain(s.id)
-    }))
+    project.orderedSegments
+      .filter((s) => s.state === 'keep')
+      .map((s) => ({
+        start: s.startSec,
+        end: s.endSec,
+        // A muted clip is silence, not a skipped range: the filter removes the
+        // loudness while the clip keeps its place on the timeline.
+        gain: project.isSegmentMuted(s.id) ? 0 : project.segmentGain(s.id)
+      }))
   );
 
   /** Extra clips on the timeline, appended after the main cut. */

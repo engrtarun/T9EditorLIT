@@ -20,7 +20,8 @@ import {
   moveInOrder,
   orderLines,
   orderSegments,
-  sourceAt
+  sourceAt,
+  timelineDuration as timelineDurationOf
 } from '../segments';
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 import { media } from './media.svelte';
@@ -64,6 +65,7 @@ interface Snapshot {
   lines: TranscriptLine[];
   segmentOrder: string[];
   splitMarks: number[];
+  cutSpans: Array<[number, number]>;
   mutedSegments: string[];
   segmentVolume: Record<string, number>;
   hiddenTracks: TrackId[];
@@ -104,6 +106,55 @@ function applySplitText(left: TranscriptLine, right: TranscriptLine, at: number)
     .trim();
   left.words = head;
   right.words = tail;
+}
+
+/**
+ * Read cut spans back out of JSON (localStorage / an undo snapshot).
+ *
+ * `JSON.parse` hands back `number[][]`, not tuples, and a corrupted entry
+ * must not be able to poison the timeline — anything that is not a real
+ * forward range is dropped.
+ */
+function toCutSpans(value: unknown): Array<[number, number]> {
+  if (!Array.isArray(value)) return [];
+  const out: Array<[number, number]> = [];
+  for (const raw of value) {
+    if (!Array.isArray(raw) || raw.length < 2) continue;
+    const a = Number(raw[0]);
+    const b = Number(raw[1]);
+    if (Number.isFinite(a) && Number.isFinite(b) && b > a) out.push([a, b]);
+  }
+  return out;
+}
+
+/** Take `[a, b]` out of a span list, keeping the parts either side. */
+function subtractSpan(
+  spans: ReadonlyArray<readonly [number, number]>,
+  a: number,
+  b: number
+): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (const [x, y] of spans) {
+    if (y <= a || x >= b) {
+      out.push([x, y]);
+      continue;
+    }
+    if (x < a) out.push([x, a]);
+    if (y > b) out.push([b, y]);
+  }
+  return out;
+}
+
+/** Sort and weld overlapping/adjacent cut spans into a canonical list. */
+function weldSpans(spans: Array<[number, number]>): Array<[number, number]> {
+  const sorted = [...spans].sort((a, b) => a[0] - b[0]);
+  const out: Array<[number, number]> = [];
+  for (const [a, b] of sorted) {
+    const last = out[out.length - 1];
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  return out;
 }
 
 /**
@@ -644,6 +695,8 @@ class ProjectStore {
     if (!source) return;
     try {
       this.lines = await this.runPipeline(source);
+      // Cuts made before any transcript existed still own their stretch.
+      this.syncCutsIntoLines();
       this.loadError = null;
     } catch (e) {
       this.loadError = e instanceof Error ? e.message : String(e);
@@ -869,6 +922,7 @@ class ProjectStore {
       const payload = {
         segmentOrder: this.segmentOrder,
         splitMarks: this.splitMarks,
+        cutSpans: this.cutSpans,
         mutedSegments: this.mutedSegments,
         segmentVolume: this.segmentVolume,
         hiddenTracks: this.hiddenTracks
@@ -888,6 +942,7 @@ class ProjectStore {
       const data = JSON.parse(raw) as {
         segmentOrder?: string[];
         splitMarks?: number[];
+        cutSpans?: unknown;
         mutedSegments?: string[];
         segmentVolume?: Record<string, number>;
         hiddenTracks?: TrackId[];
@@ -900,6 +955,8 @@ class ProjectStore {
           .filter((x): x is number => typeof x === 'number' && Number.isFinite(x))
           .sort((a, b) => a - b);
       }
+      this.cutSpans = weldSpans(toCutSpans(data.cutSpans));
+      this.syncCutsIntoLines();
       if (Array.isArray(data.mutedSegments)) {
         this.mutedSegments = data.mutedSegments.filter((x) => typeof x === 'string');
       }
@@ -932,6 +989,7 @@ class ProjectStore {
     this.clipboard = null;
     this.segmentOrder = [];
     this.splitMarks = [];
+    this.cutSpans = [];
     this.mutedSegments = [];
     this.segmentVolume = {};
     this.hiddenTracks = [];
@@ -977,14 +1035,16 @@ class ProjectStore {
     }
   }
 
-  /** Merged [start, end] ranges to skip â€” this is the Phantom Cut. */
+  /** Merged [start, end] ranges to skip — the cut blocks, in source order. */
   cutRanges = $derived.by(() => {
     const ranges: Array<[number, number]> = [];
-    for (const line of this.lines) {
-      if (line.keep === 'keep') continue;
+    const cut = this.orderedSegments
+      .filter((s) => s.state === 'cut')
+      .sort((a, b) => a.startSec - b.startSec);
+    for (const s of cut) {
       const last = ranges[ranges.length - 1];
-      if (last && line.startSec - last[1] < 0.35) last[1] = Math.max(last[1], line.endSec);
-      else ranges.push([line.startSec, line.endSec]);
+      if (last && s.startSec - last[1] < 0.35) last[1] = Math.max(last[1], s.endSec);
+      else ranges.push([s.startSec, s.endSec]);
     }
     return ranges;
   });
@@ -1010,20 +1070,26 @@ class ProjectStore {
    *
    * The maths lives in `lib/segments.ts` (pure, unit-tested).
    */
-  segments = $derived.by(() => {
-    const segs = buildSegments(this.lines);
-    if (segs.length) return segs;
-    // No transcript yet: the source is still the project's video, so the
-    // timeline shows it as one full-length clip instead of an empty lane over
-    // a ruler. (Once a line exists the transcript owns the lane again.)
-    if (this.lines.length || !this.media) return segs;
-    const dur = this.media.durationSecs;
-    if (dur <= 0) return segs;
-    // `state` is part of the Segment contract while the timeline-refactor
-    // lands; the cast keeps this fallback compiling against both shapes and
-    // the extra field is inert on the older one.
-    return [{ id: 'seg-source', startSec: 0, endSec: dur, lines: [], state: 'keep' }] as Segment[];
-  });
+
+  /** Source seconds where the user split at — each one forces a clip boundary. */
+  splitMarks = $state<number[]>([]);
+
+  /**
+   * Source ranges the user cut where no transcript row covered them.
+   *
+   * With a transcript, a cut row already carries its own range; this list is
+   * what makes a cut survive **before** any transcript exists — and stay red
+   * even once one arrives and fails to cover that stretch.
+   */
+  cutSpans = $state<Array<[number, number]>>([]);
+
+  segments = $derived(
+    buildSegments(this.lines, {
+      cutSpans: this.cutSpans,
+      splitMarks: this.splitMarks,
+      sourceDurationSec: this.durationSec
+    })
+  );
 
   /** Order of the segment ids, as the user arranged them on the timeline. */
   segmentOrder = $state<string[]>([]);
@@ -1055,6 +1121,15 @@ class ProjectStore {
 
   /** Total length of the final video (all kept segments, in order). */
   editDuration = $derived(editDurationOf(this.orderedSegments));
+
+  /**
+   * Total length of the **timeline strip** — cut blocks counted, because they
+   * still occupy their width. This is the axis the bottom lane is drawn on.
+   */
+  timelineDuration = $derived(timelineDurationOf(this.orderedSegments));
+
+  /** Is there anything at all left to put in the final video? */
+  hasKeptContent = $derived(this.editDuration > 0);
 
   /** Source time â†’ position on the edit timeline (null when inside a cut). */
   editTimeAt = (sourceSec: number): number | null =>
@@ -1088,7 +1163,9 @@ class ProjectStore {
   /** Where every extra clip sits on the bottom timeline. */
   extrasLayout = $derived.by(() => {
     const out: Array<{ clip: ProjectClip; start: number; end: number }> = [];
-    let at = this.editDuration;
+    // Extras live past the whole strip, cut blocks included — hiding a cut
+    // must not slide the extra clips over red material.
+    let at = this.timelineDuration;
     for (const clip of this.clips) {
       const end = at + this.clipLength(clip);
       out.push({ clip, start: at, end });
@@ -1097,16 +1174,34 @@ class ProjectStore {
     return out;
   });
 
-  /** Whole project length: the main cut plus every extra clip. */
+  /** Whole project length: the whole strip plus every extra clip. */
   get sequenceDuration(): number {
-    return this.editDuration + this.extrasDuration;
+    return this.timelineDuration + this.extrasDuration;
+  }
+
+  /**
+   * A source second that lies inside a cut block, mapped to the nearest kept
+   * source second. Clicking a red/grey block seeks to its edge, so playback
+   * never lands on material that is not in the final video.
+   */
+  nearestKeptSource(sourceSec: number): number {
+    let best: number | null = null;
+    for (const s of this.orderedSegments) {
+      if (s.state !== 'keep') continue;
+      for (const edge of [s.startSec, s.endSec]) {
+        if (best === null || Math.abs(edge - sourceSec) < Math.abs(best - sourceSec)) best = edge;
+      }
+    }
+    return best ?? Math.max(0, sourceSec);
   }
 
   /** Bottom-timeline position maps to the clip that owns it (null = main). */
   sequenceAt(editSec: number): { clip: ProjectClip | null; localSec: number } | null {
-    if (editSec < this.editDuration) {
-      const src = this.sourceAt(Math.max(0, editSec));
-      return src == null ? null : { clip: null, localSec: src };
+    if (editSec < this.timelineDuration) {
+      const raw = this.sourceAt(Math.max(0, editSec));
+      if (raw == null) return null;
+      const inCut = this.cutRanges.some(([a, b]) => raw >= a && raw < b);
+      return { clip: null, localSec: inCut ? this.nearestKeptSource(raw) : raw };
     }
     for (const r of this.extrasLayout) {
       if (editSec < r.end) {
@@ -1487,6 +1582,7 @@ class ProjectStore {
       lines: this.lines.map((l) => ({ ...l })),
       segmentOrder: [...this.segmentOrder],
       splitMarks: [...this.splitMarks],
+      cutSpans: this.cutSpans.map(([a, b]) => [a, b] as [number, number]),
       mutedSegments: [...this.mutedSegments],
       segmentVolume: { ...this.segmentVolume },
       hiddenTracks: [...this.hiddenTracks]
@@ -1497,6 +1593,7 @@ class ProjectStore {
     this.lines = snap.lines.map((l) => ({ ...l }));
     this.segmentOrder = [...snap.segmentOrder];
     this.splitMarks = [...snap.splitMarks];
+    this.cutSpans = (snap.cutSpans ?? []).map(([a, b]) => [a, b] as [number, number]);
     this.mutedSegments = [...snap.mutedSegments];
     this.segmentVolume = { ...snap.segmentVolume };
     this.hiddenTracks = [...snap.hiddenTracks];
@@ -1692,28 +1789,84 @@ class ProjectStore {
   }
 
   /**
-   * Delete whole clips. Marking every line `cut` is what closes the gap:
-   * `buildSegments()` simply stops producing the segment, and every later
-   * offset slides left automatically.
+   * Cut whole clips **without deleting them**.
+   *
+   * The block stays on the timeline as red material (the diagram's rule:
+   * nothing ever hides). With a transcript the rows flip to `cut`; with none,
+   * the source range joins `cutSpans`, which is the only truth a
+   * transcript-less project has. Either way `restoreSegments()` reverses it.
    */
   cutSegments(ids: string[]): number {
     const wanted = new Set(ids);
-    const targets = this.segments.filter((s) => wanted.has(s.id)).flatMap((s) => s.lines);
+    const targets = this.segments.filter((s) => wanted.has(s.id));
     if (!targets.length) return 0;
     this.commit();
-    const lineIds = new Set(targets.map((l) => l.id));
-    this.lines = this.lines.map((l) =>
-      lineIds.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l
-    );
-    this.selectedIds = [];
-    this.segmentOrder = this.segmentOrder.filter((id) => !wanted.has(id));
-    this.mutedSegments = this.mutedSegments.filter((id) => !wanted.has(id));
-    const keptVolume: Record<string, number> = {};
-    for (const [id, v] of Object.entries(this.segmentVolume)) {
-      if (!wanted.has(id)) keptVolume[id] = v;
+    const lineIds = new Set(targets.flatMap((s) => s.lines.map((l) => l.id)));
+    if (lineIds.size) {
+      this.lines = this.lines.map((l) =>
+        lineIds.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l
+      );
     }
-    this.segmentVolume = keptVolume;
+    // A segment with no transcript rows (transcript-less project) is cut by
+    // time instead — this is also what keeps a cut red when a later
+    // transcript fails to cover the stretch.
+    const spans = [...this.cutSpans];
+    let grew = false;
+    for (const s of targets) {
+      if (s.lines.length) continue;
+      spans.push([s.startSec, s.endSec]);
+      grew = true;
+    }
+    if (grew) this.cutSpans = weldSpans(spans);
+    this.selectedIds = [];
+    // The block stays in the order: it is still on the timeline, just red.
+    // Mute/volume also stay, so Restore brings the clip back exactly as it was.
     return targets.length;
+  }
+
+  /**
+   * Put cut clips back on the timeline — the counterpart of `cutSegments`.
+   *
+   * Rows flip back to `keep`, time cuts are carved out of `cutSpans`, and the
+   * segments glue back into their neighbours on the next derivation. Nothing
+   * on this timeline is ever permanently deleted.
+   */
+  restoreSegments(ids: string[]): number {
+    const wanted = new Set(ids);
+    const targets = this.segments.filter((s) => wanted.has(s.id) && s.state === 'cut');
+    if (!targets.length) return 0;
+    this.commit();
+    const lineIds = new Set(targets.flatMap((s) => s.lines.map((l) => l.id)));
+    if (lineIds.size) {
+      this.lines = this.lines.map((l) =>
+        lineIds.has(l.id) ? { ...l, keep: 'keep' as KeepState } : l
+      );
+    }
+    let spans: Array<[number, number]> = this.cutSpans.map(([a, b]) => [a, b]);
+    for (const s of targets) {
+      if (s.lines.length) continue;
+      spans = subtractSpan(spans, s.startSec, s.endSec);
+    }
+    this.cutSpans = weldSpans(spans);
+    return targets.length;
+  }
+
+  /**
+   * A time cut must show in the transcript too: rows whose midpoint lies
+   * inside a `cutSpans` range are marked `cut`, so the panel and the red
+   * block never disagree. Called when a transcript arrives (load or
+   * regeneration) — the spans are older truth than the rows.
+   */
+  private syncCutsIntoLines() {
+    if (!this.cutSpans.length || !this.lines.length) return;
+    const inside = (l: TranscriptLine) => {
+      const at = (l.startSec + l.endSec) / 2;
+      return this.cutSpans.some(([a, b]) => at >= a && at < b);
+    };
+    if (!this.lines.some((l) => l.keep === 'keep' && inside(l))) return;
+    this.lines = this.lines.map((l) =>
+      l.keep === 'keep' && inside(l) ? { ...l, keep: 'cut' as KeepState } : l
+    );
   }
 
   /** Keep order and mute state pointing at a clip whose id changes after a trim. */
@@ -1823,9 +1976,6 @@ class ProjectStore {
     this.selectedIds = [];
   }
 
-  /** Source seconds where the user split a line â€” drawn as dividers on the timeline. */
-  splitMarks = $state<number[]>([]);
-
   /**
    * Split a transcript line in two (Clipchamp's âœ‚ / `S`).
    *
@@ -1842,7 +1992,16 @@ class ProjectStore {
     const strictlyInside = (l: TranscriptLine) => sec > l.startSec + 0.25 && sec < l.endSec - 0.25;
 
     if (!under || !strictlyInside(under)) {
-      if (!this.lines[this.cursor]) return false;
+      if (!this.lines[this.cursor]) {
+        // No transcript row to split: the timeline is still the master, so
+        // the mark becomes a hard clip boundary and the split lands as two
+        // blocks instead of doing nothing.
+        const dur = this.durationSec;
+        if (dur <= 0.5 || sec <= 0.25 || sec >= dur - 0.25) return false;
+        this.commit();
+        this.splitMarks = [...this.splitMarks, sec].sort((a, b) => a - b);
+        return true;
+      }
       idx = this.cursor;
     }
 

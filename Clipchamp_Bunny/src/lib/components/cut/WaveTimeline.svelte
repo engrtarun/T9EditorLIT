@@ -600,6 +600,18 @@
     const c = ctx;
     const seg = c?.segId ? segments.find((s) => s.id === c.segId) : null;
     if (!seg) return [];
+    // A cut block is not editable material — it stays on the timeline as red
+    // (or grey) evidence of what went, and its only action is coming back.
+    if (seg.state === 'cut') {
+      return [
+        {
+          id: 'restore',
+          label:
+            seg.reason === 'silence' ? 'Restore silence (grey block)' : 'Restore clip (red block)',
+          icon: 'split'
+        }
+      ];
+    }
     const inside =
       player.currentTime > seg.startSec + 0.15 && player.currentTime < seg.endSec - 0.15;
     const muted = project.isSegmentMuted(seg.id);
@@ -627,7 +639,8 @@
       vol(0.5, '50%'),
       vol(0.25, '25%'),
       { id: 'div-2', label: '', divider: true },
-      { id: 'delete', label: 'Delete clip (closes gap)', icon: 'trash', danger: true }
+      // Cut, not delete: the block turns red and stays where it is.
+      { id: 'delete', label: 'Cut clip (block stays on timeline)', icon: 'scissors', danger: true }
     ];
   });
 
@@ -665,7 +678,10 @@
       toast.push('info', `Clip volume ${Math.round(project.segmentGain(seg.id) * 100)}%`);
     } else if (id === 'delete') {
       project.cutSegments([seg.id]);
-      toast.push('cut', '✕ Clip deleted — gap closed');
+      toast.push('cut', '✂ Clip cut — red block timeline par pada hai');
+    } else if (id === 'restore') {
+      if (project.restoreSegments([seg.id]))
+        toast.push('info', 'Clip restored — wapas timeline par');
     }
   }
 
@@ -980,6 +996,8 @@
             {@const off = offsets.get(s.id)}
             {#if off}
               {@const sel = segmentSelection(s)}
+              {@const cut = s.state === 'cut'}
+              {@const silence = cut && s.reason === 'silence'}
               {@const tr = trim?.segId === s.id ? trim : null}
               {@const trStart = tr?.edge === 'start' ? tr.targetSec - s.startSec : 0}
               {@const trEnd = tr?.edge === 'end' ? tr.targetSec - s.endSec : 0}
@@ -1002,15 +1020,24 @@
                 role="button"
                 tabindex="0"
                 aria-pressed={sel === 'all'}
-                aria-label="Clip {fmtShort(s.startSec)} to {fmtShort(s.endSec)} — drag to reorder"
+                aria-label="Clip {fmtShort(s.startSec)} to {fmtShort(s.endSec)}{cut
+                  ? ` — ${silence ? 'silence' : 'cut'} block, right-click to restore`
+                  : ' — drag to reorder'}"
+                title={cut
+                  ? `${silence ? 'Silence' : 'Cut'} ${fmtShort(s.startSec)}–${fmtShort(s.endSec)} · ${fmtShort(s.endSec - s.startSec)} — right-click to restore`
+                  : undefined}
                 class="group absolute top-0 bottom-0 cursor-grab overflow-hidden rounded-[4px] border-2 transition-all active:cursor-grabbing
                        {dragId === s.id
                   ? 'z-20 border-nc-brand shadow-lg shadow-nc-brand/20'
-                  : sel === 'all'
-                    ? 'border-nc-brand ring-1 ring-nc-brand/40'
-                    : sel === 'some'
-                      ? 'border-dashed border-nc-brand/80'
-                      : 'border-white/15 hover:border-nc-brand/70'}"
+                  : cut
+                    ? silence
+                      ? 'border-white/20 bg-nc-panel brightness-[.45] saturate-0'
+                      : 'border-nc-red/70 bg-nc-red/25 brightness-[.6]'
+                    : sel === 'all'
+                      ? 'border-nc-brand ring-1 ring-nc-brand/40'
+                      : sel === 'some'
+                        ? 'border-dashed border-nc-brand/80'
+                        : 'border-white/15 hover:border-nc-brand/70'}"
                 style="left:{left}px;width:{width}px"
               >
                 <!-- scrims so the filename and duration stay readable over any frame -->
@@ -1026,66 +1053,78 @@
                 >
                 <span
                   class="pointer-events-none absolute bottom-0.5 left-1.5 max-w-[calc(100%-2rem)] truncate font-mono text-[9px] text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,.9)]"
-                  >{fmtShort(s.startSec)}–{fmtShort(s.endSec)}</span
+                  >{fmtShort(s.startSec)}–{fmtShort(s.endSec)} · {fmtShort(
+                    s.endSec - s.startSec
+                  )}</span
                 >
-                {#if project.segmentGain(s.id) !== 1}
+                {#if cut}
+                  <span
+                    class="pointer-events-none absolute top-0.5 right-1.5 z-10 rounded px-1 text-[8px] font-bold tracking-wider {silence
+                      ? 'bg-white/20 text-white/80'
+                      : 'bg-nc-red/85 text-white'}">{silence ? 'SILENCE' : 'CUT'}</span
+                  >
+                {:else if project.segmentGain(s.id) !== 1}
                   <span
                     class="pointer-events-none absolute right-6 bottom-0.5 z-20 rounded bg-black/55 px-1 font-mono text-[8px] leading-4 text-white/85"
                     title="Clip volume — right-click the clip to change"
                     >{Math.round(project.segmentGain(s.id) * 100)}%</span
                   >
                 {/if}
-                <button
-                  onpointerdown={(e) => e.stopPropagation()}
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    project.toggleSegmentMute(s.id);
-                    toast.push(
-                      'info',
-                      project.isSegmentMuted(s.id) ? 'Clip audio muted' : 'Clip audio unmuted'
-                    );
-                  }}
-                  class="absolute right-1 bottom-0.5 z-20 grid h-4 w-4 place-items-center rounded bg-black/50 text-white/85 transition-opacity hover:bg-black/80 hover:text-white
-                         {project.isSegmentMuted(s.id)
-                    ? 'text-nc-red opacity-100'
-                    : 'opacity-0 group-hover:opacity-100'}"
-                  title={project.isSegmentMuted(s.id) ? 'Unmute clip audio' : 'Mute clip audio'}
-                >
-                  <MenuIcon
-                    name={project.isSegmentMuted(s.id) ? 'volumeOff' : 'volume'}
-                    size={11}
-                  />
-                </button>
-                <div
-                  onpointerdown={(e) => onTrimDown(e, s, 'start')}
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label="Trim clip start"
-                  class="absolute inset-y-0 left-0 z-20 w-[7px] cursor-ew-resize opacity-0 group-hover:opacity-100 {sel ===
-                  'all'
-                    ? 'opacity-100'
-                    : ''}"
-                  title="Trim clip start"
-                >
-                  <span
-                    class="absolute inset-y-1 left-0 w-[2px] rounded bg-nc-brand shadow-[0_0_4px_rgba(0,0,0,.8)]"
-                  ></span>
-                </div>
-                <div
-                  onpointerdown={(e) => onTrimDown(e, s, 'end')}
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label="Trim clip end"
-                  class="absolute inset-y-0 right-0 z-20 w-[7px] cursor-ew-resize opacity-0 group-hover:opacity-100 {sel ===
-                  'all'
-                    ? 'opacity-100'
-                    : ''}"
-                  title="Trim clip end"
-                >
-                  <span
-                    class="absolute inset-y-1 right-0 w-[2px] rounded bg-nc-brand shadow-[0_0_4px_rgba(0,0,0,.8)]"
-                  ></span>
-                </div>
+                {#if !cut}
+                  <button
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      project.toggleSegmentMute(s.id);
+                      toast.push(
+                        'info',
+                        project.isSegmentMuted(s.id) ? 'Clip audio muted' : 'Clip audio unmuted'
+                      );
+                    }}
+                    class="absolute right-1 bottom-0.5 z-20 grid h-4 w-4 place-items-center rounded bg-black/50 text-white/85 transition-opacity hover:bg-black/80 hover:text-white
+                           {project.isSegmentMuted(s.id)
+                      ? 'text-nc-red opacity-100'
+                      : 'opacity-0 group-hover:opacity-100'}"
+                    title={project.isSegmentMuted(s.id) ? 'Unmute clip audio' : 'Mute clip audio'}
+                  >
+                    <MenuIcon
+                      name={project.isSegmentMuted(s.id) ? 'volumeOff' : 'volume'}
+                      size={11}
+                    />
+                  </button>
+                {/if}
+                {#if !cut}
+                  <div
+                    onpointerdown={(e) => onTrimDown(e, s, 'start')}
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Trim clip start"
+                    class="absolute inset-y-0 left-0 z-20 w-[7px] cursor-ew-resize opacity-0 group-hover:opacity-100 {sel ===
+                    'all'
+                      ? 'opacity-100'
+                      : ''}"
+                    title="Trim clip start"
+                  >
+                    <span
+                      class="absolute inset-y-1 left-0 w-[2px] rounded bg-nc-brand shadow-[0_0_4px_rgba(0,0,0,.8)]"
+                    ></span>
+                  </div>
+                  <div
+                    onpointerdown={(e) => onTrimDown(e, s, 'end')}
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Trim clip end"
+                    class="absolute inset-y-0 right-0 z-20 w-[7px] cursor-ew-resize opacity-0 group-hover:opacity-100 {sel ===
+                    'all'
+                      ? 'opacity-100'
+                      : ''}"
+                    title="Trim clip end"
+                  >
+                    <span
+                      class="absolute inset-y-1 right-0 w-[2px] rounded bg-nc-brand shadow-[0_0_4px_rgba(0,0,0,.8)]"
+                    ></span>
+                  </div>
+                {/if}
                 {#if tr}
                   <span
                     class="pointer-events-none absolute top-0.5 left-1/2 -translate-x-1/2 rounded bg-black/85 px-1 py-0.5 font-mono text-[9px] text-white"

@@ -131,7 +131,11 @@
       // element already stopped itself, restart playback explicitly.
       // Image clips tick on an interval, so they stop at the end as before.
       if (player.loop && (!activeClip || activeClip.kind === 'video')) {
-        player.seek(activeClip ? activeClip.inSec : (project.orderedSegments[0]?.startSec ?? 0));
+        player.seek(
+          activeClip
+            ? activeClip.inSec
+            : (project.orderedSegments.find((s) => s.state === 'keep')?.startSec ?? 0)
+        );
         const v = videoEl;
         if (v && (v.paused || v.ended)) {
           void v.play().catch(() => (player.playing = false));
@@ -281,10 +285,10 @@
     activeClip ? Math.max(0, activeClip.outSec - player.currentTime) : 0
   );
 
-  /** The last kept source second - where the main cut ends. */
+  /** The last kept source second — where the main cut ends (cut blocks excluded). */
   const mainEndSec = $derived.by(() => {
-    const segs = project.orderedSegments;
-    return segs.length ? Math.max(...segs.map((s) => s.endSec)) : 0;
+    const kept = project.orderedSegments.filter((s) => s.state === 'keep');
+    return kept.length ? Math.max(...kept.map((s) => s.endSec)) : 0;
   });
 
   $effect(() => {
