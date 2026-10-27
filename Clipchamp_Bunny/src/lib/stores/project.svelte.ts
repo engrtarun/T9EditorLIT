@@ -167,7 +167,7 @@ class ProjectStore {
   snap = $state(true);
 
   /** Right-rail CC toggle â€” hides/shows the transcript panel. */
-  showTranscript = $state(true);
+  showTranscript = $state(false);
 
   /** Monotonic counter so every split produces unique line ids. */
   private splitSeq = 0;
