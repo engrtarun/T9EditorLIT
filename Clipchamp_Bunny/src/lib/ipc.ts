@@ -664,6 +664,12 @@ export function systemDetails(): Promise<SystemDetails> {
 export interface ExportSegment {
   start: number;
   end: number;
+  /**
+   * Clip loudness, `1` = untouched and `0` = muted. Omitted means `1`.
+   * Any other value makes the export re-encode its audio (a stream copy
+   * cannot carry a filter) so the file matches what the preview played.
+   */
+  gain?: number;
 }
 
 export interface ExportOptions {

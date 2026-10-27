@@ -14,7 +14,7 @@
 //! filter graph does the joining in the same pass that encodes.
 
 use crate::export::{
-    parse_progress_line, time_arg, ExportProgress, ExportResult, ProgressLine, Segment,
+    ExportProgress, ExportResult, ProgressLine, Segment, parse_progress_line, time_arg,
 };
 use crate::ffmpeg::{ffmpeg_has_encoder, run_streaming};
 use crate::media::MediaInfo;
@@ -43,6 +43,16 @@ pub const BITRATES: [u32; 4] = [128, 192, 256, 320];
 /// Sample rates the UI offers, in Hz.
 pub const SAMPLE_RATES: [u32; 2] = [44100, 48000];
 
+/// Gain for one range, as a filter suffix. `1.0` adds nothing, so an export
+/// nobody touched stays filter-free (and can still copy the source audio).
+fn gain_part(gain: f64) -> String {
+    if (gain - 1.0).abs() <= 1e-6 {
+        String::new()
+    } else {
+        format!(",volume={gain:.6}")
+    }
+}
+
 /// The filter graph that turns the kept ranges into one continuous stream.
 ///
 /// * no ranges → `None` (the whole recording is exported, straight through);
@@ -58,25 +68,24 @@ pub fn audio_filter(segments: &[Segment]) -> Option<String> {
     if segments.len() == 1 {
         let s = &segments[0];
         return Some(format!(
-            "[0:a]atrim=start={}:end={},asetpts=PTS-STARTPTS[aout]",
+            "[0:a]atrim=start={}:end={},asetpts=PTS-STARTPTS{}[aout]",
             time_arg(s.start),
-            time_arg(s.end)
+            time_arg(s.end),
+            gain_part(s.gain)
         ));
     }
 
     let mut parts: Vec<String> = Vec::with_capacity(segments.len() + 1);
     for (i, s) in segments.iter().enumerate() {
         parts.push(format!(
-            "[0:a]atrim=start={}:end={},asetpts=PTS-STARTPTS[a{i}]",
+            "[0:a]atrim=start={}:end={},asetpts=PTS-STARTPTS{}[a{i}]",
             time_arg(s.start),
-            time_arg(s.end)
+            time_arg(s.end),
+            gain_part(s.gain)
         ));
     }
     let labels: String = (0..segments.len()).map(|i| format!("[a{i}]")).collect();
-    parts.push(format!(
-        "{labels}concat=n={}:v=0:a=1[aout]",
-        segments.len()
-    ));
+    parts.push(format!("{labels}concat=n={}:v=0:a=1[aout]", segments.len()));
     Some(parts.join(";"))
 }
 
@@ -193,6 +202,7 @@ pub fn run_mp3_export(
             .map(|s| Segment {
                 start: s.start.clamp(0.0, duration),
                 end: s.end.clamp(0.0, duration),
+                gain: crate::export::segment_gain(s.gain),
             })
             .filter(|s| s.end - s.start > 0.0)
             .collect()
@@ -211,7 +221,8 @@ pub fn run_mp3_export(
 
     let mut warnings: Vec<String> = Vec::new();
     if !req.options.apply_cuts {
-        warnings.push("the timeline's cuts were not applied — the whole recording was exported".into());
+        warnings
+            .push("the timeline's cuts were not applied — the whole recording was exported".into());
     }
 
     let args = mp3_args(&source, &segments, &output, &req.options, encoder);
@@ -285,7 +296,11 @@ mod tests {
     use super::*;
 
     fn seg(start: f64, end: f64) -> Segment {
-        Segment { start, end }
+        Segment {
+            start,
+            end,
+            gain: 1.0,
+        }
     }
 
     #[test]
@@ -304,8 +319,14 @@ mod tests {
     #[test]
     fn many_segments_are_trimmed_and_joined() {
         let f = audio_filter(&[seg(0.0, 2.0), seg(5.0, 7.5), seg(9.0, 10.0)]).expect("a filter");
-        assert!(f.contains("[0:a]atrim=start=0.000000:end=2.000000"), "got {f}");
-        assert!(f.contains("[0:a]atrim=start=5.000000:end=7.500000"), "got {f}");
+        assert!(
+            f.contains("[0:a]atrim=start=0.000000:end=2.000000"),
+            "got {f}"
+        );
+        assert!(
+            f.contains("[0:a]atrim=start=5.000000:end=7.500000"),
+            "got {f}"
+        );
         assert!(f.contains("concat=n=3:v=0:a=1"), "got {f}");
         // Every branch must be labelled and every label consumed.
         for i in 0..3 {

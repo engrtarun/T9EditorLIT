@@ -99,20 +99,21 @@ So the sketch is **~90 % built**. The remaining diffs are small and concrete.
 The sketch says _mute/volume too because new clip_. `mutedSegments` is a
 `string[]` of clip ids; there is no gain.
 
-**Shipped (preview half):** `segmentVolume` in `project.svelte.ts` (a
+**Shipped (preview and export):** `segmentVolume` in `project.svelte.ts` (a
 `Record<clipId, 0..1>`, 1 = original), persisted with the rest of the timeline
 UI state, carried through split/merge/delete, applied by `VideoPreview` to the
 `<video>` element, and offered on the clip's context menu (100 / 75 / 50 / 25 %)
 with a `%` badge on the clip when it is not 100 %. It is a number in state —
 nothing is re-encoded, so the Zero-RAM rule is untouched.
 
-**Still open (export half):** `ExportRequest.segments` carries only
-`{ start, end }`, and `src-tauri/src/export.rs` has no volume filter, so **a
-muted or turned-down clip still exports at full volume**. The menu says
-"Preview only — export audio abhi unchanged" because that is the truth.
-Closing it needs: `mute`/`gain` on the Rust `Segment`, `-af volume=<g>` on the
-pieces that carry audio, and `audio_copied = false` for the whole export as
-soon as any segment asks for a gain (a stream copy cannot apply a filter).
+The export follows the same number. `ExportSegment` now carries an optional
+`gain` (`ExportMode` sends `0` for a muted clip, otherwise `segmentGain`), the
+Rust `Segment` reads it with a serde default of `1.0`, and the MP4 pieces add
+`-af volume=<g>` plus the MP3 filter graph appends `volume=<g>` to each range.
+Because a stream copy cannot carry a filter, **any gain other than 1 forces the
+exported audio to AAC** — the plan says so in its warnings rather than
+silently shipping the wrong loudness. A clip nobody touched still adds no
+filter at all, so the common export stays bit-exact.
 
 ### 3.2 AI suggestions for fumble / repeat lines
 

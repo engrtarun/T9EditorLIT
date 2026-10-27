@@ -471,10 +471,26 @@ the new controls must be numbers in state, not new files on disk.
 - `WaveTimeline.svelte`: clip context menu gains `Volume 100 / 75 / 50 / 25 %`
   with the active value dotted, and a `%` badge appears on the clip when it is
   not 100 %.
-- **Honesty rule:** the menu item says "Preview only - export audio abhi
-  unchanged", because `ExportRequest.segments` is still `{start, end}` and the
-  Rust exporter has no gain filter. The export half stays open item 1.
+- **Honesty rule:** the menu item says "Preview and export both follow this",
+  because the Rust exporter now receives the same gain.
 - Verified on localhost: menu lists the four volumes, choosing 50 % puts the
   badge on the clip and the preview `video.volume` becomes `0.5`; back to 100 %
   removes the badge and restores `1`. `npm run check` 0 errors, `npm run test`
   33 pass.
+
+### Update: per-clip volume - export half shipped too
+
+- `ExportSegment` carries an optional `gain`; `ExportMode` sends `0` for a
+  muted clip and `segmentGain(id)` otherwise.
+- `src-tauri/src/export.rs`: `Segment` gained `gain` (`serde(default = 1.0)`),
+  the planner forces `audio_copied = false` as soon as any range asks for a
+  gain (a copy cannot carry a filter) and says so in the export warnings, and
+  `piece_args` adds `-af volume=<g>` only for touched ranges.
+- `src-tauri/src/mp3.rs`: the audio-only filter graph appends `volume=<g>` per
+  range. `src-tauri/src/gif.rs` carries the number through (GIFs have no
+  audio).
+- A clip nobody touched adds no filter at all: the untouched export stays
+  bit-exact, and its audio is still stream-copied.
+- Unit tests cover the filter and the "never copy audio with a gain" rule;
+  `cargo check --all-targets` runs locally, the real `cargo test` is CI's job
+  (AGENTS.md §11).

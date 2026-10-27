@@ -16,7 +16,7 @@
 //! `paletteuse` applies it — that two-pass-over-the-frames dance is what makes
 //! a GIF look like a GIF instead of a 256-colour mess.
 
-use crate::export::{parse_progress_line, time_arg, ExportProgress, ExportResult, ProgressLine};
+use crate::export::{ExportProgress, ExportResult, ProgressLine, parse_progress_line, time_arg};
 use crate::ffmpeg::run_streaming;
 use crate::media::MediaInfo;
 use std::path::{Path, PathBuf};
@@ -64,10 +64,7 @@ pub fn gif_filter(segments: &[crate::export::Segment]) -> Option<String> {
             ));
         }
         let labels: String = (0..segments.len()).map(|i| format!("[v{i}]")).collect();
-        parts.push(format!(
-            "{labels}concat=n={}:v=1:a=0[vg]",
-            segments.len()
-        ));
+        parts.push(format!("{labels}concat=n={}:v=1:a=0[vg]", segments.len()));
     }
 
     parts.push(format!(
@@ -79,11 +76,7 @@ pub fn gif_filter(segments: &[crate::export::Segment]) -> Option<String> {
 }
 
 /// The FFmpeg invocation for a GIF export.
-fn gif_args(
-    source: &Path,
-    segments: &[crate::export::Segment],
-    output: &Path,
-) -> Vec<String> {
+fn gif_args(source: &Path, segments: &[crate::export::Segment], output: &Path) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
         "-nostdin".into(),
@@ -150,6 +143,7 @@ pub fn run_gif_export(
             .map(|s| crate::export::Segment {
                 start: s.start.clamp(0.0, duration),
                 end: s.end.clamp(0.0, duration),
+                gain: crate::export::segment_gain(s.gain),
             })
             .filter(|s| s.end - s.start > 0.0)
             .collect()
@@ -244,7 +238,11 @@ mod tests {
     use crate::export::Segment;
 
     fn seg(start: f64, end: f64) -> Segment {
-        Segment { start, end }
+        Segment {
+            start,
+            end,
+            gain: 1.0,
+        }
     }
 
     #[test]

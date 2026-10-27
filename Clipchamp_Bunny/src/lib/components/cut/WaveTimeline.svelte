@@ -622,7 +622,7 @@
       },
       // The sketch asks for volume as well as mute, because every clip is its
       // own strip (docs/TIMELINE_HUMAN_DIAGRAM.md §1.2).
-      { ...vol(1, '100%'), secondary: 'Preview only — export audio abhi unchanged' },
+      { ...vol(1, '100%'), secondary: 'Preview and export both follow this' },
       vol(0.75, '75%'),
       vol(0.5, '50%'),
       vol(0.25, '25%'),
@@ -1031,7 +1031,7 @@
                 {#if project.segmentGain(s.id) !== 1}
                   <span
                     class="pointer-events-none absolute right-6 bottom-0.5 z-20 rounded bg-black/55 px-1 font-mono text-[8px] leading-4 text-white/85"
-                    title="Clip volume (preview) — right-click the clip to change"
+                    title="Clip volume — right-click the clip to change"
                     >{Math.round(project.segmentGain(s.id) * 100)}%</span
                   >
                 {/if}

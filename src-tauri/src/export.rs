@@ -1,22 +1,22 @@
 //! Smart hybrid export engine (Chunk 4).
 //!
-//! The Cut panel only records *decisions* — nothing has touched the 5 GB file
+//! The Cut panel only records *decisions* â€” nothing has touched the 5 GB file
 //! yet. This module turns those decisions into a rendered file, in three steps
-//! that each respect the zero-RAM rule (AGENTS.md §1):
+//! that each respect the zero-RAM rule (AGENTS.md Â§1):
 //!
-//! 1. **Plan** — map every cut point onto the source's I-frame grid (from
+//! 1. **Plan** â€” map every cut point onto the source's I-frame grid (from
 //!    [`crate::keyframes`]) and split the kept timeline into pieces.
-//!    * piece **starts** on a keyframe → `-c copy`, instant and lossless;
-//!    * piece **starts mid-GOP** → only that partial GOP (typically 1–2 s) is
+//!    * piece **starts** on a keyframe â†’ `-c copy`, instant and lossless;
+//!    * piece **starts mid-GOP** â†’ only that partial GOP (typically 1â€“2 s) is
 //!      re-encoded on QuickSync/NVENC/AMF, the rest of the segment is copied.
-//! 2. **Cut** — one short-lived `ffmpeg` child per piece, writing into a
+//! 2. **Cut** â€” one short-lived `ffmpeg` child per piece, writing into a
 //!    work folder beside the destination. Children are hard-killed on Cancel.
-//! 3. **Concat** — the FFmpeg concat demuxer stitches the pieces with another
+//! 3. **Concat** â€” the FFmpeg concat demuxer stitches the pieces with another
 //!    stream copy. Progress from both phases rides `-progress pipe:1` out to
 //!    the UI as `export-progress` events.
 //!
 //! Every FFmpeg invocation is a child process; this module never holds media
-//! in memory — only a few thousand keyframe timestamps and a progress line.
+//! in memory â€” only a few thousand keyframe timestamps and a progress line.
 
 use crate::ffmpeg::{ffmpeg_encoder_usable, ffmpeg_has_encoder, run_streaming};
 use crate::keyframes;
@@ -31,13 +31,36 @@ use tauri::Emitter;
 /// Tauri event name the UI listens on for live render progress.
 pub const EXPORT_EVENT: &str = "export-progress";
 
-/// Cut points in seconds. What the transcript's ✓/✕ decisions become once the
+/// Cut points in seconds. What the transcript's âœ“/âœ• decisions become once the
 /// gaps between kept lines are closed up.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Segment {
     pub start: f64,
     pub end: f64,
+    /// Playback gain for this range: `1.0` keeps the source audio, `0.0`
+    /// mutes it. The timeline's per-clip volume is exactly this number.
+    ///
+    /// Older callers (and every clip that was never touched) omit it, so the
+    /// serde default is `1.0`. Any value other than `1.0` forces the export's
+    /// audio to be re-encoded â€” a stream copy cannot carry a filter.
+    #[serde(default = "unison")]
+    pub gain: f64,
+}
+
+/// Default gain: the source, untouched. Serde cannot name `1.0` directly.
+fn unison() -> f64 {
+    1.0
+}
+
+/// Clamp a gain that crossed IPC. A missing or non-finite value means "as
+/// recorded"; nothing may turn into NaN inside an FFmpeg filter graph.
+pub fn segment_gain(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
 }
 
 /// Why a piece exists: a straight bitstream copy, or a short re-encode.
@@ -64,20 +87,20 @@ pub struct Piece {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ExportOptions {
-    /// `hybrid` (default) · `copy` (snap to keyframes, never encode) ·
+    /// `hybrid` (default) Â· `copy` (snap to keyframes, never encode) Â·
     /// `encode` (exact cuts, everything re-encoded).
     pub mode: String,
     /// How close a cut point may sit to a keyframe and still count as aligned.
     pub align_tolerance_ms: f64,
     /// Output quality preset for re-encoded pieces: `original` (near-lossless)
-    /// · `high` (default) · `balanced` · `small`. Stream-copied pieces ignore
-    /// this — they keep the source bits verbatim.
+    /// Â· `high` (default) Â· `balanced` Â· `small`. Stream-copied pieces ignore
+    /// this â€” they keep the source bits verbatim.
     pub quality: String,
-    /// What kind of file comes out: `video` (default) · `gif` · `mp3`.
+    /// What kind of file comes out: `video` (default) Â· `gif` Â· `mp3`.
     pub format: String,
-    /// The video resolution: `source` (default, no rescale) · `480p` ·
-    /// `720p` · `1080p` · `4k`. Only a smaller frame than the source is ever
-    /// produced — upscaling a 480p recording to 4K would cost a lot of time
+    /// The video resolution: `source` (default, no rescale) Â· `480p` Â·
+    /// `720p` Â· `1080p` Â· `4k`. Only a smaller frame than the source is ever
+    /// produced â€” upscaling a 480p recording to 4K would cost a lot of time
     /// and buy nothing.
     pub resolution: String,
     /// Render onto **one exact frame** for a multi-clip sequence: H.264,
@@ -85,13 +108,13 @@ pub struct ExportOptions {
     /// different files and are joined with a stream copy, so every one of
     /// them has to agree on the codec, the frame and the audio layout.
     pub canvas: Option<[u32; 2]>,
-    /// MP3 bitrate in kbps: 128 · 192 (default) · 256 · 320.
+    /// MP3 bitrate in kbps: 128 Â· 192 (default) Â· 256 Â· 320.
     pub bitrate_kbps: u32,
-    /// MP3 sample rate in Hz: 44100 (default) · 48000.
+    /// MP3 sample rate in Hz: 44100 (default) Â· 48000.
     pub sample_rate: u32,
-    /// MP3 channel count: 1 (mono) · 2 (stereo, default).
+    /// MP3 channel count: 1 (mono) Â· 2 (stereo, default).
     pub channels: u8,
-    /// Even out the loudness of an audio export — a phone voiceover and a
+    /// Even out the loudness of an audio export â€” a phone voiceover and a
     /// music bed end up at the same level.
     pub normalize: bool,
     /// Apply the timeline's cuts. `false` exports the whole recording, which
@@ -128,7 +151,7 @@ pub struct ExportRequest {
     pub segments: Vec<Segment>,
     pub output: String,
     pub options: ExportOptions,
-    /// SQLite path for the keyframe cache — optional, but without it every
+    /// SQLite path for the keyframe cache â€” optional, but without it every
     /// export re-reads the whole source to find its I-frames.
     pub db_path: Option<String>,
 }
@@ -145,13 +168,13 @@ impl Default for ExportRequest {
     }
 }
 
-/// The full render recipe — also what the panel shows before anything runs.
+/// The full render recipe â€” also what the panel shows before anything runs.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportPlan {
     pub source: String,
     pub output: String,
-    /// Mode actually used — `hybrid` downgrades to `encode` when the source
+    /// Mode actually used â€” `hybrid` downgrades to `encode` when the source
     /// codec cannot be mixed with re-encoded pieces.
     pub mode: String,
     pub duration_secs: f64,
@@ -162,7 +185,7 @@ pub struct ExportPlan {
     pub encode_pieces: usize,
     /// Encoder used for micro-encodes, e.g. `h264_qsv`.
     pub encoder: Option<String>,
-    /// Keyframes known in the source — the size of the grid cuts snap to.
+    /// Keyframes known in the source â€” the size of the grid cuts snap to.
     pub keyframe_count: usize,
     /// Audio is copied when the container accepts it, else encoded to AAC
     /// identically in every piece (a concat must not change codec midway).
@@ -170,7 +193,7 @@ pub struct ExportPlan {
     pub estimated_size_bytes: u64,
     /// Quality preset handed to the encoder for re-encoded pieces.
     pub quality: String,
-    /// The resolution that was asked for — `source` when nothing was rescaled.
+    /// The resolution that was asked for â€” `source` when nothing was rescaled.
     pub resolution: String,
     /// The FFmpeg scale filter the re-encoded pieces carry, when the export
     /// was asked for a smaller frame than the source has.
@@ -197,12 +220,12 @@ pub struct ExportResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportProgress {
-    /// `scan` · `cut` · `concat` · `done`.
+    /// `scan` Â· `cut` Â· `concat` Â· `done`.
     pub stage: String,
     /// 1-based piece being cut, 0 outside the cutting phase.
     pub piece_index: usize,
     pub piece_count: usize,
-    /// 0–100 across the whole job.
+    /// 0â€“100 across the whole job.
     pub percent: f64,
     pub message: String,
 }
@@ -235,7 +258,7 @@ fn is_light(info: &MediaInfo) -> bool {
         && info.duration_secs <= LIGHT_DURATION_SECS
 }
 
-// ───────────────────────────── pure planning ─────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ pure planning â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Sort, de-noise and complete an I-frame list: the start of the file and the
 /// end of the file are legal copy boundaries whether or not ffprobe printed
@@ -270,13 +293,13 @@ fn nearest_keyframe(t: f64, kfs: &[f64]) -> Option<f64> {
     })
 }
 
-/// `Some(keyframe)` when `t` sits within `tol` of a keyframe — the cut can be
+/// `Some(keyframe)` when `t` sits within `tol` of a keyframe â€” the cut can be
 /// stream-copied after a nudge no larger than the tolerance.
 fn aligned(t: f64, kfs: &[f64], tol: f64) -> Option<f64> {
     nearest_keyframe(t, kfs).filter(|k| (k - t).abs() <= tol)
 }
 
-/// First keyframe strictly after `t` — where a mid-GOP start can hand over to a
+/// First keyframe strictly after `t` â€” where a mid-GOP start can hand over to a
 /// stream copy.
 fn next_keyframe_after(t: f64, kfs: &[f64]) -> Option<f64> {
     kfs.iter().copied().find(|k| *k > t + SNAP_EPS)
@@ -294,16 +317,16 @@ pub struct PlanOutcome {
 
 /// Turn kept ranges into an ordered piece list for one mode.
 ///
-/// Hybrid — the interesting one — needs at most two pieces per segment:
+/// Hybrid â€” the interesting one â€” needs at most two pieces per segment:
 ///
 /// ```text
-///   source:  ────[I]═══════[I]═══════[I]═══════[I]═══════
-///   segment:          └───────────────┘
-///   cut at s (mid-GOP):  ▲ encode ▲├──── copy ────┤
+///   source:  â”€â”€â”€â”€[I]â•â•â•â•â•â•â•[I]â•â•â•â•â•â•â•[I]â•â•â•â•â•â•â•[I]â•â•â•â•â•â•â•
+///   segment:          â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+///   cut at s (mid-GOP):  â–² encode â–²â”œâ”€â”€â”€â”€ copy â”€â”€â”€â”€â”¤
 /// ```
 ///
-/// The segment's head is the partial GOP that starts mid-GOP — re-encoded so
-/// the first frame really is `s` — and everything from the next I-frame to the
+/// The segment's head is the partial GOP that starts mid-GOP â€” re-encoded so
+/// the first frame really is `s` â€” and everything from the next I-frame to the
 /// segment end is a plain stream copy that ends wherever it ends: only a
 /// piece's *start* has to be a keyframe.
 pub fn plan_pieces(segments: &[Segment], kfs: &[f64], opts: &ExportOptions) -> PlanOutcome {
@@ -335,7 +358,7 @@ pub fn plan_pieces(segments: &[Segment], kfs: &[f64], opts: &ExportOptions) -> P
             }
             _ => {
                 if let Some(start) = aligned(seg.start, kfs, tol) {
-                    // Aligned start → try to snap the end too for a clean copy piece.
+                    // Aligned start â†’ try to snap the end too for a clean copy piece.
                     let end = aligned(seg.end, kfs, tol).unwrap_or(seg.end);
                     let start = start.min(end);
                     outcome.max_snap_secs = outcome
@@ -389,7 +412,7 @@ fn prev_keyframe_before(t: f64, kfs: &[f64]) -> Option<f64> {
 }
 
 /// The concat demuxer's own list syntax, with Windows paths flattened to
-/// forward slashes — backslashes are escape characters inside `ffconcat`
+/// forward slashes â€” backslashes are escape characters inside `ffconcat`
 /// quotes, so `C:\Users` would otherwise parse as `C:Users`.
 pub fn concat_list_text(paths: &[PathBuf]) -> String {
     let mut out = String::from("ffconcat version 1.0\n");
@@ -435,8 +458,8 @@ pub enum ProgressLine {
 }
 
 /// Parse the `-progress` stream. `out_time` (a `HH:MM:SS.ffffff` string) is
-/// preferred over `out_time_ms`, which FFmpeg reports in *microseconds* — a
-/// long-standing quirk that would put a progress bar 1000× ahead of reality.
+/// preferred over `out_time_ms`, which FFmpeg reports in *microseconds* â€” a
+/// long-standing quirk that would put a progress bar 1000Ã— ahead of reality.
 pub fn parse_progress_line(line: &str) -> Option<ProgressLine> {
     let (key, value) = line.trim().split_once('=')?;
     let value = value.trim();
@@ -452,7 +475,7 @@ pub fn parse_progress_line(line: &str) -> Option<ProgressLine> {
     }
 }
 
-/// `01:02:03.500000` → seconds. `N/A` and friends return `None`.
+/// `01:02:03.500000` â†’ seconds. `N/A` and friends return `None`.
 fn parse_hhmmss(value: &str) -> Option<f64> {
     if value.eq_ignore_ascii_case("n/a") {
         return None;
@@ -462,7 +485,7 @@ fn parse_hhmmss(value: &str) -> Option<f64> {
     let h: f64 = parts.next()?.parse().ok()?;
     let m: f64 = parts.next()?.parse().ok()?;
     let s: f64 = parts.next()?.parse().ok()?;
-    // "500000" means 0.500000 s — scale by the digit count, not by guessing.
+    // "500000" means 0.500000 s â€” scale by the digit count, not by guessing.
     let frac = if frac.is_empty() || !frac.chars().all(|c| c.is_ascii_digit()) {
         0.0
     } else {
@@ -472,7 +495,7 @@ fn parse_hhmmss(value: &str) -> Option<f64> {
     Some(h * 3600.0 + m * 60.0 + s + frac)
 }
 
-/// Which encoder family a source belongs to — pieces must stay in-family or
+/// Which encoder family a source belongs to â€” pieces must stay in-family or
 /// the concat demuxer cannot stitch them.
 fn family_of(video_codec: &str) -> Option<&'static str> {
     match video_codec {
@@ -486,7 +509,7 @@ fn family_of(video_codec: &str) -> Option<&'static str> {
 /// target i3), CPU as the fallback for a piece the hardware rejects.
 ///
 /// `-encoders` alone only lists what the *build* knows, so each candidate is
-/// also asked to encode five synthetic frames — a build with h264_qsv on a box
+/// also asked to encode five synthetic frames â€” a build with h264_qsv on a box
 /// with no iGPU must not be allowed to fail ten minutes into a render.
 fn pick_encoder(family: &str) -> Result<(Option<String>, Option<String>), String> {
     let (hw, cpu) = match family {
@@ -503,7 +526,7 @@ fn pick_encoder(family: &str) -> Result<(Option<String>, Option<String>), String
         (Some(hw), cpu) => Ok((Some(hw.to_string()), cpu.map(str::to_string))),
         (None, Some(cpu)) => Ok((Some(cpu.to_string()), None)),
         (None, None) => Err(format!(
-            "no usable {family} encoder — FFmpeg reports none of {} working",
+            "no usable {family} encoder â€” FFmpeg reports none of {} working",
             if family == "hevc" {
                 "hevc_qsv/hevc_nvenc/hevc_amf/libx265"
             } else {
@@ -524,14 +547,14 @@ fn audio_copied(info: &MediaInfo, output: &Path) -> (bool, Vec<String>) {
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
-    // What MP4 can hold natively; anything else (PCM, TrueHD, …) goes to AAC
+    // What MP4 can hold natively; anything else (PCM, TrueHD, â€¦) goes to AAC
     // in every piece so the stream stays one codec end to end.
     let mp4_native = ["aac", "mp3", "opus", "ac3", "eac3", "alac"];
     if wants_mp4 && !mp4_native.contains(&codec) {
         (
             false,
             vec![format!(
-                "source audio ({codec}) is not MP4-native — audio is encoded to AAC in every piece"
+                "source audio ({codec}) is not MP4-native â€” audio is encoded to AAC in every piece"
             )],
         )
     } else {
@@ -561,15 +584,23 @@ pub fn build_plan(
         .filter_map(|s| {
             let start = s.start.clamp(0.0, duration);
             let end = s.end.clamp(0.0, duration);
-            (end - start > SNAP_EPS).then_some(Segment { start, end })
+            (end - start > SNAP_EPS).then_some(Segment {
+                start,
+                end,
+                gain: segment_gain(s.gain),
+            })
         })
         .collect();
     if segments.is_empty() {
-        return Err("nothing to export — no kept segments".to_string());
+        return Err("nothing to export â€” no kept segments".to_string());
     }
+    // A filter cannot ride on a stream copy: one touched clip re-encodes the
+    // audio of the whole export (AAC), which is the honest trade for keeping
+    // the loudness the preview promised.
+    let any_gain = segments.iter().any(|s| (s.gain - 1.0).abs() > 1e-6);
 
     let mut warnings = Vec::new();
-    // Light files (small and short) re-encode outright — no keyframe grid,
+    // Light files (small and short) re-encode outright â€” no keyframe grid,
     // no family-mixing restriction, exact cut points. Heavy files use the
     // keyframe-cached hybrid path that stream-copies aligned cuts.
     let light = is_light(&info);
@@ -588,7 +619,7 @@ pub fn build_plan(
         if family_of(video).is_none() {
             effective_mode = "encode".to_string();
             warnings.push(format!(
-                "source codec {video} cannot be mixed with re-encoded pieces — exporting the full timeline in one family"
+                "source codec {video} cannot be mixed with re-encoded pieces â€” exporting the full timeline in one family"
             ));
         }
     }
@@ -597,7 +628,7 @@ pub fn build_plan(
 
     // A different frame size means every piece has to be re-encoded: a
     // stream-copied piece keeps the source's pixels, and the concat would then
-    // be stitching two different sizes together. Upscaling is never done —
+    // be stitching two different sizes together. Upscaling is never done â€”
     // it costs a lot of time and buys nothing.
     let mut scale: Option<String> = None;
     let mut scale_factor = 1.0f64;
@@ -627,16 +658,16 @@ pub fn build_plan(
                 effective_mode = "encode".to_string();
                 warnings.push(if was_copy {
                     format!(
-                        "scaling to {target}p re-encodes every piece — a stream copy cannot be resized"
+                        "scaling to {target}p re-encodes every piece â€” a stream copy cannot be resized"
                     )
                 } else {
-                    format!("scaling to {target}p — every piece is re-encoded")
+                    format!("scaling to {target}p â€” every piece is re-encoded")
                 });
                 let (tw, th) = scaled_size(target, w, h);
                 scale_factor = (tw as f64 * th as f64) / (w as f64 * h as f64);
             } else if target > short {
                 warnings.push(format!(
-                    "the source is only {short}p — {target}p would only upscale it, so the export keeps the source size"
+                    "the source is only {short}p â€” {target}p would only upscale it, so the export keeps the source size"
                 ));
             }
         }
@@ -650,7 +681,7 @@ pub fn build_plan(
 
     if outcome.pieces.is_empty() {
         return Err(
-            "nothing to export — every segment is shorter than one GOP in copy mode".to_string(),
+            "nothing to export â€” every segment is shorter than one GOP in copy mode".to_string(),
         );
     }
 
@@ -672,12 +703,12 @@ pub fn build_plan(
             .is_some_and(|e| ["qsv", "nvenc", "amf"].iter().any(|tag| e.contains(tag)));
         if !primary_is_hardware {
             warnings.push(
-                "no hardware encoder usable on this machine — micro-encodes run on the CPU"
+                "no hardware encoder usable on this machine â€” micro-encodes run on the CPU"
                     .to_string(),
             );
         } else if fallback.is_none() {
             warnings.push(format!(
-                "no CPU fallback for {} — if the hardware rejects a piece the export stops",
+                "no CPU fallback for {} â€” if the hardware rejects a piece the export stops",
                 primary.clone().unwrap_or_default()
             ));
         }
@@ -687,7 +718,7 @@ pub fn build_plan(
     if effective_mode == "copy" {
         if outcome.dropped_segments > 0 {
             warnings.push(format!(
-                "{} segment(s) shorter than a GOP were dropped — use hybrid mode to keep them",
+                "{} segment(s) shorter than a GOP were dropped â€” use hybrid mode to keep them",
                 outcome.dropped_segments
             ));
         }
@@ -701,12 +732,21 @@ pub fn build_plan(
 
     // A sequence canvas forces AAC: a stream copy would mix 44.1 kHz packets
     // from one clip with 48 kHz packets from the next.
-    let (audio_copy, audio_warnings) = if canvas.is_some() {
+    let (mut audio_copy, audio_warnings) = if canvas.is_some() {
         (false, Vec::new())
     } else {
         audio_copied(info, Path::new(&req.output))
     };
     warnings.extend(audio_warnings);
+    if any_gain && canvas.is_none() {
+        audio_copy = false;
+        if info.has_audio {
+            warnings.push(
+                "clip volume is applied â€” audio is re-encoded to AAC so the loudness matches the preview"
+                    .to_string(),
+            );
+        }
+    }
 
     let output_duration_secs = outcome.pieces.iter().map(|p| p.duration_secs).sum();
 
@@ -760,12 +800,12 @@ impl ExportOptions {
     }
 }
 
-// ───────────────────────────── FFmpeg commands ─────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ FFmpeg commands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// The nominal frame size a resolution name asks for.
 ///
-/// `480p` · `720p` · `1080p` · `4k` → the **short** side of the frame, in
-/// pixels. `source` — and anything unknown — asks for no rescale at all.
+/// `480p` Â· `720p` Â· `1080p` Â· `4k` â†’ the **short** side of the frame, in
+/// pixels. `source` â€” and anything unknown â€” asks for no rescale at all.
 pub fn target_resolution(resolution: &str) -> Option<u32> {
     match resolution {
         "480p" => Some(480),
@@ -779,7 +819,7 @@ pub fn target_resolution(resolution: &str) -> Option<u32> {
 /// The scale filter that turns a source frame into the target one.
 ///
 /// A landscape source is scaled by its height (`scale=-2:720`), a portrait one
-/// by its width (`scale=720:-2`) — "720p" means the *short* side is 720, which
+/// by its width (`scale=720:-2`) â€” "720p" means the *short* side is 720, which
 /// is what every phone recording and every phone screen expects.
 pub fn scale_filter(target: u32, width: u32, height: u32) -> String {
     if width >= height {
@@ -794,7 +834,7 @@ pub fn even_dim(v: u32) -> u32 {
     (v.max(2) / 2) * 2
 }
 
-/// The scale filter a **sequence canvas** uses: letterbox to exactly `w`×`h`,
+/// The scale filter a **sequence canvas** uses: letterbox to exactly `w`Ã—`h`,
 /// square pixels, 30 fps, 8-bit 4:2:0. This is the same shape `still_clip`
 /// produces, so a still and a video part can be joined with a stream copy.
 pub fn canvas_filter(w: u32, h: u32) -> String {
@@ -807,11 +847,7 @@ pub fn canvas_filter(w: u32, h: u32) -> String {
 pub fn scaled_size(target: u32, width: u32, height: u32) -> (u32, u32) {
     let even = |v: f64| -> u32 {
         let r = v.round().max(2.0) as u32;
-        if r % 2 == 0 {
-            r
-        } else {
-            r + 1
-        }
+        if r % 2 == 0 { r } else { r + 1 }
     };
     if width >= height {
         (
@@ -840,6 +876,7 @@ fn piece_args(
     out_file: &Path,
     has_audio: bool,
     audio_copied: bool,
+    gain: f64,
     pix_fmt: Option<&str>,
     encoder: Option<&str>,
     quality: &str,
@@ -864,7 +901,7 @@ fn piece_args(
         PieceKind::Encode => {
             // Accurate input seek: FFmpeg decodes from the previous keyframe
             // (references intact) and discards up to `start`, so the first
-            // encoded frame really is `start` — an IDR, exactly where the copy
+            // encoded frame really is `start` â€” an IDR, exactly where the copy
             // piece next door expects to take over.
             args.push("-ss".into());
             args.push(time_arg(piece.start));
@@ -909,7 +946,7 @@ fn piece_args(
                 args.push("-pix_fmt".into());
                 args.push(fmt.to_string());
             }
-            // A rescaled export needs every piece at the new size — a stream
+            // A rescaled export needs every piece at the new size â€” a stream
             // copy cannot be resized, so the planner never mixes the two.
             if let Some(filter) = scale {
                 args.push("-vf".into());
@@ -918,7 +955,7 @@ fn piece_args(
         }
     }
 
-    // Audio treatment is global — every piece must carry the same codec or the
+    // Audio treatment is global â€” every piece must carry the same codec or the
     // concat demuxer would have to stitch AAC into PCM.
     if has_audio || canvas.is_some() {
         args.push("-c:a".into());
@@ -937,6 +974,12 @@ fn piece_args(
                 args.push("-ac".into());
                 args.push("2".into());
             }
+            // The clip's loudness. `0` is a mute, `1` is untouched and adds no
+            // filter at all, so an export nobody touched stays bit-exact.
+            if (gain - 1.0).abs() > 1e-6 {
+                args.push("-af".into());
+                args.push(format!("volume={gain:.6}"));
+            }
         }
     }
 
@@ -952,8 +995,8 @@ fn piece_args(
 ///
 /// `original` is near-lossless (visually indistinguishable), `high` is the
 /// default, `balanced` trades a little fidelity for a smaller file, and
-/// `small` optimises hard for size. Micro-encodes are 1–2 s long, so even the
-/// generous presets cost little CPU — the boundary fidelity is what matters.
+/// `small` optimises hard for size. Micro-encodes are 1â€“2 s long, so even the
+/// generous presets cost little CPU â€” the boundary fidelity is what matters.
 fn encoder_args(encoder: &str, quality: &str) -> Vec<String> {
     // CRF ladder per preset, indexed by the tables below. Lower = better
     // quality / bigger file.
@@ -1022,7 +1065,7 @@ fn concat_args(list: &Path, has_audio: bool, output: &Path) -> Vec<String> {
     args
 }
 
-// ───────────────────────────── the run ─────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ the run â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn emit(app: &tauri::AppHandle, progress: ExportProgress) {
     let _ = app.emit(EXPORT_EVENT, progress);
@@ -1048,7 +1091,7 @@ pub fn open_cache_db(db_path: Option<&str>) -> (Option<rusqlite::Connection>, Op
     }
 }
 
-/// Everything `plan_export` needs: probe → keyframe map (cached) → recipe.
+/// Everything `plan_export` needs: probe â†’ keyframe map (cached) â†’ recipe.
 /// Also the first half of a real run, so the preview cannot drift from what
 /// the render will do.
 pub fn prepare(
@@ -1065,7 +1108,7 @@ pub fn prepare(
     let info = MediaInfo::probe(&source)?;
     let (db, db_warning) = open_cache_db(req.db_path.as_deref());
 
-    // Light files (small and short) are fast enough to re-encode outright —
+    // Light files (small and short) are fast enough to re-encode outright â€”
     // skip the full-file keyframe scan entirely. Heavy files pay the scan once
     // (SQLite-cached) and stream-copy aligned cuts.
     let light = is_light(&info);
@@ -1076,7 +1119,7 @@ pub fn prepare(
     };
     if let Some(msg) = on_scan {
         let scan_msg = if light {
-            "light file — skipping keyframe scan".to_string()
+            "light file â€” skipping keyframe scan".to_string()
         } else {
             format!("{} keyframes", kfs.len())
         };
@@ -1115,10 +1158,10 @@ pub fn run_export(
             .map_err(|e| format!("could not create output folder {}: {e}", parent.display()))?;
     }
     if req.segments.is_empty() {
-        return Err("nothing to export — no kept segments".to_string());
+        return Err("nothing to export â€” no kept segments".to_string());
     }
 
-    // 1 ── probe → keyframe map (SQLite-cached across runs) → recipe.
+    // 1 â”€â”€ probe â†’ keyframe map (SQLite-cached across runs) â†’ recipe.
     emit(
         &app,
         ExportProgress {
@@ -1126,7 +1169,7 @@ pub fn run_export(
             piece_index: 0,
             piece_count: 0,
             percent: 0.0,
-            message: "scanning keyframes…".into(),
+            message: "scanning keyframesâ€¦".into(),
         },
     );
     let scan_app = app.clone();
@@ -1147,7 +1190,7 @@ pub fn run_export(
         return Err("export cancelled".to_string());
     }
 
-    // 2 ── cut every piece into a work folder beside the destination, then
+    // 2 â”€â”€ cut every piece into a work folder beside the destination, then
     // stitch them with the concat demuxer.
     let work = output
         .parent()
@@ -1185,14 +1228,14 @@ pub fn run_export(
         warnings.push(format!("could not remove work folder: {e}"));
     }
 
-    // 3 ── verify: the output must be probe-able and roughly the duration the
+    // 3 â”€â”€ verify: the output must be probe-able and roughly the duration the
     // planner promised.
     let out_info = MediaInfo::probe(&output)
         .map_err(|e| format!("export finished but the output could not be probed: {e}"))?;
     let expected = plan.output_duration_secs;
     if (out_info.duration_secs - expected).abs() > expected.max(1.0) * 0.05 + 1.0 {
         warnings.push(format!(
-            "output duration {:.2}s differs from the planned {:.2}s — check the cut points",
+            "output duration {:.2}s differs from the planned {:.2}s â€” check the cut points",
             out_info.duration_secs, expected
         ));
     }
@@ -1305,7 +1348,7 @@ fn cut_and_concat(
                         piece_index: piece.index + 1,
                         piece_count,
                         percent: base,
-                        message: format!("retrying with {fb}…"),
+                        message: format!("retrying with {fb}â€¦"),
                     },
                 );
                 out = run_piece(
@@ -1342,7 +1385,7 @@ fn cut_and_concat(
         return Err("export cancelled".to_string());
     }
 
-    // ── concat ──────────────────────────────────────────────────────────
+    // â”€â”€ concat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let paths: Vec<PathBuf> = (0..piece_count)
         .map(|i| work.join(format!("piece_{i:04}.mkv")))
         .collect();
@@ -1357,7 +1400,7 @@ fn cut_and_concat(
             piece_index: piece_count,
             piece_count,
             percent: WEIGHT_CUT,
-            message: "stitching pieces…".into(),
+            message: "stitching piecesâ€¦".into(),
         },
     );
 
@@ -1395,7 +1438,7 @@ fn cut_and_concat(
     Ok(())
 }
 
-/// CPU encoder for the current family, when one exists — the escape hatch when
+/// CPU encoder for the current family, when one exists â€” the escape hatch when
 /// hardware rejects a piece.
 fn plan_fallback(plan: &ExportPlan) -> Option<String> {
     let primary = plan.encoder.as_deref()?;
@@ -1436,6 +1479,10 @@ fn run_piece(
         file,
         info.has_audio,
         plan.audio_copied,
+        plan.segments
+            .get(piece.segment_index)
+            .map(|s| s.gain)
+            .unwrap_or(1.0),
         pix_fmt,
         encoder,
         &plan.quality,
@@ -1510,9 +1557,8 @@ fn concat_parts_blocking(
     let out = PathBuf::from(&output);
     if let Some(parent) = out.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!("could not create output folder {}: {e}", parent.display())
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("could not create output folder {}: {e}", parent.display()))?;
         }
     }
     let work = out
@@ -1600,9 +1646,8 @@ fn still_clip_blocking(
     let out = PathBuf::from(&output);
     if let Some(parent) = out.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!("could not create output folder {}: {e}", parent.display())
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("could not create output folder {}: {e}", parent.display()))?;
         }
     }
     let secs = seconds.clamp(0.1, 600.0);
@@ -1701,6 +1746,7 @@ mod tests {
         let seg = [Segment {
             start: 2.0,
             end: 8.0,
+            gain: 1.0,
         }];
         let out = plan_pieces(&seg, &kfs(), &opts("hybrid"));
         assert_eq!(out.pieces.len(), 1);
@@ -1714,12 +1760,13 @@ mod tests {
         let seg = [Segment {
             start: 3.0,
             end: 9.5,
+            gain: 1.0,
         }];
         let out = plan_pieces(&seg, &kfs(), &opts("hybrid"));
         assert_eq!(out.pieces.len(), 2);
         assert_eq!(out.pieces[0].kind, PieceKind::Encode);
         assert_eq!(out.pieces[0].start, 3.0);
-        assert_eq!(out.pieces[0].end, 4.0, "partial GOP only — 1 s, not 6.5");
+        assert_eq!(out.pieces[0].end, 4.0, "partial GOP only â€” 1 s, not 6.5");
         assert_eq!(out.pieces[1].kind, PieceKind::Copy);
         assert_eq!(out.pieces[1].start, 4.0);
         assert_eq!(out.pieces[1].end, 9.5);
@@ -1730,6 +1777,7 @@ mod tests {
         let seg = [Segment {
             start: 4.5,
             end: 5.5,
+            gain: 1.0,
         }];
         let out = plan_pieces(&seg, &kfs(), &opts("hybrid"));
         assert_eq!(out.pieces.len(), 1);
@@ -1744,6 +1792,7 @@ mod tests {
         let seg = [Segment {
             start: 4.01,
             end: 7.99,
+            gain: 1.0,
         }];
         let out = plan_pieces(&seg, &kfs(), &opts("hybrid"));
         assert_eq!(out.pieces.len(), 1, "expected a plain copy, got {out:#?}");
@@ -1760,6 +1809,7 @@ mod tests {
         let seg = [Segment {
             start: 3.0,
             end: 9.5,
+            gain: 1.0,
         }];
         let out = plan_pieces(&seg, &kfs(), &opts("copy"));
         assert_eq!(out.pieces.len(), 1);
@@ -1774,6 +1824,7 @@ mod tests {
         let seg = [Segment {
             start: 4.5,
             end: 5.5,
+            gain: 1.0,
         }];
         let out = plan_pieces(&seg, &kfs(), &opts("copy"));
         assert!(out.pieces.is_empty());
@@ -1786,10 +1837,12 @@ mod tests {
             Segment {
                 start: 1.234,
                 end: 5.678,
+                gain: 1.0,
             },
             Segment {
                 start: 9.0,
                 end: 10.0,
+                gain: 1.0,
             },
         ];
         let out = plan_pieces(&seg, &kfs(), &opts("encode"));
@@ -1806,10 +1859,12 @@ mod tests {
             Segment {
                 start: 0.5,
                 end: 3.5,
+                gain: 1.0,
             },
             Segment {
                 start: 6.0,
                 end: 11.25,
+                gain: 1.0,
             },
         ];
         let out = plan_pieces(&seg, &kfs(), &opts("hybrid"));
@@ -1864,7 +1919,7 @@ mod tests {
             parse_progress_line("out_time=00:00:00.000000"),
             Some(ProgressLine::OutTime(0.0))
         );
-        // out_time_ms is in microseconds — deliberately not parsed.
+        // out_time_ms is in microseconds â€” deliberately not parsed.
         assert_eq!(parse_progress_line("out_time_ms=90500000"), None);
         assert_eq!(parse_progress_line("out_time_us=90500000"), None);
         assert_eq!(
@@ -1896,6 +1951,7 @@ mod tests {
             Path::new("C:\\out\\piece_0000.mkv"),
             true,
             true,
+            1.0,
             Some("yuv420p"),
             Some("h264_qsv"),
             "high",
@@ -1914,6 +1970,53 @@ mod tests {
     }
 
     #[test]
+    fn clip_gain_becomes_a_volume_filter_and_never_a_stream_copy() {
+        let piece = Piece {
+            index: 0,
+            segment_index: 0,
+            start: 3.0,
+            end: 4.0,
+            kind: PieceKind::Copy,
+            duration_secs: 1.0,
+        };
+        let args = piece_args(
+            Path::new("v.mp4"),
+            &piece,
+            Path::new("piece.mkv"),
+            true,
+            false,
+            0.5,
+            None,
+            None,
+            "high",
+            None,
+            None,
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("-af volume=0.500000"), "{joined}");
+        assert!(joined.contains("-c:a aac"), "{joined}");
+        assert!(!joined.contains("-c:a copy"), "{joined}");
+
+        // An untouched clip adds no audio filter at all.
+        let plain = piece_args(
+            Path::new("v.mp4"),
+            &piece,
+            Path::new("piece.mkv"),
+            true,
+            true,
+            1.0,
+            None,
+            None,
+            "high",
+            None,
+            None,
+        )
+        .join(" ");
+        assert!(!plain.contains("-af"), "{plain}");
+        assert!(plain.contains("-c:a copy"), "{plain}");
+    }
+
+    #[test]
     fn a_canvas_piece_is_one_shape_with_audio_even_when_the_source_is_silent() {
         let piece = Piece {
             index: 0,
@@ -1929,10 +2032,13 @@ mod tests {
             Path::new("part1.mp4"),
             false,
             false,
+            1.0,
             Some("yuv420p"),
             Some("libx264"),
             "high",
-            Some("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"),
+            Some(
+                "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
+            ),
             Some((1920, 1080)),
         );
         let joined = args.join(" ");
@@ -1976,6 +2082,7 @@ mod tests {
             Path::new("piece_0001.mkv"),
             false,
             true,
+            1.0,
             None,
             None,
             "high",
@@ -2037,7 +2144,7 @@ mod tests {
                 duration_secs: 1.0,
             },
         ];
-        // 5 s copy = 500 B, 1 s encode = 100 B × 0.7 = 70 B.
+        // 5 s copy = 500 B, 1 s encode = 100 B Ã— 0.7 = 70 B.
         // `scale_factor` 1.0 = no scaling, so the encode keeps full weight.
         assert_eq!(estimate_size(&info, &pieces, 1.0), 570);
     }
