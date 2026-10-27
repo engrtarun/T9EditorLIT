@@ -120,13 +120,20 @@ filter at all, so the common export stays bit-exact.
 The sketch wants _auto cut suggestion AI fumble / Repeat lines_, but
 `autoSuggest()` calls `project.suggestSilences()` only.
 
-- Add `findAiCuts(minSecs)` = `findSilences()` **plus** the spans of lines with
-  `flag` `fumble` / `repeat` that are still `keep`.
-- Stage them in the same `project.suggestions` list — the green preview,
-  Apply/Reject banner and minimap already understand a `SilenceRange[]`.
-- Product decision to make first: a line the **user** pressed `V` on also has
-  `flag: 'fumble'`, and re-suggesting it would fight the user. Either record a
-  `manual` bit on the line, or only suggest flags with `confidence < 0.7`.
+**Shipped (detector):** `src/lib/suggestions.ts` reads the transcript instead
+of the waveform, because a retake or an `umm` false start leaves no silence
+behind. It flags filler-only lines, lines that open with a filler, immediate
+stutters, takes abandoned mid-word, a false start the next line completes, and
+near-identical neighbouring takes (Jaccard ≥ 0.75). `flag: 'fumble' | 'repeat'`
+from the cloud brain is honoured. Lines the user already cut are ignored, so it
+never re-suggests a decision. Pure functions, 14 `node --test` cases.
+
+**Still open (wiring):** the store does not call it yet, deliberately — the
+timeline-tiling lane is editing `project.svelte.ts` and `WaveTimeline.svelte`
+in the same tree, and two edits to one store merge badly (§8). Once that lane
+lands: a `qualitySuggestions` state beside `suggestions`, Apply cutting by
+**line id** (not by overlap, so a neighbour that merely touches the boundary
+cannot be swept in), and `autoSuggest()` running silences + text together.
 
 ### 3.3 Project-level in/out
 

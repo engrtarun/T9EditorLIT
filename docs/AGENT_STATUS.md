@@ -494,3 +494,17 @@ the new controls must be numbers in state, not new files on disk.
 - Unit tests cover the filter and the "never copy audio with a gain" rule;
   `cargo check --all-targets` runs locally, the real `cargo test` is CI's job
   (AGENTS.md §11).
+
+### Update: fumble / repeat detector (waveform is not enough)
+
+- `src/lib/suggestions.ts` (new, pure) finds the lines the sketch calls
+  _fumble_ and _repeat_: filler-only lines, filler-led short takes, immediate
+  stutters, takes abandoned mid-word, a false start the next line completes,
+  and near-identical neighbouring takes. A `fumble`/`repeat` flag from the
+  cloud brain is honoured; lines the user already cut are ignored.
+- 14 cases in `src/lib/suggestions.test.ts`; `npm test` passes.
+- **Not wired to the UI yet on purpose**: `project.svelte.ts` and
+  `WaveTimeline.svelte` are being edited by the timeline-tiling lane in the
+  same tree. Two edits to one store merge badly, so the store method and the
+  Apply button wait for that lane's commit. Apply must cut by **line id**,
+  never by time overlap.
