@@ -508,3 +508,25 @@ the new controls must be numbers in state, not new files on disk.
   same tree. Two edits to one store merge badly, so the store method and the
   Apply button wait for that lane's commit. Apply must cut by **line id**,
   never by time overlap.
+
+### Update: the fumble/repeat suggestions are wired, and a dropped clip shows frames
+
+- The timeline-tiling lane went idle for ~20 minutes with `svelte-check` at 0
+  errors and 47 tests green, so the admin lane committed it (`310c4d0`) rather
+  than leave the tree dirty behind every later deploy. It is their design —
+  the timeline is the master, every second of the source is a block.
+- `project.svelte.ts`: `qualitySuggestions` + `liveQualitySuggestions` beside
+  the silence preview, `suggestQuality()` stages, `applyQualitySuggestions()`
+  cuts by **line id**, `clearQualitySuggestions()` rejects. The AI button runs
+  silences **and** the transcript scan in one click; the banner reads
+  "2 silence 1 line", Apply cuts both, Reject drops both. Amber in the
+  minimap, "AI fumble" in the legend.
+- Verified live on localhost: restoring the mock's cut repeat line made the
+  scan report "2 silence 1 line"; Apply turned it red again and closed the
+  banner; 20 clips, zero console errors.
+- `ClipFilmstrip.svelte` (new): an asset clip now paints its real frames.
+  One hidden `<video>`, ≤ 8 seeks, frames at true aspect repeated to fill the
+  slice, ≤ 4096 px buffer, image assets get a cover fill. Nothing is decoded
+  into the Rust heap and a broken file falls back to the gradient.
+- Verified by sampling the canvas in the live page: 8 slices, every one with
+  picture content, no console errors.

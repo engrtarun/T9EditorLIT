@@ -128,12 +128,33 @@ near-identical neighbouring takes (Jaccard ≥ 0.75). `flag: 'fumble' | 'repeat'
 from the cloud brain is honoured. Lines the user already cut are ignored, so it
 never re-suggests a decision. Pure functions, 14 `node --test` cases.
 
-**Still open (wiring):** the store does not call it yet, deliberately — the
-timeline-tiling lane is editing `project.svelte.ts` and `WaveTimeline.svelte`
-in the same tree, and two edits to one store merge badly (§8). Once that lane
-lands: a `qualitySuggestions` state beside `suggestions`, Apply cutting by
-**line id** (not by overlap, so a neighbour that merely touches the boundary
-cannot be swept in), and `autoSuggest()` running silences + text together.
+**Shipped (wiring):** the store keeps `qualitySuggestions` beside
+`suggestions`, `suggestQuality()` stages the amber preview, and the AI button
+now runs both scans in one click. The banner names the two counts
+("2 silence 1 line"), Apply cuts both, Reject drops both. `applyQualitySuggestions()`
+cuts by **line id**, never by overlap, so a neighbour that merely touches the
+boundary cannot be swept in; `liveQualitySuggestions` drops a line the moment
+it is applied or restored, so no stale band survives. The amber band sits in
+the minimap next to the green one, and the legend calls it "AI fumble".
+
+Proven in the browser: restoring the mock's cut repeat line made the next scan
+report "2 silence 1 line"; Apply turned that line red again and closed the
+banner. That is exactly the rule that a cut is never suggested twice.
+
+### 3.4 A dropped clip must look "like previews"
+
+The sketch's note _new clip also support drag & drop etc like previews_ had
+half landed: drag & drop, `+` and double-click all add a clip, but the block
+was a gradient, a name and a duration — no frames.
+
+**Shipped:** `src/lib/components/cut/ClipFilmstrip.svelte` paints the real
+frames of an asset clip. One hidden `<video>` is seeked to evenly spaced times
+and each frame is drawn on a canvas at its true aspect ratio, repeated to fill
+its slice, so a wide block reads as a filmstrip rather than one stretched
+picture. Frames are capped (≤ 8 seeks, ≤ 4096 px buffer) because the strip is
+a preview, not a decode job: nothing is buffered for the whole file, nothing
+reaches the Rust heap, and a file that cannot be read leaves the gradient
+underneath visible instead of a black hole. Image assets get one cover fill.
 
 ### 3.3 Project-level in/out
 
@@ -165,4 +186,6 @@ on the source and would have to reach the export filter graph — do it with
    missing today).
 3. AI button → green spans include fumbles/repeats; Reject leaves the timeline
    untouched; Apply turns them red and closes the gaps.
-4. `npm run check`, `npm run test`, then the deploy contract in `AGENTS.md` §10.
+4. Drop a library clip on the timeline → the block shows frames, not a
+   gradient; a broken file falls back to the gradient instead of going black.
+5. `npm run check`, `npm run test`, then the deploy contract in `AGENTS.md` §10.

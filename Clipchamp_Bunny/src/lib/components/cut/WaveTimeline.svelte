@@ -10,6 +10,7 @@
   import { clamp, fmtShort, fmtTime, niceStep } from '../../utils';
   import ContextMenu from '../ContextMenu.svelte';
   import MenuIcon from '../MenuIcon.svelte';
+  import ClipFilmstrip from './ClipFilmstrip.svelte';
   import type { MenuItem } from '../../types';
 
   /* Timeline metrics (measured on the Clipchamp OBS capture + DOM extract):
@@ -782,15 +783,26 @@
       </button>
       <button
         onclick={() => {
-          project.snap = !project.snap;
-          player.snap = project.snap;
+          player.previewRaw = !player.previewRaw;
+          toast.push(
+            'info',
+            player.previewRaw
+              ? '◉ Raw preview — cut material bhi play hoga'
+              : '✂ Applied preview — cuts skip ho rahe hain'
+          );
         }}
         class="grid h-7 w-7 place-items-center rounded-md transition-colors
-               {project.snap
-          ? 'text-nc-brand hover:bg-nc-panel-2'
-          : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
-        title="Snap to line boundaries"
+               {player.previewRaw
+          ? 'text-amber-400 hover:bg-nc-panel-2'
+          : 'text-nc-brand hover:bg-nc-panel-2'}"
+        aria-pressed={player.previewRaw}
+        title={player.previewRaw
+          ? 'Raw preview ON — playback cut material ko bhi dikhata hai (click: applied mode)'
+          : 'Applied preview — playback cuts skip karta hai (click: raw mode, cut material dekho)'}
       >
+        <!-- The play button, cut in two: applied mode holds the halves apart
+             with a dashed cut line between them; raw mode closes the gap and
+             the triangle becomes whole again. -->
         <svg
           width="15"
           height="15"
@@ -798,8 +810,32 @@
           fill="none"
           stroke="currentColor"
           stroke-width="1.7"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          <path d="M6 3v7a6 6 0 0 0 12 0V3M6 3H3M18 3h3M9 21h6" />
+          <path
+            d="M6 4L12 7.7V16.3L6 20Z"
+            fill="currentColor"
+            stroke="none"
+            class="transition-transform duration-300 ease-out {player.previewRaw
+              ? ''
+              : '-translate-x-[1.5px]'}"
+          />
+          <path
+            d="M12 7.7L19 12L12 16.3Z"
+            fill="currentColor"
+            stroke="none"
+            class="transition-transform duration-300 ease-out {player.previewRaw
+              ? ''
+              : 'translate-x-[1.5px]'}"
+          />
+          <path
+            d="M12 3.5V20.5"
+            stroke-dasharray="2 2.5"
+            class="transition-opacity duration-300 {player.previewRaw
+              ? 'opacity-0'
+              : 'opacity-100'}"
+          />
         </svg>
       </button>
     </div>
@@ -903,8 +939,8 @@
           {/if}
           {#if project.liveQualitySuggestions.length}
             <span class="text-[9px] font-medium text-amber-300">
-              {project.liveQualitySuggestions.length} line{project.liveQualitySuggestions
-                .length === 1
+              {project.liveQualitySuggestions.length} line{project.liveQualitySuggestions.length ===
+              1
                 ? ''
                 : 's'}
             </span>
@@ -1203,6 +1239,19 @@
             >
               <div
                 class="absolute inset-0 bg-gradient-to-br from-nc-brand/25 via-nc-panel-2 to-black/40"
+              ></div>
+              <!-- The sketch asks for a dropped clip to look "like previews":
+                   real frames, not a gradient. The strip falls back to the
+                   gradient above if the file cannot be read. -->
+              <ClipFilmstrip
+                src={r.clip.url}
+                kind={r.clip.kind}
+                inSec={r.clip.inSec}
+                outSec={r.clip.outSec}
+                width={Math.max(6, (r.end - r.start) * zoom)}
+              />
+              <div
+                class="pointer-events-none absolute inset-0 bg-gradient-to-br from-nc-brand/10 via-transparent to-black/35"
               ></div>
               <div
                 class="pointer-events-none absolute inset-x-0 top-0 h-5 bg-gradient-to-b from-black/70 to-transparent"
