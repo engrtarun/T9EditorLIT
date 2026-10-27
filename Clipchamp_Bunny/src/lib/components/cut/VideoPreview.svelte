@@ -274,6 +274,8 @@
     project.isTrackHidden('audio') ||
       (currentSegment ? project.isSegmentMuted(currentSegment.id) : false)
   );
+  /** Per-clip loudness (the sketch's "mute/volume too because new clip"). */
+  const audioGain = $derived(currentSegment ? project.segmentGain(currentSegment.id) : 1);
   const videoHidden = $derived(project.isTrackHidden('video'));
   const clipTimeLeft = $derived(
     activeClip ? Math.max(0, activeClip.outSec - player.currentTime) : 0
@@ -289,6 +291,9 @@
     const v = videoEl;
     if (!v) return;
     v.muted = audioHidden;
+    // The element clamps at 1.0; the model does too, so preview and export
+    // can never disagree about how loud a clip is.
+    v.volume = audioGain;
   });
 </script>
 

@@ -99,20 +99,20 @@ So the sketch is **~90 % built**. The remaining diffs are small and concrete.
 The sketch says _mute/volume too because new clip_. `mutedSegments` is a
 `string[]` of clip ids; there is no gain.
 
-- **Model:** `volume: Record<string, number>` (0–2, default 1) next to
-  `mutedSegments` in `project.svelte.ts`, persisted in `restoreUiState()` /
-  `uiSnapshot()` and remapped wherever `mutedSegments` is remapped
-  (`split`, merge, delete).
-- **Preview:** `VideoPreview.svelte` already does
-  `el.muted = project.isSegmentMuted(currentSegment.id)`; add
-  `el.volume = Math.min(1, volume)` (the element clamps at 1.0).
-- **UI:** the clip header already has a mute button; a small range input in the
-  same corner (visible on hover / when selected) is enough.
-- **Export:** the Rust exporter receives no mute or gain today, so **muted
-  clips still export their audio**. Fixing that is a separate Rust change
-  (`mute`/`volume` in the export request + `volume=0` / `volume=<g>` in the
-  filter graph) and should land together with the volume UI, or the control
-  would be a preview-only promise.
+**Shipped (preview half):** `segmentVolume` in `project.svelte.ts` (a
+`Record<clipId, 0..1>`, 1 = original), persisted with the rest of the timeline
+UI state, carried through split/merge/delete, applied by `VideoPreview` to the
+`<video>` element, and offered on the clip's context menu (100 / 75 / 50 / 25 %)
+with a `%` badge on the clip when it is not 100 %. It is a number in state —
+nothing is re-encoded, so the Zero-RAM rule is untouched.
+
+**Still open (export half):** `ExportRequest.segments` carries only
+`{ start, end }`, and `src-tauri/src/export.rs` has no volume filter, so **a
+muted or turned-down clip still exports at full volume**. The menu says
+"Preview only — export audio abhi unchanged" because that is the truth.
+Closing it needs: `mute`/`gain` on the Rust `Segment`, `-af volume=<g>` on the
+pieces that carry audio, and `audio_copied = false` for the whole export as
+soon as any segment asks for a gain (a stream copy cannot apply a filter).
 
 ### 3.2 AI suggestions for fumble / repeat lines
 

@@ -603,6 +603,13 @@
     const inside =
       player.currentTime > seg.startSec + 0.15 && player.currentTime < seg.endSec - 0.15;
     const muted = project.isSegmentMuted(seg.id);
+    const gain = project.segmentGain(seg.id);
+    const vol = (v: number, label: string): MenuItem => ({
+      id: `vol-${v}`,
+      // A dot marks the current value: the menu has no checkbox column.
+      label: `${Math.abs(gain - v) < 0.005 ? '● ' : ''}Volume ${label}`,
+      icon: 'volume'
+    });
     return [
       { id: 'split', label: 'Split at playhead', icon: 'split', disabled: !inside },
       { id: 'trim-start', label: 'Trim start to playhead', icon: 'scissors', disabled: !inside },
@@ -613,6 +620,12 @@
         label: muted ? 'Unmute clip audio' : 'Mute clip audio',
         icon: muted ? 'volumeOff' : 'volume'
       },
+      // The sketch asks for volume as well as mute, because every clip is its
+      // own strip (docs/TIMELINE_HUMAN_DIAGRAM.md §1.2).
+      { ...vol(1, '100%'), secondary: 'Preview only — export audio abhi unchanged' },
+      vol(0.75, '75%'),
+      vol(0.5, '50%'),
+      vol(0.25, '25%'),
       { id: 'div-2', label: '', divider: true },
       { id: 'delete', label: 'Delete clip (closes gap)', icon: 'trash', danger: true }
     ];
@@ -646,6 +659,10 @@
         'info',
         project.isSegmentMuted(seg.id) ? 'Clip audio muted' : 'Clip audio unmuted'
       );
+    } else if (id.startsWith('vol-')) {
+      const gain = Number(id.slice(4));
+      project.setSegmentVolume(seg.id, gain);
+      toast.push('info', `Clip volume ${Math.round(project.segmentGain(seg.id) * 100)}%`);
     } else if (id === 'delete') {
       project.cutSegments([seg.id]);
       toast.push('cut', '✕ Clip deleted — gap closed');
@@ -1011,6 +1028,13 @@
                   class="pointer-events-none absolute bottom-0.5 left-1.5 max-w-[calc(100%-2rem)] truncate font-mono text-[9px] text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,.9)]"
                   >{fmtShort(s.startSec)}–{fmtShort(s.endSec)}</span
                 >
+                {#if project.segmentGain(s.id) !== 1}
+                  <span
+                    class="pointer-events-none absolute right-6 bottom-0.5 z-20 rounded bg-black/55 px-1 font-mono text-[8px] leading-4 text-white/85"
+                    title="Clip volume (preview) — right-click the clip to change"
+                    >{Math.round(project.segmentGain(s.id) * 100)}%</span
+                  >
+                {/if}
                 <button
                   onpointerdown={(e) => e.stopPropagation()}
                   onclick={(e) => {

@@ -12,6 +12,7 @@ import { MOCK_LINES } from '../mock';
 import { framePreset, type ProjectFrame } from '../project-frame';
 import {
   buildSegments,
+  type Segment,
   computeOffsets,
   dropIndex,
   editDuration as editDurationOf,
@@ -19,7 +20,8 @@ import {
   moveInOrder,
   orderLines,
   orderSegments,
-  sourceAt
+  sourceAt,
+  timelineDuration as timelineDurationOf
 } from '../segments';
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 import { media } from './media.svelte';
@@ -64,6 +66,7 @@ interface Snapshot {
   segmentOrder: string[];
   splitMarks: number[];
   mutedSegments: string[];
+  segmentVolume: Record<string, number>;
   hiddenTracks: TrackId[];
 }
 
@@ -102,6 +105,43 @@ function applySplitText(left: TranscriptLine, right: TranscriptLine, at: number)
     .trim();
   left.words = head;
   right.words = tail;
+}
+
+/**
+ * Read cut spans back out of JSON (localStorage / an undo snapshot).
+ *
+ * `JSON.parse` hands back `number[][]`, not tuples, and a corrupted entry
+ * must not be able to poison the timeline — anything that is not a real
+ * forward range is dropped.
+ */
+function toCutSpans(value: unknown): Array<[number, number]> {
+  if (!Array.isArray(value)) return [];
+  const out: Array<[number, number]> = [];
+  for (const raw of value) {
+    if (!Array.isArray(raw) || raw.length < 2) continue;
+    const a = Number(raw[0]);
+    const b = Number(raw[1]);
+    if (Number.isFinite(a) && Number.isFinite(b) && b > a) out.push([a, b]);
+  }
+  return out;
+}
+
+/** Take `[a, b]` out of a span list, keeping the parts either side. */
+function subtractSpan(
+  spans: ReadonlyArray<readonly [number, number]>,
+  a: number,
+  b: number
+): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (const [x, y] of spans) {
+    if (y <= a || x >= b) {
+      out.push([x, y]);
+      continue;
+    }
+    if (x < a) out.push([x, a]);
+    if (y > b) out.push([b, y]);
+  }
+  return out;
 }
 
 /**
@@ -149,6 +189,15 @@ class ProjectStore {
   activeClipId = $state<string | null>(null);
   /** Clip ids whose audio is muted (Clipchamp's speaker button on the clip). */
   mutedSegments = $state<string[]>([]);
+  /**
+   * Per-clip playback gain, 1 = original. Absent means 1.
+   *
+   * The sketch of the timeline asks for "mute/volume too because new clip"
+   * (docs/TIMELINE_HUMAN_DIAGRAM.md): each clip is its own strip, so it owns
+   * its own loudness. Nothing is re-encoded - this is a number in state, like
+   * the cut flags, and the `<video>` element applies it in the preview.
+   */
+  segmentVolume = $state<Record<string, number>>({});
   /** Whole tracks hidden by the eye/Hide control. */
   hiddenTracks = $state<TrackId[]>([]);
   waveform = $state<WaveformData | null>(null);
@@ -859,6 +908,7 @@ class ProjectStore {
         segmentOrder: this.segmentOrder,
         splitMarks: this.splitMarks,
         mutedSegments: this.mutedSegments,
+        segmentVolume: this.segmentVolume,
         hiddenTracks: this.hiddenTracks
       };
       localStorage.setItem(key, JSON.stringify(payload));
@@ -877,6 +927,7 @@ class ProjectStore {
         segmentOrder?: string[];
         splitMarks?: number[];
         mutedSegments?: string[];
+        segmentVolume?: Record<string, number>;
         hiddenTracks?: TrackId[];
       };
       if (Array.isArray(data.segmentOrder)) {
@@ -889,6 +940,13 @@ class ProjectStore {
       }
       if (Array.isArray(data.mutedSegments)) {
         this.mutedSegments = data.mutedSegments.filter((x) => typeof x === 'string');
+      }
+      if (data.segmentVolume && typeof data.segmentVolume === 'object') {
+        const map: Record<string, number> = {};
+        for (const [id, v] of Object.entries(data.segmentVolume)) {
+          if (typeof v === 'number' && Number.isFinite(v)) map[id] = Math.min(1, Math.max(0, v));
+        }
+        this.segmentVolume = map;
       }
       if (Array.isArray(data.hiddenTracks)) {
         this.hiddenTracks = data.hiddenTracks.filter(
@@ -913,6 +971,7 @@ class ProjectStore {
     this.segmentOrder = [];
     this.splitMarks = [];
     this.mutedSegments = [];
+    this.segmentVolume = {};
     this.hiddenTracks = [];
     this.past = [];
     this.future = [];
@@ -997,7 +1056,11 @@ class ProjectStore {
     // a ruler. (Once a line exists the transcript owns the lane again.)
     if (this.lines.length || !this.media) return segs;
     const dur = this.media.durationSecs;
-    return dur > 0 ? [{ id: 'seg-source', startSec: 0, endSec: dur, lines: [] }] : segs;
+    if (dur <= 0) return segs;
+    // `state` is part of the Segment contract while the timeline-refactor
+    // lands; the cast keeps this fallback compiling against both shapes and
+    // the extra field is inert on the older one.
+    return [{ id: 'seg-source', startSec: 0, endSec: dur, lines: [], state: 'keep' }] as Segment[];
   });
 
   /** Order of the segment ids, as the user arranged them on the timeline. */
@@ -1463,6 +1526,7 @@ class ProjectStore {
       segmentOrder: [...this.segmentOrder],
       splitMarks: [...this.splitMarks],
       mutedSegments: [...this.mutedSegments],
+      segmentVolume: { ...this.segmentVolume },
       hiddenTracks: [...this.hiddenTracks]
     };
   }
@@ -1472,6 +1536,7 @@ class ProjectStore {
     this.segmentOrder = [...snap.segmentOrder];
     this.splitMarks = [...snap.splitMarks];
     this.mutedSegments = [...snap.mutedSegments];
+    this.segmentVolume = { ...snap.segmentVolume };
     this.hiddenTracks = [...snap.hiddenTracks];
     this.cursor = Math.max(0, Math.min(this.lines.length - 1, this.cursor));
     this.selectedIds = [];
@@ -1630,6 +1695,23 @@ class ProjectStore {
   /* ------------------------------------------------------- edit timeline */
   isSegmentMuted = (id: string) => this.mutedSegments.includes(id);
 
+  /** A clip's loudness, clamped to 0..1. Defaults to 1. */
+  segmentGain = (id: string): number => {
+    const v = this.segmentVolume[id];
+    return typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
+  };
+
+  /** Set a clip's loudness. 1 = unchanged; the number only lives in state. */
+  setSegmentVolume(id: string, gain: number) {
+    const next = Math.min(1, Math.max(0, gain));
+    if (Math.abs(this.segmentGain(id) - next) < 0.005) return;
+    this.commit();
+    const map = { ...this.segmentVolume };
+    if (Math.abs(next - 1) < 0.005) delete map[id];
+    else map[id] = next;
+    this.segmentVolume = map;
+  }
+
   /** Speaker button on a clip — preview mutes this source range. */
   toggleSegmentMute(id: string) {
     this.commit();
@@ -1664,6 +1746,11 @@ class ProjectStore {
     this.selectedIds = [];
     this.segmentOrder = this.segmentOrder.filter((id) => !wanted.has(id));
     this.mutedSegments = this.mutedSegments.filter((id) => !wanted.has(id));
+    const keptVolume: Record<string, number> = {};
+    for (const [id, v] of Object.entries(this.segmentVolume)) {
+      if (!wanted.has(id)) keptVolume[id] = v;
+    }
+    this.segmentVolume = keptVolume;
     return targets.length;
   }
 
@@ -1680,6 +1767,12 @@ class ProjectStore {
     };
     this.segmentOrder = remap(this.segmentOrder);
     this.mutedSegments = remap(this.mutedSegments);
+    if (this.segmentVolume[oldId] !== undefined) {
+      const next = { ...this.segmentVolume };
+      next[newId] = next[oldId];
+      delete next[oldId];
+      this.segmentVolume = next;
+    }
   }
 
   /**

@@ -460,3 +460,21 @@ never this machine (AGENTS.md §11).
 
 **Rule that must survive:** cuts are phantom (a flag flip, never a re-encode);
 the new controls must be numbers in state, not new files on disk.
+
+### Update (secondary lane, same session): per-clip volume - preview half shipped
+
+- `project.svelte.ts`: `segmentVolume` (clip id -> 0..1, 1 = original) with
+  `segmentGain()` / `setSegmentVolume()`, persisted in the timeline UI state,
+  carried through split / merge / delete / undo snapshots.
+- `VideoPreview.svelte`: the `<video>` element now applies the clip gain, so a
+  50 % clip is audibly half as loud in the preview.
+- `WaveTimeline.svelte`: clip context menu gains `Volume 100 / 75 / 50 / 25 %`
+  with the active value dotted, and a `%` badge appears on the clip when it is
+  not 100 %.
+- **Honesty rule:** the menu item says "Preview only - export audio abhi
+  unchanged", because `ExportRequest.segments` is still `{start, end}` and the
+  Rust exporter has no gain filter. The export half stays open item 1.
+- Verified on localhost: menu lists the four volumes, choosing 50 % puts the
+  badge on the clip and the preview `video.volume` becomes `0.5`; back to 100 %
+  removes the badge and restores `1`. `npm run check` 0 errors, `npm run test`
+  33 pass.
