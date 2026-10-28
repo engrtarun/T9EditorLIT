@@ -15,7 +15,11 @@
    * seeds the colour before the first frame decodes, exactly like the stage.
    */
   const glowPoster = $derived(
-    project.activeClip ? undefined : (project.thumbnails ? thumbUrl(project.thumbnails, 0) : undefined)
+    project.activeClip
+      ? undefined
+      : project.thumbnails
+        ? thumbUrl(project.thumbnails, 0)
+        : undefined
   );
 
   /**
