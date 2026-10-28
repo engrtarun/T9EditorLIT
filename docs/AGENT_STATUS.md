@@ -581,3 +581,42 @@ the new controls must be numbers in state, not new files on disk.
   wallpaper frame as a magenta stripe behind undo/redo. Verified in the live
   page: computed `rgb(21, 23, 27)`, no bottom border.
 - Localhost still shows the same 20-clip project with zero console errors.
+
+### Shipped: insert-between-clips + Splitting a clip (`ci-546e4a6`, now `ci-cfdb720`)
+
+- Work order **SARKARI-20261028-123129-0C8D** -> `shipped`, mode **live**,
+  build `ci-546e4a6`, SHA-256 `4c729c9b…1992`, canary passed. A second order
+  (**SARKARI-20261028-124007-09D7**) shipped the same build again to undo a
+  race: another lane's deploy landed right after mine and staged its own
+  `ci-b10d1fa` as `t9-editor-lit.new.exe`, so the Update button offered an
+  **older** build. The staged file is gone and the marker is `live` again.
+- **Insert at the drop slot.** `insertSlotAt(layout, editSec)` (pure,
+  unit-tested) turns a pointer position on the bottom timeline into a slot
+  among the extra clips, using the same midpoint rule `dropIndex` uses.
+  `project.placeAsset(id, atIndex?)` / `addToTimeline(id, atIndex?)` insert
+  there; `+` and the S/paste paths still append. Drop a tile between clip 1
+  and clip 2 and it lands between them, not at the end.
+- **Explorer drops are two-sided.** A file dropped in the editor fills My media
+  **and** lands on the timeline at the pointer (`DropOverlay.placeDropped`);
+  on the dashboard it only imports. The sidebar can no longer disagree with
+  the timeline about what exists.
+- **Split makes a new clip.** `splitClipAt` cuts an extra clip into two clips
+  of the same file (new in/out points, no decode, no re-encode).
+  `splitAtPlayhead` routes both the toolbar button and `S`; `splitAt` now
+  splits the **block under the playhead** (red cut, grey silence, or a gap)
+  before falling back to the cursor's transcript row, so `S` over a red/grey
+  block adds a block instead of doing nothing.
+- **`b10d1fa` was red.** The tool-row ambient glow landed with `<AmbientGlow>`
+  but without its `import` and `glowPoster`, so `svelte-check` failed with two
+  errors and CI had no artifact - the first order
+  (**SARKARI-20261028-122841-117D**) FAILED for that reason. `546e4a6` commits
+  the fix that was already sitting (uncommitted) in the shared tree, and
+  nothing else.
+- Verified on localhost before the ship: extra clip split 60 s -> 20 s + 40 s
+  with the toast "Clip split — ab do clips hain"; a still dragged between B's
+  first and second half inserted at clip 3 with the blue caret shown; `S` over
+  a grey silence block turned 20 blocks into 21 - zero console errors. The
+  shared tree was checked at `b10d1fa`/`546e4a6` and is green in CI.
+- `docs/MEDIA_LIBRARY_TIMELINE.md` invariants 3-6 now describe the slot,
+  the Explorer drop and the block split (the old text said "every later drop
+  is appended", which this work made false).

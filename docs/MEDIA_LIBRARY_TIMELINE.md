@@ -56,13 +56,21 @@ Two stores, two jobs:
 2. **Import is not an edit.** `importPaths()` / `importBlobs()` only append to
    the library. They never touch `project.media`, `project.clips`, the
    transcript or the playhead.
-3. **One door onto the timeline.** Only `project.placeAsset(id)` — called by
-   the tile's **+**, a **double-click**, a keyboard **Enter**, or a **drop on
-   the lane**. A plain click is a selection.
+3. **One door onto the timeline.** Only `project.placeAsset(id, atIndex?)` —
+   called by the tile's **+**, a **double-click**, a keyboard **Enter**, or a
+   **drop on the lane**. A plain click is a selection. `atIndex` is the slot
+   the pointer was over (`insertSlotAt`), so a library tile dropped **between
+   two clips** inserts there and does not jump to the end.
 4. **The first clip makes the project.** Drop a clip into a project that has no
    source and it becomes the project's video (so Cut, transcript and Phantom
-   Cut have something to work on). Every later drop is appended after the cut.
-5. **Switching projects switches the library.** Including the browser demo.
+   Cut have something to work on). Every later drop is an extra clip: between
+   two clips it inserts at that slot, past the last one it appends.
+5. **A file dragged out of Explorer is both.** In the editor, the import fills
+   My media **and** places the clip at the pointer (the lane slot if the drop
+   lands on the timeline, otherwise the end), so the sidebar and the timeline
+   never disagree. On the dashboard the same drop only opens/imports — there is
+   no timeline to put it on yet.
+6. **Switching projects switches the library.** Including the browser demo.
 
 ### What an empty project looks like now
 
