@@ -66,6 +66,24 @@
   let defaultBroken = $state(false);
   let photoInput = $state<HTMLInputElement | null>(null);
 
+  /** In-progress avatar crop (source-pixel space) while the picker overlay is open. */
+  let cropOverlay = $state(false);
+  let cropSrcUrl = $state<string | null>(null);
+  let cropImgEl = $state<HTMLImageElement | null>(null);
+  let cropImgSize = $state<{ w: number; h: number }>({ w: 0, h: 0 });
+  /** Square crop: centre + side, in source pixels. */
+  let cropRect = $state<{ cx: number; cy: number; s: number }>({ cx: 0, cy: 0, s: 0 });
+  let cropDrag = $state<{
+    mode: 'move' | 'resize';
+    handle?: 'se' | 'nw' | 'ne' | 'sw';
+    start: { cx: number; cy: number; s: number };
+    startX: number;
+    startY: number;
+    img: HTMLImageElement;
+    W: number;
+    H: number;
+  } | null>(null);
+
   /** What the avatar shows: user photo → default photo → initials. */
   const avatarSrc = $derived(photo ?? (defaultBroken ? null : DEFAULT_AVATAR));
 
@@ -266,41 +284,29 @@
   /* ------------------------------------------------------------- photo */
 
   /**
-   * Turn the picked file into a 256 px square JPEG data URL.
+   * Draw an image into a 256 px square JPEG data URL, cropping to `rect` when given.
    *
    * The photo lives in localStorage next to the name, so it must be tiny —
    * a raw phone picture is megabytes and would not fit (and must not be held
    * in RAM anyway). Canvas does the shrink, the big original is released the
    * moment this resolves.
    */
-  function shrinkToAvatar(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        const SIZE = 256;
-        const side = Math.min(img.naturalWidth, img.naturalHeight);
-        const sx = (img.naturalWidth - side) / 2;
-        const sy = (img.naturalHeight - side) / 2;
-        const canvas = document.createElement('canvas');
-        canvas.width = SIZE;
-        canvas.height = SIZE;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          URL.revokeObjectURL(url);
-          reject(new Error('no 2d context'));
-          return;
-        }
-        ctx.drawImage(img, sx, sy, side, side, 0, 0, SIZE, SIZE);
-        URL.revokeObjectURL(url);
-        resolve(canvas.toDataURL('image/jpeg', 0.85));
-      };
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        reject(new Error('image failed to load'));
-      };
-      img.src = url;
-    });
+  function drawShrunken(
+    img: HTMLImageElement,
+    rect?: { sx: number; sy: number; size: number }
+  ): string {
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    const side = rect?.size ?? Math.min(W, H);
+    const sx = rect?.sx ?? (W - Math.min(W, H)) / 2;
+    const sy = rect?.sy ?? (H - Math.min(W, H)) / 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('no 2d context');
+    ctx.drawImage(img, sx, sy, side, side, 0, 0, 256, 256);
+    return canvas.toDataURL('image/jpeg', 0.85);
   }
 
   async function pickPhoto(e: Event): Promise<void> {
@@ -313,17 +319,107 @@
       return;
     }
     try {
-      const data = await shrinkToAvatar(file);
-      photo = data;
-      try {
-        localStorage.setItem(PHOTO_KEY, data);
-      } catch {
-        // Quota/private mode: the photo still shows for this session.
-      }
-      toast.push('info', i18n.t('profile.photoSet'));
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      const loaded = new Promise<void>((res, rej) => {
+        img.onload = () => res();
+        img.onerror = () => rej(new Error('image failed to load'));
+        img.src = url;
+      });
+      await loaded;
+      const W = img.naturalWidth;
+      const H = img.naturalHeight;
+      const s = Math.min(W, H);
+      cropSrcUrl = url;
+      cropImgEl = img;
+      cropImgSize = { w: W, h: H };
+      cropRect = { cx: (W - s) / 2, cy: (H - s) / 2, s };
+      cropDrag = null;
+      cropOverlay = true;
     } catch {
       toast.push('warn', i18n.t('profile.photoBad'));
     }
+  }
+
+  function closeCrop(): void {
+    if (cropSrcUrl) URL.revokeObjectURL(cropSrcUrl);
+    cropSrcUrl = null;
+    cropImgEl = null;
+    cropImgSize = { w: 0, h: 0 };
+    cropRect = { cx: 0, cy: 0, s: 0 };
+    cropDrag = null;
+    cropOverlay = false;
+  }
+
+  function saveCroppedPhoto(): void {
+    const img = cropImgEl;
+    const r = cropRect;
+    if (!img || !r.s) return;
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    const sx = Math.max(0, Math.min(r.cx - r.s / 2, W - r.s));
+    const sy = Math.max(0, Math.min(r.cy - r.s / 2, H - r.s));
+    const side = Math.min(r.s, W - sx, H - sy);
+    const data = drawShrunken(img, { sx, sy, size: Math.max(8, side) });
+    photo = data;
+    try {
+      localStorage.setItem(PHOTO_KEY, data);
+    } catch {
+      /* private mode */
+    }
+    toast.push('info', i18n.t('profile.photoSet'));
+    closeCrop();
+  }
+
+  function cancelCrop(): void {
+    closeCrop();
+  }
+
+  function cropPointerDown(e: PointerEvent): void {
+    if (!cropImgSize.w || !cropImgSize.h || !cropImgEl) return;
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const handle = (e.target as HTMLElement).closest('[data-crop-handle]') as HTMLDivElement | null;
+    cropDrag = {
+      mode: handle ? 'resize' : 'move',
+      handle: handle ? (handle.dataset.cropHandle as 'se' | 'nw' | 'ne' | 'sw') : undefined,
+      start: { ...cropRect },
+      startX: e.clientX,
+      startY: e.clientY,
+      img: cropImgEl,
+      W: cropImgSize.w,
+      H: cropImgSize.h
+    };
+  }
+
+  function cropPointerMove(e: PointerEvent): void {
+    const drag = cropDrag;
+    if (!drag) return;
+    const rect = drag.img.getBoundingClientRect();
+    const k = drag.W / Math.max(1, rect.width);
+    const d = { x: (e.clientX - drag.startX) * k, y: (e.clientY - drag.startY) * k };
+    const r = { ...drag.start };
+    if (drag.mode === 'move') {
+      r.cx = Math.min(Math.max(r.cx + d.x, r.s / 2), drag.W - r.s / 2);
+      r.cy = Math.min(Math.max(r.cy + d.y, r.s / 2), drag.H - r.s / 2);
+      cropRect = r;
+    } else {
+      const handle = drag.handle ?? 'se';
+      let growth = 0;
+      if (handle === 'se') growth = d.x + d.y;
+      else if (handle === 'nw') growth = -(d.x + d.y);
+      else if (handle === 'ne') growth = d.x - d.y;
+      else if (handle === 'sw') growth = -d.x + d.y;
+      const s = Math.min(Math.max(r.s + growth, 8), Math.min(drag.W, drag.H));
+      r.s = s;
+      r.cx = Math.min(Math.max(r.cx, s / 2), drag.W - s / 2);
+      r.cy = Math.min(Math.max(r.cy, s / 2), drag.H - s / 2);
+      cropRect = r;
+    }
+  }
+
+  function cropPointerUp(): void {
+    cropDrag = null;
   }
 
   function removePhoto(): void {
@@ -468,6 +564,72 @@
     <path d="M7 10l5 5 5-5z" />
   </svg>
 </button>
+
+{#if cropOverlay}
+  <div
+    class="fixed inset-0 z-[430] flex items-center justify-center bg-black/70"
+    role="dialog"
+    aria-modal="true"
+    aria-label={i18n.t('profile.crop')}
+    tabindex="-1"
+    onpointerdown={cropPointerDown}
+    onpointermove={cropPointerMove}
+    onpointerup={cropPointerUp}
+    onpointercancel={cropPointerUp}
+  >
+    <div class="relative max-h-[52vh] max-w-[92vw]">
+      {#if cropImgEl}
+        <img
+          bind:this={cropImgEl}
+          src={cropSrcUrl ?? undefined}
+          alt=""
+          class="block max-h-[52vh] max-w-[92vw] w-auto h-auto"
+        />
+      {/if}
+      {#if cropRect.s > 0}
+        <div
+          class="absolute border-2 border-nc-brand bg-nc-brand/20"
+          style="left:{((cropRect.cx - cropRect.s / 2) / cropImgSize.w) *
+            100}%; top:{((cropRect.cy - cropRect.s / 2) / cropImgSize.h) *
+            100}%; width:{(cropRect.s / cropImgSize.w) * 100}%; aspect-ratio: 1 / 1;"
+        >
+          <div
+            data-crop-handle="se"
+            class="absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-nc-brand"
+          ></div>
+          <div
+            data-crop-handle="nw"
+            class="absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-nc-brand"
+          ></div>
+          <div
+            data-crop-handle="ne"
+            class="absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-nc-brand"
+          ></div>
+          <div
+            data-crop-handle="sw"
+            class="absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-nc-brand"
+          ></div>
+        </div>
+      {/if}
+    </div>
+    <div class="absolute bottom-4 flex items-center gap-2">
+      <button
+        type="button"
+        onclick={cancelCrop}
+        class="rounded-lg border border-nc-line px-3 py-1.5 text-[12px] text-nc-txt transition-colors hover:bg-nc-panel-2"
+      >
+        {i18n.t('profile.cancel')}
+      </button>
+      <button
+        type="button"
+        onclick={saveCroppedPhoto}
+        class="rounded-lg bg-nc-brand px-3 py-1.5 text-[12px] font-semibold text-white transition-[filter] duration-150 hover:brightness-110"
+      >
+        {i18n.t('profile.save')}
+      </button>
+    </div>
+  </div>
+{/if}
 
 {#if open}
   <div

@@ -1036,43 +1036,33 @@
         </div>
         <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
       {/if}
-      <span class="flex items-center gap-1 text-[9px] text-nc-mut">
-        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-brand"></i>keep
+      <span class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300">
+        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-brand"></i>Keep
       </span>
-      <span class="flex items-center gap-1 text-[9px] text-nc-mut">
-        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-red"></i>fumble
+      <span class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300">
+        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-red"></i>AI Fumble
       </span>
-      <span class="flex items-center gap-1 text-[9px] text-nc-mut">
-        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-mut-2"></i>khamoshi
+      <span class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300">
+        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-mut-2"></i>Silence
       </span>
-      <span class="flex items-center gap-1 text-[9px] text-nc-mut">
-        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-green"></i>suggest
-      </span>
-      <span class="flex items-center gap-1 text-[9px] text-nc-mut">
-        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-amber-400"></i>AI fumble
+      <span class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300">
+        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-green"></i>AI Suggest
       </span>
       <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
       <button
-        onclick={() => project.toggleTrackHidden('video')}
+        onclick={() => project.toggleTracksHidden()}
         class="flex h-6 items-center gap-1 rounded px-1.5 text-[9px] transition-colors
-               {project.isTrackHidden('video')
+               {project.isTrackHidden('audio') || project.isTrackHidden('video')
           ? 'bg-nc-red/15 text-nc-red'
           : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
-        title={project.isTrackHidden('video') ? 'Show video track' : 'Hide video track'}
+        title={project.isTrackHidden('audio') || project.isTrackHidden('video')
+          ? 'Show audio and video'
+          : 'Hide audio and video'}
       >
-        <MenuIcon name={project.isTrackHidden('video') ? 'eyeOff' : 'eye'} size={12} />
-        V
-      </button>
-      <button
-        onclick={() => project.toggleTrackHidden('audio')}
-        class="flex h-6 items-center gap-1 rounded px-1.5 text-[9px] transition-colors
-               {project.isTrackHidden('audio')
-          ? 'bg-nc-red/15 text-nc-red'
-          : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
-        title={project.isTrackHidden('audio') ? 'Show audio track' : 'Hide audio track'}
-      >
-        <MenuIcon name={project.isTrackHidden('audio') ? 'eyeOff' : 'eye'} size={12} />
-        A
+        <MenuIcon
+          name={project.isTrackHidden('audio') || project.isTrackHidden('video') ? 'eyeOff' : 'eye'}
+          size={12}
+        />
       </button>
     </div>
   </div>

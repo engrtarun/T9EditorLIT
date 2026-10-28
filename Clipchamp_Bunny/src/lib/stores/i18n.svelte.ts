@@ -63,6 +63,7 @@ const en: Dict = {
   'profile.photoReset': 'Back to the default photo.',
   'profile.photoBad': 'That file is not a readable image.',
   'profile.close': 'Close menu',
+  'profile.crop': 'Crop your photo',
 
   /* ------------------------------- background (profile menu → Background) */
   'profile.background': 'Background',
@@ -336,7 +337,10 @@ const en: Dict = {
 };
 
 const hinglish: Dict = {
-    /* ------------------------------- background (profile menu → Background) */
+  /* ---------------------------------------------------------- profile menu */
+  'profile.crop': 'Photo ka crop karo',
+
+  /* ------------------------------- background (profile menu → Background) */
   'profile.background': 'Background',
   'bg.title': 'BACKGROUND',
   'bg.video': 'Video chuno…',
@@ -627,6 +631,7 @@ const hi: Dict = {
   'profile.photoReset': 'डिफ़ॉल्ट फ़ोटो पर वापस.',
   'profile.photoBad': 'यह फ़ाइल मान्य इमेज नहीं है.',
   'profile.close': 'मेनू बंद करें',
+  'profile.crop': 'फ़ोटो काटें',
 
   /* ------------------------------- background (profile menu → Background) */
   'profile.background': 'बैकग्राउंड',

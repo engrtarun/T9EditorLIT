@@ -17,8 +17,17 @@ class PlayerStore {
    *  re-encoded; the toggle lives on the preview bar's Size pill. */
   loop = $state(false);
 
-  /** Registered <video> element. Held weakly-ish: cleared on mode teardown. */
-  el: HTMLVideoElement | null = null;
+  /**
+   * Registered <video> element. Held weakly-ish: cleared on mode teardown.
+   *
+   * Reactive on purpose: the ambient glow on the preview bar and the timeline
+   * tool row samples *this* element, and it appears (`loadeddata`) and
+   * disappears (mode teardown, image clip) at unpredictable moments — the
+   * glow has to follow those transitions, not poll for them. Not proxied by
+   * Svelte (non-plain object), so identity checks like `player.el === v`
+   * still hold.
+   */
+  el: HTMLVideoElement | null = $state(null);
 
   /** `performance.now()` of the last programmatic seek. */
   seekAt = 0;

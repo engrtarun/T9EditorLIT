@@ -6,6 +6,7 @@ import {
   dropIndex,
   editDuration,
   editTimeAt,
+  insertSlotAt,
   moveInOrder,
   orderLines,
   orderSegments,
@@ -221,4 +222,19 @@ test('moveInOrder splices into the reduced list', () => {
   assert.deepEqual(moveInOrder(order, 'a', 2), ['b', 'c', 'a']);
   assert.deepEqual(moveInOrder(order, 'c', 0), ['c', 'a', 'b']);
   assert.deepEqual(moveInOrder(order, 'b', 1), ['a', 'b', 'c']);
+});
+
+test('insertSlotAt puts a new clip in the gap the pointer is over', () => {
+  const layout = [
+    { start: 10, end: 14 }, // clip 1
+    { start: 14, end: 20 }, // clip 2
+    { start: 20, end: 21 } // clip 3
+  ];
+  assert.equal(insertSlotAt(layout, 0), 0, 'over the main cut = before the first extra');
+  assert.equal(insertSlotAt(layout, 11.9), 0, 'first half of clip 1 = before it');
+  assert.equal(insertSlotAt(layout, 12.1), 1, 'past clip 1 midpoint = after it');
+  assert.equal(insertSlotAt(layout, 16.9), 1, 'first half of clip 2 = before it');
+  assert.equal(insertSlotAt(layout, 17.1), 2, 'past clip 2 midpoint = after it');
+  assert.equal(insertSlotAt(layout, 99), 3, 'past the last clip = append');
+  assert.equal(insertSlotAt([], 5), 0, 'empty strip = first slot');
 });

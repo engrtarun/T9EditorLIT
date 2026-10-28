@@ -49,10 +49,10 @@
 
   const FLAG_LABEL: Record<LineFlag, string> = {
     none: '',
-    fumble: 'FUMBLE',
-    repeat: 'REPEAT',
-    'wrong-example': 'GALAT EXAMPLE',
-    silence: 'KHAMOSHI'
+    fumble: 'AI Fumble',
+    repeat: 'AI Repeat',
+    'wrong-example': 'AI Wrong Example',
+    silence: 'Silence'
   };
 
   const FLAG_CHIP: Record<LineFlag, string> = {
@@ -62,6 +62,19 @@
     'wrong-example': 'border-nc-red/40 bg-nc-red/10 text-nc-red',
     silence: 'border-nc-mut-2/40 bg-nc-panel-2 text-nc-mut'
   };
+
+  /** Restart the flag chip's pop animation whenever the flag it shows changes. */
+  function flagFlash(node: HTMLElement): { destroy: () => void } {
+    const anim = node.animate(
+      [
+        { transform: 'scale(0.6)', opacity: 0 },
+        { transform: 'scale(1.18)', opacity: 1, offset: 0.3 },
+        { transform: 'scale(1)', opacity: 1, offset: 0.5 }
+      ],
+      { duration: 2400, easing: 'ease-out', fill: 'forwards' }
+    );
+    return { destroy: () => anim.cancel() };
+  }
 
   function jump(line: TranscriptLine) {
     // A transcript line belongs to the main source: previewing an extra clip
@@ -185,6 +198,7 @@
             </span>
             {#if line.flag !== 'none'}
               <span
+                use:flagFlash
                 class="mt-0.5 inline-block rounded border px-1 py-[1px] text-[8px] font-bold tracking-wider
                        {FLAG_CHIP[line.flag]}"
               >

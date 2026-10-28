@@ -378,6 +378,26 @@ export function dropIndex(
   return others.length;
 }
 
+/**
+ * Where a **new** clip should be inserted, given the extra-clip layout on the
+ * bottom timeline and the pointer's position on that axis.
+ *
+ * Extra clips sit back to back after the main strip, so this is the same
+ * midpoint rule `dropIndex` uses: pass a clip's midpoint and the new clip
+ * goes after it. Anywhere over the main cut (before the first extra) means
+ * "insert at the front"; past the last clip means "append".
+ */
+export function insertSlotAt(
+  layout: ReadonlyArray<{ start: number; end: number }>,
+  editSec: number
+): number {
+  for (let i = 0; i < layout.length; i++) {
+    const r = layout[i];
+    if (editSec < r.start + (r.end - r.start) / 2) return i;
+  }
+  return layout.length;
+}
+
 /** Move a segment inside the id order, returning the new order. */
 export function moveInOrder(order: string[], fromId: string, toIndex: number): string[] {
   const from = order.indexOf(fromId);

@@ -535,7 +535,7 @@ the new controls must be numbers in state, not new files on disk.
 
 - **Why it failed only in the app:** Tauri keeps `dragDropEnabled: true` so a file
   dropped from Explorer arrives as a real path (`DropOverlay`). That same switch
-  makes WebView2 swallow HTML5 drag *inside* the page, so a media tile dragged on
+  makes WebView2 swallow HTML5 drag _inside_ the page, so a media tile dragged on
   localhost and did nothing in the app. The timeline clips were already
   pointer-based; the media tiles were not.
 - `MediaPanel.svelte`: media tiles now also drag with **pointer events** — 6 px

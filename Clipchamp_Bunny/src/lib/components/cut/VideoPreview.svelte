@@ -325,18 +325,18 @@
     : 'p-4'}"
 >
   {#if project.media}
-    <!-- YouTube-style Ambient Mode glow: strictly BEHIND the player,
-         blooming outward from behind the player edges into the stage. The
-         `isolate` above keeps `mix-blend-mode: screen` inside this stage -
-         the glow can never tint the media or transcript panels. -->
-    <div
-      class="pointer-events-none absolute inset-0 z-0 grid place-items-center"
-      aria-hidden="true"
-    >
-      <div class="max-h-full w-full scale-[1.18]" style={fs ? fsFrameStyle : frameStyle}>
-        <AmbientGlow video={videoEl} {poster} />
-      </div>
-    </div>
+    <!-- YouTube-style Ambient Mode glow — region 1 of a three-part band (this
+         stage, the preview bar, the timeline tool row), all sampling the SAME
+         `<video>`, so no second decoder exists anywhere.
+
+         It sits strictly BEHIND the player and fills the whole stage
+         (`inset-0`), no frame-shaped box: the mask fades to zero exactly at
+         the stage edges, so nothing looks sliced into a rectangle. The stage
+         stays `bg-nc-bg` + `isolate`, which keeps `mix-blend-mode: screen`
+         inside — the glow can never tint the media or transcript panels, and
+         the player itself is never filtered (no blur, no saturation: the
+         picture stays crisp; only this backdrop blooms). -->
+    <AmbientGlow video={videoEl} {poster} />
 
     <!-- The project's own frame, fitted to the stage, in front of the glow -->
     <div

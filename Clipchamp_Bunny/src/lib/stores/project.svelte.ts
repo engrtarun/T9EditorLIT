@@ -17,6 +17,7 @@ import {
   dropIndex,
   editDuration as editDurationOf,
   editTimeAt,
+  insertSlotAt,
   moveInOrder,
   orderLines,
   orderSegments,
@@ -1314,7 +1315,7 @@ class ProjectStore {
    * source**, so the whole Cut pipeline (transcript, waveform, phantom cut)
    * has something to work on. Every later one is appended after the cut.
    */
-  async placeAsset(assetId: string): Promise<'source' | 'clip' | 'blocked'> {
+  async placeAsset(assetId: string, atIndex?: number): Promise<'source' | 'clip' | 'blocked'> {
     const entry = media.get(assetId);
     if (!entry || entry.phase === 'loading') return 'blocked';
     if (isAudioOnly(entry.asset.name, entry.asset.url)) return 'blocked';
@@ -1329,24 +1330,41 @@ class ProjectStore {
       return this.media ? 'source' : 'blocked';
     }
 
-    const clip = this.addToTimeline(assetId);
+    const clip = this.addToTimeline(assetId, atIndex);
     if (!clip) return 'blocked';
     this.activateClip(clip.id);
     return 'clip';
   }
 
   /**
-   * Append a library asset to the timeline as an extra clip.
+   * Where a new clip should be inserted for a pointer on the bottom timeline.
    *
-   * Returns null when the asset cannot be a clip (still probing, audio-only,
-   * or already the project's main source - adding that one twice would show
-   * the same video before and after the cut).
+   * The main cut is one source: a foreign video cannot be woven into its
+   * transcript (that would need a multi-source render), so anywhere over it
+   * means "before the first extra clip". Inside the extra strip the pointer
+   * picks the gap between two clips, which is the Clipchamp gesture of
+   * dropping a new clip *between* two existing ones.
    */
-  addToTimeline(assetId: string): ProjectClip | null {
+  insertIndexAt(editSec: number): number {
+    return insertSlotAt(this.extrasLayout, editSec);
+  }
+
+  /**
+   * Put a library asset on the timeline as an extra clip.
+   *
+   * `atIndex` is the slot the pointer was over (see `insertIndexAt`);
+   * omitting it appends, which is what the + button does. Returns null when
+   * the asset cannot be a clip (still probing, audio-only, or already on the
+   * timeline as the main source).
+   */
+  addToTimeline(assetId: string, atIndex?: number): ProjectClip | null {
     const entry = media.get(assetId);
     if (!entry) return null;
     if (isAudioOnly(entry.asset.name, entry.asset.url)) return null;
     const kind = clipKind(entry.asset.name, entry.asset.url);
+    // `inUse` is the library's stable "this tile is the open project" marker;
+    // path equality misses once the URL has been normalised.
+    if (entry.inUse) return null;
     if (entry.path && this.sourcePath && entry.path === this.sourcePath) return null;
     // The browser has no path; its equivalent identity is the streamed URL.
     if (this.media && entry.asset.url && entry.asset.url === this.media.url) return null;
@@ -1365,7 +1383,9 @@ class ProjectStore {
       inSec: 0,
       outSec: kind === 'image' ? Math.min(5, duration) || 5 : duration
     };
-    this.clips = [...this.clips, clip];
+    const at =
+      atIndex == null ? this.clips.length : Math.max(0, Math.min(this.clips.length, atIndex));
+    this.clips = [...this.clips.slice(0, at), clip, ...this.clips.slice(at)];
     this.saveClips();
     return clip;
   }
@@ -1840,6 +1860,16 @@ class ProjectStore {
   }
 
   /**
+   * One button, one eye: hide (or show) the audio and video tracks together.
+   * The old separate `V` (video) / `A` (audio) buttons become one toggle.
+   */
+  toggleTracksHidden() {
+    this.commit();
+    const hiding = !(this.isTrackHidden('audio') && this.isTrackHidden('video'));
+    this.hiddenTracks = hiding ? ['audio', 'video'] : [];
+  }
+
+  /**
    * Cut whole clips **without deleting them**.
    *
    * The block stays on the timeline as red material (the diagram's rule:
@@ -2043,6 +2073,19 @@ class ProjectStore {
     const strictlyInside = (l: TranscriptLine) => sec > l.startSec + 0.25 && sec < l.endSec - 0.25;
 
     if (!under || !strictlyInside(under)) {
+      // The playhead is over a *block*, not a transcript row — a red cut, a
+      // grey silence, or the gap between two kept rows. The timeline is the
+      // master, so the split cuts the block in two instead of silently
+      // splitting whichever row the cursor happened to be on. 0.35 s keeps
+      // the halves usable (a 0.1 s sliver is not a clip).
+      const seg = this.orderedSegments.find(
+        (s) => sec > s.startSec + 0.35 && sec < s.endSec - 0.35
+      );
+      if (seg) {
+        this.commit();
+        this.splitMarks = [...this.splitMarks, sec].sort((a, b) => a - b);
+        return true;
+      }
       if (!this.lines[this.cursor]) {
         // No transcript row to split: the timeline is still the master, so
         // the mark becomes a hard clip boundary and the split lands as two

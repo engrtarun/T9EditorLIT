@@ -9,7 +9,13 @@
    *      fine detail drops. YouTube's own canvas is ~10x6 px; we use 48x27.
    *   3. The canvas is stretched to full size and blurred, saturated with CSS
    *      filters, then masked with an elliptical falloff so the glow blooms
-   *      outwards and fades before the container edge.
+   *      outwards and fades to zero exactly AT the container edge
+   *      (`farthest-side`: alpha is 0 on all four mid-edges and beyond). A
+   *      `farthest-corner` ellipse still stood at ~0.76 opacity on the
+   *      mid-edges, so any parent clip (the stage's `overflow-hidden`) sliced
+   *      the bloom there — a hard-edged rectangle around the glow. The rows
+   *      that carry this glow are full-bleed boxes now, so the fade has to
+   *      complete *inside* the box, never at a clipped line.
    *   4. `requestAnimationFrame` loop only while the video plays; on pause /
    *      ended the loop stops (CPU drops to zero) and the last frame stays.
    *   5. `prefers-reduced-motion: reduce` disables the effect entirely.
@@ -39,8 +45,8 @@
   // never paints a dark rectangle over the stage.
   const style =
     'opacity:.85;mix-blend-mode:screen;filter:blur(56px) saturate(1.6) brightness(1.15);' +
-    '-webkit-mask-image:radial-gradient(ellipse at center,#000 58%,rgba(0,0,0,.55) 82%,transparent 100%);' +
-    'mask-image:radial-gradient(ellipse at center,#000 58%,rgba(0,0,0,.55) 82%,transparent 100%)';
+    '-webkit-mask-image:radial-gradient(ellipse farthest-side at center,#000 58%,rgba(0,0,0,.55) 82%,transparent 100%);' +
+    'mask-image:radial-gradient(ellipse farthest-side at center,#000 58%,rgba(0,0,0,.55) 82%,transparent 100%)';
 
   $effect(() => {
     const v = video;
