@@ -6,7 +6,7 @@
   import { settings } from '../../stores/settings.svelte';
   import { toast } from '../../stores/toast.svelte';
   import { thumbUrl } from '../../media';
-  import { dropIndex } from '../../segments';
+  import { dropIndex, moveInOrder } from '../../segments';
   import { clamp, fmtShort, fmtTime, niceStep } from '../../utils';
   import ContextMenu from '../ContextMenu.svelte';
   import MenuIcon from '../MenuIcon.svelte';
@@ -46,6 +46,9 @@
   /* ---- clip drag state ---- */
   let dragId: string | null = $state(null);
   let dragDx = $state(0);
+  /** While a clip is dragged: the slot it would land in (index among the
+   *  other segments). Painted as a blue caret so the drop is never a guess. */
+  let dropSlot = $state<number | null>(null);
   let lastClickedSegId: string | null = $state(null);
 
   type TrimEdge = 'start' | 'end';
@@ -76,7 +79,8 @@
   const editPlayhead = $derived(project.globalTimeAt(project.activeClipId, player.currentTime));
   const contentW = $derived(Math.max(600, viewW, (editDur + 4) * zoom));
   const step = $derived(niceStep(zoom));
-  const minor = $derived(step / (step >= 5 ? 5 : step >= 2 ? 4 : 2));
+  /** Four intervals per label gap = three dots between labels, like Clipchamp. */
+  const minor = $derived(step / 4);
 
   const ticks = $derived.by(() => {
     const out: Array<{ t: number; major: boolean }> = [];
@@ -88,6 +92,20 @@
 
   const segments = $derived(project.orderedSegments);
   const offsets = $derived(project.segmentOffsets);
+
+  /** Where the blue drop caret sits while a clip is in the air, in px. */
+  const dropSlotX = $derived.by(() => {
+    if (!dragId || dropSlot == null) return null;
+    const others = segments.filter((s) => s.id !== dragId);
+    if (!others.length) return 0;
+    const at = Math.min(Math.max(0, dropSlot), others.length);
+    if (at >= others.length) {
+      const off = offsets.get(others[others.length - 1].id);
+      return off ? off.end * zoom : null;
+    }
+    const off = offsets.get(others[at].id);
+    return off ? off.start * zoom : null;
+  });
 
   /* ---------------------------------------------------------------- thumbs
      Only the frames inside the viewport are fetched, so a 2-hour timeline
@@ -365,6 +383,19 @@
       toast.push('info', 'Audio-only clip abhi timeline me nahi lagta');
       return;
     }
+    // Dropping the project's own source on its timeline is not an error - it
+    // is already there. Say that, instead of the generic "nahi lag sakta"
+    // red toast the tile's + button never showed. `inUse` is the library's
+    // stable marker for "this is the open project"; path equality missed
+    // when the URL had been normalised.
+    if (
+      entry.inUse ||
+      (project.media &&
+        (entry.path ? entry.path === project.sourcePath : entry.asset.url === project.media.url))
+    ) {
+      toast.push('info', 'Yeh clip project ka main source hai — timeline par already hai');
+      return;
+    }
     const placed = await project.placeAsset(id);
     if (placed === 'source') {
       toast.push('info', `${entry.asset.name} project ka main video ban gaya`);
@@ -518,34 +549,77 @@
     const startX = e.clientX;
     let moved = false;
     let dx = 0;
+    let lastX = startX;
+    let autoScroll = 0;
+    let frame = 0;
+
+    /** The slot the pointer is over, as an index among the *other* segments. */
+    const slotAt = (clientX: number, rect: DOMRect) => {
+      const editSec = clamp((clientX - rect.left) / zoom, 0, editDur);
+      return dropIndex(segments, offsets, seg.id, editSec);
+    };
+
+    /** Paint (and keep painting) the caret where the clip would land. */
+    const refresh = () => {
+      if (!laneEl) return;
+      dropSlot = slotAt(lastX, laneEl.getBoundingClientRect());
+    };
+
+    const scrollStep = () => {
+      frame = 0;
+      if (!autoScroll || !laneEl) return;
+      laneEl.scrollLeft += autoScroll;
+      refresh();
+      frame = requestAnimationFrame(scrollStep);
+    };
 
     const move = (ev: PointerEvent) => {
+      lastX = ev.clientX;
       dx = ev.clientX - startX;
       if (!moved && Math.abs(dx) < 4) return;
       moved = true;
       dragId = seg.id;
       dragDx = dx;
+      if (!laneEl) return;
+      const rect = laneEl.getBoundingClientRect();
+      refresh();
+      // Carry the clip past the visible window: near an edge, scroll.
+      const edge = 48;
+      autoScroll = lastX < rect.left + edge ? -16 : lastX > rect.right - edge ? 16 : 0;
+      if (autoScroll && !frame) frame = requestAnimationFrame(scrollStep);
+      if (!autoScroll && frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
     };
-    const up = (ev: PointerEvent) => {
+    const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      if (frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
       const id = dragId;
+      const target = dropSlot;
       dragId = null;
       dragDx = 0;
+      dropSlot = null;
       if (!moved) {
         // A plain click selects and reveals the clip's first frame.
         player.seek(seg.startSec);
         return;
       }
-      if (!id || !laneEl) return;
+      if (!id || target == null) return;
 
-      const rect = laneEl.getBoundingClientRect();
-      const editSec = clamp((ev.clientX - rect.left) / zoom, 0, editDur);
-      const from = segments.findIndex((s) => s.id === id);
-      const target = dropIndex(segments, offsets, id, editSec);
-      if (target !== from) {
+      // Compare the *result* of the move, not two different index spaces:
+      // a drop that changes nothing used to look like a broken drag.
+      const order = segments.map((s) => s.id);
+      const next = moveInOrder(order, id, target);
+      if (next.join() !== order.join()) {
         project.moveSegment(id, target);
         toast.push('info', 'Clip moved — transcript reordered');
+      } else {
+        toast.push('info', 'Clip wahi jagah hai — aur door kheenchiye');
       }
     };
     window.addEventListener('pointermove', move);
@@ -1034,15 +1108,20 @@
           onkeydown={laneKeys}
         >
           {#each ticks as tick (tick.t)}
-            <div
-              class="absolute top-0 bottom-0 w-px {tick.major ? 'bg-nc-line-2' : 'bg-nc-line'}"
-              style="left:{tick.t * zoom}px"
-            ></div>
             {#if tick.major}
               <span
                 class="absolute top-0.5 font-mono text-[9px] text-nc-mut"
                 style="left:{tick.t * zoom + 3}px">{fmtShort(tick.t)}</span
               >
+            {:else}
+              <!-- Clipchamp's ruler carries no hairlines: between two labels
+                   sit small dots (three per label gap), on the labels' own
+                   line. A full-height `w-px` line per tick read as a fence
+                   over the lane below; a 3px dot reads as a ruler. -->
+              <span
+                class="absolute top-[7px] h-[3px] w-[3px] rounded-full bg-nc-mut-2/70"
+                style="left:{tick.t * zoom}px"
+              ></span>
             {/if}
           {/each}
         </div>
@@ -1065,6 +1144,7 @@
           }}
           ondragleave={() => (dropHover = false)}
           ondrop={onLaneDrop}
+          data-t9-drop="lane"
           title="Drag a clip to reorder the final video — the transcript follows"
         >
           <canvas bind:this={filmCanvas} class="absolute inset-0 block"></canvas>
@@ -1104,6 +1184,7 @@
                   ? `${silence ? 'Silence' : 'Cut'} ${fmtShort(s.startSec)}–${fmtShort(s.endSec)} · ${fmtShort(s.endSec - s.startSec)} — right-click to restore`
                   : undefined}
                 class="group absolute top-0 bottom-0 cursor-grab overflow-hidden rounded-[4px] border-2 transition-all active:cursor-grabbing
+                       {dragId === s.id ? 'transition-none' : ''}
                        {dragId === s.id
                   ? 'z-20 border-nc-brand shadow-lg shadow-nc-brand/20'
                   : cut
@@ -1279,6 +1360,15 @@
               >
             </div>
           {/each}
+
+          {#if dropSlotX != null}
+            <!-- The drop caret: without it a drag gives no clue where the clip
+                 will land, and a drop that changes nothing reads as broken. -->
+            <div
+              class="pointer-events-none absolute top-0 bottom-0 z-30 w-[2px] -translate-x-1/2 rounded bg-nc-brand shadow-[0_0_6px_rgba(77,141,255,.9)]"
+              style="left:{dropSlotX}px"
+            ></div>
+          {/if}
 
           {#if project.isTrackHidden('video')}
             <span

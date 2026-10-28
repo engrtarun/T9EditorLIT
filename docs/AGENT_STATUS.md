@@ -530,3 +530,36 @@ the new controls must be numbers in state, not new files on disk.
   into the Rust heap and a broken file falls back to the gradient.
 - Verified by sampling the canvas in the live page: 8 slices, every one with
   picture content, no console errors.
+
+### Update: drag & drop works in the desktop window too (and the tree is clean again)
+
+- **Why it failed only in the app:** Tauri keeps `dragDropEnabled: true` so a file
+  dropped from Explorer arrives as a real path (`DropOverlay`). That same switch
+  makes WebView2 swallow HTML5 drag *inside* the page, so a media tile dragged on
+  localhost and did nothing in the app. The timeline clips were already
+  pointer-based; the media tiles were not.
+- `MediaPanel.svelte`: media tiles now also drag with **pointer events** — 6 px
+  threshold, a blue `+ name` ghost under the cursor, the lane outlined in
+  `nc-brand`, and `placeAsset()` on release over `[data-t9-drop="lane"]`. When a
+  real HTML5 drag does start (localhost), `dragstart` cancels the fallback, so an
+  asset is never added twice.
+- `WaveTimeline.svelte`: the video lane carries `data-t9-drop="lane"`; clip
+  reorder paints a **blue caret** at the slot the clip will land in, auto-scrolls
+  near the lane edges, and reports the result ("Clip moved — transcript
+  reordered" / "Clip wahi jagah hai — aur door kheenchiye"). It compares the
+  resulting order, not two different index spaces, so a real move never looks
+  like a no-op.
+- Dropping the project's own source tile now says "Yeh clip project ka main
+  source hai — timeline par already hai" (info), not the red "nahi lag sakta".
+  The guard uses the library's `inUse` flag; path/URL equality missed after URL
+  normalisation.
+- **Tree recovery:** the i18n lane's rewrite was left half-done overnight
+  (locales deleted, `readFile` import that never existed), which blanked the
+  page. Its WIP is saved at
+  `%TEMP%\opencode\t9-i18n-wip\` (store patch + `types.ts`), and
+  `src/lib/stores/i18n.svelte.ts` is back to the committed version. The UI-study
+  lane's finished ruler dots and `PreviewBar` strip removal are kept.
+- Verified on localhost: media tile → lane shows the ghost + outline and the
+  info toast; a clip dragged right by 240 px moves one slot (A B C → B A C) with
+  the caret at `197px` and disappears on release; release outside the lane adds
+  nothing; 20 clips, zero console errors; `svelte-check` 0 errors, 47 tests.

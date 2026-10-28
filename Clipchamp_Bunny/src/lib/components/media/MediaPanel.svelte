@@ -81,10 +81,13 @@
     if (!e) return;
     selectedId = id;
     // The main source is already on the timeline — adding it again would show
-    // the same video before and after the cut.
+    // the same video before and after the cut. `inUse` is the library's own
+    // marker for "this tile is the open project", so it survives URL/path
+    // rewriting that made the old path comparison miss.
     if (
-      project.media &&
-      (e.path ? e.path === project.sourcePath : e.asset.url === project.media.url)
+      e.inUse ||
+      (project.media &&
+        (e.path ? e.path === project.sourcePath : e.asset.url === project.media.url))
     ) {
       toast.push('info', 'Yeh clip project ka main source hai — timeline par already hai');
       return;
@@ -114,6 +117,108 @@
     dt.setData('application/x-t9-asset', id);
     dt.setData('text/plain', id);
     dt.effectAllowed = 'copy';
+  }
+
+  /* --------------------------------------------------- pointer drag fallback
+     The desktop window keeps Tauri's `dragDropEnabled` on, because that is the
+     only way a file dropped from Explorer arrives as a real path (DropOverlay).
+     That same switch stops WebView2 from doing HTML5 drag *inside* the page —
+     which is why a tile drags on localhost and does nothing in the app.
+
+     So the tile also moves with plain pointer events. No dependency on the
+     native drag machinery, and it behaves the same in both places. When the
+     browser does start a real HTML5 drag, `dragstart` fires and this path
+     steps aside instead of adding the clip twice. */
+  const DROP_LANE = '[data-t9-drop="lane"]';
+
+  function onTilePointerDown(ev: PointerEvent, id: string) {
+    if (ev.button !== 0) return;
+    const tile = ev.currentTarget as HTMLElement;
+    // The tile has + / ⋯ buttons; a press there belongs to the button.
+    if ((ev.target as HTMLElement).closest('button')) return;
+
+    const startX = ev.clientX;
+    const startY = ev.clientY;
+    let started = false;
+    let dead = false;
+    let ghost: HTMLDivElement | null = null;
+    let lane: HTMLElement | null = null;
+
+    const finish = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      tile.removeEventListener('dragstart', deadDrag);
+      tile.style.opacity = '';
+      ghost?.remove();
+      ghost = null;
+      paintLane(null);
+    };
+
+    const paintLane = (el: HTMLElement | null) => {
+      if (el === lane) return;
+      if (lane) {
+        lane.style.outline = '';
+        lane.style.outlineOffset = '';
+      }
+      lane = el;
+      if (lane) {
+        lane.style.outline = '2px solid rgba(77,141,255,.85)';
+        lane.style.outlineOffset = '-2px';
+      }
+    };
+
+    // Chromium owns the gesture once a native drag starts; stand down.
+    function deadDrag() {
+      dead = true;
+      finish();
+    }
+
+    const move = (m: PointerEvent) => {
+      if (dead) return;
+      if (!started) {
+        if (Math.hypot(m.clientX - startX, m.clientY - startY) < 6) return;
+        started = true;
+        const entry = media.get(id);
+        ghost = document.createElement('div');
+        ghost.textContent = `+ ${entry ? entry.asset.name : 'clip'}`;
+        ghost.style.cssText =
+          'position:fixed;z-index:9999;pointer-events:none;transform:translate(12px,14px);' +
+          'max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' +
+          'padding:5px 9px;border-radius:6px;background:#4D8DFF;color:#fff;font-size:11px;' +
+          'font-weight:600;box-shadow:0 6px 18px rgba(0,0,0,.45)';
+        document.body.appendChild(ghost);
+        tile.style.opacity = '0.45';
+      }
+      if (ghost) {
+        ghost.style.left = `${m.clientX}px`;
+        ghost.style.top = `${m.clientY}px`;
+      }
+      paintLane(
+        (document.elementFromPoint(m.clientX, m.clientY)?.closest(DROP_LANE) as HTMLElement) ?? null
+      );
+    };
+
+    const up = (u: PointerEvent) => {
+      if (dead) return;
+      const wasDrag = started;
+      const target = wasDrag
+        ? ((document.elementFromPoint(u.clientX, u.clientY)?.closest(DROP_LANE) as HTMLElement) ??
+          null)
+        : null;
+      finish();
+      if (wasDrag && target) void placeAsset(id);
+    };
+
+    const cancel = () => {
+      dead = true;
+      finish();
+    };
+
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+    tile.addEventListener('dragstart', deadDrag, { once: true });
   }
 
   async function importFromFiles() {
@@ -353,6 +458,7 @@
               tabindex="0"
               draggable={e.phase !== 'loading'}
               ondragstart={(ev) => onDragStart(ev, e.asset.id)}
+              onpointerdown={(ev) => onTilePointerDown(ev, e.asset.id)}
               aria-label="{e.asset.name}, {e.durationLabel}, {e.inUse
                 ? 'Current project'
                 : onTimeline

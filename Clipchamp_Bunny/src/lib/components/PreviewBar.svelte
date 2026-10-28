@@ -30,10 +30,14 @@
 <!-- PREVIEW BAR — three-column grid so the Size group sits DEAD CENTER:
      left (undo/redo) | centre (Size + Loop) | right (Share + Export). The
      old twin `flex-1` spacers only balanced when both sides were the same
-     width — Share + Export are wider, so the pill drifted left. -->
-<div
-  class="grid h-10 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 border-b border-nc-line bg-nc-panel px-3 select-none"
->
+     width — Share + Export are wider, so the pill drifted left.
+
+     No strip: Clipchamp has no panel or rule under the top bar — these
+     controls float on the editor's own background (its toolbar row and the
+     preview share one surface). The `bg-nc-panel border-b` used to draw a
+     full-width band across every panel below it, which is exactly the bar
+     Clipchamp does not have, so it is gone; only the spacing row remains. -->
+<div class="grid h-10 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 select-none">
   <div class="flex items-center gap-2">
     <button
       onclick={() => project.undo()}
