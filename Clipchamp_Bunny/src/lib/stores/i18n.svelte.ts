@@ -336,30 +336,7 @@ const en: Dict = {
 };
 
 const hinglish: Dict = {
-  /* ---------------------------------------------------------- profile menu */
-  'profile.menu': 'Profile menu',
-  'profile.open': 'Profile menu kholo',
-  'profile.picture': '{name} ki profile picture',
-  'profile.edit': 'Edit profile',
-  'profile.settings': 'App settings',
-  'profile.language': 'Language',
-  'profile.help': 'Help & About',
-  'profile.back': 'Wapas',
-  'profile.cancel': 'Cancel',
-  'profile.name': 'Display name',
-  'profile.namePlaceholder': 'Aapka naam',
-  'profile.save': 'Save',
-  'profile.saved': 'Profile save ho gaya.',
-  'profile.nameEmpty': 'Naam khaali nahi ho sakta.',
-  'profile.hint': 'Sirf is PC pe save hota hai — kuch upload nahi hota.',
-  'profile.photoPick': 'Photo chuno',
-  'profile.photoResetBtn': 'Photo hatao',
-  'profile.photoSet': 'Profile photo update ho gayi.',
-  'profile.photoReset': 'Wapas default photo pe.',
-  'profile.photoBad': 'Ye file ek valid image nahi hai.',
-  'profile.close': 'Menu band karo',
-
-  /* ------------------------------- background (profile menu → Background) */
+    /* ------------------------------- background (profile menu → Background) */
   'profile.background': 'Background',
   'bg.title': 'BACKGROUND',
   'bg.video': 'Video chuno…',
