@@ -34,10 +34,19 @@
 
      No strip: Clipchamp has no panel or rule under the top bar — these
      controls float on the editor's own background (its toolbar row and the
-     preview share one surface). The `bg-nc-panel border-b` used to draw a
-     full-width band across every panel below it, which is exactly the bar
-     Clipchamp does not have, so it is gone; only the spacing row remains. -->
-<div class="grid h-10 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 select-none">
+     preview share one surface). The old `bg-nc-panel border-b` drew a
+     full-width band across every panel below, which is exactly the bar
+     Clipchamp does not have.
+
+     But the row stays OPAQUE: `BackgroundVideo` is fixed behind the whole
+     window and only *plays* on the home screen, because the editor was always
+     meant to cover it. A transparent row here leaked one paused wallpaper
+     frame as a magenta stripe (#6A0547) behind undo/redo. So the strip is
+     removed by matching the editor's own `nc-bg` — no lighter panel, no
+     rule — not by going transparent. -->
+<div
+  class="grid h-10 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 bg-nc-bg px-3 select-none"
+>
   <div class="flex items-center gap-2">
     <button
       onclick={() => project.undo()}
