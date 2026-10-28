@@ -12,7 +12,22 @@
   import ContextMenu from '../ContextMenu.svelte';
   import MenuIcon from '../MenuIcon.svelte';
   import ClipFilmstrip from './ClipFilmstrip.svelte';
+  import AmbientGlow from './AmbientGlow.svelte';
   import type { MenuItem } from '../../types';
+
+  /**
+   * Region 3 of the ambient band: this tool row washes with the SAME glow as
+   * the stage and the preview bar, sampling the ONE registered `<video>`
+   * (`player.el`) — no second decoder, no extra RAM. The poster seeds the
+   * colour before the first frame decodes, exactly like the other regions.
+   */
+  const glowPoster = $derived(
+    project.activeClip
+      ? undefined
+      : project.thumbnails
+        ? thumbUrl(project.thumbnails, 0)
+        : undefined
+  );
 
   /* Timeline metrics (measured on the Clipchamp OBS capture + DOM extract):
      tool row 30px · source minimap 7px · ruler 24px
@@ -852,7 +867,9 @@
        through the 30px band. `overflow-hidden` pins the 56px blur inside the
        row. All three regions sample the one `player.el` video — no second
        decoder. -->
-  <div class="relative isolate flex h-[30px] shrink-0 items-center gap-1 border-b border-nc-line px-2">
+  <div
+    class="relative isolate flex h-[30px] shrink-0 items-center gap-1 border-b border-nc-line px-2"
+  >
     <div
       class="pointer-events-none absolute inset-0 -z-10 overflow-hidden bg-nc-panel"
       aria-hidden="true"
