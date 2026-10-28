@@ -1876,6 +1876,12 @@ class ProjectStore {
     this.hiddenTracks = hiding ? ['audio', 'video'] : [];
   }
 
+  /** Show both tracks again — the inverse of `toggleTracksHidden`. */
+  showTracks() {
+    this.commit();
+    this.hiddenTracks = [];
+  }
+
   /**
    * Cut whole clips **without deleting them**.
    *

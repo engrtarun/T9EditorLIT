@@ -56,6 +56,7 @@
   let viewW = $state(1200);
   let scrollLeft = $state(0);
   let busy = $state(false);
+  let eyeMenuOpen = $state(false);
   /** True while a library tile is dragged over the video lane. */
   let dropHover = $state(false);
 
@@ -66,6 +67,15 @@
    *  other segments). Painted as a blue caret so the drop is never a guess. */
   let dropSlot = $state<number | null>(null);
   let lastClickedSegId: string | null = $state(null);
+
+  /** Legend rotation — the active flag chip re-animates every few seconds. */
+  const LEGEND = ['Keep', 'AI Fumble', 'Silence', 'AI Suggest'] as const;
+  const LEGEND_INTERVAL_MS = 5000;
+  let legendIdx = $state(0);
+  $effect(() => {
+    const t = setInterval(() => (legendIdx = (legendIdx + 1) % LEGEND.length), LEGEND_INTERVAL_MS);
+    return () => clearInterval(t);
+  });
 
   type TrimEdge = 'start' | 'end';
   interface ClipTrim {
@@ -1093,34 +1103,104 @@
         </div>
         <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
       {/if}
-      <span class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300">
+      <span
+        class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300 {0 ===
+        legendIdx
+          ? 'legend-chip'
+          : ''}"
+      >
         <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-brand"></i>Keep
       </span>
-      <span class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300">
+      <span
+        class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300 {1 ===
+        legendIdx
+          ? 'legend-chip'
+          : ''}"
+      >
         <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-red"></i>AI Fumble
       </span>
-      <span class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300">
+      <span
+        class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300 {2 ===
+        legendIdx
+          ? 'legend-chip'
+          : ''}"
+      >
         <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-mut-2"></i>Silence
       </span>
-      <span class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300">
+      <span
+        class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300 {3 ===
+        legendIdx
+          ? 'legend-chip'
+          : ''}"
+      >
         <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-green"></i>AI Suggest
       </span>
       <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
-      <button
-        onclick={() => project.toggleTracksHidden()}
-        class="flex h-6 items-center gap-1 rounded px-1.5 text-[9px] transition-colors
-               {project.isTrackHidden('audio') || project.isTrackHidden('video')
-          ? 'bg-nc-red/15 text-nc-red'
-          : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
-        title={project.isTrackHidden('audio') || project.isTrackHidden('video')
-          ? 'Show audio and video'
-          : 'Hide audio and video'}
-      >
-        <MenuIcon
-          name={project.isTrackHidden('audio') || project.isTrackHidden('video') ? 'eyeOff' : 'eye'}
-          size={12}
-        />
-      </button>
+      <span class="relative">
+        <button
+          onclick={() => (eyeMenuOpen = !eyeMenuOpen)}
+          class="flex h-6 items-center gap-1 rounded px-1.5 text-[9px] transition-colors
+                 {project.isTrackHidden('audio') || project.isTrackHidden('video')
+            ? 'bg-nc-red/15 text-nc-red'
+            : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
+          title={project.isTrackHidden('audio') || project.isTrackHidden('video')
+            ? 'Show audio and video'
+            : 'Hide audio and video'}
+        >
+          <MenuIcon
+            name={project.isTrackHidden('audio') || project.isTrackHidden('video')
+              ? 'eyeOff'
+              : 'eye'}
+            size={12}
+          />
+        </button>
+        {#if eyeMenuOpen}
+          <div
+            class="absolute right-0 top-full z-30 mt-1 w-36 rounded-lg border border-nc-line-2 bg-nc-panel p-1 shadow-2xl"
+          >
+            <button
+              type="button"
+              onclick={() => {
+                project.toggleTrackHidden('video');
+                eyeMenuOpen = false;
+              }}
+              class="block w-full rounded px-2 py-1.5 text-left text-[11px] text-nc-txt transition-colors hover:bg-nc-panel-2"
+            >
+              Hide video
+            </button>
+            <button
+              type="button"
+              onclick={() => {
+                project.toggleTrackHidden('audio');
+                eyeMenuOpen = false;
+              }}
+              class="block w-full rounded px-2 py-1.5 text-left text-[11px] text-nc-txt transition-colors hover:bg-nc-panel-2"
+            >
+              Hide audio
+            </button>
+            <button
+              type="button"
+              onclick={() => {
+                project.toggleTracksHidden();
+                eyeMenuOpen = false;
+              }}
+              class="block w-full rounded px-2 py-1.5 text-left text-[11px] text-nc-txt transition-colors hover:bg-nc-panel-2"
+            >
+              Hide both
+            </button>
+            <button
+              type="button"
+              onclick={() => {
+                project.showTracks();
+                eyeMenuOpen = false;
+              }}
+              class="block w-full rounded px-2 py-1.5 text-left text-[11px] text-nc-txt transition-colors hover:bg-nc-panel-2"
+            >
+              Show both
+            </button>
+          </div>
+        {/if}
+      </span>
     </div>
   </div>
 
@@ -1607,3 +1687,20 @@
     />
   {/if}
 </section>
+
+<style>
+  .legend-chip {
+    animation: legendIn 2.4s ease-out;
+  }
+
+  @keyframes legendIn {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+</style>
