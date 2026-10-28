@@ -563,3 +563,21 @@ the new controls must be numbers in state, not new files on disk.
   info toast; a clip dragged right by 240 px moves one slot (A B C → B A C) with
   the caret at `197px` and disappears on release; release outside the lane adds
   nothing; 20 clips, zero console errors; `svelte-check` 0 errors, 47 tests.
+
+### Shipped: drag & drop on the desktop (`ci-e57b726`)
+
+- Work order **SARKARI-20261028-114818-AEF6** -> `shipped`, mode **live**,
+  build `ci-e57b726`, SHA-256 `242476c3…1e61`, canary passed, doctor clean
+  (marker hash matches, no staged file, daemon `go-b7a8709702c199e0` on 7878).
+  The app was closed, so it installed in place - the next launch is the fix.
+- The deploy ran from a **detached worktree** at the commit
+  (`%TEMP%\opencode\t9-wt-e57b726`, `node_modules` + `src-tauri/target`
+  junctioned) because the i18n lane kept rewriting
+  `src/lib/stores/i18n.svelte.ts` mid-check and failed the previous work order
+  with 1506 syntax errors. CI compiles from the pushed commit, so the shared
+  tree can be red without blocking a ship.
+- `PreviewBar.svelte`: the toolbar row is `bg-nc-bg`, not transparent -
+  `BackgroundVideo` sits fixed behind the window and leaked one paused
+  wallpaper frame as a magenta stripe behind undo/redo. Verified in the live
+  page: computed `rgb(21, 23, 27)`, no bottom border.
+- Localhost still shows the same 20-clip project with zero console errors.
