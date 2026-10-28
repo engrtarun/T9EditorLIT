@@ -262,6 +262,17 @@
       return;
     }
     if (hit('split', e)) {
+      // An extra clip splits into two clips of its own. The old guard skipped
+      // the shortcut entirely, so pressing S on a dropped clip did nothing.
+      const clip = project.activeClip;
+      if (clip) {
+        if (project.splitClipAt(clip.id, player.currentTime)) {
+          toast.push('split', 'Clip split — ab do clips hain');
+        } else {
+          toast.push('warn', 'Split nahi hua — clip ke beech me rakho');
+        }
+        return;
+      }
       if (onExtra) return;
       if (project.splitAt(player.currentTime)) {
         player.seek(project.snapTime(player.currentTime));

@@ -1558,8 +1558,8 @@ class ProjectStore {
    * puts a clip on the timeline — that only happens when the user drags one
    * in (or presses its + button).
    */
-  async importPaths(paths: string[]) {
-    if (!paths.length) return;
+  async importPaths(paths: string[]): Promise<string[]> {
+    if (!paths.length) return [];
     // With no project open the import still needs a library of its own (a
     // draft), or the files would land in whichever project was open last.
     if (!this.media && !media.isDraft) media.startDraft();
@@ -1606,15 +1606,20 @@ class ProjectStore {
     }
 
     // Nothing else. The files are in My media; the timeline stays exactly as
-    // the user left it until they drag one in.
+    // the user left it until they drag one in — a caller that *did* mean
+    // "put it on the timeline" (a drop on the lane) uses the returned ids.
     this.ready = true;
+    return fresh.map((f) => f.id);
   }
 
-  /** User-dropped files in the browser (no filesystem path). */
-  async importBlobs(files: File[]): Promise<string | null> {
-    if (!files.length) return null;
+  /**
+   * Add dropped files to the library. Split out from `importBlobs` because a
+   * drop that lands on the timeline needs **every** id to place, while the
+   * "this file is the project" caller only wants the first one.
+   */
+  private addBlobEntries(files: File[]): string[] {
     if (!this.media && !media.isDraft) media.startDraft();
-    let firstId: string | null = null;
+    const ids: string[] = [];
     for (const f of files) {
       const isImage = f.type.startsWith('image/');
       if (!f.type.startsWith('video/') && !f.type.startsWith('audio/') && !isImage) continue;
@@ -1625,12 +1630,14 @@ class ProjectStore {
         durationSecs: isImage ? 5 : 0,
         durationLabel: isImage ? '0:05' : '…'
       });
-      firstId ??= entry.asset.id;
+      ids.push(entry.asset.id);
     }
-    // Library only — a dropped file is not a project and not a timeline clip.
-    // The caller that *did* mean "this file is the project" (Create project →
-    // This PC) takes the returned id and opens it explicitly.
-    return firstId;
+    return ids;
+  }
+
+  /** User-dropped files in the browser (no filesystem path). */
+  async importBlobs(files: File[]): Promise<string | null> {
+    return this.addBlobEntries(files)[0] ?? null;
   }
 
   /**
@@ -1641,8 +1648,8 @@ class ProjectStore {
    * FFmpeg or stored in SQLite, so importing one on the desktop would only
    * ever produce a fake asset.
    */
-  async importDropped(files: File[]) {
-    await this.importBlobs(files);
+  async importDropped(files: File[]): Promise<string[]> {
+    return this.addBlobEntries(files);
   }
 
   /** User-dropped files must not navigate the window away. */
@@ -2115,6 +2122,46 @@ class ProjectStore {
     this.splitMarks = [...this.splitMarks, at].sort((a, b) => a - b);
     this.cursor = idx + 1;
     return true;
+  }
+
+  /**
+   * Split an **extra clip** in two at a local time.
+   *
+   * Clipchamp's split makes a new clip out of the right half; T9 keeps the
+   * same rule for the clips that come after the main cut. Nothing is decoded:
+   * the two halves are the same file with different `in/out` points, so the
+   * export still cuts from the original bytes.
+   */
+  splitClipAt(clipId: string, localSec: number): boolean {
+    const i = this.clips.findIndex((c) => c.id === clipId);
+    if (i < 0) return false;
+    const c = this.clips[i];
+    const at = Math.max(c.inSec + 0.2, Math.min(c.outSec - 0.2, localSec));
+    if (at - c.inSec < 0.2 || c.outSec - at < 0.2) return false;
+    const left: ProjectClip = { ...c, id: crypto.randomUUID(), outSec: at };
+    const right: ProjectClip = { ...c, id: crypto.randomUUID(), inSec: at };
+    this.clips = [...this.clips.slice(0, i), left, right, ...this.clips.slice(i + 1)];
+    // Stay on the left half so the preview has a real src and the playhead
+    // stays on the frame that was split.
+    this.activeClipId = left.id;
+    this.saveClips();
+    return true;
+  }
+
+  /**
+   * Split whatever the playhead is over, in one call.
+   *
+   * The keyboard shortcut and the toolbar button both come here, so an extra
+   * clip splits into two clips and the main cut splits into two blocks (red
+   * and grey included) instead of each surface re-deciding.
+   */
+  splitAtPlayhead(): 'clip' | 'timeline' | null {
+    // An extra clip is a different video: falling through to `splitAt` would
+    // cut the main source at the clip's local time.
+    if (this.activeClip) {
+      return this.splitClipAt(this.activeClip.id, player.currentTime) ? 'clip' : null;
+    }
+    return this.splitAt(player.currentTime) ? 'timeline' : null;
   }
 
   /**

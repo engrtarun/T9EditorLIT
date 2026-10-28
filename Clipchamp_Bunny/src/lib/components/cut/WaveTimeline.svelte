@@ -2,6 +2,7 @@
   import { project, isAudioOnly } from '../../stores/project.svelte';
   import { media } from '../../stores/media.svelte';
   import { player } from '../../stores/player.svelte';
+  import { dropTarget } from '../../stores/dropTarget.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { settings } from '../../stores/settings.svelte';
   import { toast } from '../../stores/toast.svelte';
@@ -371,6 +372,14 @@
    * replaced when there is no main source yet - then the dropped file becomes
    * the project's source, exactly like the tile's + button.
    */
+  /** Where a dropped tile would land: pointer x → edit seconds → slot. */
+  function insertSlot(e: DragEvent): number {
+    const lane = e.currentTarget as HTMLElement;
+    const rect = lane.getBoundingClientRect();
+    const x = Math.max(0, e.clientX - rect.left);
+    return project.insertIndexAt(x / zoom);
+  }
+
   async function onLaneDrop(e: DragEvent) {
     dropHover = false;
     const id = e.dataTransfer?.getData('application/x-t9-asset');
@@ -396,11 +405,14 @@
       toast.push('info', 'Yeh clip project ka main source hai — timeline par already hai');
       return;
     }
-    const placed = await project.placeAsset(id);
+    // The slot under the pointer, so a drop *between* two clips inserts there
+    // instead of appending at the end.
+    const at = insertSlot(e);
+    const placed = await project.placeAsset(id, at);
     if (placed === 'source') {
       toast.push('info', `${entry.asset.name} project ka main video ban gaya`);
     } else if (placed === 'clip') {
-      toast.push('info', `+ ${entry.asset.name} timeline me add ho gaya`);
+      toast.push('info', `+ ${entry.asset.name} — slot ${at + 1} par lag gaya`);
     } else {
       toast.push('warn', 'Yeh asset timeline me nahi lag sakta');
     }
@@ -448,12 +460,25 @@
   }
 
   function doSplit() {
-    if (project.splitAt(player.currentTime)) {
-      player.seek(project.snapTime(player.currentTime));
-      toast.push('split', `✂ Split at ${fmtTime(player.currentTime)}`);
-    } else {
-      toast.push('warn', '✂ Split nahi hua — line bahut chhoti hai');
+    // One door for both kinds of split: an extra clip becomes two clips, the
+    // main cut becomes two blocks (red and grey included — the block under
+    // the playhead is the thing being split, not the cursor's row).
+    const what = project.splitAtPlayhead();
+    if (what === 'clip') {
+      toast.push('split', '✂ Clip split — ab do clips hain');
+      return;
     }
+    if (what === 'timeline') {
+      if (!project.activeClip) player.seek(project.snapTime(player.currentTime));
+      toast.push('split', `✂ Split at ${fmtTime(player.currentTime)}`);
+      return;
+    }
+    toast.push(
+      'warn',
+      project.activeClip
+        ? '✂ Split nahi hua — clip ke beech me rakho, kinare par nahi'
+        : '✂ Split nahi hua — playhead kisi block ke andar rakho'
+    );
   }
 
   /** Clipchamp's "AI suggestions" — find long silences **and** the transcript
@@ -817,8 +842,23 @@
       class="h-[3px] shrink-0 cursor-row-resize bg-nc-line transition-colors hover:bg-nc-brand/60"
     ></div>
   {/if}
-  <!-- TOOL ROW: tools left, transport centred, legend + track eyes right. -->
-  <div class="relative flex h-[30px] shrink-0 items-center gap-1 border-b border-nc-line px-2">
+  <!-- TOOL ROW: tools left, transport centred, legend + track eyes right.
+
+       Ambient Mode (region 3): this row is transparent over the section's
+       `bg-nc-panel`, so the glow layer carries `bg-nc-panel` itself — the
+       screen blend needs an opaque backdrop inside its own stacking context
+       (`-z-10` + `isolate` on the row keeps it behind every button and
+       inside this row), and the opaque fill keeps the wallpaper from leaking
+       through the 30px band. `overflow-hidden` pins the 56px blur inside the
+       row. All three regions sample the one `player.el` video — no second
+       decoder. -->
+  <div class="relative isolate flex h-[30px] shrink-0 items-center gap-1 border-b border-nc-line px-2">
+    <div
+      class="pointer-events-none absolute inset-0 -z-10 overflow-hidden bg-nc-panel"
+      aria-hidden="true"
+    >
+      <AmbientGlow video={player.el} poster={glowPoster} />
+    </div>
     <div class="flex items-center gap-0.5">
       <button
         onclick={autoSuggest}
@@ -1357,6 +1397,15 @@
             <div
               class="pointer-events-none absolute top-0 bottom-0 z-30 w-[2px] -translate-x-1/2 rounded bg-nc-brand shadow-[0_0_6px_rgba(77,141,255,.9)]"
               style="left:{dropSlotX}px"
+            ></div>
+          {/if}
+
+          {#if dropTarget.x != null}
+            <!-- Same caret for a tile dragged out of My media: it shows the
+                 gap between two clips the drop will insert into. -->
+            <div
+              class="pointer-events-none absolute top-0 bottom-0 z-30 w-[2px] -translate-x-1/2 rounded bg-nc-brand shadow-[0_0_6px_rgba(77,141,255,.9)]"
+              style="left:{dropTarget.x}px"
             ></div>
           {/if}
 

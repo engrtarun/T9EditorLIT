@@ -1,6 +1,8 @@
 <script lang="ts">
   import { media } from '../../stores/media.svelte';
   import { project, clipKind, isAudioOnly } from '../../stores/project.svelte';
+  import { player } from '../../stores/player.svelte';
+  import { dropTarget } from '../../stores/dropTarget.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { toast } from '../../stores/toast.svelte';
   import {
@@ -76,7 +78,7 @@
    * a drag onto the lane — never from a plain click. A click selects a tile;
    * it must never be able to add a clip the user did not ask for.
    */
-  async function placeAsset(id: string) {
+  async function placeAsset(id: string, atIndex?: number) {
     const e = media.get(id);
     if (!e) return;
     selectedId = id;
@@ -100,14 +102,29 @@
       toast.push('info', 'Audio-only clip abhi timeline me nahi lagta — video ya image chuno');
       return;
     }
-    const placed = await project.placeAsset(id);
+    const placed = await project.placeAsset(id, atIndex);
     if (placed === 'source') {
       toast.push('info', `${e.asset.name} project ka main video ban gaya`);
     } else if (placed === 'clip') {
-      toast.push('info', `+ ${e.asset.name} timeline me add ho gaya`);
+      toast.push(
+        'info',
+        atIndex == null
+          ? `+ ${e.asset.name} timeline me add ho gaya`
+          : `+ ${e.asset.name} — clip ${atIndex + 1} ki jagah lag gaya`
+      );
     } else {
       toast.push('warn', 'Yeh asset timeline me nahi lag sakta');
     }
+  }
+
+  /**
+   * The slot under the pointer, in both forms the two consumers need: the
+   * insertion index for `placeAsset`, and the caret's x inside the lane.
+   */
+  function slotInLane(lane: HTMLElement, clientX: number) {
+    const rect = lane.getBoundingClientRect();
+    const x = Math.max(0, clientX - rect.left);
+    return { index: project.insertIndexAt(x / player.zoom), x };
   }
 
   /** Drag a tile onto the timeline. The timeline reads this exact MIME type. */
@@ -153,6 +170,7 @@
       ghost?.remove();
       ghost = null;
       paintLane(null);
+      dropTarget.clear();
     };
 
     const paintLane = (el: HTMLElement | null) => {
@@ -194,9 +212,18 @@
         ghost.style.left = `${m.clientX}px`;
         ghost.style.top = `${m.clientY}px`;
       }
-      paintLane(
-        (document.elementFromPoint(m.clientX, m.clientY)?.closest(DROP_LANE) as HTMLElement) ?? null
-      );
+      const over =
+        (document.elementFromPoint(m.clientX, m.clientY)?.closest(DROP_LANE) as HTMLElement) ??
+        null;
+      paintLane(over);
+      if (over) {
+        // Same caret the clip reorder paints: without it the drop gives no
+        // clue *where between two clips* the tile will land.
+        const slot = slotInLane(over, m.clientX);
+        dropTarget.set(slot.index, slot.x);
+      } else {
+        dropTarget.clear();
+      }
     };
 
     const up = (u: PointerEvent) => {
@@ -206,8 +233,9 @@
         ? ((document.elementFromPoint(u.clientX, u.clientY)?.closest(DROP_LANE) as HTMLElement) ??
           null)
         : null;
+      const slot = target ? slotInLane(target, u.clientX) : null;
       finish();
-      if (wasDrag && target) void placeAsset(id);
+      if (wasDrag && target && slot) void placeAsset(id, slot.index);
     };
 
     const cancel = () => {

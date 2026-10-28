@@ -1,5 +1,7 @@
 <script lang="ts">
   import { project } from '../stores/project.svelte';
+  import { media } from '../stores/media.svelte';
+  import { player } from '../stores/player.svelte';
   import { mode } from '../stores/mode.svelte';
   import { app } from '../stores/app.svelte';
   import { isTauri } from '../ipc';
@@ -45,6 +47,34 @@
     }
   }
 
+  /**
+   * A file dropped into the **editor** also reaches the timeline.
+   *
+   * Dropping on the lane inserts at the pointer's slot; dropping anywhere else
+   * in the editor appends. The library is filled by the import itself, so the
+   * sidebar updates either way — the user should never have to import twice to
+   * get the same file on both sides.
+   */
+  async function placeDropped(ids: string[], clientX: number, clientY: number) {
+    if (!ids.length) return;
+    const lane =
+      (document
+        .elementFromPoint(clientX, clientY)
+        ?.closest('[data-t9-drop="lane"]') as HTMLElement | null) ?? null;
+    let at = lane
+      ? project.insertIndexAt(
+          Math.max(0, (clientX - lane.getBoundingClientRect().left) / player.zoom)
+        )
+      : project.clips.length;
+    for (const id of ids) {
+      const entry = media.get(id);
+      // The project's own source is already on the timeline.
+      if (!entry || entry.inUse) continue;
+      const placed = await project.placeAsset(id, at);
+      if (placed === 'clip') at += 1;
+    }
+  }
+
   async function onDrop(e: DragEvent) {
     if (isTauri() || !isFileDrag(e)) return;
     e.preventDefault();
@@ -68,8 +98,9 @@
     const onDashboard = app.view === 'home';
     if (onDashboard) await project.startNew('', '16:9');
     const hadProject = !!project.media;
-    await project.importDropped(usable);
+    const ids = await project.importDropped(usable);
     if (onDashboard) app.openEditor();
+    else await placeDropped(ids, e.clientX, e.clientY);
     if (!hadProject) mode.set('cut');
   }
 
@@ -102,7 +133,12 @@
                 mode.set('cut');
               })();
             } else {
-              void project.importPaths(payload.paths);
+              void (async () => {
+                const ids = await project.importPaths(payload.paths);
+                // Tauri reports physical pixels; the DOM works in CSS pixels.
+                const dpr = window.devicePixelRatio || 1;
+                await placeDropped(ids, payload.position.x / dpr, payload.position.y / dpr);
+              })();
             }
           }
         });

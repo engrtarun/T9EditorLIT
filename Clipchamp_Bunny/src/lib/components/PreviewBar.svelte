@@ -5,6 +5,18 @@
   import { menu } from '../stores/menu.svelte';
   import { i18n } from '../stores/i18n.svelte';
   import { FRAMES, type ProjectFrame } from '../project-frame';
+  import { thumbUrl } from '../media';
+  import AmbientGlow from './cut/AmbientGlow.svelte';
+
+  /**
+   * Region 2 of the ambient band: the same glow that blooms behind the player
+   * also washes this row — all three regions sample the ONE registered
+   * `<video>` (`player.el`), so there is still exactly one decoder. The poster
+   * seeds the colour before the first frame decodes, exactly like the stage.
+   */
+  const glowPoster = $derived(
+    project.activeClip ? undefined : (project.thumbnails ? thumbUrl(project.thumbnails, 0) : undefined)
+  );
 
   /**
    * The Size pill is live: the ratio the project plays in and exports at,
@@ -43,10 +55,22 @@
      meant to cover it. A transparent row here leaked one paused wallpaper
      frame as a magenta stripe (#6A0547) behind undo/redo. So the strip is
      removed by matching the editor's own `nc-bg` — no lighter panel, no
-     rule — not by going transparent. -->
+     rule — not by going transparent.
+
+     Ambient Mode (region 2): the glow layer sits at `-z-10`, behind every
+     control, and carries its OWN `bg-nc-bg` — the mask has to screen-blend
+     against a real backdrop inside its own stacking context, and the opaque
+     fill doubles as the wallpaper guard above. `overflow-hidden` pins the
+     56px blur inside this 40px row so nothing bleeds onto the panels below. -->
 <div
-  class="grid h-10 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 bg-nc-bg px-3 select-none"
+  class="relative isolate grid h-10 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 bg-nc-bg px-3 select-none"
 >
+  <div
+    class="pointer-events-none absolute inset-0 -z-10 overflow-hidden bg-nc-bg"
+    aria-hidden="true"
+  >
+    <AmbientGlow video={player.el} poster={glowPoster} />
+  </div>
   <div class="flex items-center gap-2">
     <button
       onclick={() => project.undo()}
