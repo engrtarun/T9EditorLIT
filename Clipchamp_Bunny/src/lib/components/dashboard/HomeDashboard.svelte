@@ -39,13 +39,14 @@
     defaultDbPath,
     demoSourcePath,
     extractPoster,
+    fileSizes,
     importThumbnail,
     isTauri,
     loadProjects,
     loadTrash,
     pickImageFile,
     pickVideos,
-    probeMedia,
+    purgeAllTrash,
     purgeTrash,
     restoreProject,
     revealPath,
@@ -157,29 +158,68 @@
   }
 
   /**
-   * The slow part — posters first, then sizes.
+   * The slow part — and why the dashboard never waits for it.
    *
-   * Posters win the race on purpose: they are what the eye sees. A cached
-   * still is just a file existence check; an uncached one costs one FFmpeg
-   * child. Either way they run **one at a time** — the dashboard is already
-   * on screen, and a queue of eight parallel decoders would be exactly the
-   * kind of CPU burn this app is built to avoid.
+   * Three tiers, cheapest first:
+   *   1. **Sizes** land in one `file_sizes` call — a filesystem stat per path,
+   *      no ffprobe child at all. It used to spawn one probe process per card
+   *      just to read a number the OS already knew.
+   *   2. **The user's own thumbnails** are a directory read — cheap enough to
+   *      stay eager, and a custom thumb decides the card needs no extractor.
+   *   3. **Extracted posters queue lazily**: a card enters the queue only when
+   *      it scrolls near the viewport (one `IntersectionObserver`), still one
+   *      video at a time. Opening a 200-project library used to schedule an
+   *      FFmpeg decode per card before the first paint.
    *
-   * Sizes come from the SQLite ffprobe cache, so the second visit is free.
    * A card that cannot get a still falls back to streaming the file itself —
    * a real frame, never a blank box.
    */
   async function hydrate(list: RustProject[]) {
+    // 1. Sizes — one IPC round-trip for the whole grid.
+    void fileSizes(list.map((p) => p.sourcePath))
+      .then((sizes) => {
+        const byPath = new Map(sizes.map((s) => [s.path, s]));
+        for (const p of list) {
+          const s = byPath.get(p.sourcePath);
+          // A vanished file keeps whatever the card already knew; the card
+          // shows its "missing" state from the project row instead.
+          if (s?.exists) patch(p.id, (c) => ({ ...c, sizeBytes: s.sizeBytes }));
+        }
+      })
+      .catch(() => {});
+
+    // 2. The custom thumb check decides everything below it.
+    const pending: RustProject[] = [];
     for (const p of list) {
       try {
-        // A picture the user chose beats a frame the app picked, so the
-        // custom one is looked for first. It is a directory read - the image
-        // is never decoded, only its path is kept.
         const custom = await customThumbnail(p.sourcePath);
         if (custom) {
           patch(p.id, (c) => ({ ...c, customThumb: custom, posterUrl: assetUrl(custom) }));
           continue;
         }
+      } catch {
+        /* fall through to the extractor */
+      }
+      pending.push(p);
+    }
+
+    // 3. What is left waits for the viewport — the `$effect` below observes
+    //    the card elements and feeds them to the queue as they near it.
+    for (const p of pending) posterWaiting.set(p.id, p);
+  }
+
+  /* ------------------------------------------------ lazy poster extraction */
+
+  /**
+   * One FFmpeg poster child at a time — the rule the eager loop had, kept.
+   * The queue only *starts* a job when the card is scrolled close enough to
+   * matter, so an off-screen library costs literally nothing.
+   */
+  let posterQueue: Promise<void> = Promise.resolve();
+
+  function lazyPosterQueue(p: RustProject) {
+    posterQueue = posterQueue.then(async () => {
+      try {
         const poster = await extractPoster(p.sourcePath);
         patch(p.id, (c) => ({ ...c, posterUrl: assetUrl(poster.path) }));
       } catch {
@@ -188,17 +228,61 @@
       }
       // Give the UI a frame between ffmpeg children.
       await new Promise((r) => setTimeout(r, 0));
-    }
-
-    for (const p of list) {
-      try {
-        const info = await probeMedia(p.sourcePath);
-        patch(p.id, (c) => ({ ...c, sizeBytes: info.sizeBytes }));
-      } catch {
-        /* the file has moved or is gone — the card keeps what it knows */
-      }
-    }
+    });
   }
+
+  /**
+   * Svelte actions are invalid on components (Svelte 5), so the dashboard
+   * reads the grid instead: the `<li>` cards render in `visible` order, and a
+   * single `$effect` (below) stamps `data-card-id` onto each one and lets one
+   * `IntersectionObserver` start their extraction when they near the
+   * viewport.
+   */
+
+  /** Card id → project row, waiting to be scrolled near. */
+  const posterWaiting = new Map<string, RustProject>();
+  let posterObserver: IntersectionObserver | null = null;
+
+  // Card elements on screen, observed for lazy poster extraction.
+  $effect(() => {
+    if (!isTauri()) return;
+    const list = visible;
+    const grid = document.getElementById('cards-grid');
+    if (!grid || !list.length) return;
+
+    posterObserver ??= new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const id = (entry.target as HTMLElement).dataset.cardId;
+          const waiting = id ? posterWaiting.get(id) : undefined;
+          if (waiting) {
+            posterWaiting.delete(id!);
+            lazyPosterQueue(waiting);
+          }
+          // Custom-thumb and already-queued cards drop out here too.
+          posterObserver?.unobserve(entry.target);
+        }
+      },
+      // Two screens ahead — by the time the card is really visible, the
+      // still usually exists already.
+      { rootMargin: '200svh 0px 200svh 0px' }
+    );
+
+    // The `{#each}` renders `visible` in order, so children[i] ↔ list[i].
+    Array.from(grid.children).forEach((el, i) => {
+      const p = list[i];
+      if (!(el instanceof HTMLElement) || !p) return;
+      el.dataset.cardId = p.project.id;
+      posterObserver?.observe(el);
+    });
+
+    return () => {
+      // The list changed — rebuild the observation next round; already-
+      // extracted ids are simply absent from the waiting map and no-op.
+      posterObserver?.disconnect();
+    };
+  });
 
   async function sweepTrash(): Promise<number> {
     if (!dbPath) return 0;
@@ -522,7 +606,7 @@
     dangerOpen = true;
   }
 
-  /** The notice's YES - the real purge, exactly the old body. */
+  /** The notice's YES — one transaction, one toast. */
   async function doEmptyBin() {
     if (!dbPath) {
       // Browser dev mode: no backend to purge against, just drop the dummy rows.
@@ -530,15 +614,19 @@
       toast.push('info', i18n.t('dash.emptyTrashDone'));
       return;
     }
-    for (const item of bin) {
-      try {
-        await purgeTrash(dbPath, item.sourcePath);
-      } catch {
-        /* one bad row must not stop the rest */
-      }
+    try {
+      // The backend does every bin row in ONE transaction and deletes each
+      // project's derived cache files (poster · strip · waveform) with it.
+      // The video files are never touched.
+      const removed = await purgeAllTrash(dbPath);
+      bin = [];
+      toast.push(
+        'info',
+        `${removed} project ka record delete ho gaya — video files disk pe safe hain`
+      );
+    } catch (e) {
+      toast.push('warn', `Trash khaali nahi hua: ${e instanceof Error ? e.message : e}`);
     }
-    bin = [];
-    toast.push('info', i18n.t('dash.emptyTrashDone'));
   }
 
   function openBinMenu(item: RustTrashItem, e: MouseEvent) {
@@ -894,7 +982,10 @@
                     </div>
                   {/if}
                 {:else}
-                  <ul class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  <ul
+                    id="cards-grid"
+                    class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+                  >
                     {#each visible as c, i (c.project.id)}
                       <ProjectCard
                         card={c}

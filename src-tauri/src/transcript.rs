@@ -180,6 +180,13 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 ";
 
+/// Covering indexes for the two ORDER BYs the UI issues on every dashboard
+/// load. Without the `last_opened` one every load sorts the whole table.
+const INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS idx_projects_last_opened ON projects (last_opened);
+CREATE INDEX IF NOT EXISTS idx_trash_deleted_at     ON trash (deleted_at);
+";
+
 /// The dashboard's bin.
 ///
 /// A row here is a project the user removed from the list — **its video file is
@@ -195,7 +202,7 @@ CREATE TABLE IF NOT EXISTS trash (
 );
 ";
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 static INITIALIZED_DBS: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
@@ -210,22 +217,38 @@ pub fn open_db(path: &std::path::Path) -> Result<Connection, String> {
 
     // WAL mode + NORMAL synchronous: concurrent reads never block writes,
     // and writes append sequentially to WAL without expensive disk locks.
+    //
+    // The rest are bounded-RAM choices for the 8 GB box: a 4 MB page cache,
+    // temp tables in memory (the diff save uses one), and a 4 MB WAL cap so
+    // a big transaction wave cannot balloon the file.
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
-         PRAGMA busy_timeout = 5000;",
+         PRAGMA busy_timeout = 5000;
+         PRAGMA temp_store = MEMORY;
+         PRAGMA cache_size = -4000;
+         PRAGMA journal_size_limit = 4194304;",
     )
     .map_err(|e| format!("could not configure sqlite pragmas: {e}"))?;
 
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    // A per-command open happens dozens of times a session. The schema init
+    // runs once per process, so it is remembered by **both** spellings of the
+    // path — the raw one callers pass and the canonical one — and the
+    // (syscall-heavy) canonicalize only happens on the very first miss.
     let already_init = {
         let mut guard = INITIALIZED_DBS.lock().unwrap_or_else(|e| e.into_inner());
         let set = guard.get_or_insert_with(HashSet::new);
-        if set.contains(&canonical) {
+        if set.contains(path) {
             true
         } else {
-            set.insert(canonical);
-            false
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            if set.contains(&canonical) {
+                true
+            } else {
+                set.insert(canonical);
+                set.insert(path.to_path_buf());
+                false
+            }
         }
     };
 
@@ -243,6 +266,11 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("could not init projects schema: {e}"))?;
     conn.execute_batch(TRASH_SCHEMA)
         .map_err(|e| format!("could not init trash schema: {e}"))?;
+    conn.execute_batch(INDEXES)
+        .map_err(|e| format!("could not init indexes: {e}"))?;
+    // `PRAGMA optimize` updates the query planner's statistics from what this
+    // session actually did — once per process, cheap, no ANALYZE scan needed.
+    let _ = conn.execute_batch("PRAGMA optimize;");
     migrate_paths(conn)
 }
 
@@ -329,7 +357,7 @@ fn migrate_transcripts(conn: &Connection) -> Result<(), String> {
 /// PRAGMA does not accept a bound parameter, so the identifier is formatted
 /// into the statement. Both arguments come from string literals in this file —
 /// never from user input — which is what makes that safe here.
-fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
     let sql = format!("PRAGMA table_info({table})");
 
     let mut stmt = conn
@@ -353,36 +381,144 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, S
     Ok(false)
 }
 
+/// Replace the stored transcript for a source — **diff-style**.
+///
+/// Autosave fires every 750 ms while the user edits, and it used to reroll the
+/// *whole* table (DELETE all + INSERT all, words JSON included). On a
+/// three-hour interview that is thousands of lines rewritten every second of
+/// edit time, for a change of one line. This version:
+///
+/// * loads the stored rows once,
+/// * upserts only the lines that actually differ (including `words` — an
+///   absent `words` never erases the stored timings),
+/// * deletes the ids that no longer exist, in the same transaction.
+///
+/// Everything lands atomically, and the return value is how many rows the
+/// engine wrote — the progress trail uses it to prove a save was not a no-op.
 pub fn save_transcript(
     conn: &Connection,
     source_path: &str,
     lines: &[TranscriptLine],
-) -> Result<(), String> {
+) -> Result<u32, String> {
     let source_path = canonical_path(source_path);
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("could not start transaction: {e}"))?;
 
-    tx.execute(
-        "DELETE FROM transcripts WHERE source_path = ?1",
-        params![source_path],
-    )
-    .map_err(|e| format!("could not clear old transcript: {e}"))?;
+    // The stored state, compared field by field below.
+    struct Stored {
+        start_secs: f64,
+        end_secs: f64,
+        text: String,
+        keep: i64,
+        flag: String,
+        original_text: String,
+        words: String,
+    }
+    let mut existing: HashMap<String, Stored> = HashMap::with_capacity(lines.len());
+    {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, start_secs, end_secs, text, keep, flag, original_text, words
+                 FROM transcripts WHERE source_path = ?1",
+            )
+            .map_err(|e| format!("could not prepare transcript read: {e}"))?;
+        let mut rows = stmt
+            .query(params![source_path])
+            .map_err(|e| format!("could not read the stored transcript: {e}"))?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| format!("could not read a transcript row: {e}"))?
+        {
+            let id: String = row
+                .get(0)
+                .map_err(|e| format!("could not read a transcript id: {e}"))?;
+            let get = |i: usize| -> Result<String, String> {
+                row.get::<_, Option<String>>(i)
+                    .map(|v| v.unwrap_or_default())
+                    .map_err(|e| e.to_string())
+            };
+            existing.insert(
+                id,
+                Stored {
+                    start_secs: row.get(1).map_err(|e| e.to_string())?,
+                    end_secs: row.get(2).map_err(|e| e.to_string())?,
+                    text: get(3)?,
+                    keep: row.get::<_, Option<i64>>(4).map_err(|e| e.to_string())?.unwrap_or(1),
+                    flag: get(5)?,
+                    original_text: get(6)?,
+                    words: get(7)?,
+                },
+            );
+        }
+    }
 
+    // Ids the caller no longer provides are gone. One DELETE per stale id is
+    // fine after a split/merge — the count is at most a handful, and it keeps
+    // the statement cache warm instead of building a giant IN (...) list.
+    let provided: std::collections::HashSet<&str> =
+        lines.iter().map(|l| l.id.as_str()).collect();
+    let mut stale: Vec<&String> = existing
+        .keys()
+        .filter(|id| !provided.contains(id.as_str()))
+        .collect();
+    stale.sort_unstable();
+    {
+        let mut stmt = tx
+            .prepare("DELETE FROM transcripts WHERE source_path = ?1 AND id = ?2")
+            .map_err(|e| format!("could not prepare transcript delete: {e}"))?;
+        for id in &stale {
+            stmt.execute(params![source_path, *id])
+                .map_err(|e| format!("could not delete a removed line: {e}"))?;
+        }
+    }
+
+    // The words column: an explicit word list replaces it, an absent one must
+    // **not** erase the stored timings (see the module doc).
+    let words_of = |line: &TranscriptLine, current: Option<&String>| -> String {
+        match &line.words {
+            Some(w) if !w.is_empty() => serde_json::to_string(w).unwrap_or_default(),
+            _ => current.cloned().unwrap_or_default(),
+        }
+    };
+
+    // Upsert only the rows that actually differ from what is stored. On a
+    // typical autosave tick that is zero or one line — not the whole table.
+    let mut changed: u32 = stale.len() as u32;
     {
         let mut stmt = tx
             .prepare(
                 "INSERT INTO transcripts (source_path, id, start_secs, end_secs, text, keep, flag, original_text, words)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(source_path, id) DO UPDATE SET
+                   start_secs = excluded.start_secs,
+                   end_secs = excluded.end_secs,
+                   text = excluded.text,
+                   keep = excluded.keep,
+                   flag = excluded.flag,
+                   original_text = excluded.original_text,
+                   words = excluded.words",
             )
-            .map_err(|e| format!("could not prepare insert: {e}"))?;
+            .map_err(|e| format!("could not prepare transcript upsert: {e}"))?;
         for line in lines {
-            let words_json = match &line.words {
-                Some(w) if !w.is_empty() => {
-                    serde_json::to_string(w).map_err(|e| format!("could not encode words: {e}"))?
+            let current = existing.get(&line.id);
+            let words = words_of(line, current.map(|s| &s.words));
+            let differs = match current {
+                None => true,
+                Some(s) => {
+                    s.start_secs != line.start_secs
+                        || s.end_secs != line.end_secs
+                        || s.text != line.text
+                        || s.keep != i64::from(line.keep)
+                        || s.flag != line.flag
+                        || s.original_text != line.original_text
+                        || s.words != words
                 }
-                _ => String::new(),
             };
+            if !differs {
+                continue;
+            }
+            changed += 1;
             stmt.execute(params![
                 source_path,
                 line.id,
@@ -392,15 +528,15 @@ pub fn save_transcript(
                 if line.keep { 1 } else { 0 },
                 line.flag,
                 line.original_text,
-                words_json,
+                words,
             ])
-            .map_err(|e| format!("could not insert transcript line: {e}"))?;
+            .map_err(|e| format!("could not upsert transcript line: {e}"))?;
         }
     }
 
     tx.commit()
         .map_err(|e| format!("could not commit transcript: {e}"))?;
-    Ok(())
+    Ok(changed)
 }
 
 pub fn load_transcript(
@@ -586,7 +722,10 @@ fn now_unix() -> i64 {
 pub fn trash_project(conn: &Connection, source_path: &str) -> Result<(), String> {
     let source_path = canonical_path(source_path);
     let now = now_unix();
-    conn.execute(
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("could not start transaction: {e}"))?;
+    tx.execute(
         "INSERT INTO trash (id, name, source_path, duration_secs, deleted_at)
            SELECT id, name, source_path, duration_secs, ?1
              FROM projects
@@ -598,18 +737,22 @@ pub fn trash_project(conn: &Connection, source_path: &str) -> Result<(), String>
         params![now, source_path],
     )
     .map_err(|e| format!("could not move project to trash: {e}"))?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM projects WHERE source_path = ?1",
         params![source_path],
     )
     .map_err(|e| format!("could not remove project from the list: {e}"))?;
-    Ok(())
+    tx.commit()
+        .map_err(|e| format!("could not commit trash move: {e}"))
 }
 
 /// Bring a project back from the bin.
 pub fn restore_project(conn: &Connection, source_path: &str) -> Result<(), String> {
     let source_path = canonical_path(source_path);
-    conn.execute(
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("could not start transaction: {e}"))?;
+    tx.execute(
         "INSERT INTO projects (id, name, source_path, duration_secs, last_opened)
            SELECT id, name, source_path, duration_secs, ?1
              FROM trash
@@ -621,12 +764,13 @@ pub fn restore_project(conn: &Connection, source_path: &str) -> Result<(), Strin
         params![now_unix(), source_path],
     )
     .map_err(|e| format!("could not restore project: {e}"))?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM trash WHERE source_path = ?1",
         params![source_path],
     )
     .map_err(|e| format!("could not clear project from trash: {e}"))?;
-    Ok(())
+    tx.commit()
+        .map_err(|e| format!("could not commit restore: {e}"))
 }
 
 /// Everything currently in the bin, newest first.
@@ -656,37 +800,216 @@ pub fn load_trash(conn: &Connection) -> Result<Vec<TrashItem>, String> {
     Ok(out)
 }
 
-/// Drop a project from the bin for good.
+/* ------------------------------------------------------------ purge + sweep */
+
+/// One purged project: where its rows lived and the derived-file key it owned.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgedEntry {
+    pub path: String,
+    pub cache_key: String,
+}
+
+/// The outcome of a purge or an orphan sweep.
 ///
-/// **Only the app's record is deleted** — the user's video file is left alone
-/// on disk, because the app never owns somebody else's footage.
-pub fn purge_trash(conn: &Connection, source_path: &str) -> Result<(), String> {
-    let source_path = canonical_path(source_path);
-    conn.execute(
-        "DELETE FROM trash WHERE source_path = ?1",
-        params![source_path],
+/// `entries` tells the **command layer** which derived files it may now delete
+/// from the disk — this module knows SQLite, not the cache root, so the file
+/// deletion deliberately happens one layer up.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgeSummary {
+    /// Projects that vanished (a row in `projects` or `trash` existed for it).
+    pub purged: usize,
+    /// Extra dead rows a sweep removed (transcript lines + probe-cache rows).
+    pub orphan_rows: usize,
+    /// The `cache::source_key`-keyed files the caller can delete.
+    pub entries: Vec<PurgedEntry>,
+}
+
+/// Does the probe-cache table exist at all?
+///
+/// Both crates create it next to these tables, but a database only touched by
+/// an old build can predate it — and a purge must survive that.
+fn media_cache_exists(conn: &Connection) -> bool {
+    matches!(
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_cache'",
+            [],
+            |r| r.get::<_, i64>(0)
+        ),
+        Ok(1)
     )
-    .map_err(|e| format!("could not empty trash: {e}"))?;
-    Ok(())
+}
+
+/// Remove the records of projects — from the list, the bin, their transcript
+/// and their probe cache — in **one transaction**.
+///
+/// The video files themselves are never touched: the app does not own the
+/// user's footage. What is fair game are the app's own derived files, and the
+/// [`PurgeSummary`] hands the (path, cache key) pairs to the command layer so
+/// it can delete `posters/<key>.jpg`, `thumbs/<key>/` and `waveform/<key>.json`.
+pub fn purge_projects(conn: &Connection, paths: &[String]) -> Result<PurgeSummary, String> {
+    let mut summary = PurgeSummary::default();
+
+    // Canonicalise and dedupe up front — a duplicate path would otherwise be
+    // counted (and cleaned) twice.
+    let mut unique: Vec<String> = paths
+        .iter()
+        .map(|p| canonical_path(p))
+        .collect::<Vec<_>>();
+    unique.sort_unstable();
+    unique.dedup();
+    if unique.is_empty() {
+        return Ok(summary);
+    }
+
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("could not start transaction: {e}"))?;
+
+    // The keys must be read *before* the rows vanish, and this read rides the
+    // same transaction so it cannot race a concurrent probe.
+    if media_cache_exists(&tx) {
+        summary.entries = super::media::media_cache_keys(&tx, &unique)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(path, cache_key)| PurgedEntry { path, cache_key })
+            .collect();
+    }
+
+    {
+        let mut del_transcript = tx
+            .prepare("DELETE FROM transcripts WHERE source_path = ?1")
+            .map_err(|e| format!("could not prepare transcript delete: {e}"))?;
+        let mut del_trash = tx
+            .prepare("DELETE FROM trash WHERE source_path = ?1")
+            .map_err(|e| format!("could not prepare trash delete: {e}"))?;
+        let mut del_project = tx
+            .prepare("DELETE FROM projects WHERE source_path = ?1")
+            .map_err(|e| format!("could not prepare project delete: {e}"))?;
+        let mut del_media = tx
+            .prepare("DELETE FROM media_cache WHERE source_path = ?1")
+            .map_err(|e| format!("could not prepare media cache delete: {e}"))?;
+
+        for path in &unique {
+            // ?1 twice: SQLite allows repeated indexed markers, rusqlite binds
+            // the slot once, so one param covers both EXISTS probes.
+            let tracked: i64 = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM projects WHERE source_path = ?1)
+                      + EXISTS(SELECT 1 FROM trash    WHERE source_path = ?1)",
+                    params![path],
+                    |r| r.get(0),
+                )
+                .map_err(|e| format!("could not look up project rows: {e}"))?;
+            if tracked > 0 {
+                summary.purged += 1;
+            }
+            del_transcript
+                .execute(params![path])
+                .map_err(|e| format!("could not delete a transcript: {e}"))?;
+            del_trash
+                .execute(params![path])
+                .map_err(|e| format!("could not delete a trash row: {e}"))?;
+            del_project
+                .execute(params![path])
+                .map_err(|e| format!("could not delete a project row: {e}"))?;
+            del_media
+                .execute(params![path])
+                .map_err(|e| format!("could not delete a media cache row: {e}"))?;
+        }
+    }
+
+    tx.commit()
+        .map_err(|e| format!("could not commit purge: {e}"))?;
+    Ok(summary)
+}
+
+/// Drop every binned project for good. Same file-cleanup contract as
+/// [`purge_projects`], which does the actual work.
+pub fn purge_all_trash(conn: &Connection) -> Result<PurgeSummary, String> {
+    let paths = load_trash(conn)?
+        .into_iter()
+        .map(|item| item.source_path)
+        .collect::<Vec<_>>();
+    purge_projects(conn, &paths)
 }
 
 /// Drop every binned project whose retention window has passed.
 ///
 /// The retention is user-settable and defaults to 12 days; `days <= 0` means
-/// "never auto-delete" and removes nothing. Like [`purge_trash`], this only
-/// touches the app's row — the user's video file is never removed.
-///
-/// Returns the number of rows removed, so the UI can tell the user what
-/// happened instead of silently shrinking the list.
-pub fn purge_expired_trash(conn: &Connection, days: i64) -> Result<u64, String> {
+/// "never auto-delete" and removes nothing. Like every purge here, this only
+/// touches the app's rows — the user's video file is never removed.
+pub fn purge_expired_trash(conn: &Connection, days: i64) -> Result<PurgeSummary, String> {
     if days <= 0 {
-        return Ok(0);
+        return Ok(PurgeSummary::default());
     }
     let cutoff = now_unix() - days * 86_400;
-    let removed = conn
-        .execute("DELETE FROM trash WHERE deleted_at < ?1", params![cutoff])
-        .map_err(|e| format!("could not purge expired trash: {e}"))?;
-    Ok(removed as u64)
+    let paths_res = load_trash(conn);
+    let paths = paths_res?
+        .into_iter()
+        .filter(|item| item.deleted_at < cutoff)
+        .map(|item| item.source_path)
+        .collect::<Vec<_>>();
+    purge_projects(conn, &paths)
+}
+
+/// Delete transcript lines and probe-cache rows whose source path is **neither
+/// in the list nor in the bin** — rows no view can ever reach again.
+///
+/// The live database carried 43 such transcript rows (5 dead sources) and 8
+/// probe-cache rows; this sweep is what keeps that from growing. Runs once at
+/// startup, after the trash retention purge.
+pub fn sweep_orphans(conn: &Connection) -> Result<PurgeSummary, String> {
+    let mut summary = PurgeSummary::default();
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("could not start transaction: {e}"))?;
+
+    const ORPHAN_SQL: &str =
+        "NOT IN (SELECT source_path FROM projects UNION SELECT source_path FROM trash)";
+
+    // Keys first — the rows are about to be deleted by the same transaction.
+    if media_cache_exists(&tx) {
+        let mut stmt = tx
+            .prepare(&format!(
+                "SELECT source_path, cache_key FROM media_cache
+                  WHERE cache_key != '' AND source_path {ORPHAN_SQL}"
+            ))
+            .map_err(|e| format!("could not prepare orphan key scan: {e}"))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(PurgedEntry {
+                    path: r.get(0)?,
+                    cache_key: r.get(1)?,
+                })
+            })
+            .map_err(|e| format!("could not scan orphan cache keys: {e}"))?;
+        for row in rows {
+            summary
+                .entries
+                .push(row.map_err(|e| format!("could not read an orphan cache key: {e}"))?);
+        }
+    }
+
+    summary.orphan_rows += tx
+        .execute(
+            &format!("DELETE FROM transcripts WHERE source_path {ORPHAN_SQL}"),
+            [],
+        )
+        .map_err(|e| format!("could not delete orphan transcripts: {e}"))?;
+    if media_cache_exists(&tx) {
+        summary.orphan_rows += tx
+            .execute(
+                &format!("DELETE FROM media_cache WHERE source_path {ORPHAN_SQL}"),
+                [],
+            )
+            .map_err(|e| format!("could not delete orphan media cache rows: {e}"))?;
+    }
+
+    tx.commit()
+        .map_err(|e| format!("could not commit orphan sweep: {e}"))?;
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -1030,13 +1353,181 @@ mod tests {
     }
 
     #[test]
-    fn purge_trash_forgets_the_record_but_keeps_the_project_row_out() {
+    fn save_transcript_rewrites_only_changed_rows() {
         let conn = mem_conn();
         init_schema(&conn).unwrap();
+
+        let first = vec![line("1", "a"), line("2", "b"), line("3", "c")];
+        assert_eq!(save_transcript(&conn, &canon("/v.mp4"), &first).unwrap(), 3);
+
+        // A no-op autosave tick must write zero rows.
+        let same = vec![line("1", "a"), line("2", "b"), line("3", "c")];
+        assert_eq!(
+            save_transcript(&conn, &canon("/v.mp4"), &same).unwrap(),
+            0
+        );
+
+        // One text edit → exactly one rewritten row.
+        let edited = vec![line("1", "a"), line("2", "b fixed"), line("3", "c")];
+        assert_eq!(
+            save_transcript(&conn, &canon("/v.mp4"), &edited).unwrap(),
+            1
+        );
+
+        // One split/merge removal → the stale delete alone.
+        let shrunk = vec![line("1", "a"), line("3", "c")];
+        assert_eq!(
+            save_transcript(&conn, &canon("/v.mp4"), &shrunk).unwrap(),
+            1
+        );
+
+        let loaded = load_transcript(&conn, &canon("/v.mp4")).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].text, "a");
+        assert_eq!(loaded[1].text, "c");
+    }
+
+    #[test]
+    fn absent_words_never_erase_the_stored_timings() {
+        let conn = mem_conn();
+        init_schema(&conn).unwrap();
+
+        let mut worded = line("1", "hello");
+        worded.words = Some(vec![Word {
+            word: "he".into(),
+            start: 0.0,
+            end: 0.5,
+        }]);
+        assert_eq!(
+            save_transcript(&conn, &canon("/v.mp4"), &[worded.clone()]).unwrap(),
+            1
+        );
+
+        // The same line without the word list: the stored JSON must survive.
+        let bare = line("1", "hello");
+        assert_eq!(save_transcript(&conn, &canon("/v.mp4"), &[bare]).unwrap(), 0);
+
+        let loaded = load_transcript(&conn, &canon("/v.mp4")).unwrap();
+        assert_eq!(loaded[0].words.as_ref().unwrap().len(), 1);
+        assert_eq!(loaded[0].words.as_ref().unwrap()[0].word, "he");
+    }
+
+    /* ------------------------------------------------------ diff-save + purge */
+
+    /// The probe cache, as the media module shapes it, on an in-memory db.
+    fn media_cache_table(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE media_cache (
+                 source_path TEXT PRIMARY KEY,
+                 size_bytes  INTEGER NOT NULL,
+                 mtime_secs  INTEGER NOT NULL,
+                 json        TEXT NOT NULL,
+                 cache_key   TEXT NOT NULL DEFAULT ''
+             );",
+        )
+        .unwrap();
+    }
+
+    /// canonical_path resolves a Windows root for a bare "/name", so every
+    /// comparison in these tests goes through it.
+    fn canon(p: &str) -> String {
+        canonical_path(p)
+    }
+
+    #[test]
+    fn purge_projects_scours_every_table_and_hands_back_the_keys() {
+        let conn = mem_conn();
+        init_schema(&conn).unwrap();
+        media_cache_table(&conn);
+
+        let key_path = canon("/v.mp4");
+        conn.execute(
+            "INSERT INTO media_cache (source_path, size_bytes, mtime_secs, json, cache_key)
+             VALUES (?1, 1, 1, '{}', 'abc123')",
+            params![key_path],
+        )
+        .unwrap();
+
         save_project(&conn, "p1", "Video", "/v.mp4", 60.0, 100).unwrap();
-        trash_project(&conn, "/v.mp4").unwrap();
-        purge_trash(&conn, "/v.mp4").unwrap();
-        assert!(load_trash(&conn).unwrap().is_empty());
+        save_transcript(&conn, "/v.mp4", &[line("1", "hi")]).unwrap();
+
+        let summary = purge_projects(&conn, &[key_path.clone()]).unwrap();
+        assert_eq!(summary.purged, 1);
+        assert_eq!(summary.entries.len(), 1);
+        assert_eq!(summary.entries[0].path, key_path);
+        assert_eq!(summary.entries[0].cache_key, "abc123");
+
         assert!(load_projects(&conn).unwrap().is_empty());
+        assert!(load_trash(&conn).unwrap().is_empty());
+        assert!(load_transcript(&conn, "/v.mp4").unwrap().is_empty());
+        let cache_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM media_cache", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cache_rows, 0);
+    }
+
+    #[test]
+    fn sweep_orphans_removes_rows_no_view_can_reach() {
+        let conn = mem_conn();
+        init_schema(&conn).unwrap();
+        media_cache_table(&conn);
+
+        // Alive: one project on the list, one in the bin (trash keeps its
+        // transcript on purpose — a restore must not re-transcribe).
+        save_project(&conn, "p1", "Video", "/v.mp4", 60.0, 100).unwrap();
+        save_transcript(&conn, "/v.mp4", &[line("1", "hi")]).unwrap();
+        save_project(&conn, "p2", "Binned", "/bin.mp4", 60.0, 100).unwrap();
+        trash_project(&conn, "/bin.mp4").unwrap();
+        save_transcript(&conn, "/bin.mp4", &[line("1", "ho")]).unwrap();
+
+        // Orphans: a transcript and a probe row for a path in neither table,
+        // plus a second orphan transcript for good measure.
+        save_transcript(&conn, "/gone.mp4", &[line("1", "bye")]).unwrap();
+        save_transcript(&conn, "/gone2.mp4", &[line("1", "gone too")]).unwrap();
+        conn.execute(
+            "INSERT INTO media_cache (source_path, size_bytes, mtime_secs, json, cache_key)
+             VALUES (?1, 1, 1, '{}', 'dead beef')",
+            params![canon("/gone.mp4")],
+        )
+        .unwrap();
+
+        let summary = sweep_orphans(&conn).unwrap();
+        // 2 transcript rows + 1 media-cache row.
+        assert_eq!(summary.orphan_rows, 3);
+        assert_eq!(summary.entries.len(), 1);
+        assert_eq!(summary.entries[0].path, canon("/gone.mp4"));
+        assert_eq!(summary.entries[0].cache_key, "dead beef");
+
+        assert_eq!(load_transcript(&conn, "/v.mp4").unwrap().len(), 1);
+        assert!(load_transcript(&conn, "/bin.mp4").unwrap().len() == 1);
+        assert!(load_transcript(&conn, "/gone.mp4").unwrap().is_empty());
+        assert!(load_transcript(&conn, "/gone2.mp4").unwrap().is_empty());
+    }
+
+    #[test]
+    fn purge_expired_trash_only_takes_what_is_old_enough() {
+        let conn = mem_conn();
+        init_schema(&conn).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        save_project(&conn, "p1", "Old", "/old.mp4", 60.0, now).unwrap();
+        save_project(&conn, "p2", "Fresh", "/new.mp4", 60.0, now).unwrap();
+        trash_project(&conn, "/old.mp4").unwrap();
+        trash_project(&conn, "/new.mp4").unwrap();
+        // Backdate one row so only it passes the 12-day window.
+        conn.execute(
+            "UPDATE trash SET deleted_at = ?1 WHERE source_path = ?2",
+            params![now - 13 * 86_400, canon("/old.mp4")],
+        )
+        .unwrap();
+
+        let summary = purge_expired_trash(&conn, 12).unwrap();
+        assert_eq!(summary.purged, 1);
+        let remaining = load_trash(&conn).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "Fresh");
     }
 }

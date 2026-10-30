@@ -389,12 +389,20 @@ export function loadTranscript(dbPath: string, sourcePath: string): Promise<Rust
   return invoke('load_transcript', { dbPath, sourcePath });
 }
 
+/**
+ * Replace the stored transcript **diff-style**.
+ *
+ * Returns the number of rows SQLite actually wrote. The persist trail uses it
+ * to prove a save (or a no-op autosave tick) — a full 5 000-line re-save used
+ * to rewrite the whole table every 750 ms while editing; now one edit is one
+ * row.
+ */
 export function saveTranscript(
   dbPath: string,
   sourcePath: string,
   lines: unknown[]
-): Promise<void> {
-  return invoke('save_transcript', { dbPath, sourcePath, lines });
+): Promise<number> {
+  return invoke<number>('save_transcript', { dbPath, sourcePath, lines });
 }
 
 export function setTranscriptKeep(
@@ -487,19 +495,48 @@ export function loadTrash(dbPath: string): Promise<RustTrashItem[]> {
   return invoke<RustTrashItem[]>('load_trash', { dbPath });
 }
 
-/** Forget a binned project for good — the app's record only, never the file. */
+/** Forget a binned project for good — the app's record and its derived cache
+ * files (poster, thumb strip, waveform) go with it; never the video file. */
 export function purgeTrash(dbPath: string, sourcePath: string): Promise<void> {
   return invoke('purge_trash', { dbPath, sourcePath });
+}
+
+/** Empty the bin in one sweep — every binned project's rows *and* derived
+ * cache files go. Returns how many projects were removed. */
+export function purgeAllTrash(dbPath: string): Promise<number> {
+  return invoke<number>('purge_all_trash', { dbPath });
 }
 
 /**
  * Drop every binned project older than the retention window.
  *
- * `days <= 0` means "never auto-delete". Returns the number of rows removed.
- * The video files are never touched — only the app's records.
+ * `days <= 0` means "never auto-delete". Returns the number of projects
+ * removed. The video files are never touched — only the app's records and
+ * its derived cache files.
  */
 export function purgeExpiredTrash(dbPath: string, days: number): Promise<number> {
   return invoke<number>('purge_expired_trash', { dbPath, days });
+}
+
+/* --------------------------------------------------------------- file sizes */
+
+/** One dashboard card's size, from a plain filesystem stat. */
+export interface FileSizeEntry {
+  path: string;
+  /** `false` when the file has vanished — the card shows a missing state. */
+  exists: boolean;
+  sizeBytes: number;
+}
+
+/**
+ * File sizes for a batch of dashboard cards in **one** IPC call.
+ *
+ * Each card used to spawn an ffprobe child just to read "2.4 GB" — a number
+ * `fs::stat` already knows. On a big library that was dozens of probe
+ * processes per dashboard visit for zero information.
+ */
+export function fileSizes(paths: string[]): Promise<FileSizeEntry[]> {
+  return invoke<FileSizeEntry[]>('file_sizes', { paths });
 }
 
 /* ------------------------------------------------------------------ poster */

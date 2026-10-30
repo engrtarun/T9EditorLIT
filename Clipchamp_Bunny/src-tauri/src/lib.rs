@@ -407,10 +407,19 @@ fn log_transcription_job(
 }
 
 /// Read a small telemetry/settings key back from SQLite (`None` if absent).
+///
+/// Telemetry lives in its own `telemetry.db` — the main database stopped
+/// carrying the stats tables.
 #[tauri::command]
 fn stats_kv_get(app: tauri::AppHandle, key: String) -> Result<Option<String>, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(stats::kv_get(&dir.join("nanamicut.db"), &key))
+    let mut value = stats::kv_get(&dir.join("telemetry.db"), &key);
+    if value.is_none() {
+        // One launch of goodwill: the very first run after the split still
+        // finds flags that were written to the old file.
+        value = stats::kv_get(&dir.join("nanamicut.db"), &key);
+    }
+    Ok(value)
 }
 
 /// Store a small telemetry/settings key (onboarding flags, last options …).
@@ -477,13 +486,16 @@ fn load_transcript(db_path: String, source_path: String) -> Result<Vec<Transcrip
     transcript::load_transcript(&conn, &source_path)
 }
 
-/// Replace the stored transcript for a source video.
+/// Replace the stored transcript for a source video, diff-style.
+///
+/// Returns the number of rows SQLite actually wrote — the progress trail uses
+/// it to prove an autosave was not a no-op.
 #[tauri::command]
 fn save_transcript(
     db_path: String,
     source_path: String,
     lines: Vec<TranscriptLine>,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     let conn = transcript::open_db(Path::new(&db_path))?;
     transcript::save_transcript(&conn, &source_path, &lines)
 }
@@ -558,20 +570,100 @@ fn load_trash(db_path: String) -> Result<Vec<TrashItem>, String> {
     transcript::load_trash(&conn)
 }
 
-/// Forget a binned project for good — the app's record only, never the file.
+/// Delete what a purge left behind on the disk: the derived files a purged
+/// project owned.
+///
+/// `posters/<key>.jpg`, `thumbs/<key>/` and `waveform/<key>.json` are pure
+/// app-managed cache — the video itself is never touched. Keys are
+/// content hashes, so deleting by exact name cannot collide with a project the
+/// user kept. Custom thumbnails (`thumbs/custom/…`) are keyed by a raw-path
+/// hash with no stored key, so they are skipped here rather than guessed.
+fn clean_purged_cache(root: &Path, entries: &[transcript::PurgedEntry]) {
+    for entry in entries {
+        if entry.cache_key.is_empty() {
+            continue;
+        }
+        let _ = std::fs::remove_file(root.join("posters").join(format!("{}.jpg", entry.cache_key)));
+        let _ = std::fs::remove_dir_all(root.join("thumbs").join(&entry.cache_key));
+        let _ = std::fs::remove_file(
+            root.join("waveform")
+                .join(format!("{}.json", entry.cache_key)),
+        );
+    }
+}
+
+/// Run the schema migration the purge needs, then forget a **binned**
+/// project for good — its rows and its derived files.
 #[tauri::command]
-fn purge_trash(db_path: String, source_path: String) -> Result<(), String> {
+fn purge_trash(app: tauri::AppHandle, db_path: String, source_path: String) -> Result<(), String> {
     let conn = transcript::open_db(Path::new(&db_path))?;
-    transcript::purge_trash(&conn, &source_path)
+    media::init_media_cache_schema(&conn)?;
+    let summary = transcript::purge_projects(&conn, std::slice::from_ref(&source_path))?;
+    if let Ok(root) = cache_root(&app) {
+        clean_purged_cache(&root, &summary.entries);
+    }
+    Ok(())
+}
+
+/// Empty the bin: every binned project goes in one transaction, its derived
+/// files follow. Returns how many projects were removed.
+#[tauri::command]
+fn purge_all_trash(app: tauri::AppHandle, db_path: String) -> Result<u64, String> {
+    let conn = transcript::open_db(Path::new(&db_path))?;
+    media::init_media_cache_schema(&conn)?;
+    let summary = transcript::purge_all_trash(&conn)?;
+    if let Ok(root) = cache_root(&app) {
+        clean_purged_cache(&root, &summary.entries);
+    }
+    Ok(summary.purged as u64)
 }
 
 /// Drop every binned project older than `days` (the user's retention window).
 ///
-/// `days <= 0` means "never auto-delete". Returns how many rows were removed.
+/// `days <= 0` means "never auto-delete". Returns how many projects were
+/// removed; their derived files are cleaned with the rows.
 #[tauri::command]
-fn purge_expired_trash(db_path: String, days: i64) -> Result<u64, String> {
+fn purge_expired_trash(app: tauri::AppHandle, db_path: String, days: i64) -> Result<u64, String> {
     let conn = transcript::open_db(Path::new(&db_path))?;
-    transcript::purge_expired_trash(&conn, days)
+    media::init_media_cache_schema(&conn)?;
+    let summary = transcript::purge_expired_trash(&conn, days)?;
+    if let Ok(root) = cache_root(&app) {
+        clean_purged_cache(&root, &summary.entries);
+    }
+    Ok(summary.purged as u64)
+}
+
+/// One file size for the dashboard cards.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSize {
+    pub path: String,
+    /// `false` when the file has vanished (moved, renamed, deleted) — the card
+    /// shows a "missing" state instead of a size.
+    pub exists: bool,
+    pub size_bytes: u64,
+}
+
+/// Dashboard card sizes in one call — plain `fs::stat` on every path, no
+/// ffprobe. A batch of 50 cards used to spawn 50 probe child processes just to
+/// read a number the filesystem already knows.
+#[tauri::command]
+fn file_sizes(paths: Vec<String>) -> Result<Vec<FileSize>, String> {
+    Ok(paths
+        .into_iter()
+        .map(|path| match std::fs::metadata(&path) {
+            Ok(meta) => FileSize {
+                path,
+                exists: true,
+                size_bytes: meta.len(),
+            },
+            Err(_) => FileSize {
+                path,
+                exists: false,
+                size_bytes: 0,
+            },
+        })
+        .collect())
 }
 
 /* ------------------------------------------------------------------ poster */
@@ -1463,7 +1555,9 @@ pub fn run() {
             restore_project,
             load_trash,
             purge_trash,
+            purge_all_trash,
             purge_expired_trash,
+            file_sizes,
             extract_poster,
             import_thumbnail,
             custom_thumbnail,
@@ -1493,8 +1587,30 @@ pub fn run() {
             // Telemetry: schema + prune + session row + background writer +
             // 15s RAM sampler. Fire-and-forget by design — a failure here
             // degrades to no-op logging, never a broken launch.
+            //
+            // It moved to its own `telemetry.db`: the main `nanamicut.db`
+            // carried ten stats tables next to the transcript/trash/probe
+            // engine, so every stats burst priced the app's own WAL too.
             if let Ok(dir) = app.path().app_data_dir() {
-                stats::start(&dir.join("nanamicut.db"), env!("CARGO_PKG_VERSION").trim());
+                stats::start(&dir.join("telemetry.db"), env!("CARGO_PKG_VERSION").trim());
+                // Startup hygiene, off the UI thread: legacy stats tables out
+                // of the main database, then the orphan sweep. Each part is
+                // best-effort — a busy database (an old build still running)
+                // simply waits for the next launch.
+                let main_db = dir.join("nanamicut.db");
+                let cache_root = dir.join("cache");
+                std::thread::spawn(move || {
+                    stats::drop_legacy_tables(&main_db);
+                    if let Ok(conn) = transcript::open_db(&main_db) {
+                        let _ = media::init_media_cache_schema(&conn);
+                        // Orphan rows (sources neither in the list nor in the
+                        // bin) are dead weight the dashboard can never show —
+                        // their rows and derived files both go.
+                        if let Ok(summary) = transcript::sweep_orphans(&conn) {
+                            clean_purged_cache(&cache_root, &summary.entries);
+                        }
+                    }
+                });
             }
             // The cloud brain comes up with the app - no terminal needed.
             ensure_daemon(app.handle());

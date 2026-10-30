@@ -188,7 +188,16 @@ class ProjectStore {
    */
   name = $state('');
   media = $state<MediaAsset | null>(null);
-  lines = $state<TranscriptLine[]>([]);
+  /**
+   * The transcript rows — **non-deep reactive** on purpose.
+   *
+   * `$state.raw` skips per-field proxies on what is usually thousands of
+   * objects (a 4 000-line interview ≈ hundreds of MB of handler churn on
+   * this 8 GB box). The store only ever *replaces* the array (map/slice/
+   * spread), never mutating a row in place, so granular reactivity is not
+   * needed: swapping the array triggers the same `$$tracked` reads.
+   */
+  lines = $state.raw<TranscriptLine[]>([]);
   /**
    * Extra clips appended after the main cut — the rest of the project's media.
    *
@@ -215,8 +224,12 @@ class ProjectStore {
   segmentVolume = $state<Record<string, number>>({});
   /** Whole tracks hidden by the eye/Hide control. */
   hiddenTracks = $state<TrackId[]>([]);
-  waveform = $state<WaveformData | null>(null);
-  thumbnails = $state<ThumbnailStrip | null>(null);
+  /**
+   * Waveform peaks and the filmstrip — also raw. Both are single payloads the
+   * extractor hands over wholesale; nothing mutates a bar or a frame in place.
+   */
+  waveform = $state.raw<WaveformData | null>(null);
+  thumbnails = $state.raw<ThumbnailStrip | null>(null);
 
   /** Index of the transcript line the keyboard cursor sits on. */
   cursor = $state(0);
@@ -919,7 +932,10 @@ class ProjectStore {
     if (!path || !isTauri()) return false;
     try {
       const db = await defaultDbPath();
-      await saveTranscript(
+      // Diff save: the engine writes only rows that actually differ and
+      // returns how many. A tick where the user did not touch anything
+      // writes zero rows instead of re-rolling the whole table.
+      const written = await saveTranscript(
         db,
         path,
         this.lines.map((l) => ({
@@ -934,9 +950,11 @@ class ProjectStore {
         }))
       );
       // Progress trail: one row per real save (fires at most once per
-      // debounced burst — never per keystroke).
+      // debounced burst — never per keystroke). `written` is the honest
+      // "what changed" number, so a trail row never lies about work done.
       logEditAction(this.name || path, 'autosave', {
         lines: this.lines.length,
+        written,
         cut: this.cutCount,
         kept: this.keptCount
       });
@@ -1682,7 +1700,12 @@ class ProjectStore {
 
   private commit() {
     this.past.push(this.snapshot());
-    if (this.past.length > 30) this.past.shift();
+    // The stack cap scales with the transcript. A snapshot literally holds
+    // every line object ({ ...l }), so a 4 000-line interview leaves a
+    // 30-step stack holding ~120 000 objects. Long cut → fewer steps; the
+    // classic 30 stays for everyday transcripts.
+    const cap = this.lines.length > 2000 ? 6 : this.lines.length > 400 ? 12 : 30;
+    if (this.past.length > cap) this.past.shift();
     this.future.length = 0;
     // Every mutating edit passes through here — the single place to save it.
     this.scheduleAutosave();

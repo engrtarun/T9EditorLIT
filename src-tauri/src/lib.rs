@@ -238,13 +238,16 @@ fn load_transcript(db_path: String, source_path: String) -> Result<Vec<Transcrip
     transcript::load_transcript(&conn, &source_path)
 }
 
-/// Replace the stored transcript for a source video.
+/// Replace the stored transcript for a source video, diff-style.
+///
+/// Returns the number of rows SQLite actually wrote — the progress trail uses
+/// it to prove an autosave was not a no-op.
 #[tauri::command]
 fn save_transcript(
     db_path: String,
     source_path: String,
     lines: Vec<TranscriptLine>,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     let conn = transcript::open_db(Path::new(&db_path))?;
     transcript::save_transcript(&conn, &source_path, &lines)
 }

@@ -206,6 +206,44 @@ CREATE INDEX IF NOT EXISTS idx_edits_proj   ON edit_actions(project);
 
 const PRAGMAS: &str = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
 
+/// The ten telemetry tables.
+///
+/// They now live in their own `telemetry.db`; copies still inside the main
+/// app database are legacy and get dropped by [`drop_legacy_tables`].
+const ALL_TABLES: &[&str] = &[
+    "app_metrics",
+    "child_metrics",
+    "edit_actions",
+    "project_revisions",
+    "sessions",
+    "transcription_jobs",
+    "exports",
+    "app_events",
+    "vault_transfers",
+    "kv",
+];
+
+/// Remove the telemetry tables that used to live in the **main** app database.
+///
+/// Telemetry moved to its own file so the transcript/trash/probe engine
+/// (`nanamicut.db`) never pays for WAL growth it does not use. Runs once at
+/// startup on the main database, best-effort: a missing table, a lock held by
+/// an old build still running, or a read-only dir is simply left for the next
+/// launch. The app tables (`transcripts`, `projects`, `trash`,
+/// `media_cache`, `keyframes`) are never touched.
+pub fn drop_legacy_tables(app_db_path: &Path) {
+    let Ok(conn) = Connection::open(app_db_path) else {
+        return;
+    };
+    // An old build can hold this file; never let hygiene stall the launch.
+    let _ = conn.execute_batch("PRAGMA busy_timeout = 3000;");
+    for table in ALL_TABLES {
+        let _ = conn.execute(&format!("DROP TABLE IF EXISTS {table}"), []);
+    }
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;");
+    let _ = conn.close();
+}
+
 /// How long raw rows survive, in seconds. Run once per launch — by then the
 /// tables are small (a day of metrics is ~5 700 rows of ~40 bytes).
 const KEEP_METRICS_SECS: i64 = 7 * 24 * 3600;
@@ -695,18 +733,7 @@ mod tests {
     #[test]
     fn schema_creates_every_table_empty() {
         let conn = mem_db();
-        for table in [
-            "app_metrics",
-            "child_metrics",
-            "edit_actions",
-            "project_revisions",
-            "sessions",
-            "transcription_jobs",
-            "exports",
-            "app_events",
-            "vault_transfers",
-            "kv",
-        ] {
+        for table in ALL_TABLES {
             let count: i64 = conn
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
                 .unwrap_or_else(|e| panic!("{table} missing from the schema: {e}"));
@@ -813,5 +840,46 @@ mod tests {
         assert_eq!(rows, 1, "the same id must update, not duplicate");
         assert_eq!(done, 100);
         assert_eq!(status, "done");
+    }
+
+    #[test]
+    fn drop_legacy_tables_takes_only_the_telemetry_tables() {
+        // A file that looks like the OLD app database: app tables and the
+        // telemetry set side by side.
+        let path = std::env::temp_dir().join(format!("t9-stats-drop-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE transcripts (
+                     source_path TEXT NOT NULL,
+                     id TEXT NOT NULL,
+                     PRIMARY KEY (source_path, id)
+                 );
+                 INSERT INTO transcripts VALUES ('a.mp4', '1');",
+            )
+            .unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+        }
+
+        drop_legacy_tables(&path);
+
+        let conn = Connection::open(&path).unwrap();
+        let kept: i64 = conn
+            .query_row("SELECT COUNT(*) FROM transcripts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1, "the app's own tables must survive the sweep");
+        for table in ALL_TABLES {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![table],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(exists, 0, "{table} should be gone as a legacy table");
+        }
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
     }
 }

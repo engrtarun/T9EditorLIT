@@ -6,7 +6,7 @@
 
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,19 +69,89 @@ struct RawStream {
 
 /// SQLite cache for ffprobe results, keyed by source path + size + mtime so a
 /// re-import of an unchanged file never spawns ffprobe again.
+///
+/// `cache_key` mirrors the file-derived key `cache::source_key` hands out for
+/// the poster / thumbnail / waveform directories, so purging a project can
+/// delete its derived **files** from the disk, not just its rows.
 const MEDIA_CACHE_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS media_cache (
     source_path TEXT PRIMARY KEY,
     size_bytes  INTEGER NOT NULL,
     mtime_secs  INTEGER NOT NULL,
-    json        TEXT NOT NULL
+    json        TEXT NOT NULL,
+    cache_key   TEXT NOT NULL DEFAULT ''
 );
 ";
 
 pub fn init_media_cache_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(MEDIA_CACHE_SCHEMA)
         .map_err(|e| format!("could not init media cache schema: {e}"))?;
-    migrate_media_cache_paths(conn)
+    migrate_media_cache_paths(conn)?;
+    backfill_media_cache_keys(conn)
+}
+
+/// Pre-`cache_key` databases get the column, and rows whose file still exists
+/// get their key computed once. A row for a vanished file keeps the empty key —
+/// there is nothing on disk to clean for it anyway.
+fn backfill_media_cache_keys(conn: &Connection) -> Result<(), String> {
+    if !super::transcript::column_exists(conn, "media_cache", "cache_key")? {
+        conn.execute_batch(
+            "ALTER TABLE media_cache ADD COLUMN cache_key TEXT NOT NULL DEFAULT '';",
+        )
+        .map_err(|e| format!("could not add media cache cache_key column: {e}"))?;
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT source_path FROM media_cache WHERE cache_key = ''")
+        .map_err(|e| format!("could not scan media cache keys: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| format!("could not read media cache paths: {e}"))?;
+    let mut paths = Vec::new();
+    for row in rows {
+        paths.push(row.map_err(|e| format!("could not read media cache path: {e}"))?);
+    }
+    drop(stmt);
+
+    for path in paths {
+        let source = PathBuf::from(&path);
+        let Ok(meta) = std::fs::metadata(&source) else {
+            continue;
+        };
+        let Ok(key) = super::cache::source_key(&source, &meta) else {
+            continue;
+        };
+        conn.execute(
+            "UPDATE media_cache SET cache_key = ?1 WHERE source_path = ?2 AND cache_key = ''",
+            params![key, path],
+        )
+        .map_err(|e| format!("could not backfill a cache key: {e}"))?;
+    }
+    Ok(())
+}
+
+/// The `cache::source_key` value each path's derived files were stored under.
+///
+/// The map only carries paths that actually have a key in `media_cache` — a
+/// purge caller skips the ones it does not find (nothing derived on disk).
+pub fn media_cache_keys(
+    conn: &Connection,
+    paths: &[String],
+) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::with_capacity(paths.len());
+    let mut stmt = conn
+        .prepare("SELECT source_path, cache_key FROM media_cache WHERE source_path = ?1")
+        .map_err(|e| format!("could not prepare cache key select: {e}"))?;
+    for path in paths {
+        if let Ok((sp, key)) = stmt.query_row(params![path], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        }) {
+            if !key.is_empty() {
+                out.push((sp, key));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn media_fingerprint(path: &Path) -> Result<(u64, i64), String> {
@@ -110,7 +180,8 @@ pub fn load_cached_media(conn: &Connection, source_path: &str, path: &Path) -> O
     serde_json::from_str(&json).ok()
 }
 
-/// Persist a freshly probed result for next time.
+/// Persist a freshly probed result for next time, together with the file
+/// derived `cache::source_key` the purge later cleans by.
 pub fn store_cached_media(
     conn: &Connection,
     source_path: &str,
@@ -118,16 +189,23 @@ pub fn store_cached_media(
     info: &MediaInfo,
 ) -> Result<(), String> {
     let (size, mtime) = media_fingerprint(path)?;
+    // Same stat the key derivation needs — one probe pass, no extra syscall
+    // wave beyond what the fingerprint already paid.
+    let cache_key = std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| super::cache::source_key(path, &meta).ok())
+        .unwrap_or_default();
     let json =
         serde_json::to_string(info).map_err(|e| format!("could not serialize media info: {e}"))?;
     conn.execute(
-        "INSERT INTO media_cache (source_path, size_bytes, mtime_secs, json)
-         VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO media_cache (source_path, size_bytes, mtime_secs, json, cache_key)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(source_path) DO UPDATE SET
             size_bytes = excluded.size_bytes,
             mtime_secs = excluded.mtime_secs,
-            json       = excluded.json",
-        params![source_path, size as i64, mtime, json],
+            json       = excluded.json,
+            cache_key  = excluded.cache_key",
+        params![source_path, size as i64, mtime, json, cache_key],
     )
     .map_err(|e| format!("could not cache media info: {e}"))?;
     Ok(())
