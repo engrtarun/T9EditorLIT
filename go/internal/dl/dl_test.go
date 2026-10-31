@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -457,5 +458,180 @@ func TestParseContentRangeTotal(t *testing.T) {
 		if got := fmt.Sprint(parseContentRangeTotal(tc.in)); got != tc.want {
 			t.Errorf("parseContentRangeTotal(%q) = %s, want %s", tc.in, got, tc.want)
 		}
+	}
+}
+
+// A host that drops a transfer mid-range: the first two ranged requests are
+// answered with half the requested bytes and a clean close — exactly the
+// short-EOF every real file host serves now and then. The old code treated
+// that EOF as success, the worker abandoned its tail and the row died with
+// "download adhoora reh gaya" (the file.zip paste). fetchRange must turn it
+// into a reconnect-from-offset, and the reassembled file stays byte-perfect.
+func TestShortRangeEOFIsRetriedNotSwallowed(t *testing.T) {
+	blob := make([]byte, 300<<10)
+	if _, err := rand.Read(blob); err != nil {
+		t.Fatal(err)
+	}
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", fmt.Sprint(len(blob)))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		s, e := int64(0), int64(len(blob)-1)
+		if rng := r.Header.Get("Range"); rng != "" {
+			if _, err := fmt.Sscanf(rng, "bytes=%d-%d", &s, &e); err != nil {
+				t.Errorf("bad range header %q", rng)
+				return
+			}
+		} else {
+			return // the manager only ever issues ranged GETs here
+		}
+		mid := s + (e-s)/2
+		if atomic.AddInt32(&hits, 1) <= 2 {
+			// Half the range, no Content-Length: the reader hits EOF
+			// short of the segment's bound.
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", s, mid, len(blob)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(blob[s : mid+1])
+			return
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", s, e, len(blob)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(blob[s : e+1])
+	}))
+	t.Cleanup(srv.Close)
+
+	m := newTestManager(t, srv)
+	item, err := m.Start(srv.URL, "")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	done := waitStatus(t, m, item.ID, StatusDone)
+	if done.ReceivedBytes != int64(len(blob)) {
+		t.Errorf("receivedBytes = %d, want %d — the cut segments never refilled", done.ReceivedBytes, len(blob))
+	}
+	got, err := os.ReadFile(done.Path)
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if !bytes.Equal(got, blob) {
+		t.Fatalf("the file differs from the source after the short-EOF retries")
+	}
+}
+
+// A host that goes silent mid-body: headers arrive, then nothing for over
+// the idle window. Without the watchdog the row sits at 0.0 MB forever
+// (the 45 GB Lucifer paste). The watchdog must cut the attempt, the retry
+// must resume, and the result must still be byte-perfect.
+func TestIdleServerGetsCutAndResumed(t *testing.T) {
+	prev := idleTimeout
+	idleTimeout = 400 * time.Millisecond
+	t.Cleanup(func() { idleTimeout = prev })
+
+	blob := make([]byte, 128<<10)
+	if _, err := rand.Read(blob); err != nil {
+		t.Fatal(err)
+	}
+	var stalled int32 = 1
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", fmt.Sprint(len(blob)))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		s, e := int64(0), int64(len(blob)-1)
+		if rng := r.Header.Get("Range"); rng != "" {
+			if _, err := fmt.Sscanf(rng, "bytes=%d-%d", &s, &e); err != nil {
+				t.Errorf("bad range header %q", rng)
+				return
+			}
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", s, e, len(blob)))
+		w.WriteHeader(http.StatusPartialContent)
+		if atomic.CompareAndSwapInt32(&stalled, 1, 0) {
+			time.Sleep(1200 * time.Millisecond) // the bottomless stall
+		}
+		_, _ = w.Write(blob[s : e+1])
+	}))
+	t.Cleanup(srv.Close)
+
+	m := newTestManager(t, srv)
+	item, err := m.Start(srv.URL, "")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	done := waitStatus(t, m, item.ID, StatusDone)
+	got, err := os.ReadFile(done.Path)
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if !bytes.Equal(got, blob) {
+		t.Fatalf("file differs from the source after the idle-cut retries")
+	}
+}
+
+// The non-ranged twin of the resume test: with no Range support the resume
+// re-serves the file from byte 0, so the transport MUST skip the bytes that
+// are already on the disk before writing again. Skipping nothing means the
+// second half of the stream is planted at the wrong offset — the byte
+// comparison catches it.
+func TestNonRangedResumeSkipsBytesAlreadyOnDisk(t *testing.T) {
+	blob := make([]byte, 200<<10)
+	if _, err := rand.Read(blob); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Content-Length", fmt.Sprint(len(blob)))
+			w.WriteHeader(http.StatusOK) // no Accept-Ranges: the plain host
+			return
+		}
+		for off := 0; off < len(blob); off += 4096 { // ignore any Range probe
+			end := off + 4096
+			if end > len(blob) {
+				end = len(blob)
+			}
+			if _, err := w.Write(blob[off:end]); err != nil {
+				return
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(5 * time.Millisecond) // ~205 ms total
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	m := newTestManager(t, srv)
+	item, err := m.Start(srv.URL, "")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	time.Sleep(120 * time.Millisecond) // mid-flight: ~half the file written
+	if _, err := m.Pause(item.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if partial := m.List()[0].ReceivedBytes; partial <= 0 || partial >= int64(len(blob)) {
+		t.Fatalf("pause should land mid-file, got %d of %d", partial, len(blob))
+	}
+
+	if _, err := m.Resume(item.ID); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	done := waitStatus(t, m, item.ID, StatusDone)
+	got, err := os.ReadFile(done.Path)
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if !bytes.Equal(got, blob) {
+		t.Fatalf("the resumed non-ranged file differs — the on-disk bytes were not skipped")
 	}
 }

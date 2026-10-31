@@ -69,6 +69,28 @@ const (
 	// download fails. Each attempt resumes from the exact byte it stopped at.
 	MaxRetries = 5
 
+	// IdleTimeout drops a server that sends nothing for this long instead
+	// of hanging the row at "0% 0.0 MB" forever — file hosts stall mid-
+	// transfer constantly (the 45 GB Lucifer paste that never moved one
+	// byte). The reconnect resumes from the exact offset on disk, so
+	// nothing is ever re-fetched twice.
+	IdleTimeout = 30 * time.Second
+
+	// ResponseHeaderTimeout bounds the wait for a server's first answer.
+	// There is no overall client timeout (huge files take hours), so this
+	// is what stops a silent host from hanging Do() indefinitely.
+	ResponseHeaderTimeout = 15 * time.Second
+
+	// HugeBytes is the size past which extra parallel connections still
+	// pay off: 45–90 GB over the default eight sockets leaves real
+	// throughput on the table, so huge files get more.
+	HugeBytes    = 1 << 30 // 1 GiB
+	HugeSegments = 12
+
+	// HardMaxSegments is the ceiling; some hosts refuse or throttle above
+	// a dozen connections on one file.
+	HardMaxSegments = 16
+
 	// keepTerminalFor is how long a finished row stays in the list before
 	// List() drops it, so a long-running daemon cannot grow the queue
 	// forever.
@@ -166,8 +188,9 @@ func New(opts Options) (*Manager, error) {
 					Timeout:   10 * time.Second,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
-				TLSHandshakeTimeout: 10 * time.Second,
-				MaxIdleConnsPerHost: segs + 2,
+				TLSHandshakeTimeout:   10 * time.Second,
+				MaxIdleConnsPerHost:   HardMaxSegments + 2,
+				ResponseHeaderTimeout: ResponseHeaderTimeout,
 			},
 		}
 	}
@@ -201,6 +224,7 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 
 	probe, err := m.probe(ctx, rawURL, referer)
 	if err != nil {
+		diagf("probe fail %s err=%v", parsed.Host, err)
 		return nil, err
 	}
 
@@ -236,6 +260,15 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 	if !probe.ranged || probe.total <= 0 || probe.total < m.minSegmentBytes {
 		n = 1
 	}
+	// Huge files pay for more sockets than the default: past ~1 GiB the
+	// per-connection setup is noise against hours of transfer, and eight
+	// sockets leave real throughput on the table.
+	if probe.total >= HugeBytes && n > 1 && n < HugeSegments {
+		n = HugeSegments
+	}
+	if n > HardMaxSegments {
+		n = HardMaxSegments
+	}
 	// Each segment must hold its own worth: below ~64 KiB the per-connection
 	// round trips cost more than the parallelism returns. The floor scales
 	// with the configured threshold so tests (64 KiB total) still split.
@@ -247,6 +280,8 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 		n /= 2
 	}
 	d.segs = splitSegments(probe.total, n, probe.ranged)
+	diagf("start %s id=%s total=%d ranged=%v segs=%d",
+		parsed.Host, d.id, probe.total, probe.ranged, len(d.segs))
 
 	if err := d.open(); err != nil {
 		return nil, err
@@ -649,6 +684,7 @@ func (d *download) finishLocked() {
 		d.errText = "file rename nahi hui: " + err.Error()
 	} else {
 		d.status = StatusDone
+		diagf("done id=%s bytes=%d", d.id, d.totalBytes)
 	}
 	d.finishedAt = time.Now()
 	_ = os.Remove(d.sidePath)
@@ -673,6 +709,7 @@ func (d *download) fetchSegment(ctx context.Context, i int) error {
 		backoff := time.Duration(1<<attempt) * 300 * time.Millisecond
 		d.log.Warn("download segment retrying",
 			"id", d.id, "segment", i, "attempt", attempt+1, "err", err)
+		diagf("retry id=%s seg=%d attempt=%d err=%v", d.id, i, attempt+1, err)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -683,13 +720,28 @@ func (d *download) fetchSegment(ctx context.Context, i int) error {
 
 // fetchRange performs one request for the segment's remaining bytes and
 // writes them to disk as they arrive. Never holds more than one buffer.
+//
+// Three hard lessons are baked in here:
+//   - an idle connection (no bytes for `idleTimeout`) is cut and retried
+//     instead of hanging the row at 0.0 MB forever;
+//   - a range that ends short is an ERROR, not success — the old code
+//     returned nil on EOF and quietly abandoned the tail of the segment
+//     ("download adhoora reh gaya");
+//   - a resumed non-ranged transfer must skip the bytes already on disk,
+//     because the server streams the file from 0 again.
 func (d *download) fetchRange(ctx context.Context, seg *segment) error {
 	start := seg.start + seg.done.Load()
 	if seg.end >= 0 && start > seg.end {
 		return nil
 	}
 
-	req, err := d.newRequest(ctx, start)
+	// rwctx lets the watchdog cut THIS attempt — and unblock a body read
+	// stuck on a silent connection — without touching the download's own
+	// context (pause and cancel keep their meaning).
+	rwctx, rwcancel := context.WithCancel(ctx)
+	defer rwcancel()
+
+	req, err := d.newRequest(rwctx, start)
 	if err != nil {
 		return err
 	}
@@ -705,13 +757,47 @@ func (d *download) fetchRange(ctx context.Context, seg *segment) error {
 	case http.StatusOK:
 		// A server that ignores Range would corrupt a multi-segment file
 		// with overlapping writes — refuse instead. For the single-segment
-		// (non-ranged) download this is the normal answer.
+		// (non-ranged) download this is the normal answer, and since the
+		// response always starts at byte 0, a resume must skip the bytes
+		// that are already on the disk before the writers take over.
 		if d.ranged && len(d.segs) > 1 {
 			return errors.New("server ne Range header ko ignore kar diya")
+		}
+		if !d.ranged && start > 0 {
+			if _, serr := io.CopyN(io.Discard, resp.Body, start); serr != nil {
+				return serr
+			}
 		}
 	default:
 		return fmt.Errorf("server ne mana kar diya (status %d)", resp.StatusCode)
 	}
+
+	// The idle watchdog: when no byte has arrived for `idleTimeout`, cancel
+	// rwctx (net/http closes the connection, which unblocks the read below)
+	// and let the reconnect in fetchSegment resume from the exact offset
+	// that reached the disk.
+	var lastProgress atomic.Int64
+	lastProgress.Store(time.Now().UnixNano())
+	watched := make(chan struct{})
+	defer close(watched)
+	go func() {
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-watched:
+				return
+			case <-tick.C:
+				idle := time.Since(time.Unix(0, lastProgress.Load()))
+				if idle > idleTimeout {
+					d.log.Warn("download segment idle, reconnecting",
+						"id", d.id, "idle", idle.Truncate(time.Second).String())
+					rwcancel()
+					return
+				}
+			}
+		}
+	}()
 
 	buf := bufPool.Get().([]byte)
 	defer bufPool.Put(buf)
@@ -724,17 +810,22 @@ func (d *download) fetchRange(ctx context.Context, seg *segment) error {
 			}
 			seg.done.Add(int64(n))
 			d.received.Add(int64(n))
+			lastProgress.Store(time.Now().UnixNano())
 		}
 		if rerr != nil {
-			if rerr == io.EOF {
-				// A ranged request answered short: the server closed before
-				// the range ended. Nil only when the segment really is done.
+			if errors.Is(rerr, io.EOF) {
+				// EOF means "the server stopped sending" — for a bound
+				// segment that is only done when every byte arrived.
+				// Anything short is retryable, not success.
+				if seg.end >= 0 && !seg.finished() {
+					return io.ErrUnexpectedEOF
+				}
 				return nil
 			}
 			return rerr
 		}
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if rwctx.Err() != nil {
+			return rwctx.Err()
 		}
 	}
 }
@@ -848,6 +939,8 @@ func (d *download) fail(err error) {
 		d.errText = err.Error()
 		d.finishedAt = time.Now()
 		d.saveSidecarLocked() // a failed row can still be resumed later
+		diagf("fail id=%s status=%s err=%s recv=%d total=%d",
+			d.id, d.status, d.errText, d.received.Load(), d.totalBytes)
 	}
 	d.mu.Unlock()
 }
@@ -1034,4 +1127,32 @@ func newID() string {
 		return strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// idleTimeout is IdleTimeout in a variable so tests can shrink it (a 30 s
+// watchdog would make a stall test minutes long).
+var idleTimeout = IdleTimeout
+
+// diagf appends one line to `%LOCALAPPDATA%\T9EditorLIT\dl-diag.log` — the
+// machine-readable trail for "download slow / stuck / file not visible"
+// reports, in the same spirit as the browser's browser-diag.log. Every
+// probe, start, retry, done and failure lands here, so a stuck transfer is
+// read from a file instead of guessed at. Best effort: a logging problem
+// must never break a transfer. (Non-Windows daemons have no LOCALAPPDATA
+// and simply log nothing extra.)
+func diagf(format string, args ...any) {
+	root := os.Getenv("LOCALAPPDATA")
+	if root == "" {
+		return
+	}
+	p := filepath.Join(root, "T9EditorLIT", "dl-diag.log")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "[%s] %s\n", time.Now().UTC().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))
 }
