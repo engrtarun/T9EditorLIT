@@ -184,6 +184,17 @@ const en: Dict = {
   'bar.helpShort': 'Help',
   'bar.projectMenu': 'Project menu',
 
+  /* tools panel (the 9-dots launcher) */
+  'bar.tools': 'Tools & websites',
+  'bar.toolsAdd': 'Pin a website',
+  'bar.toolsRemove': 'Unpin',
+  'bar.toolsLocked': 'built-in, cannot be removed',
+  'bar.toolsName': 'Name',
+  'bar.toolsUrl': 'Website URL',
+  'bar.toolsPin': 'Pin',
+  'bar.toolsEmpty':
+    'Nothing pinned yet. Press + to add your own site — it will be remembered here.',
+
   /* -------------------------------------------------------------- dashboard */
   'nav.home': 'Home',
   'nav.cloud': 'T9 Cloud',
@@ -454,6 +465,17 @@ const hinglish: Dict = {
   'bar.help': 'Help · keyboard shortcuts (Ctrl + /)',
   'bar.helpShort': 'Help',
   'bar.projectMenu': 'Project menu',
+
+  /* tools panel (the 9-dots launcher) */
+  'bar.tools': 'Tools & websites',
+  'bar.toolsAdd': 'Website pin karo',
+  'bar.toolsRemove': 'Pin hatao',
+  'bar.toolsLocked': 'built-in hai, hataya nahi ja sakta',
+  'bar.toolsName': 'Naam',
+  'bar.toolsUrl': 'Website URL',
+  'bar.toolsPin': 'Pin karo',
+  'bar.toolsEmpty':
+    'Abhi tak kuch pin nahi hai. + dabao aur apni site add karo — yahin save ho jayegi.',
 
   /* -------------------------------------------------------------- dashboard */
   'nav.home': 'Home',
@@ -747,6 +769,16 @@ const hi: Dict = {
   'bar.help': 'सहायता · कीबोर्ड शॉर्टकट (Ctrl + /)',
   'bar.helpShort': 'सहायता',
   'bar.projectMenu': 'प्रोजेक्ट मेनू',
+
+  /* tools panel (the 9-dots launcher) */
+  'bar.tools': 'टूल्स और वेबसाइट्स',
+  'bar.toolsAdd': 'वेबसाइट पिन करें',
+  'bar.toolsRemove': 'पिन हटाएँ',
+  'bar.toolsLocked': 'बिल्ट-इन है, हटाया नहीं जा सकता',
+  'bar.toolsName': 'नाम',
+  'bar.toolsUrl': 'वेबसाइट URL',
+  'bar.toolsPin': 'पिन करें',
+  'bar.toolsEmpty': 'अभी तक कुछ पिन नहीं है. + दबाकर अपनी साइट जोड़ें — यहीं सेव हो जाएगी.',
 
   /* -------------------------------------------------------------- dashboard */
   'nav.home': 'होम',

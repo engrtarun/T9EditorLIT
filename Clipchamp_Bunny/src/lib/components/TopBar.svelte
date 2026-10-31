@@ -14,6 +14,7 @@
   import UpdateButton from './UpdateButton.svelte';
   import BrandMark from './dashboard/BrandMark.svelte';
   import ProfileMenu from './ProfileMenu.svelte';
+  import ToolsPanel from './ToolsPanel.svelte';
   import WindowControls from './WindowControls.svelte';
 
   /** Clipchamp's project-name menu (captured in the .ipynb DOM extract). */
@@ -66,42 +67,25 @@
   class="flex h-10 shrink-0 items-center gap-2 border-b border-nc-line bg-nc-panel pr-0 pl-1.5 select-none outline-none"
   data-tauri-drag-region
 >
-  <!-- app launcher (9 dots) — the way back to the dashboard -->
+  <!-- app launcher (9 dots) → the suggested-websites panel; Home moved to the brand -->
+  <ToolsPanel />
+
+  <!-- brand: the traced T9 mark from the brand board, plus the wordmark.
+       Click it to go Home — it is the way back to the dashboard. -->
   <button
     onclick={() =>
       // Write any edit still inside the debounce window before the dashboard
       // re-reads SQLite — otherwise a fast Home click shows a stale card.
       void project.flush().then(() => app.goHome('home'))}
-    class="grid h-8 w-8 place-items-center rounded-md text-nc-mut transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
+    class="flex items-center gap-1.5 rounded-md pl-0.5 transition-opacity duration-150 hover:opacity-80"
     title={i18n.t('bar.home')}
     aria-label={i18n.t('bar.home')}
   >
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-      <circle cx="3" cy="3" r="1.4" /><circle cx="8" cy="3" r="1.4" /><circle
-        cx="13"
-        cy="3"
-        r="1.4"
-      />
-      <circle cx="3" cy="8" r="1.4" /><circle cx="8" cy="8" r="1.4" /><circle
-        cx="13"
-        cy="8"
-        r="1.4"
-      />
-      <circle cx="3" cy="13" r="1.4" /><circle cx="8" cy="13" r="1.4" /><circle
-        cx="13"
-        cy="13"
-        r="1.4"
-      />
-    </svg>
-  </button>
-
-  <!-- brand: the traced T9 mark from the brand board, plus the wordmark -->
-  <div class="flex items-center gap-1.5 pl-0.5">
     <BrandMark size={22} />
     <span class="font-brand text-[15px] leading-none tracking-[0.02em]">
       T9 Editor <span class="text-nc-brand">LIT</span>
     </span>
-  </div>
+  </button>
 
   <!-- project dropdown — Clipchamp's project menu (Rename / Open file location / New video) -->
   {#if renaming}
