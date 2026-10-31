@@ -67,6 +67,9 @@ mod shell_menu;
 /// Where the background video is on disk (the frontend only ever gets a path).
 mod background_video;
 
+/// The in-built browser's native half: one WebView2 child per live tab.
+mod browser;
+
 /// Rounded corners + no 1 px frame on the undecorated window (Windows only).
 #[cfg(target_os = "windows")]
 mod window_chrome;
@@ -1505,6 +1508,7 @@ pub fn run() {
         .manage(AppStorageProbe::new())
         .manage(Mutex::new(None::<Arc<AtomicBool>>))
         .manage(PendingOpens::default())
+        .manage(browser::BrowserState::default())
         .invoke_handler(tauri::generate_handler![
             get_memory_stats,
             system_details,
@@ -1567,7 +1571,10 @@ pub fn run() {
             plan_export,
             concat_parts,
             still_clip,
-            polish_render
+            polish_render,
+            browser::browser_show,
+            browser::browser_hide,
+            browser::browser_set_rect
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

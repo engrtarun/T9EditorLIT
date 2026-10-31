@@ -10,6 +10,8 @@
  */
 
 import type { BrowserTab } from '../types';
+import { browserShow, onBrowserDownload, onBrowserNav, onBrowserPage, isTauri } from '../ipc';
+import { downloads } from './downloads.svelte';
 
 /** The hard cap. Nine tabs, like the plan says — no more. */
 export const MAX_TABS = 9;
@@ -253,6 +255,50 @@ class BrowserStore {
       .filter((t) => t.live && t.id !== this.activeId)
       .sort((a, b) => a.lastActive - b.lastActive);
     return live[0] ?? null;
+  }
+
+  /**
+   * Wire the store to the native side (once, on mount). No-ops in the dev
+   * preview so the browser shell stays usable without a webview.
+   */
+  private wired = false;
+
+  wireTauri(): void {
+    if (this.wired || !isTauri()) return;
+    this.wired = true;
+
+    // Every navigation the store drives (new tab, switch, address bar,
+    // back/forward, reload) funnels through this one function.
+    this.nudge = (id, url) => {
+      void browserShow(id, url);
+    };
+
+    // The page finished loading — clear the spinner, take its final URL
+    // (after redirects) and its title.
+    void onBrowserNav(({ id, url }) => {
+      const tab = this.tabs.find((t) => t.id === id);
+      if (!tab) return;
+      // A self-navigation is a new history entry (link click, redirect).
+      if (tab.url !== url) {
+        tab.url = url;
+        tab.title = hostOf(url);
+        this.push(id, url);
+      }
+    });
+
+    void onBrowserPage(({ id, url }) => {
+      const tab = this.tabs.find((t) => t.id === id);
+      if (!tab) return;
+      tab.loading = false;
+      tab.live = true;
+      if (url && tab.url !== url) tab.url = url;
+    });
+
+    // WebView2 wanted to download a file; Rust cancelled it and handed the
+    // URL here. The daemon's multi-segment downloader owns the bytes now.
+    void onBrowserDownload(({ url, referer }) => {
+      void downloads.start(url, referer ? { referer } : undefined);
+    });
   }
 }
 

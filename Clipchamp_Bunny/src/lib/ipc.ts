@@ -1122,3 +1122,58 @@ export function statsSet(key: string, value: string): Promise<void> {
   if (!isTauri()) return Promise.resolve();
   return invoke<void>('stats_kv_set', { key, value }).catch(() => {});
 }
+
+/* ---------------------------------------------------------------- browser */
+
+/**
+ * Show one browser tab: destroy every other tab's webview, then create or
+ * navigate this one.
+ *
+ * The single path for everything that brings a page on screen — new tab,
+ * tab switch, address bar, back/forward, reload — so the webview and the
+ * tab strip can never disagree about what is displayed. An empty or
+ * `about:blank` URL destroys the live webview and shows the speed dial
+ * (which is plain DOM in the main webview, costing zero megabytes).
+ */
+export function browserShow(id: string, url: string): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_show', { id, url });
+}
+
+/** Destroy a tab's webview (tab closed, or the browser view unmounted). */
+export function browserHide(id: string): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_hide', { id }).catch(() => {});
+}
+
+/**
+ * Move the live webview onto the content rectangle the frontend measured
+ * (`[data-focus="browser-content"]`). Keep this in an effect on the
+ * container's bounding box: tab strip changes, the downloads panel opening
+ * and window resizes all repaint the page in exactly the right hole.
+ */
+export function browserSetRect(x: number, y: number, width: number, height: number): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_set_rect', { x, y, width, height }).catch(() => {});
+}
+
+/** A browser page finished loading (clears the strip's spinner). */
+export function onBrowserPage(cb: (p: { id: string; url: string }) => void): Promise<() => void> {
+  return listen<{ id: string; url: string }>('browser:page', (e) => cb(e.payload));
+}
+
+/** The page navigated itself (link click / redirect) — follow it in the store. */
+export function onBrowserNav(cb: (p: { id: string; url: string }) => void): Promise<() => void> {
+  return listen<{ id: string; url: string }>('browser:nav', (e) => cb(e.payload));
+}
+
+/**
+ * WebView2 wanted to download a file; Rust cancelled its own download and
+ * hands the URL here. The store gives it to the daemon's multi-segment
+ * downloader.
+ */
+export function onBrowserDownload(
+  cb: (p: { url: string; referer: string | null }) => void
+): Promise<() => void> {
+  return listen<{ url: string; referer: string | null }>('browser:download', (e) => cb(e.payload));
+}

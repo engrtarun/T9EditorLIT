@@ -21,13 +21,54 @@
   import { downloads } from '../../stores/downloads.svelte';
   import { app } from '../../stores/app.svelte';
   import { toast } from '../../stores/toast.svelte';
-  import { isTauri } from '../../ipc';
+  import { isTauri, browserHide, browserSetRect } from '../../ipc';
+  import { onMount } from 'svelte';
 
   const tab = $derived(browser.active);
 
   /** Back / forward ride the store's own history stack. */
   const canBack = $derived(browser.canBack());
   const canForward = $derived(browser.canForward());
+
+  // Wire the store to the native side once (browserShow + event listeners).
+  // The rect effect below measures this element and keeps the child webview
+  // aligned with it.
+  let contentEl = $state<HTMLDivElement | null>(null);
+
+  onMount(() => {
+    browser.wireTauri();
+    return () => {
+      // The whole browser tree unmounts (App.svelte's {#if}): hide the
+      // live webview so the 500 MB budget holds while the editor is open.
+      const active = browser.active;
+      if (active && isTauri()) void browserHide(active.id);
+    };
+  });
+
+  // Keep the native webview's rect aligned with the content area. The
+  // effect re-runs whenever the container's box changes (tab strip grows,
+  // downloads panel opens, window resizes) because the ResizeObserver
+  // writes into the `rect` signal.
+  let rect = $state({ x: 0, y: 0, width: 0, height: 0 });
+  $effect(() => {
+    const el = contentEl;
+    if (!el || !isTauri()) return;
+    const ro = new ResizeObserver(() => {
+      const r = el.getBoundingClientRect();
+      rect = { x: r.left, y: r.top, width: r.width, height: r.height };
+    });
+    ro.observe(el);
+    // Seed the first measurement immediately (RO fires async).
+    const r = el.getBoundingClientRect();
+    rect = { x: r.left, y: r.top, width: r.width, height: r.height };
+    return () => ro.disconnect();
+  });
+
+  $effect(() => {
+    if (rect.width > 0 && rect.height > 0) {
+      void browserSetRect(rect.x, rect.y, rect.width, rect.height);
+    }
+  });
 
   /** ⬇ in the toolbar: hand the active tab's URL to the fast downloader. */
   async function downloadPage() {
