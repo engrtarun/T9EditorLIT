@@ -1905,6 +1905,26 @@ class ProjectStore {
     this.hiddenTracks = [];
   }
 
+  /** Hide both tracks — the inverse of `showTracks`. */
+  hideTracks() {
+    this.commit();
+    this.hiddenTracks = ['audio', 'video'];
+  }
+
+  /**
+   * Show exactly one track and hide the other: "only video" (the picture, with
+   * the sound off) or "only audio" (the sound, with the stage dark).
+   *
+   * This is not the same as `toggleTrackHidden`: from "both hidden" that
+   * toggle would *show* the track it is given and leave the other one hidden,
+   * while "only X" always means the other track is off. The two never disagree
+   * about what the eye shows, because both write `hiddenTracks` in one go.
+   */
+  onlyTrack(track: TrackId) {
+    this.commit();
+    this.hiddenTracks = track === 'video' ? ['audio'] : ['video'];
+  }
+
   /**
    * Cut whole clips **without deleting them**.
    *

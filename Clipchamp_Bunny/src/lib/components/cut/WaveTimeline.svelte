@@ -5,10 +5,11 @@
   import { dropTarget } from '../../stores/dropTarget.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { settings } from '../../stores/settings.svelte';
+  import { appearance } from '../../stores/appearance.svelte';
   import { toast } from '../../stores/toast.svelte';
   import { thumbUrl } from '../../media';
   import { dropIndex, moveInOrder } from '../../segments';
-  import { clamp, fmtShort, fmtTime, niceStep } from '../../utils';
+  import { clamp, fmtShort, fmtTime, niceStep, parseTimecode } from '../../utils';
   import ContextMenu from '../ContextMenu.svelte';
   import MenuIcon from '../MenuIcon.svelte';
   import ClipFilmstrip from './ClipFilmstrip.svelte';
@@ -57,6 +58,129 @@
   let scrollLeft = $state(0);
   let busy = $state(false);
   let eyeMenuOpen = $state(false);
+  let eyeWrap: HTMLSpanElement | null = $state(null);
+
+  /* --------------------------------------------------------------- track menu
+   * The eye used to be one plain toggle. It is a menu now: two per-track
+   * switches (a tick means the track is drawn) and the four presets that cover
+   * every state two tracks can be in. "Only video" mutes the sound, "Only
+   * audio" darkens the stage; both write `hiddenTracks` in one go, so the menu,
+   * the lanes and the preview can never disagree about what is on.
+   */
+  const TRACK_ROWS = [
+    { id: 'video', label: 'Video', icon: 'film' },
+    { id: 'audio', label: 'Audio', icon: 'volume' }
+  ] as const;
+
+  const onlyVideo = $derived(!project.isTrackHidden('video') && project.isTrackHidden('audio'));
+  const onlyAudio = $derived(project.isTrackHidden('video') && !project.isTrackHidden('audio'));
+  const bothShown = $derived(!project.isTrackHidden('audio') && !project.isTrackHidden('video'));
+  const bothHidden = $derived(project.isTrackHidden('audio') && project.isTrackHidden('video'));
+
+  /** What the eye says at a glance: both on, one off, or nothing. */
+  const trackState = $derived.by(() => {
+    if (bothHidden)
+      return {
+        icon: 'eyeOff',
+        short: 'None',
+        label: 'Both tracks hidden — click for options',
+        cls: 'border-nc-red/40 bg-nc-red/10 text-nc-red hover:bg-nc-red/15'
+      } as const;
+    if (onlyVideo || onlyAudio)
+      return {
+        icon: onlyVideo ? 'film' : 'volume',
+        short: onlyVideo ? 'Video' : 'Audio',
+        label: onlyVideo ? 'Only video — audio is muted' : 'Only audio — video is hidden',
+        cls: 'border-amber-400/40 bg-amber-400/10 text-amber-300 hover:bg-amber-400/15'
+      } as const;
+    return {
+      icon: 'eye',
+      short: 'Both',
+      label: 'Both tracks visible — click for options',
+      cls: 'border-nc-line/70 bg-nc-panel-2/60 text-nc-mut hover:border-nc-line-2 hover:text-nc-txt'
+    } as const;
+  });
+
+  $effect(() => {
+    // Outside click / Escape closes the menu — before this it stayed open
+    // until you found the tiny eye again.
+    if (!eyeMenuOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (eyeWrap && e.target instanceof Node && eyeWrap.contains(e.target)) return;
+      eyeMenuOpen = false;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') eyeMenuOpen = false;
+    };
+    window.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('keydown', onKey);
+    };
+  });
+
+  /* ------------------------------------------------------------ timecode box
+   * The Clipchamp trick: the playhead time is a button, not a label. Click it,
+   * type the time you want (m:ss.cc, h:mm:ss, or plain seconds) and press
+   * Enter — the playhead jumps exactly there. Escape leaves it alone; blur
+   * commits what parses and silently drops what does not.
+   */
+  let timeEditing = $state(false);
+  let timeDraft = $state('');
+
+  function beginTimeEdit() {
+    timeDraft = fmtTime(editPlayhead);
+    timeEditing = true;
+  }
+
+  /** Focus + select the freshly mounted input, so typing replaces the time. */
+  function focusSelect(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
+
+  function commitTime() {
+    if (!timeEditing) return;
+    const parsed = parseTimecode(timeDraft);
+    if (parsed !== null) seekToTime(parsed);
+    timeEditing = false;
+  }
+
+  /**
+   * Seek to a typed time.
+   *
+   * `sequenceAt` has no answer exactly at the end of the sequence, so a time at
+   * (or past) the end used to do nothing at all — typing `9:99` was silently
+   * ignored. A typed time at the end means "the last frame", so land a hair
+   * before it; `false` keeps the typed time exact instead of snapping it to a
+   * cut edge.
+   */
+  function seekToTime(sec: number) {
+    const target = clamp(sec, 0, editDur);
+    seekToEdit(Math.min(target, Math.max(0, editDur - 0.05)), false);
+  }
+
+  function onTimeKey(e: KeyboardEvent) {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const parsed = parseTimecode(timeDraft);
+      if (parsed === null) {
+        // Keep the box open: a typo should be fixable, not swallowed.
+        toast.push('warn', 'Time samajh nahi aaya — m:ss.cc, h:mm:ss ya seconds likho');
+        return;
+      }
+      seekToTime(parsed);
+      timeEditing = false;
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      timeEditing = false;
+    }
+  }
+
   /** True while a library tile is dragged over the video lane. */
   let dropHover = $state(false);
 
@@ -68,11 +192,66 @@
   let dropSlot = $state<number | null>(null);
   let lastClickedSegId: string | null = $state(null);
 
-  /** Legend rotation — the active flag chip re-animates every few seconds. */
-  const LEGEND = ['Keep', 'AI Fumble', 'Silence', 'AI Suggest'] as const;
-  const LEGEND_INTERVAL_MS = 5000;
+  /* ------------------------------------------------------------ legend pill
+   * Keep · AI Fumble · Silence · AI Suggest used to sit side by side in this
+   * 30 px row and eat ~200 px for information the timeline already paints.
+   * They now share ONE slot that cross-fades between them — the same treatment
+   * the dashboard gives its "T9 Cloud" tab: every phrase is stacked in a single
+   * grid cell, so the pill is as wide as the widest entry and nothing to its
+   * right ever shifts.
+   *
+   * The pill carries the live count of each colour, so the rotation is not
+   * decoration — it is the only readout of how many blocks are kept, how many
+   * the AI flagged and how many silences the cut drops. Hover or focus pauses
+   * it, a click steps to the next entry, and Reduced Motion lays all four out
+   * statically again: a legend that cannot rotate must not hide three quarters
+   * of itself.
+   */
+  const LEGEND_INTERVAL_MS = 2600; // ~2 s readable + the 650 ms cross-fade
+  const LEGEND = [
+    { label: 'Keep', swatch: 'var(--color-nc-brand)' },
+    { label: 'AI Fumble', swatch: 'var(--color-nc-red)' },
+    { label: 'Silence', swatch: 'var(--color-nc-mut-2)' },
+    { label: 'AI Suggest', swatch: 'var(--color-nc-green)' }
+  ] as const;
+
   let legendIdx = $state(0);
+  /** Hover / keyboard focus holds the rotation so a phrase can be read. */
+  let legendPaused = $state(false);
+
+  const motionOff = $derived(
+    appearance.motion === 'reduced' ||
+      (typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches)
+  );
+
+  /** How many timeline blocks each colour stands for — segments, like the lanes. */
+  const legendCounts = $derived.by(() => {
+    let keep = 0;
+    let fumble = 0;
+    let silence = 0;
+    for (const s of project.orderedSegments) {
+      if (s.state === 'keep') keep++;
+      else if (s.reason === 'silence') silence++;
+      else fumble++;
+    }
+    return [keep, fumble, silence, project.liveQualitySuggestions.length] as const;
+  });
+
+  /** Label + colour + live count in one list, so markup never indexes twice. */
+  const legendItems = $derived(LEGEND.map((it, i) => ({ ...it, count: legendCounts[i] })));
+
+  const legendTitle = $derived(
+    `Colour key — ${legendItems.map((it) => `${it.label} ${it.count}`).join(' · ')}`
+  );
+
+  function nextLegend() {
+    legendIdx = (legendIdx + 1) % LEGEND.length;
+  }
+
   $effect(() => {
+    // The loop restarts whenever motion or the hover hold changes — never on a
+    // tick, because `legendIdx` is only written here, never read.
+    if (motionOff || legendPaused) return;
     const t = setInterval(() => (legendIdx = (legendIdx + 1) % LEGEND.length), LEGEND_INTERVAL_MS);
     return () => clearInterval(t);
   });
@@ -848,6 +1027,42 @@
   }
 </script>
 
+<!--
+  One legend key: colour swatch · name · live count. Written once and rendered
+  by both the rotating pill and the Reduced Motion row, so the two can never
+  drift apart.
+-->
+{#snippet legendKey(item: (typeof legendItems)[number])}
+  <i class="inline-block h-1.5 w-1.5 shrink-0 rounded-sm" style:background={item.swatch}></i>
+  <span class="font-medium">{item.label}</span>
+  {#if item.count > 0}
+    <span class="tabular-nums text-nc-mut-2">{item.count}</span>
+  {/if}
+{/snippet}
+
+<!--
+  One row of the eye menu's preset block. A tick marks the state the project is
+  in right now, so "Only audio" and "Hide both" never look like the same thing.
+-->
+{#snippet presetRow(label: string, hint: string, active: boolean, run: () => void)}
+  <button
+    type="button"
+    role="menuitemradio"
+    aria-checked={active}
+    onclick={() => {
+      run();
+      eyeMenuOpen = false;
+    }}
+    class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] transition-colors
+           hover:bg-nc-panel-2 {active ? 'text-nc-txt' : 'text-nc-mut hover:text-nc-txt'}"
+  >
+    <span class="flex-1">
+      {label}{#if hint}<span class="ml-1 text-[9px] text-nc-mut-2">{hint}</span>{/if}
+    </span>
+    <span class="w-3 text-center text-nc-brand">{active ? '✓' : ''}</span>
+  </button>
+{/snippet}
+
 <!-- BOTTOM BLOCK — the EDIT timeline: the final video, gapless, with draggable clips. -->
 <section
   data-focus="timeline"
@@ -1054,9 +1269,31 @@
             </svg>
           {/if}
         </button>
-        <span class="ml-1 font-mono text-[12px] text-nc-txt">
-          {fmtTime(editPlayhead)}
-          <span class="text-nc-mut-2"> / {fmtTime(project.sequenceDuration)}</span>
+        <span class="ml-1 flex items-center gap-1 font-mono text-[12px] text-nc-txt">
+          {#if timeEditing}
+            <input
+              use:focusSelect
+              bind:value={timeDraft}
+              onkeydown={onTimeKey}
+              onblur={commitTime}
+              class="w-[86px] rounded border border-nc-brand/60 bg-nc-panel-2 px-1 py-0.5 text-[12px]
+                     tabular-nums text-nc-txt outline-none"
+              aria-label="Jump to time — type m:ss.cc or h:mm:ss, then Enter"
+              spellcheck="false"
+              inputmode="decimal"
+            />
+          {:else}
+            <button
+              type="button"
+              onclick={beginTimeEdit}
+              class="-mx-1 rounded px-1 tabular-nums transition-colors hover:bg-nc-panel-2 hover:text-white"
+              title="Click to type an exact time — m:ss.cc, h:mm:ss or seconds; Enter jumps there"
+              aria-label="Playhead time — click to type an exact time"
+            >
+              {fmtTime(editPlayhead)}
+            </button>
+          {/if}
+          <span class="text-nc-mut-2">/ {fmtTime(project.sequenceDuration)}</span>
         </span>
       </div>
     </div>
@@ -1103,101 +1340,108 @@
         </div>
         <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
       {/if}
-      <span
-        class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300 {0 ===
-        legendIdx
-          ? 'legend-chip'
-          : ''}"
-      >
-        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-brand"></i>Keep
-      </span>
-      <span
-        class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300 {1 ===
-        legendIdx
-          ? 'legend-chip'
-          : ''}"
-      >
-        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-red"></i>AI Fumble
-      </span>
-      <span
-        class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300 {2 ===
-        legendIdx
-          ? 'legend-chip'
-          : ''}"
-      >
-        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-mut-2"></i>Silence
-      </span>
-      <span
-        class="flex items-center gap-1 text-[9px] text-nc-mut transition-colors duration-300 {3 ===
-        legendIdx
-          ? 'legend-chip'
-          : ''}"
-      >
-        <i class="inline-block h-1.5 w-1.5 rounded-sm bg-nc-green"></i>AI Suggest
-      </span>
-      <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
-      <span class="relative">
+      {#if motionOff}
+        <!-- Reduced Motion: the four keys stay side by side — the legend must
+             never hide three quarters of itself when it cannot rotate. -->
+        <div class="flex items-center gap-1.5">
+          {#each legendItems as item (item.label)}
+            <span class="flex items-center gap-1 text-[9px] text-nc-mut">
+              {@render legendKey(item)}
+            </span>
+          {/each}
+        </div>
+      {:else}
         <button
-          onclick={() => (eyeMenuOpen = !eyeMenuOpen)}
-          class="flex h-6 items-center gap-1 rounded px-1.5 text-[9px] transition-colors
-                 {project.isTrackHidden('audio') || project.isTrackHidden('video')
-            ? 'bg-nc-red/15 text-nc-red'
-            : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
-          title={project.isTrackHidden('audio') || project.isTrackHidden('video')
-            ? 'Show audio and video'
-            : 'Hide audio and video'}
+          type="button"
+          onclick={nextLegend}
+          onmouseenter={() => (legendPaused = true)}
+          onmouseleave={() => (legendPaused = false)}
+          onfocus={() => (legendPaused = true)}
+          onblur={() => (legendPaused = false)}
+          class="flex h-[22px] items-center overflow-hidden rounded-md border border-nc-line/70
+                 bg-nc-panel-2/60 px-1.5 text-[9px] text-nc-mut transition-colors
+                 hover:border-nc-line-2 hover:text-nc-txt"
+          title="{legendTitle} · click: next"
+          aria-label={legendTitle}
         >
-          <MenuIcon
-            name={project.isTrackHidden('audio') || project.isTrackHidden('video')
-              ? 'eyeOff'
-              : 'eye'}
-            size={12}
-          />
+          <span class="relative inline-grid" aria-hidden="true">
+            {#each legendItems as item, i (item.label)}
+              <span
+                class="t9-label-rotate col-start-1 row-start-1 flex items-center gap-1 whitespace-nowrap"
+                data-on={i === legendIdx ? '' : undefined}
+              >
+                {@render legendKey(item)}
+              </span>
+            {/each}
+          </span>
+        </button>
+      {/if}
+      <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
+      <span class="relative" bind:this={eyeWrap}>
+        <button
+          type="button"
+          onclick={() => (eyeMenuOpen = !eyeMenuOpen)}
+          class="flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-[9px] font-medium
+                 transition-colors {trackState.cls}"
+          title={trackState.label}
+          aria-label={trackState.label}
+          aria-haspopup="menu"
+          aria-expanded={eyeMenuOpen}
+        >
+          <MenuIcon name={trackState.icon} size={12} />
+          <span>{trackState.short}</span>
+          <svg
+            width="7"
+            height="7"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="3"
+            class="opacity-70 transition-transform duration-150 {eyeMenuOpen ? 'rotate-180' : ''}"
+            aria-hidden="true"
+          >
+            <path d="M6 9l6 6 6-6" />
+          </svg>
         </button>
         {#if eyeMenuOpen}
           <div
-            class="absolute right-0 top-full z-30 mt-1 w-36 rounded-lg border border-nc-line-2 bg-nc-panel p-1 shadow-2xl"
+            role="menu"
+            aria-label="Tracks"
+            class="t9-fade-in absolute right-0 top-full z-30 mt-1 w-44 rounded-lg border border-nc-line-2
+                   bg-nc-panel p-1 shadow-2xl"
           >
-            <button
-              type="button"
-              onclick={() => {
-                project.toggleTrackHidden('video');
-                eyeMenuOpen = false;
-              }}
-              class="block w-full rounded px-2 py-1.5 text-left text-[11px] text-nc-txt transition-colors hover:bg-nc-panel-2"
+            <p
+              class="px-2 pt-1 pb-1 text-[9px] font-semibold tracking-wider text-nc-mut-2 uppercase"
             >
-              Hide video
-            </button>
-            <button
-              type="button"
-              onclick={() => {
-                project.toggleTrackHidden('audio');
-                eyeMenuOpen = false;
-              }}
-              class="block w-full rounded px-2 py-1.5 text-left text-[11px] text-nc-txt transition-colors hover:bg-nc-panel-2"
-            >
-              Hide audio
-            </button>
-            <button
-              type="button"
-              onclick={() => {
-                project.toggleTracksHidden();
-                eyeMenuOpen = false;
-              }}
-              class="block w-full rounded px-2 py-1.5 text-left text-[11px] text-nc-txt transition-colors hover:bg-nc-panel-2"
-            >
-              Hide both
-            </button>
-            <button
-              type="button"
-              onclick={() => {
-                project.showTracks();
-                eyeMenuOpen = false;
-              }}
-              class="block w-full rounded px-2 py-1.5 text-left text-[11px] text-nc-txt transition-colors hover:bg-nc-panel-2"
-            >
-              Show both
-            </button>
+              Tracks
+            </p>
+            {#each TRACK_ROWS as row (row.id)}
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={!project.isTrackHidden(row.id)}
+                onclick={() => project.toggleTrackHidden(row.id)}
+                class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] transition-colors
+                       hover:bg-nc-panel-2 {project.isTrackHidden(row.id)
+                  ? 'text-nc-mut-2'
+                  : 'text-nc-txt'}"
+              >
+                <MenuIcon name={row.icon} size={12} />
+                <span class="flex-1">{row.label}</span>
+                <span class="w-3 text-center text-nc-brand">
+                  {project.isTrackHidden(row.id) ? '' : '✓'}
+                </span>
+              </button>
+            {/each}
+            <span class="my-1 block h-px bg-nc-line"></span>
+            {@render presetRow('Only video', '· sound off', onlyVideo, () =>
+              project.onlyTrack('video')
+            )}
+            {@render presetRow('Only audio', '· video off', onlyAudio, () =>
+              project.onlyTrack('audio')
+            )}
+            {@render presetRow('Show both', '', bothShown, () => project.showTracks())}
+            {@render presetRow('Hide both', '', bothHidden, () => project.hideTracks())}
           </div>
         {/if}
       </span>
@@ -1687,20 +1931,3 @@
     />
   {/if}
 </section>
-
-<style>
-  .legend-chip {
-    animation: legendIn 2.4s ease-out;
-  }
-
-  @keyframes legendIn {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-</style>

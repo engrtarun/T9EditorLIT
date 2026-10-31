@@ -37,7 +37,19 @@ const DECL = /(font-size|line-height)(\s*:\s*)(-?[\d.]+)(px|rem)/g;
 /** The theme's font-size scale: `--text-sm`, `--text-base--line-height`. */
 const THEME = /(--text-[a-z0-9][a-z0-9-]*)(\s*:\s*)(-?[\d.]+)(px|rem)/g;
 
-const SCALE = 'calc($3$4$2* var(--t9-text-scale, 1))';
+/**
+ * The rewrite keeps the property name and its colon ($1$2) and wraps only the
+ * value. An earlier version built `calc($3$4$2* ...)`, which dropped the
+ * property and produced `calc(9px: * var(...))` — invalid CSS, so the browser
+ * discarded every font-size in the bundle and the whole app fell back to the
+ * browser's 16 px default. Keep $1$2 in front of `calc`.
+ */
+const SCALE = '$1$2calc($3$4 * var(--t9-text-scale, 1))';
+
+/** The whole rewrite, pure — exported so the test can prove the CSS stays valid. */
+export function scaleText(code: string): string {
+  return code.replace(DECL, SCALE).replace(THEME, SCALE);
+}
 
 export function textScale(): Plugin {
   return {
@@ -45,7 +57,7 @@ export function textScale(): Plugin {
     enforce: 'post',
     transform(code) {
       if (!code.includes('font-size') && !code.includes('--text-')) return null;
-      const out = code.replace(DECL, SCALE).replace(THEME, SCALE);
+      const out = scaleText(code);
       // `null` when nothing matched keeps the module (and its map) untouched.
       return out === code ? null : { code: out, map: null };
     }

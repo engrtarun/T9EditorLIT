@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { clamp, fmtHuman, fmtShort, fmtSize, fmtTime, niceStep } from './utils.ts';
+import { clamp, fmtHuman, fmtShort, fmtSize, fmtTime, niceStep, parseTimecode } from './utils.ts';
 
 test('fmtTime renders m:ss.cc and clamps negatives to zero', () => {
   assert.equal(fmtTime(0), '0:00.00');
@@ -29,6 +29,27 @@ test('clamp bounds a value', () => {
   assert.equal(clamp(5, 0, 10), 5);
   assert.equal(clamp(-1, 0, 10), 0);
   assert.equal(clamp(99, 0, 10), 10);
+});
+
+test('parseTimecode reads the forms a person actually types', () => {
+  assert.equal(parseTimecode('83'), 83);
+  assert.equal(parseTimecode('1:23'), 83);
+  assert.equal(parseTimecode('1:23.45'), 83.45);
+  assert.equal(parseTimecode('0:05.63'), 5.63);
+  assert.equal(parseTimecode('1:02:03'), 3723);
+  assert.equal(parseTimecode('1:02:03.5'), 3723.5);
+});
+
+test('parseTimecode tolerates spaces, commas and a leading zero', () => {
+  assert.equal(parseTimecode('  1:23  '), 83);
+  assert.equal(parseTimecode('1,5'), 1.5);
+  assert.equal(parseTimecode('0:09'), 9);
+});
+
+test('parseTimecode refuses what it cannot know for sure', () => {
+  for (const bad of ['', '   ', 'abc', '1:2:3:4', '1::2', '-5', '1:2:3.4.5', '1:23f']) {
+    assert.equal(parseTimecode(bad), null, `"${bad}" should not parse`);
+  }
 });
 
 test('niceStep always keeps labels at least 72px apart', () => {
