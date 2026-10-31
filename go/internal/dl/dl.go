@@ -236,7 +236,16 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 	}
 	name = sanitizeFilename(name)
 
-	dest := m.reservePath(name)
+	// A previous attempt at the same file leaves a `.part` plus its sidecar on
+	// disk, and those bytes are real: resuming them is the difference between a
+	// 45 GB download taking hours once and taking hours every single time. The
+	// sidecar is only trusted when it describes the same URL, the same size and
+	// (when both sides know it) the same ETag - a changed ETag means the file
+	// behind the URL is a different file, and splicing them would corrupt both.
+	resume, dest := m.resumable(rawURL, probe)
+	if dest == "" {
+		dest = m.reservePath(name)
+	}
 
 	d := &download{
 		id:           newID(),
@@ -280,6 +289,13 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 		n /= 2
 	}
 	d.segs = splitSegments(probe.total, n, probe.ranged)
+	if resume != nil {
+		// The sidecar's offsets are only usable when the split is identical;
+		// `adoptSidecar` checks that and reports how many bytes it recovered.
+		if got := d.adoptSidecar(resume); got > 0 {
+			diagf("resume id=%s file=%s at=%d", d.id, d.filename, got)
+		}
+	}
 	diagf("start %s id=%s total=%d ranged=%v segs=%d",
 		parsed.Host, d.id, probe.total, probe.ranged, len(d.segs))
 
@@ -504,6 +520,48 @@ func (m *Manager) get(id string) (*download, error) {
 	return d, nil
 }
 
+// resumable finds an interrupted attempt at the same file.
+//
+// A `.part.json` is written on every pause and every failure, but until now
+// nothing ever read one back: a retry took a fresh name ("(1)", "(2)", ...) and
+// started from byte zero, which on a multi-gigabyte file means the disk fills
+// with dead partials and the download never gets further than the last crash.
+//
+// The sidecar is trusted only for the same URL, the same total size and the
+// same ETag (when both sides know one). The `.part` it points at must still
+// exist; a sidecar without its partial is a leftover, not a resume.
+func (m *Manager) resumable(rawURL string, probe *probeResult) (*sidecar, string) {
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return nil, ""
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".part.json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(m.dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var sc sidecar
+		if json.Unmarshal(b, &sc) != nil || sc.Version != 1 {
+			continue
+		}
+		if sc.URL != rawURL || sc.TotalBytes != probe.total || len(sc.Segments) == 0 {
+			continue
+		}
+		if sc.ETag != "" && probe.etag != "" && sc.ETag != probe.etag {
+			continue // the URL now serves a different file
+		}
+		dest := strings.TrimSuffix(filepath.Join(m.dir, e.Name()), ".part.json")
+		if _, err := os.Stat(dest + ".part"); err != nil {
+			continue
+		}
+		return &sc, dest
+	}
+	return nil, ""
+}
+
 // pruneLocked drops terminal rows that have been finished for a while, so a
 // daemon left running for days cannot grow the queue without bound.
 func (m *Manager) pruneLocked() {
@@ -596,6 +654,38 @@ type download struct {
 	speed      atomic.Int64
 	lastBytes  atomic.Int64
 	lastSample atomic.Int64 // unix nanos of the previous speed sample
+}
+
+// adoptSidecar copies the progress a previous run left behind into this one.
+//
+// Segments are matched by index and only when their bounds agree: a different
+// split (the huge-file rule can raise the socket count) writes each worker at
+// a different offset, and adopting a `done` that belongs to another range would
+// silently corrupt the file. A mismatch is not an error — the download simply
+// starts clean, which is what the old code always did.
+func (d *download) adoptSidecar(sc *sidecar) int64 {
+	if len(sc.Segments) != len(d.segs) {
+		return 0
+	}
+	for i, s := range sc.Segments {
+		if s.Start != d.segs[i].start || s.End != d.segs[i].end {
+			return 0
+		}
+		if s.Done < 0 || s.Done > d.segs[i].length() {
+			return 0
+		}
+	}
+	var total int64
+	for i, s := range sc.Segments {
+		d.segs[i].done.Store(s.Done)
+		total += s.Done
+	}
+	// The counters follow the bytes that are already on disk, so the panel
+	// shows 43 GB / 46 GB instead of 0% next to a file that is nearly done.
+	d.received.Store(total)
+	d.lastBytes.Store(total)
+	d.lastSample.Store(time.Now().UnixNano())
+	return total
 }
 
 // open creates the partial file at its final size, so every segment can

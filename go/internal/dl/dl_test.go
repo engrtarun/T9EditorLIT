@@ -3,6 +3,7 @@ package dl
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -633,5 +634,115 @@ func TestNonRangedResumeSkipsBytesAlreadyOnDisk(t *testing.T) {
 	}
 	if !bytes.Equal(got, blob) {
 		t.Fatalf("the resumed non-ranged file differs — the on-disk bytes were not skipped")
+	}
+}
+
+// countingWriter counts the bytes actually flushed to the client, so a test can
+// prove that a resumed download did *not* ask for the bytes already on disk.
+type countingWriter struct {
+	http.ResponseWriter
+	n *atomic.Int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.ResponseWriter.Write(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// TestRestartResumesThePartialInsteadOfStartingOver is the 45 GB bug.
+//
+// The old code wrote a sidecar on every pause and crash but never read one
+// back, so a retry took a fresh name ("(1)", "(2)", ...) and started from byte
+// zero. On a huge file that means the disk fills with dead partials and the
+// download never advances past the last crash. A sidecar that describes the
+// same URL/size/ETag must be adopted: the finished file is byte-identical and
+// the bytes already on disk are never fetched twice.
+func TestRestartResumesThePartialInsteadOfStartingOver(t *testing.T) {
+	blob := make([]byte, 512<<10)
+	if _, err := rand.Read(blob); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	var served atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", fmt.Sprint(len(blob)))
+			w.Header().Set("ETag", `"blob-v1"`)
+			w.Header().Set("Content-Disposition", `attachment; filename="big.rar"`)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.ServeContent(&countingWriter{ResponseWriter: w, n: &served}, r, "big.rar", time.Unix(0, 0), bytes.NewReader(blob))
+	}))
+	t.Cleanup(srv.Close)
+
+	m := newTestManager(t, srv)
+
+	// The state a killed daemon leaves behind: a full-size .part whose first
+	// quarter is real data, plus the sidecar that says exactly that.
+	done := int64(128 << 10)
+	dest := filepath.Join(m.Dir(), "big.rar")
+	part := dest + ".part"
+	f, err := os.Create(part)
+	if err != nil {
+		t.Fatalf("create part: %v", err)
+	}
+	if err := f.Truncate(int64(len(blob))); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if _, err := f.WriteAt(blob[:done], 0); err != nil {
+		t.Fatalf("write first segment: %v", err)
+	}
+	f.Close()
+
+	sc := sidecar{
+		Version:    1,
+		URL:        srv.URL,
+		Filename:   "big.rar",
+		TotalBytes: int64(len(blob)),
+		Ranged:     true,
+		ETag:       `"blob-v1"`,
+	}
+	for _, s := range splitSegments(int64(len(blob)), 4, true) {
+		var got int64
+		if s.start == 0 {
+			got = done
+		}
+		sc.Segments = append(sc.Segments, struct {
+			Start int64 `json:"start"`
+			End   int64 `json:"end"`
+			Done  int64 `json:"done"`
+		}{s.start, s.end, got})
+	}
+	b, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal sidecar: %v", err)
+	}
+	if err := os.WriteFile(part+".json", b, 0o644); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+
+	item, err := m.Start(srv.URL, "")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if item.ReceivedBytes != done {
+		t.Fatalf("resume should adopt %d bytes, the panel shows %d", done, item.ReceivedBytes)
+	}
+	if filepath.Base(item.Path) != "big.rar" {
+		t.Fatalf("a resume must keep the original name, got %q", filepath.Base(item.Path))
+	}
+
+	final := waitStatus(t, m, item.ID, StatusDone)
+	got, err := os.ReadFile(final.Path)
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if !bytes.Equal(got, blob) {
+		t.Fatalf("resumed file differs from the source")
+	}
+	if again := served.Load(); again > int64(len(blob))-done {
+		t.Fatalf("resume re-fetched bytes already on disk: server sent %d, expected at most %d", again, int64(len(blob))-done)
 	}
 }

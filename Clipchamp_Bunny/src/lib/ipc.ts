@@ -657,6 +657,24 @@ export async function revealPath(path: string): Promise<boolean> {
 }
 
 /**
+ * Open a finished download with whatever app owns it.
+ *
+ * "Folder me dikhao" answers *where* the file went; this answers *what* came
+ * down — a 45 GB archive is useless until the user can double-click it, and
+ * making them walk to Explorer first is a second step that buys nothing.
+ */
+export async function openPath(path: string): Promise<boolean> {
+  if (!path || !isTauri()) return false;
+  try {
+    const { openPath: openWithShell } = await import('@tauri-apps/plugin-opener');
+    await openWithShell(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Drain the video paths this process was launched with.
  *
  * The Explorer verb ("Edit with T9 Editor LIT") starts the exe with the
