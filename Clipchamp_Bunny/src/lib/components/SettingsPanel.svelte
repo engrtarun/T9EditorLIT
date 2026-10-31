@@ -36,6 +36,7 @@
     type TypographyId
   } from '../stores/appearance.svelte';
   import { i18n, UI_LANGS, type UiLang } from '../stores/i18n.svelte';
+  import { TIME_FORMATS, formatTimecode, type TimeFormat } from '../utils';
 
   /** The option rows of the appearance tab, in the order they are offered. */
   const appearanceAccents = ACCENTS;
@@ -106,6 +107,11 @@
     settings.setSeekStep(n);
     customStep = settings.seekStepLabel;
     toast.push('info', i18n.t('set.skip.toast', { n: settings.seekStepLabel }));
+  }
+
+  function pickTimeFormat(fmt: TimeFormat) {
+    settings.setTimeFormat(fmt);
+    toast.push('info', i18n.t('set.time.toast', { value: formatTimecode(3723.45, fmt) }));
   }
 
   async function cleanExpired() {
@@ -357,6 +363,33 @@
                 >
                   {i18n.t('set.skip.reset', { n: SEEK_STEP_DEFAULT })}
                 </button>
+              </div>
+            </section>
+
+            <section class="mt-4 rounded-xl border border-nc-line bg-nc-panel-2/50 p-4">
+              <div class="flex items-baseline justify-between gap-3">
+                <h3 class="text-[10px] font-bold tracking-widest text-nc-brand">
+                  {i18n.t('set.time.title')}
+                </h3>
+                <span class="font-mono text-[11px] text-nc-mut">
+                  {formatTimecode(3723.45, settings.timeFormat)}
+                </span>
+              </div>
+
+              <p class="mt-2 text-[11px] leading-relaxed text-nc-mut">
+                {i18n.t('set.time.desc')}
+              </p>
+
+              <div class="mt-3 flex flex-wrap gap-2">
+                {#each TIME_FORMATS as f (f.id)}
+                  <button
+                    onclick={() => pickTimeFormat(f.id)}
+                    class="{chip(settings.timeFormat === f.id)} font-mono"
+                    title={formatTimecode(3723.45, f.id)}
+                  >
+                    {f.label}
+                  </button>
+                {/each}
               </div>
             </section>
 

@@ -253,23 +253,11 @@
       return;
     }
     if (hit('seekBack', e)) {
-      const step = -settings.seekStepSec;
-      const clip = project.activeClip;
-      player.seek(
-        clip
-          ? Math.max(clip.inSec, player.currentTime + step)
-          : project.skipBy(player.currentTime, step)
-      );
+      project.stepSequenceBy(-settings.seekStepSec);
       return;
     }
     if (hit('seekForward', e)) {
-      const step = settings.seekStepSec;
-      const clip = project.activeClip;
-      player.seek(
-        clip
-          ? Math.min(clip.outSec, player.currentTime + step)
-          : project.skipBy(player.currentTime, step)
-      );
+      project.stepSequenceBy(settings.seekStepSec);
       return;
     }
     if (hit('nextLine', e)) {

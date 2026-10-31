@@ -10,6 +10,8 @@
  * The retention is in **days** and `0` means "never auto-delete".
  */
 
+import { isTimeFormat, type TimeFormat } from '../utils';
+
 /** LocalStorage key. */
 const TRASH_DAYS_KEY = 't9-editor-lit.trashDays';
 
@@ -18,6 +20,12 @@ const SEEK_STEP_KEY = 't9-editor-lit.seekStep';
 
 /** LocalStorage key for "call the AI transcript API on import". */
 const AUTO_TRANSCRIBE_KEY = 't9-editor-lit.autoTranscribe';
+
+/** LocalStorage key for how the playhead time is written. */
+const TIME_FORMAT_KEY = 't9-editor-lit.timeFormat';
+
+/** LocalStorage key for "the timeline scrolls with the playhead". */
+const FOLLOW_PLAYHEAD_KEY = 't9-editor-lit.followPlayhead';
 
 /** The window the user asked for: a binned project is recoverable for 12 days. */
 export const TRASH_DAYS_DEFAULT = 12;
@@ -61,6 +69,24 @@ class SettingsStore {
    * never spends an API call.
    */
   autoTranscribe = $state(false);
+
+  /**
+   * How the playhead time is written under the transport. `auto` keeps the
+   * app's historical `m:ss.cc`, adding hours only when the project needs them.
+   */
+  timeFormat = $state<TimeFormat>('auto');
+
+  /**
+   * Clipchamp's timeline follows the playhead during playback: when the line
+   * reaches the right edge the view scrolls to keep it visible. Some editors
+   * prefer a still timeline, so this is a switch (eye menu → Follow playhead).
+   */
+  followPlayhead = $state(true);
+
+  /** True when the printed format can be typed back into the timecode box. */
+  get timeFormatEditable(): boolean {
+    return this.timeFormat !== 'seconds' && this.timeFormat !== 'millis';
+  }
 
   /** `5` -> `"5"`, `0.5` -> `"0.5"` — titles and the transport icon. */
   get seekStepLabel(): string {
@@ -112,11 +138,26 @@ class SettingsStore {
     this.persist();
   }
 
+  /** Pick how the playhead time is written. Unknown ids are ignored. */
+  setTimeFormat(fmt: TimeFormat): void {
+    if (!isTimeFormat(fmt)) return;
+    this.timeFormat = fmt;
+    this.persist();
+  }
+
+  /** Turn the playhead-following timeline scroll on or off. */
+  setFollowPlayhead(on: boolean): void {
+    this.followPlayhead = on;
+    this.persist();
+  }
+
   private persist(): void {
     try {
       localStorage.setItem(TRASH_DAYS_KEY, String(this.trashRetentionDays));
       localStorage.setItem(SEEK_STEP_KEY, String(this.seekStepSec));
       localStorage.setItem(AUTO_TRANSCRIBE_KEY, this.autoTranscribe ? '1' : '0');
+      localStorage.setItem(TIME_FORMAT_KEY, this.timeFormat);
+      localStorage.setItem(FOLLOW_PLAYHEAD_KEY, this.followPlayhead ? '1' : '0');
     } catch {
       /* private mode */
     }
@@ -131,6 +172,11 @@ class SettingsStore {
       const auto = localStorage.getItem(AUTO_TRANSCRIBE_KEY);
       // Absent = off: asking before an API call is the safe default.
       this.autoTranscribe = auto === '1';
+      const fmt = localStorage.getItem(TIME_FORMAT_KEY);
+      if (isTimeFormat(fmt)) this.timeFormat = fmt;
+      const follow = localStorage.getItem(FOLLOW_PLAYHEAD_KEY);
+      // Absent = on: Clipchamp's behaviour is the default.
+      this.followPlayhead = follow === null ? true : follow === '1';
     } catch {
       /* private mode */
     }

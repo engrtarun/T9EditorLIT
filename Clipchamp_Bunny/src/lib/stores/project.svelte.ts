@@ -412,6 +412,7 @@ class ProjectStore {
     if (bakedEntry) media.focusSource(bakedEntry.asset.id);
     this.restoreClips();
     this.restoreUiState();
+    this.restorePlayhead();
     this.ready = true;
   }
 
@@ -619,6 +620,7 @@ class ProjectStore {
     }
     this.restoreClips();
     this.restoreUiState();
+    this.restorePlayhead();
 
     // Remember the project, so the next launch opens this very file. The clock
     // stays honest: a resume keeps the old stamp, an open/import gets "now".
@@ -1080,6 +1082,60 @@ class ProjectStore {
     }
   }
 
+  /** LocalStorage key for the last playhead position (tiny, written often). */
+  private playheadKey(): string | null {
+    const id = this.sourcePath ?? this.media?.name;
+    return id ? `t9.playhead:${id}` : null;
+  }
+
+  /**
+   * Remember where the playhead was.
+   *
+   * A cut project used to reopen at the top of the sequence, which is confusing
+   * once clips have been reordered: "the first clip" is no longer the beginning
+   * of the recording the user remembers. The position is a tiny key of its own,
+   * so the debounced 750 ms UI-state save does not have to run on every seek.
+   */
+  savePlayhead() {
+    const key = this.playheadKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(
+        key,
+        JSON.stringify({ clipId: this.activeClipId, sec: player.currentTime })
+      );
+    } catch {
+      /* private mode / quota — resuming is a nicety, never a blocker */
+    }
+  }
+
+  /** Reopen at the exact place the editor was left, not the top of the strip. */
+  private restorePlayhead() {
+    const key = this.playheadKey();
+    if (!key) return;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const data = JSON.parse(raw) as { clipId?: string | null; sec?: number };
+      if (typeof data.sec !== 'number' || !Number.isFinite(data.sec)) return;
+      const clip = data.clipId ? this.clips.find((c) => c.id === data.clipId) : null;
+      if (clip) {
+        this.activeClipId = clip.id;
+        player.seek(Math.min(clip.outSec, Math.max(clip.inSec, data.sec)));
+        return;
+      }
+      this.activeClipId = null;
+      // A position that is now inside a cut would show cut material in the
+      // applied preview; land on the nearest kept frame instead.
+      let sec = this.isCutAt(data.sec) ? this.nearestKeptSource(data.sec) : data.sec;
+      const dur = this.media?.durationSecs ?? 0;
+      if (dur > 0) sec = Math.min(sec, Math.max(0, dur - 0.05));
+      player.seek(Math.max(0, sec));
+    } catch {
+      /* corrupt entry — start at the top */
+    }
+  }
+
   /** Switching files must not leak the previous project's order or mutes. */
   private resetEditState() {
     this.lines = [];
@@ -1387,6 +1443,32 @@ class ProjectStore {
       // Back to the main cut: its first kept frame, not the top of the file.
       player.seek(this.sourceAt(0) ?? 0);
     }
+  }
+
+  /**
+   * Move the playhead by `delta` seconds of the **visible timeline** (J / L).
+   *
+   * J / L used to step through *source* seconds. After a cut or a reorder that
+   * is not the step the user chose: a 5 s press could cross a red block and
+   * move 17 s on the strip, or land inside a cut and get flung to its edge.
+   * The transport step is a step of the timeline the user is looking at, so the
+   * conversion happens in sequence space and an extra clip is activated when
+   * the target lands after the main cut.
+   */
+  stepSequenceBy(delta: number) {
+    const clip = this.activeClip;
+    if (clip) {
+      // An extra clip has no cuts: a plain step clamped to its own in/out.
+      player.seek(Math.min(clip.outSec, Math.max(clip.inSec, player.currentTime + delta)));
+      return;
+    }
+    const from = this.globalTimeAt(null, player.currentTime);
+    const end = Math.max(0, this.sequenceDuration - 0.05);
+    const target = Math.min(Math.max(from + delta, 0), end);
+    const at = this.sequenceAt(target);
+    if (!at) return;
+    this.activateClip(at.clip?.id ?? null);
+    player.seek(at.localSec);
   }
 
   /**

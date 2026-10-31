@@ -9,7 +9,7 @@
   import { toast } from '../../stores/toast.svelte';
   import { thumbUrl } from '../../media';
   import { dropIndex, moveInOrder } from '../../segments';
-  import { clamp, fmtShort, fmtTime, niceStep, parseTimecode } from '../../utils';
+  import { clamp, fmtShort, fmtTime, formatTimecode, niceStep, parseTimecode } from '../../utils';
   import ContextMenu from '../ContextMenu.svelte';
   import MenuIcon from '../MenuIcon.svelte';
   import ClipFilmstrip from './ClipFilmstrip.svelte';
@@ -130,7 +130,11 @@
   let timeDraft = $state('');
 
   function beginTimeEdit() {
-    timeDraft = fmtTime(editPlayhead);
+    // Prefill the format the transport is showing, but only when that form can
+    // be typed back; `83.46s` / `83456 ms` would fail to parse on Enter.
+    timeDraft = settings.timeFormatEditable
+      ? formatTimecode(editPlayhead, settings.timeFormat)
+      : fmtTime(editPlayhead);
     timeEditing = true;
   }
 
@@ -286,6 +290,42 @@
   const step = $derived(niceStep(zoom));
   /** Four intervals per label gap = three dots between labels, like Clipchamp. */
   const minor = $derived(step / 4);
+
+  /* ------------------------------------------------------ playhead memory
+   * Reopening a cut project used to start at the top of the sequence; once
+   * clips are reordered that is a middle frame of the recording. Remember the
+   * exact spot, but write it at most every 3 s so scrubbing does not spam
+   * localStorage. The teardown flushes the last position.
+   */
+  let lastPlayheadSave = 0;
+  $effect(() => {
+    const at = player.currentTime;
+    if (!project.ready || !Number.isFinite(at)) return;
+    const now = performance.now();
+    if (now - lastPlayheadSave < 3000) return;
+    lastPlayheadSave = now;
+    project.savePlayhead();
+  });
+  $effect(() => () => project.savePlayhead());
+
+  /* --------------------------------------------------- follow the playhead
+   * Clipchamp scrolls the strip while the video plays. A manual wheel scroll
+   * pauses the follow for a moment, so inspecting another part of the timeline
+   * is not yanked back by the next timeupdate.
+   */
+  let followPauseUntil = 0;
+  $effect(() => {
+    if (!settings.followPlayhead) return;
+    if (performance.now() < followPauseUntil) return;
+    const el = wrap;
+    const t = editPlayhead;
+    if (!el || t == null) return;
+    const x = t * zoom;
+    const edge = 56;
+    if (x < el.scrollLeft + edge || x > el.scrollLeft + el.clientWidth - edge) {
+      el.scrollLeft = Math.max(0, x - el.clientWidth * 0.3);
+    }
+  });
 
   const ticks = $derived.by(() => {
     const out: Array<{ t: number; major: boolean }> = [];
@@ -636,18 +676,12 @@
   }
 
   /**
-   * Step the playhead. On the main cut this skips over cut ranges; inside an
-   * extra clip it is a plain step clamped to the clip's own in/out points -
-   * that clip has no transcript, so there is nothing to skip.
+   * Step the playhead. The step is measured on the **visible timeline**, not
+   * on the source file: after a cut or a reorder the two are not the same, and
+   * the user chose a number of seconds of the video they are editing.
    */
   function stepBy(delta: number) {
-    const clip = project.activeClip;
-    if (!clip) {
-      player.seek(project.skipBy(player.currentTime, delta));
-      return;
-    }
-    const next = player.currentTime + delta;
-    player.seek(Math.min(clip.outSec, Math.max(clip.inSec, next)));
+    project.stepSequenceBy(delta);
   }
 
   function seekFromEvent(e: MouseEvent) {
@@ -1393,10 +1427,12 @@
               title="Click to type an exact time — m:ss.cc, h:mm:ss or seconds; Enter jumps there"
               aria-label="Playhead time — click to type an exact time"
             >
-              {fmtTime(editPlayhead)}
+              {formatTimecode(editPlayhead, settings.timeFormat)}
             </button>
           {/if}
-          <span class="text-nc-mut-2">/ {fmtTime(project.sequenceDuration)}</span>
+          <span class="text-nc-mut-2"
+            >/ {formatTimecode(project.sequenceDuration, settings.timeFormat)}</span
+          >
         </span>
       </div>
     </div>
@@ -1545,6 +1581,24 @@
             )}
             {@render presetRow('Show both', '', bothShown, () => project.showTracks())}
             {@render presetRow('Hide both', '', bothHidden, () => project.hideTracks())}
+            <span class="my-1 block h-px bg-nc-line"></span>
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={settings.followPlayhead}
+              onclick={() => settings.setFollowPlayhead(!settings.followPlayhead)}
+              class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] transition-colors
+                     hover:bg-nc-panel-2 {settings.followPlayhead
+                ? 'text-nc-txt'
+                : 'text-nc-mut-2'}"
+              title="Timeline scrolls to keep the playhead visible while the video plays"
+            >
+              <MenuIcon name="eye" size={12} />
+              <span class="flex-1">Follow playhead</span>
+              <span class="w-3 text-center text-nc-brand">
+                {settings.followPlayhead ? '✓' : ''}
+              </span>
+            </button>
           </div>
         {/if}
       </span>
@@ -1569,6 +1623,7 @@
       bind:this={wrap}
       bind:clientWidth={viewW}
       onscroll={(e) => (scrollLeft = e.currentTarget.scrollLeft)}
+      onwheel={() => (followPauseUntil = performance.now() + 2500)}
       class="nc-scroll min-h-0 overflow-x-auto overflow-y-hidden"
     >
       <div class="relative" style="width:{contentW}px">

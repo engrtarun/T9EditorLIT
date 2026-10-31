@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { clamp, fmtHuman, fmtShort, fmtSize, fmtTime, niceStep, parseTimecode } from './utils.ts';
+import {
+  clamp,
+  fmtHuman,
+  fmtShort,
+  fmtSize,
+  fmtTime,
+  formatTimecode,
+  isTimeFormat,
+  niceStep,
+  parseTimecode
+} from './utils.ts';
 
 test('fmtTime renders m:ss.cc and clamps negatives to zero', () => {
   assert.equal(fmtTime(0), '0:00.00');
@@ -56,4 +66,27 @@ test('niceStep always keeps labels at least 72px apart', () => {
   for (const zoom of [4, 10, 35, 90, 220]) {
     assert.ok(niceStep(zoom) * zoom >= 72, `zoom ${zoom} produced a crowded ruler`);
   }
+});
+
+test('formatTimecode honours every picker format', () => {
+  assert.equal(formatTimecode(83.456, 'auto'), '1:23.46');
+  assert.equal(formatTimecode(3723.456, 'auto'), '1:02:03.46');
+  assert.equal(formatTimecode(83.456, 'mmss'), '1:23');
+  assert.equal(formatTimecode(83.456, 'mmsscc'), '1:23.46');
+  assert.equal(formatTimecode(83.456, 'hms'), '0:01:23');
+  assert.equal(formatTimecode(3723.456, 'hmscc'), '1:02:03.46');
+  assert.equal(formatTimecode(83.456, 'seconds'), '83.46s');
+  assert.equal(formatTimecode(83.456, 'millis'), '83456 ms');
+});
+
+test('formatTimecode carries a rounded second into the next minute', () => {
+  assert.equal(formatTimecode(59.999, 'mmsscc'), '1:00.00');
+  assert.equal(formatTimecode(3599.999, 'auto'), '1:00:00.00');
+});
+
+test('isTimeFormat only accepts ids the picker offers', () => {
+  assert.equal(isTimeFormat('auto'), true);
+  assert.equal(isTimeFormat('millis'), true);
+  assert.equal(isTimeFormat('frames'), false);
+  assert.equal(isTimeFormat(null), false);
 });

@@ -6,6 +6,71 @@ export function fmtTime(sec: number): string {
   return `${m}:${rem.toFixed(2).padStart(5, '0')}`;
 }
 
+/**
+ * How the playhead time is written. `auto` is the app's historical form
+ * (`m:ss.cc`), with hours only when the project is long enough to need them.
+ */
+export type TimeFormat = 'auto' | 'mmss' | 'mmsscc' | 'hms' | 'hmscc' | 'seconds' | 'millis';
+
+/**
+ * The settings picker's order and labels.
+ *
+ * `typed` says whether the printed form can be typed back into the timecode
+ * box (`parseTimecode`); a suffix like `83.46s` reads well but would not parse,
+ * so the editor falls back to `m:ss.cc` when it opens the box.
+ */
+export const TIME_FORMATS: Array<{ id: TimeFormat; label: string; typed: boolean }> = [
+  { id: 'auto', label: 'Auto', typed: true },
+  { id: 'mmss', label: 'm:ss', typed: true },
+  { id: 'mmsscc', label: 'm:ss.cc', typed: true },
+  { id: 'hms', label: 'h:mm:ss', typed: true },
+  { id: 'hmscc', label: 'h:mm:ss.cc', typed: true },
+  { id: 'seconds', label: 'sec', typed: false },
+  { id: 'millis', label: 'ms', typed: false }
+];
+
+const TIME_FORMAT_IDS = new Set<TimeFormat>(TIME_FORMATS.map((f) => f.id));
+
+/** Narrow anything localStorage hands back to a known format. */
+export function isTimeFormat(raw: unknown): raw is TimeFormat {
+  return typeof raw === 'string' && TIME_FORMAT_IDS.has(raw as TimeFormat);
+}
+
+/**
+ * Write a time in the format the user picked.
+ *
+ * Centiseconds are derived from a single rounded centisecond count, so
+ * `59.999` carries to `1:00.00` instead of printing `0:59.100`.
+ */
+export function formatTimecode(sec: number, fmt: TimeFormat = 'auto'): string {
+  const s = Math.max(0, sec);
+  const cs = Math.round(s * 100);
+  const h = Math.floor(cs / 360_000);
+  const m = Math.floor((cs % 360_000) / 6_000);
+  const whole = Math.floor((cs % 6_000) / 100);
+  const centis = cs % 100;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  switch (fmt) {
+    case 'seconds':
+      return `${s.toFixed(2)}s`;
+    case 'millis':
+      return `${Math.round(s * 1000)} ms`;
+    case 'mmss':
+      return `${m}:${pad(whole)}`;
+    case 'hms':
+      return `${h}:${pad(m)}:${pad(whole)}`;
+    case 'hmscc':
+      return `${h}:${pad(m)}:${pad(whole)}.${pad(centis)}`;
+    case 'mmsscc':
+      return `${m}:${pad(whole)}.${pad(centis)}`;
+    case 'auto':
+    default:
+      return h > 0
+        ? `${h}:${pad(m)}:${pad(whole)}.${pad(centis)}`
+        : `${m}:${pad(whole)}.${pad(centis)}`;
+  }
+}
+
 export function fmtShort(sec: number): string {
   const s = Math.max(0, Math.floor(sec));
   const m = Math.floor(s / 60);

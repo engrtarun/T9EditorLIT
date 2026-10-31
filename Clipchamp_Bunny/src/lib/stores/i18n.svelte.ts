@@ -121,6 +121,11 @@ const en: Dict = {
   'set.skip.bad': 'Skip step must be a positive number of seconds.',
   'set.skip.toast': 'Skip step {n}s — J / L and the transport buttons.',
 
+  'set.time.title': 'PLAYHEAD FORMAT',
+  'set.time.desc':
+    'How the playhead time is written under the transport. Clicking the time still accepts m:ss.cc, h:mm:ss or plain seconds.',
+  'set.time.toast': 'Playhead format: {value}',
+
   'set.auto.title': 'AI TRANSCRIPT',
   'set.auto.label': 'Generate a transcript automatically on import',
   'set.auto.on': 'On',
@@ -405,6 +410,11 @@ const hinglish: Dict = {
   'set.skip.reset': 'Reset to {n}s',
   'set.skip.bad': 'Skip step positive number hona chahiye (seconds).',
   'set.skip.toast': 'Skip step {n}s — J / L aur transport buttons.',
+
+  'set.time.title': 'PLAYHEAD FORMAT',
+  'set.time.desc':
+    'Playhead ka time transport ke neeche kaise likha jaye. Time pe click karke m:ss.cc, h:mm:ss ya plain seconds ab bhi type kar sakte ho.',
+  'set.time.toast': 'Playhead format: {value}',
 
   'set.auto.title': 'AI TRANSCRIPT',
   'set.auto.label': 'Import karte hi apne aap transcript banao',
@@ -718,6 +728,11 @@ const hi: Dict = {
     'ट्रांसक्रिप्ट एक बार बन जाने पर SQLite में सेव हो जाता है — दोबारा कभी transcribe नहीं होगा.',
   'set.skip.bad': 'स्किप स्टेप एक सकारात्मक संख्या होनी चाहिए (सेकंड).',
   'set.skip.toast': 'स्किप स्टेप {n} सेकंड — J / L और ट्रांसपोर्ट बटन.',
+
+  'set.time.title': 'प्लेहेड फ़ॉर्मेट',
+  'set.time.desc':
+    'ट्रांसपोर्ट के नीचे प्लेहेड का समय कैसे लिखा जाए। समय पर क्लिक करके m:ss.cc, h:mm:ss या सामान्य सेकंड अब भी टाइप कर सकते हैं।',
+  'set.time.toast': 'प्लेहेड फ़ॉर्मेट: {value}',
 
   'set.lang.title': 'भाषा',
   'set.lang.desc': 'मेनू, बटन, सेटिंग्स और डैशबोर्ड के लेबल तुरंत बदल जाते हैं.',
