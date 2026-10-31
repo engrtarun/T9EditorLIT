@@ -297,6 +297,22 @@
 
   const segments = $derived(project.orderedSegments);
   const offsets = $derived(project.segmentOffsets);
+  /** The main source is a picture: it owns no audio lane, so never explain one. */
+  const imageSource = $derived(/\.(png|jpe?g|webp|bmp|gif)$/i.test(project.media?.name ?? ''));
+  /**
+   * Seconds one filmstrip frame covers.
+   *
+   * `fps` is what was *asked* for; `count` is what FFmpeg actually produced —
+   * the fast keyframe pass lands near 1 fps, not exactly on it. The honest
+   * spacing is duration / count, and using it means the lane can never leave
+   * gaps between frames.
+   */
+  const thumbStep = $derived.by(() => {
+    const s = project.thumbnails;
+    if (!s || s.count <= 0) return 1;
+    const d = s.durationSecs || 0;
+    return d > 0 ? d / s.count : 1 / (s.fps || 1);
+  });
 
   /** Where the blue drop caret sits while a clip is in the air, in px. */
   const dropSlotX = $derived.by(() => {
@@ -320,8 +336,8 @@
   function ensureThumbs(fromSec: number, toSec: number) {
     const strip = project.thumbnails;
     if (!strip) return;
-    const i0 = Math.max(0, Math.floor(fromSec * strip.fps));
-    const i1 = Math.min(strip.count - 1, Math.ceil(toSec * strip.fps));
+    const i0 = Math.max(0, Math.floor(fromSec / thumbStep));
+    const i1 = Math.min(strip.count - 1, Math.ceil(toSec / thumbStep));
     for (let i = i0; i <= i1; i++) {
       if (thumbImgs.has(i)) continue;
       const img = new Image();
@@ -357,6 +373,22 @@
     return colours[i] ?? '#3a3d4c';
   }
 
+  /**
+   * One quiet line inside an empty lane.
+   *
+   * "Building…" is the honest state while FFmpeg decodes the file; the reason
+   * is what the user sees when a lane really cannot be built. Both beat a black
+   * strip that looks like the app forgot to draw anything.
+   */
+  function laneNote(ctx: CanvasRenderingContext2D, text: string, h: number) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.30)';
+    ctx.font = '10px ui-sans-serif, system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 12, h / 2);
+    ctx.restore();
+  }
+
   /* ---------------------------------------------------------------- drawing */
   function drawVideoLane() {
     const c = filmCanvas;
@@ -369,6 +401,15 @@
     ctx.clearRect(0, 0, w, VIDEO_H);
 
     const strip = project.thumbnails;
+    // Nothing to draw yet: say why, so a black lane never reads as "broken".
+    if (!strip) {
+      const note = project.thumbError
+        ? 'Filmstrip unavailable'
+        : project.thumbLoading
+          ? 'Building filmstrip…'
+          : '';
+      if (note) laneNote(ctx, note, VIDEO_H);
+    }
     for (const s of segments) {
       const off = offsets.get(s.id);
       if (!off) continue;
@@ -381,14 +422,16 @@
       ctx.rect(x0, 0, x1 - x0, VIDEO_H);
       ctx.clip();
       if (strip) {
-        const i0 = Math.max(0, Math.floor(s.startSec * strip.fps));
-        const i1 = Math.min(strip.count - 1, Math.floor(s.endSec * strip.fps));
+        const i0 = Math.max(0, Math.floor(s.startSec / thumbStep));
+        const i1 = Math.min(strip.count - 1, Math.floor(s.endSec / thumbStep));
         for (let i = i0; i <= i1; i++) {
           const img = thumbImgs.get(i);
           if (!img || !img.complete || !img.naturalWidth) continue;
-          // the source frame, drawn at its position inside the segment
-          const local = (i / strip.fps - s.startSec) * zoom;
-          ctx.drawImage(img, x0 + local, 0, Math.max(1, zoom), VIDEO_H);
+          // the source frame, drawn at its position inside the segment.
+          // Width is the time ONE frame covers (`thumbStep`), not one second:
+          // a keyframe pass sampled at 0.96 fps would otherwise leave gaps.
+          const local = (i * thumbStep - s.startSec) * zoom;
+          ctx.drawImage(img, x0 + local, 0, Math.max(1, zoom * thumbStep), VIDEO_H);
         }
       }
       ctx.restore();
@@ -418,6 +461,17 @@
     ctx.fillRect(0, 0, w, AUDIO_H);
     const mid = AUDIO_H / 2;
     const dur = project.durationSec || 1;
+
+    // A picture has no audio, so its lane stays flat. A video that is still
+    // being decoded says so — and if it failed, it says why.
+    if (!peaks?.length && !imageSource) {
+      const note = project.waveformError
+        ? 'Waveform unavailable'
+        : project.waveformLoading
+          ? 'Building waveform…'
+          : '';
+      if (note) laneNote(ctx, note, AUDIO_H);
+    }
 
     for (const s of segments) {
       const off = offsets.get(s.id);
@@ -514,6 +568,10 @@
     void project.waveform;
     void project.clipPeaks; // a dropped clip's lane repaints when its peaks land
     void project.mutedSegments;
+    void project.waveformLoading; // "Building…" must disappear when it lands
+    void project.thumbLoading;
+    void project.waveformError; // and a failure must not stay silent
+    void project.thumbError;
     void zoom;
     void contentW;
     void colours;

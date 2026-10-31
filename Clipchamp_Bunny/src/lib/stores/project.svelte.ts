@@ -231,6 +231,18 @@ class ProjectStore {
   waveform = $state.raw<WaveformData | null>(null);
   thumbnails = $state.raw<ThumbnailStrip | null>(null);
   /**
+   * True while FFmpeg is still building this project's derived media.
+   *
+   * A first import decodes the whole file twice (audio for the peaks, video for
+   * the filmstrip), which on a slow disk is tens of seconds — and an empty lane
+   * with no explanation reads as "broken". The lanes say "Building…" instead.
+   */
+  waveformLoading = $state(false);
+  thumbLoading = $state(false);
+  /** Why a lane stayed empty. Shown in the lane, never swallowed. */
+  waveformError = $state<string | null>(null);
+  thumbError = $state<string | null>(null);
+  /**
    * Peaks for the extra clips, keyed by **source path**.
    *
    * The main source has `waveform`; an extra clip is a different file with its
@@ -571,9 +583,27 @@ class ProjectStore {
     // One project, one "current" tile — restored entries start unused.
     media.focusSource(entry.asset.id);
 
+    // A first import decodes the file twice. Say so in the lanes instead of
+    // showing two black strips that look broken, and keep the reason when a
+    // lane really cannot be built (a picture, a file with no audio track).
+    this.waveformLoading = true;
+    this.thumbLoading = true;
+    this.waveformError = null;
+    this.thumbError = null;
+    const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
     const [wave, thumbs] = await Promise.all([
-      extractWaveform(canonical).catch(() => null),
-      extractThumbnails(canonical).catch(() => null)
+      extractWaveform(canonical)
+        .catch((e) => {
+          this.waveformError = reason(e);
+          return null;
+        })
+        .finally(() => (this.waveformLoading = false)),
+      extractThumbnails(canonical)
+        .catch((e) => {
+          this.thumbError = reason(e);
+          return null;
+        })
+        .finally(() => (this.thumbLoading = false))
     ]);
     if (wave) this.waveform = wave;
     if (thumbs) this.thumbnails = thumbs;
@@ -1057,6 +1087,10 @@ class ProjectStore {
     this.activeClipId = null;
     this.waveform = null;
     this.thumbnails = null;
+    this.waveformLoading = false;
+    this.thumbLoading = false;
+    this.waveformError = null;
+    this.thumbError = null;
     this.clipPeaks = {};
     this.cursor = 0;
     this.selectedIds = [];

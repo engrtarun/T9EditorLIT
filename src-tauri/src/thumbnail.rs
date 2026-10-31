@@ -93,27 +93,26 @@ pub fn extract(
 
     let pattern = dir.join("thumb_%05d.jpg");
     let vf = format!("fps={fps},scale={width}:-2");
-    let status = crate::ffmpeg::silent("ffmpeg")
-        .args(["-y", "-hide_banner", "-nostats", "-loglevel", "error"])
-        // Frame-threaded decode is where FFmpeg's RAM lives: every thread owns
-        // its own decoder context plus one or two reference frames, and on a
-        // 4K source each of those frames is megabytes. Letting it default to
-        // one thread per logical CPU is the difference between "tens of MB" and
-        // "a spike you can watch climb in the RAM meter" on an 8 GB box — and
-        // two i3 threads still finish a 1 fps strip long before the user scrolls
-        // to it. Placed before `-i` so it binds the DECODER, not the muxer.
-        .args(["-threads", "2", "-i"])
-        .arg(source)
-        .args(["-vf", &vf, "-q:v", JPEG_QUALITY, "-f", "image2"])
-        .arg(&pattern)
-        .status()
-        .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
-
-    if !status.success() {
-        return Err(format!("ffmpeg thumbnail extraction failed: {status}"));
+    // Two passes, cheapest first.
+    //
+    // `-skip_frame nokey` decodes only I-frames: 61 s -> 4.6 s for 3 minutes of
+    // 1080p on this box, because the P/B frames (and their motion search) are
+    // skipped entirely. The `fps` filter then keeps the nearest keyframe per
+    // tick, so the strip is still ~1 frame/second — just sampled from keyframes
+    // instead of exact seconds.
+    //
+    // A file with a very long GOP would produce too few frames, so the count is
+    // checked and a full decode runs as the fallback. Correctness first: a
+    // strip that is too sparse is worse than a strip that took a minute.
+    run_pass(source, &vf, &pattern, true)?;
+    let mut count = count_frames(&dir)?;
+    let wanted = ((duration * fps) / 3.0).floor().max(1.0) as usize;
+    if count < wanted {
+        clean_stale_frames(&dir);
+        run_pass(source, &vf, &pattern, false)?;
+        count = count_frames(&dir)?;
     }
 
-    let count = count_frames(&dir)?;
     if count == 0 {
         return Err("ffmpeg produced no thumbnails".to_string());
     }
@@ -139,6 +138,35 @@ pub fn extract(
         height,
         dir: dir.to_string_lossy().into_owned(),
     })
+}
+
+/// One FFmpeg pass over the source, writing `thumb_00001.jpg`, `thumb_00002.jpg`…
+///
+/// `keyframes_only` binds `-skip_frame nokey` to the *input* (before `-i`), so
+/// the decoder never expands P/B frames. Both flags go before `-i` because that
+/// is where FFmpeg reads decoder options from.
+fn run_pass(source: &Path, vf: &str, pattern: &Path, keyframes_only: bool) -> Result<(), String> {
+    let mut cmd = crate::ffmpeg::silent("ffmpeg");
+    cmd.args(["-y", "-hide_banner", "-nostats", "-loglevel", "error"]);
+    if keyframes_only {
+        cmd.args(["-skip_frame", "nokey"]);
+    }
+    // Frame-threaded decode is where FFmpeg's RAM lives: every thread owns its
+    // own decoder context plus one or two reference frames, and on a 4K source
+    // each of those frames is megabytes. Letting it default to one thread per
+    // logical CPU is the difference between "tens of MB" and "a spike you can
+    // watch climb in the RAM meter" on an 8 GB box.
+    cmd.args(["-threads", "2", "-i"])
+        .arg(source)
+        .args(["-vf", vf, "-q:v", JPEG_QUALITY, "-f", "image2"])
+        .arg(pattern);
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
+    if !status.success() {
+        return Err(format!("ffmpeg thumbnail extraction failed: {status}"));
+    }
+    Ok(())
 }
 
 /// Picture formats the app is willing to show as a poster.
