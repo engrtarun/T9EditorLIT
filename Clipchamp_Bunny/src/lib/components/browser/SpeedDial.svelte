@@ -11,8 +11,15 @@
    * In the dev preview favicons load straight from the network; on the desktop
    * they come through the daemon's proxy (Slice 3) so the CSP stays tight.
    */
-  import { browser, SPEED_DIAL, hostOf } from '../../stores/browser.svelte';
+  import { browser, SPEED_DIAL, hostOf, faviconSrc } from '../../stores/browser.svelte';
   import { isTauri } from '../../ipc';
+
+  /**
+   * Favicons that failed to load (no `/favicon.ico`, blocked, offline). Each
+   * falls back to the letter badge underneath — the dial never shows a broken
+   * image. Keyed by the site URL so a retry never flickers the whole grid.
+   */
+  let failed = $state<Record<string, boolean>>({});
 
   /** Card colour: derive a stable hue from the host so each card has an identity. */
   function hue(url: string): number {
@@ -38,6 +45,7 @@
   <div class="grid max-w-[560px] grid-cols-3 gap-3 sm:grid-cols-3">
     {#each SPEED_DIAL as site (site.url)}
       {@const h = hue(site.url)}
+      {@const icon = faviconSrc(site.url)}
       <button
         type="button"
         onclick={() => open(site.url)}
@@ -45,11 +53,23 @@
         title={site.url}
       >
         <span
-          class="grid h-10 w-10 place-items-center rounded-full text-[15px] font-bold text-white transition-transform group-hover:scale-105"
+          class="relative grid h-10 w-10 place-items-center rounded-full text-[15px] font-bold text-white transition-transform group-hover:scale-105"
           style="background: hsl({h} 45% 42%)"
-          aria-hidden="true"
         >
-          {site.label.charAt(0)}
+          <!-- The letter badge is the always-there fallback. -->
+          <span aria-hidden="true">{site.label.charAt(0)}</span>
+          {#if icon && !failed[site.url]}
+            <!-- The real favicon, loaded through the daemon proxy (or the
+                 network in the dev preview), covers the badge while it
+                 loads and disappears on error. -->
+            <img
+              src={icon}
+              alt=""
+              loading="lazy"
+              class="absolute inset-0 h-10 w-10 rounded-full bg-white object-contain p-1"
+              onerror={() => (failed[site.url] = true)}
+            />
+          {/if}
         </span>
         <span class="max-w-full truncate text-[12px] text-nc-mut group-hover:text-nc-txt">
           {site.label}

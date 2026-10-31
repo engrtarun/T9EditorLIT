@@ -10,7 +10,13 @@
    * Each tab is a `div[role=tab]` holding **two** buttons (select + close):
    * a nested `<button>` is invalid HTML and screen readers mangle it.
    */
-  import { browser, MAX_TABS, hostOf } from '../../stores/browser.svelte';
+  import { browser, MAX_TABS, hostOf, faviconSrc } from '../../stores/browser.svelte';
+
+  /**
+   * Tabs whose favicon failed to load — fall back to the globe. Keyed by tab
+   * id so one dead icon never blanks the whole strip.
+   */
+  let failed = $state<Record<string, boolean>>({});
 </script>
 
 <div
@@ -19,6 +25,7 @@
   aria-label="Browser tabs"
 >
   {#each browser.tabs as tab (tab.id)}
+    {@const icon = tab.url === 'about:blank' ? null : faviconSrc(tab.url)}
     <div
       role="tab"
       aria-selected={tab.id === browser.activeId}
@@ -43,8 +50,14 @@
             class="h-3 w-3 animate-spin rounded-full border border-nc-mut border-t-transparent"
             aria-hidden="true"
           ></span>
-        {:else if tab.favicon}
-          <img src={tab.favicon} alt="" class="h-4 w-4 object-contain" loading="lazy" />
+        {:else if icon && !failed[tab.id]}
+          <img
+            src={icon}
+            alt=""
+            class="h-4 w-4 object-contain"
+            loading="lazy"
+            onerror={() => (failed[tab.id] = true)}
+          />
         {:else}
           <svg
             width="13"

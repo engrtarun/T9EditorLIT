@@ -63,6 +63,29 @@ func TestFaviconFetchesCachesAndServes(t *testing.T) {
 	}
 }
 
+func TestFaviconResolvesBareOriginToIconICO(t *testing.T) {
+	// The tab strip and speed dial only know a host, so they send a bare
+	// origin. The proxy must try the conventional /favicon.ico for it.
+	var got string
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Path
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte{0x89, 'P', 'N', 'G'})
+	}))
+	t.Cleanup(site.Close)
+
+	s := newFaviconServer(t)
+	rec := httptest.NewRecorder()
+	s.handleFavicon(rec, httptest.NewRequest("GET", "/v1/favicon?url="+site.URL, nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	if got != "/favicon.ico" {
+		t.Errorf("proxy requested path %q, want /favicon.ico for a bare origin", got)
+	}
+}
+
 func TestFaviconRejectsNonHTTPURLs(t *testing.T) {
 	s := newFaviconServer(t)
 	for _, raw := range []string{"", "ftp://x/y", "file:///x", "not-a-url"} {

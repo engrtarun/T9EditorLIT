@@ -43,6 +43,14 @@ func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A bare origin (`https://site.com`) is the common caller — the tab strip
+	// and speed dial only know the host. Try the conventional `/favicon.ico`
+	// before giving up; a real icon URL (any path) is fetched as-is.
+	if parsed.Path == "" || parsed.Path == "/" {
+		parsed.Path = "/favicon.ico"
+		raw = parsed.String()
+	}
+
 	cache := s.faviconPath(parsed.Host)
 	if info, err := os.Stat(cache); err == nil && time.Since(info.ModTime()) < faviconCacheTTL {
 		serveFaviconFile(w, r, cache)

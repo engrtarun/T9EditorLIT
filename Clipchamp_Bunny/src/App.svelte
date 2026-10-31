@@ -14,6 +14,7 @@
   import BackgroundVideo from './lib/components/BackgroundVideo.svelte';
   import { mode } from './lib/stores/mode.svelte';
   import { app } from './lib/stores/app.svelte';
+  import { browser } from './lib/stores/browser.svelte';
   import { player } from './lib/stores/player.svelte';
   import { project } from './lib/stores/project.svelte';
   import { layout } from './lib/stores/layout.svelte';
@@ -83,6 +84,27 @@
     // On the **dashboard** or in the **browser** the editor's shortcuts have
     // nothing to act on — only the shortcut sheet still makes sense there.
     if (app.view !== 'editor') {
+      // The browser owns the standard browser chords: Ctrl+T opens a tab,
+      // Ctrl+W closes the active one (and returns to the editor on the last).
+      if (app.view === 'browser' && e.ctrlKey && !e.altKey && !e.shiftKey) {
+        const k = e.key.toLowerCase();
+        if (k === 't') {
+          e.preventDefault();
+          browser.open();
+          return;
+        }
+        if (k === 'w') {
+          e.preventDefault();
+          const active = browser.active;
+          if (active) {
+            const last = browser.tabs.length === 1;
+            browser.close(active.id);
+            // Firefox rule: closing the last tab closes the browser window.
+            if (last) app.closeBrowser();
+          }
+          return;
+        }
+      }
       if (hit('help', e)) {
         layout.helpOpen = !layout.helpOpen;
         return;

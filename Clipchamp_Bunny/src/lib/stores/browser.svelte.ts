@@ -10,7 +10,14 @@
  */
 
 import type { BrowserTab } from '../types';
-import { browserShow, onBrowserDownload, onBrowserNav, onBrowserPage, isTauri } from '../ipc';
+import {
+  browserShow,
+  browserHide,
+  onBrowserDownload,
+  onBrowserNav,
+  onBrowserPage,
+  isTauri
+} from '../ipc';
 import { downloads } from './downloads.svelte';
 
 /** The hard cap. Nine tabs, like the plan says — no more. */
@@ -73,6 +80,31 @@ export function hostOf(url: string): string {
   } catch {
     return 'New tab';
   }
+}
+
+const DAEMON = 'http://127.0.0.1:7878';
+
+/**
+ * The favicon image source for a page URL.
+ *
+ * On the desktop every icon routes through the daemon's proxy (which fetches
+ * `/favicon.ico` for the host once and caches it on disk) so the webview's CSP
+ * stays tight — the shell never loads an arbitrary origin directly. In the dev
+ * preview there is no daemon, so the icon loads straight from the network.
+ * Returns `null` for a non-http(s) URL, letting the caller fall back to a
+ * letter badge or the globe.
+ */
+export function faviconSrc(pageUrl: string): string | null {
+  let origin: string;
+  try {
+    const u = new URL(pageUrl);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    origin = u.origin;
+  } catch {
+    return null;
+  }
+  if (isTauri()) return `${DAEMON}/v1/favicon?url=${encodeURIComponent(origin)}`;
+  return `${origin}/favicon.ico`;
 }
 
 class BrowserStore {
@@ -190,18 +222,26 @@ class BrowserStore {
   }
 
   select(id: string): void {
-    if (!this.tabs.some((t) => t.id === id)) return;
-    this.activeId = id;
     const tab = this.tabs.find((t) => t.id === id);
-    if (tab) tab.lastActive = Date.now();
+    if (!tab) return;
+    this.activeId = id;
+    tab.lastActive = Date.now();
+    // Only the active tab holds a native webview: selecting a tab brings its
+    // page on screen (destroying the previous tab's webview). This is the same
+    // `browser_show` path a new tab or address-bar navigation takes.
+    this.nudge?.(tab.id, tab.url);
   }
 
   /** Close a tab. Closing the active one activates the neighbour (Firefox rule). */
   close(id: string): void {
     const i = this.tabs.findIndex((t) => t.id === id);
     if (i < 0) return;
+    const wasActive = this.activeId === id;
     this.tabs.splice(i, 1);
-    if (this.activeId === id) {
+    if (wasActive) {
+      // The active tab is the only one with a live webview — closing it must
+      // destroy that webview or it would outlive the tab in the strip.
+      if (isTauri()) void browserHide(id);
       const next = this.tabs[Math.min(i, this.tabs.length - 1)];
       this.activeId = next ? next.id : null;
     }
