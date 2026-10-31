@@ -16,6 +16,7 @@ import {
   onBrowserDownload,
   onBrowserNav,
   onBrowserPage,
+  onBrowserPopup,
   isTauri
 } from '../ipc';
 import { downloads } from './downloads.svelte';
@@ -332,6 +333,25 @@ class BrowserStore {
       tab.loading = false;
       tab.live = true;
       if (url && tab.url !== url) tab.url = url;
+    });
+
+    // A page asked for a new window — target=_blank (search results use it),
+    // Ctrl+click, window.open. Rust denied the native popup; here the URL
+    // becomes a tab in the strip, so the link stays inside the app. At the
+    // nine-tab cap the current tab navigates instead (never shell out).
+    void onBrowserPopup(({ url }) => {
+      if (this.openInNewTab(url)) {
+        const tab = this.active;
+        if (tab) {
+          tab.title = hostOf(url);
+          tab.loading = true;
+          this.push(tab.id, url);
+          this.nudge?.(tab.id, url);
+          if (!this.nudge) tab.loading = false;
+        }
+      } else {
+        this.navigate(url);
+      }
     });
 
     // WebView2 wanted to download a file; Rust cancelled it and handed the

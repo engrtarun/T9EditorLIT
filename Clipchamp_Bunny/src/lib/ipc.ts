@@ -1168,6 +1168,15 @@ export function onBrowserNav(cb: (p: { id: string; url: string }) => void): Prom
 }
 
 /**
+ * A page asked for a new window (target=_blank, Ctrl+click, window.open).
+ * Rust denies the native popup and hands the URL here — the store opens it
+ * as a tab in the strip, so no link can ever leave the in-built browser.
+ */
+export function onBrowserPopup(cb: (p: { id: string; url: string }) => void): Promise<() => void> {
+  return listen<{ id: string; url: string }>('browser:popup', (e) => cb(e.payload));
+}
+
+/**
  * WebView2 wanted to download a file; Rust cancelled its own download and
  * hands the URL here. The store gives it to the daemon's multi-segment
  * downloader.

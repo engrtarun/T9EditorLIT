@@ -30,7 +30,9 @@
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::webview::{DownloadEvent, PageLoadEvent, WebviewBuilder};
+use tauri::webview::{
+    DownloadEvent, NewWindowFeatures, NewWindowResponse, PageLoadEvent, WebviewBuilder,
+};
 use tauri::{
     Emitter, LogicalPosition, LogicalSize, Manager, Runtime, Url, Webview, WebviewUrl, Window,
 };
@@ -247,6 +249,26 @@ fn build_tab_webview<R: Runtime>(
                 },
             );
         }
+    });
+
+    // New-window hook: target=_blank, Ctrl+click and window.open. Wry's
+    // default with no handler is to DENY the request silently, so a search
+    // result link (DuckDuckGo opens them via target=_blank) appeared to do
+    // nothing. Instead of letting WebView2 spawn its own top-level popup
+    // (an untracked second webview — OOM budget and UX both break), deny it
+    // here and hand the URL to the store, which opens it as a tab in the
+    // strip. No link ever leaves the in-built browser.
+    let pop_app = app.clone();
+    let pop_id = id.to_string();
+    let builder = builder.on_new_window(move |url, _features: NewWindowFeatures| {
+        let _ = pop_app.emit(
+            "browser:popup",
+            NavPayload {
+                id: pop_id.clone(),
+                url: url.to_string(),
+            },
+        );
+        NewWindowResponse::Deny
     });
 
     // Download hook: WebView2's own download UI never appears — returning
