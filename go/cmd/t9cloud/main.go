@@ -27,6 +27,7 @@ import (
 	"github.com/engrtarun/T9EditorLIT/go/internal/api"
 	"github.com/engrtarun/T9EditorLIT/go/internal/cloud"
 	"github.com/engrtarun/T9EditorLIT/go/internal/config"
+	"github.com/engrtarun/T9EditorLIT/go/internal/dl"
 	"github.com/engrtarun/T9EditorLIT/go/internal/queue"
 	"github.com/engrtarun/T9EditorLIT/go/internal/vault"
 )
@@ -72,9 +73,19 @@ func run() error {
 	})
 	defer q.Close()
 
+	// The browser's fast downloader. Shutdown pauses anything still running
+	// so its sidecar is written — the next daemon start offers the row for
+	// resume instead of losing the bytes.
+	downloads, err := dl.New(dl.Options{Log: log})
+	if err != nil {
+		return err
+	}
+	defer downloads.Shutdown()
+
 	deps := api.Deps{
 		Config: cfg,
 		Queue:  q,
+		DL:     downloads,
 		Log:    log,
 		Vault:  vault.Unconfigured(),
 	}

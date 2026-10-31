@@ -23,6 +23,7 @@ import (
 
 	"github.com/engrtarun/T9EditorLIT/go/internal/cloud"
 	"github.com/engrtarun/T9EditorLIT/go/internal/config"
+	"github.com/engrtarun/T9EditorLIT/go/internal/dl"
 	"github.com/engrtarun/T9EditorLIT/go/internal/model"
 	"github.com/engrtarun/T9EditorLIT/go/internal/netspeed"
 	"github.com/engrtarun/T9EditorLIT/go/internal/queue"
@@ -39,6 +40,7 @@ type Deps struct {
 	Groq   *cloud.GroqClient
 	Gemini *cloud.GeminiClient
 	Vault  *vault.Vault
+	DL     *dl.Manager
 	Log    *slog.Logger
 }
 
@@ -48,6 +50,10 @@ type Server struct {
 	mux      *http.ServeMux
 	store    *jobStore
 	greeting *greetingState
+	// faviconDir is the on-disk icon cache. Empty means "next to the
+	// daemon's working directory"; New() resolves it once so every request
+	// reads a plain string.
+	faviconDir string
 }
 
 // New builds the server. The job store is created here and the queue's OnDone
@@ -63,6 +69,11 @@ func New(deps Deps) *Server {
 		mux:      http.NewServeMux(),
 		store:    newJobStore(),
 		greeting: &greetingState{},
+	}
+	if cache, err := os.UserCacheDir(); err == nil {
+		s.faviconDir = filepath.Join(cache, "t9editorlit", "favicons")
+	} else {
+		s.faviconDir = filepath.Join(os.TempDir(), "t9editorlit-favicons")
 	}
 
 	deps.Queue.SetOnDone(s.store.finish)
@@ -104,6 +115,17 @@ func (s *Server) routes() {
 	// travels in the body, is used for one models-list call, and is never
 	// logged or echoed back (api/keys_probe.go).
 	s.mux.HandleFunc("POST /v1/keys/probe", s.handleKeysProbe)
+
+	// Fast downloads (the in-built browser's downloader): the daemon owns
+	// the sockets so the webview never touches multi-segment Range requests.
+	s.mux.HandleFunc("GET /v1/dl", s.handleDLList)
+	s.mux.HandleFunc("POST /v1/dl", s.handleDLStart)
+	s.mux.HandleFunc("POST /v1/dl/{id}/{action}", s.handleDLAction)
+
+	// Favicon proxy: the webview's CSP forbids loading arbitrary origins,
+	// so every site icon goes through here — fetched once, cached on disk,
+	// served from the loopback origin the CSP already allows.
+	s.mux.HandleFunc("GET /v1/favicon", s.handleFavicon)
 }
 
 // ServeHTTP applies a defensive outer layer: generous body limits, panic
