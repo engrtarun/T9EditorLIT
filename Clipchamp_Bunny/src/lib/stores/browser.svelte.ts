@@ -26,8 +26,8 @@ import { toast } from './toast.svelte';
 /** The hard cap. Nine tabs, like the plan says — no more. */
 export const MAX_TABS = 9;
 
-/** DuckDuckGo, not Google: no account, no tracking pixel on every keystroke. */
-const SEARCH_URL = 'https://duckduckgo.com/?q=';
+/** Brave Search, not Google: no account, no ad profile on every keystroke. */
+const SEARCH_URL = 'https://search.brave.com/search?q=';
 
 /**
  * The speed-dial sites on the new-tab page.
@@ -39,7 +39,7 @@ const SEARCH_URL = 'https://duckduckgo.com/?q=';
 export const SPEED_DIAL: ReadonlyArray<{ url: string; label: string }> = [
   { url: 'https://www.youtube.com', label: 'YouTube' },
   { url: 'https://github.com/engrtarun/T9EditorLIT', label: 'GitHub' },
-  { url: 'https://duckduckgo.com', label: 'DuckDuckGo' },
+  { url: 'https://search.brave.com', label: 'Brave' },
   { url: 'https://groq.com', label: 'Groq' },
   { url: 'https://aistudio.google.com', label: 'Gemini' },
   { url: 'https://web.telegram.org', label: 'Telegram' }
@@ -49,7 +49,7 @@ export const SPEED_DIAL: ReadonlyArray<{ url: string; label: string }> = [
  * Normalise whatever the user typed into a URL.
  *
  * A bare `youtube.com` becomes `https://youtube.com` (the scheme is implied);
- * anything with whitespace or no dot becomes a DuckDuckGo search. Returns the
+ * anything with whitespace or no dot becomes a Brave search. Returns the
  * search URL when the input is a query, so the caller never has to branch.
  */
 export function toUrl(input: string): string {

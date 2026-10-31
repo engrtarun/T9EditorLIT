@@ -209,7 +209,7 @@
   <TabStrip />
 
   <!-- ── content: the exact rect the native webview covers ───────────── -->
-  <div class="relative min-h-0 flex-1" data-focus="browser-content">
+  <div bind:this={contentEl} class="relative min-h-0 flex-1" data-focus="browser-content">
     {#if !tab || tab.url === 'about:blank'}
       <SpeedDial />
     {:else if !isTauri()}
@@ -225,9 +225,17 @@
         sandbox="allow-scripts allow-same-origin allow-forms"
       ></iframe>
     {:else}
-      <!-- Desktop: the Rust side positions `tab-{id}` over this box. -->
+      <!--
+        Desktop: the Rust side positions `tab-{id}` over this box. This
+        text is only honest while the page is actually loading — a live
+        webview covers the whole box the moment it is positioned, and a
+        finished page that stays "loading" was exactly the invisible-webview
+        bug (rect measured as 0×0), so the lie had to go too.
+      -->
       <div class="grid h-full w-full place-items-center bg-nc-bg">
-        <p class="animate-pulse text-[13px] text-nc-mut">{tab.title} khul raha hai…</p>
+        {#if tab.loading}
+          <p class="animate-pulse text-[13px] text-nc-mut">{tab.title} khul raha hai…</p>
+        {/if}
       </div>
     {/if}
   </div>

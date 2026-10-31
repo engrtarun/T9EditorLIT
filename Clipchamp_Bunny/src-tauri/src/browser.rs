@@ -153,8 +153,19 @@ fn label_for(id: &str) -> String {
 /// alive — the store passes the tab the user just left. Kept webviews are
 /// collapsed to 1×1; everything else is destroyed. `force` bypasses the
 /// same-URL fast path (reload button, address re-submit).
+/// Show tab `id` at the browser content rect, creating its native webview
+/// when needed.
+///
+/// MUST be an async command: `Window::add_child` posts the webview build
+/// onto the main thread and blocks on a channel (`run_on_main_thread` +
+/// `rx.recv()`). A sync command already runs ON that main thread, so that
+/// recv would block the very event loop that was supposed to run the
+/// posted work — creation hangs forever while the UI keeps looking alive
+/// (browser-diag.log caught exactly this: "creating child webview" with
+/// no "create ok" ever after). Tauri schedules async commands off the
+/// main thread, which makes the post/recv round-trip legitimate.
 #[tauri::command]
-pub fn browser_show(
+pub async fn browser_show(
     app: tauri::AppHandle,
     id: String,
     url: String,
@@ -181,6 +192,16 @@ pub fn browser_show(
         set_active(&app, "");
         diag("show blank -> swept");
         return Ok(());
+    }
+
+    // A degenerate rect means the content area was never measured (the
+    // bind that feeds browser_set_rect failed). Creating the child there
+    // yields a permanently invisible webview with no error for anyone —
+    // the second silent failure the diag log caught (rect 0×0 in the
+    // show line). Fail loudly instead: the toast carries this back.
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        diag("show -> rect 0x0, refusing to create an invisible webview");
+        return Err("browser content area was not measured yet — try again".to_string());
     }
 
     let parsed = Url::parse(&url).map_err(|e| format!("invalid url: {e}"))?;
@@ -259,8 +280,13 @@ pub fn browser_show(
 
 /// Destroy a tab's webview (tab closed, or the browser view closed). A
 /// missing webview is success — nothing to do is not an error.
+/// Hide a tab's webview without killing the whole browser UI.
+///
+/// Async for the same reason as [`browser_show`]: it drives webview
+/// handles that marshal work onto the main thread, and a sync command
+/// would deadlock that exact thread when it waits.
 #[tauri::command]
-pub fn browser_hide(app: tauri::AppHandle, id: String) -> Result<(), String> {
+pub async fn browser_hide(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
@@ -279,8 +305,12 @@ pub fn browser_hide(app: tauri::AppHandle, id: String) -> Result<(), String> {
 /// Sweep every tab webview: the browser view unmounted (back to the
 /// editor). The ledger drops to zero live webviews — the zero-RAM rule
 /// applied to leaving the browser, kept ones included.
+/// The browser UI is unmounting: sweep every tab webview.
+///
+/// Async for the same reason as [`browser_show`] — `close()`/`set_size()`
+/// on child webviews marshal onto the main thread internally.
 #[tauri::command]
-pub fn browser_view_closed(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn browser_view_closed(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
@@ -297,8 +327,12 @@ pub fn browser_view_closed(app: tauri::AppHandle) -> Result<(), String> {
 /// Called from an effect watching the container's bounding box, so tab
 /// strip changes, the downloads panel opening, and window resizes all keep
 /// the page painted in exactly the right hole.
+/// Record where the browser content area sits in window coordinates.
+///
+/// Async for the same reason as [`browser_show`] — this state is the
+/// creator's argument, so it must never run on the main thread either.
 #[tauri::command]
-pub fn browser_set_rect(
+pub async fn browser_set_rect(
     app: tauri::AppHandle,
     x: f64,
     y: f64,
