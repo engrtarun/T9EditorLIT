@@ -9,6 +9,7 @@
   import type { MenuItem } from '../types';
   import { mode } from '../stores/mode.svelte';
   import { menu } from '../stores/menu.svelte';
+  import { browser } from '../stores/browser.svelte';
   import { applyStagedUpdate, installedBuild, isTauri, revealSource } from '../ipc';
   import { toast } from '../stores/toast.svelte';
   import UpdateButton from './UpdateButton.svelte';
@@ -114,6 +115,35 @@
 
   <!-- cloud / local toggle → backup & AI providers -->
   <CloudMenu />
+
+  <!-- + : the in-built browser. From the editor it opens the browser view;
+       already inside it, the same button is the familiar "new tab" (capped
+       at nine, and the tooltip says so when the cap is hit). -->
+  <button
+    type="button"
+    onclick={() => (app.view === 'browser' ? browser.open() : app.openBrowser('editor'))}
+    class="grid h-8 w-8 place-items-center rounded-md text-nc-mut transition-colors duration-150
+           {app.view === 'browser'
+      ? 'bg-nc-panel-2 text-nc-brand'
+      : 'hover:bg-nc-panel-2 hover:text-nc-txt'}"
+    title={app.view === 'browser'
+      ? browser.atCap
+        ? '9 tabs ki limit hai — pehle ek band karo'
+        : 'Naya tab'
+      : 'Browser kholo (9 tabs, fast download)'}
+    aria-label={app.view === 'browser' ? 'New browser tab' : 'Open browser'}
+  >
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  </button>
 
   <div class="flex-1" data-tauri-drag-region></div>
 

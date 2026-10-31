@@ -289,3 +289,54 @@ export interface BackgroundState {
   seconds: number | null;
   bytes: number | null;
 }
+
+/* --------------------------------------------------------------- browser */
+
+/**
+ * One browser tab.
+ *
+ * Mirrors `browser::TabState` in Rust (`serde camelCase`). The tab's *page*
+ * lives in a native child webview; this struct is only the metadata the
+ * chrome (strip, favicon, title) paints. A suspended tab has `live: false` —
+ * its webview was destroyed to honour the 500 MB budget, and only this row
+ * survives (in SQLite on the desktop, in the store during the dev preview).
+ */
+export interface BrowserTab {
+  /** Stable id — the webview label is `tab-{id}`. */
+  id: string;
+  url: string;
+  title: string;
+  /** Favicon URL from the page, or `null` when none was found. */
+  favicon: string | null;
+  /** A native child webview currently exists for this tab. */
+  live: boolean;
+  /** True while the page is loading (spinner on the strip). */
+  loading: boolean;
+  /** Unix ms of the last activation — the LRU rule suspends the oldest. */
+  lastActive: number;
+}
+
+/**
+ * One download in the fast-download queue.
+ *
+ * Mirrors the Go daemon's `/v1/dl` item shape (`dl.Item`). Progress is
+ * reported in bytes so the UI can render its own bar and speed from the same
+ * numbers the downloader counts — no second source of truth.
+ */
+export interface DownloadItem {
+  id: string;
+  url: string;
+  /** Final filename on disk (after the server's Content-Disposition). */
+  filename: string;
+  /** Absolute destination path. */
+  path: string;
+  totalBytes: number;
+  receivedBytes: number;
+  /** Bytes per second, over the last second's sliding window. */
+  speedBps: number;
+  /** Parallel connections in use — the 1DM trick. `1` = no range support. */
+  segments: number;
+  /** `running` · `paused` · `done` · `error` · `cancelled`. */
+  status: string;
+  error: string | null;
+}

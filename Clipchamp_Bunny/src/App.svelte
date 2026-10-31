@@ -10,6 +10,7 @@
   import CutMode from './lib/components/modes/CutMode.svelte';
   import ExportMode from './lib/components/modes/ExportMode.svelte';
   import HomeDashboard from './lib/components/dashboard/HomeDashboard.svelte';
+  import BrowserView from './lib/components/browser/BrowserView.svelte';
   import BackgroundVideo from './lib/components/BackgroundVideo.svelte';
   import { mode } from './lib/stores/mode.svelte';
   import { app } from './lib/stores/app.svelte';
@@ -79,9 +80,9 @@
       return;
     }
 
-    // On the **dashboard** the editor's shortcuts have nothing to act on —
-    // only the shortcut sheet still makes sense there.
-    if (app.view === 'home') {
+    // On the **dashboard** or in the **browser** the editor's shortcuts have
+    // nothing to act on — only the shortcut sheet still makes sense there.
+    if (app.view !== 'editor') {
       if (hit('help', e)) {
         layout.helpOpen = !layout.helpOpen;
         return;
@@ -356,6 +357,17 @@
   -->
   {#if app.view === 'home'}
     <HomeDashboard />
+  {:else if app.view === 'browser'}
+    <!--
+      The browser keeps the same header (window controls, meters, the + that
+      opened it) and swaps the editor body for the browser chrome. Its own
+      `{#if}` branch means entering/leaving the browser also tears down the
+      previous tree — same zero-RAM rule as the editor modes.
+    -->
+    <div class="flex min-h-0 flex-1 flex-col">
+      <TopBar />
+      <BrowserView />
+    </div>
   {:else}
     <!-- The editor slides in by a hair when the dashboard hands over. -->
     <div class="t9-slide-in flex min-h-0 flex-1 flex-col">
