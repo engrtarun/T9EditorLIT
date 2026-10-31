@@ -262,12 +262,38 @@ class BrowserStore {
     }
   }
 
-  /** Navigate the active tab (or a specific one). */
+  /**
+   * Navigate the active tab (or a specific one).
+   *
+   * Adopt rule: with **no tab open at all** — a fresh browser sitting on
+   * the speed dial — the address bar, a speed-dial card and the popup
+   * fallback all land here. A click that navigates must never evaporate,
+   * so instead of a silent return the URL opens the browser's first tab.
+   * That was the v1 bug: every search keystroke, pasted link and dial
+   * card did literally nothing while `tabs` was empty.
+   */
   navigate(url: string, id?: string): void {
-    const target = id ? this.tabs.find((t) => t.id === id) : this.active;
+    let target: BrowserTab | undefined;
+    if (id) {
+      target = this.tabs.find((t) => t.id === id);
+    } else if (this.active) {
+      target = this.active;
+    } else if (this.atCap) {
+      return; // nine tabs and none focused: refresh by opening one from the strip
+    } else {
+      const fresh = makeTab('');
+      this.tabs.push(fresh);
+      this.activeId = fresh.id;
+      target = fresh;
+    }
     if (!target) return;
     const next = toUrl(url);
     if (!next) return;
+    if (next === 'about:blank' && !id) {
+      // An empty submit has nothing to load: leave the fresh dial tab.
+      if (target.url === '') target.url = 'about:blank';
+      return;
+    }
     target.url = next;
     target.title = hostOf(next);
     target.loading = true;
