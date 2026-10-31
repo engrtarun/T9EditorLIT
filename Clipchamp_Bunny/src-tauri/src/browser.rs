@@ -34,6 +34,8 @@
 //!                           URL to the Go daemon's multi-segment
 //!                           downloader instead        { url, referer }
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -43,6 +45,33 @@ use tauri::webview::{
 use tauri::{
     Emitter, LogicalPosition, LogicalSize, Manager, Runtime, Url, Webview, WebviewUrl, Window,
 };
+
+/// Append one line to the browser diagnostic log (`%LOCALAPPDATA%\T9EditorLIT\browser-diag.log`).
+///
+/// Every browser command, webview event and failure lands here so that
+/// "page does not render" can be told apart from "webview never created"
+/// from a file read — without a new build. Best-effort: a logging problem
+/// must never break the command.
+fn diag(msg: &str) {
+    let Some(path) = std::env::var_os("LOCALAPPDATA").map(|root| {
+        std::path::PathBuf::from(root)
+            .join("T9EditorLIT")
+            .join("browser-diag.log")
+    }) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(file, "[{ts}] {msg}");
+}
 
 /// A page or self-navigation report. Mirrors what the store needs to update
 /// one tab row (`camelCase` over the wire).
@@ -140,6 +169,9 @@ pub fn browser_show(
         .rect
         .lock()
         .map_err(|_| "browser rect lock poisoned".to_string())?;
+    diag(&format!(
+        "show id={id} url={url} keep={keep:?} force={force:?} rect={rect:?}"
+    ));
 
     // A blank/new tab has nothing to show: the speed dial is plain DOM in
     // the main webview, so the right action is to sweep any live page
@@ -147,6 +179,7 @@ pub fn browser_show(
     if url.is_empty() || url == "about:blank" {
         destroy_others(&window, &[]);
         set_active(&app, "");
+        diag("show blank -> swept");
         return Ok(());
     }
 
@@ -191,13 +224,21 @@ pub fn browser_show(
                 if let Ok(actual) = webview.url() {
                     if actual == parsed {
                         set_active(&app, &label);
+                        diag("show kept fast-path (already at url)");
                         return Ok(());
                     }
                 }
             }
-            webview.navigate(parsed).map_err(|e| e.to_string())?;
+            diag("show -> navigate existing");
+            webview
+                .navigate(parsed)
+                .map_err(|e| {
+                    diag(&format!("navigate ERR {e}"));
+                    e.to_string()
+                })?;
         }
         None => {
+            diag("show -> creating child webview");
             let builder = build_tab_webview(&app, &id, parsed);
             window
                 .add_child(
@@ -205,7 +246,11 @@ pub fn browser_show(
                     LogicalPosition::new(rect.x, rect.y),
                     LogicalSize::new(rect.width, rect.height),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| {
+                    diag(&format!("create ERR {e}"));
+                    e.to_string()
+                })?;
+            diag("create ok");
         }
     }
     set_active(&app, &label);
@@ -243,6 +288,7 @@ pub fn browser_view_closed(app: tauri::AppHandle) -> Result<(), String> {
     if let Ok(mut a) = app.state::<BrowserState>().active.lock() {
         *a = String::new();
     }
+    diag("view closed -> swept all");
     Ok(())
 }
 
@@ -260,6 +306,10 @@ pub fn browser_set_rect(
     height: f64,
 ) -> Result<(), String> {
     let rect = ContentRect { x, y, width, height };
+    diag(&format!(
+        "set_rect {}x{} @ ({x},{y})",
+        width, height
+    ));
     *app
         .state::<BrowserState>()
         .rect
@@ -329,6 +379,7 @@ fn build_tab_webview<R: Runtime>(
     let nav_id = id.to_string();
     let builder = WebviewBuilder::new(label, WebviewUrl::External(url)).on_navigation(
         move |target: &Url| {
+            diag(&format!("event nav {} -> {target}", nav_id));
             let _ = nav_app.emit(
                 "browser:nav",
                 NavPayload {
@@ -346,6 +397,7 @@ fn build_tab_webview<R: Runtime>(
     let page_id = id.to_string();
     let builder = builder.on_page_load(move |webview, payload| {
         if matches!(payload.event(), PageLoadEvent::Finished) {
+            diag(&format!("event page finished {} -> {}", page_id, payload.url()));
             let _ = webview.emit(
                 "browser:page",
                 NavPayload {
@@ -380,6 +432,7 @@ fn build_tab_webview<R: Runtime>(
     let pop_app = app.clone();
     let pop_id = id.to_string();
     let builder = builder.on_new_window(move |url, _features: NewWindowFeatures| {
+        diag(&format!("event popup {} -> {url}", pop_id));
         let _ = pop_app.emit(
             "browser:popup",
             NavPayload {
@@ -395,8 +448,10 @@ fn build_tab_webview<R: Runtime>(
     // the daemon's multi-segment downloader (1DM-style speed). The tab's
     // current URL travels as the referer.
     let dl_app = app.clone();
+    let dl_id = id.to_string();
     builder.on_download(move |webview, event| {
         if let DownloadEvent::Requested { url, .. } = &event {
+            diag(&format!("event download requested {} -> {url}", dl_id));
             let referer = webview.url().ok().map(|u| u.to_string());
             let _ = dl_app.emit(
                 "browser:download",

@@ -21,6 +21,7 @@ import {
   isTauri
 } from '../ipc';
 import { downloads } from './downloads.svelte';
+import { toast } from './toast.svelte';
 
 /** The hard cap. Nine tabs, like the plan says — no more. */
 export const MAX_TABS = 9;
@@ -327,9 +328,15 @@ class BrowserStore {
     this.wired = true;
 
     // Every navigation the store drives (new tab, switch, address bar,
-    // back/forward, reload) funnels through this one function.
+    // back/forward, reload) funnels through this one function. A failure
+    // that used to be swallowed now reaches the user — the toast carries
+    // the native error verbatim.
     this.nudge = (id, url, keep, force) => {
-      void browserShow(id, url, { keep, force });
+      browserShow(id, url, { keep, force }).catch((err) => {
+        const tab = this.tabs.find((t) => t.id === id);
+        if (tab) tab.loading = false;
+        toast.push('warn', `Browser tab nahi khula: ${String(err)}`);
+      });
     };
 
     // The page finished loading — clear the spinner, take its final URL
