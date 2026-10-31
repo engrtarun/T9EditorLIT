@@ -21,7 +21,7 @@
   import { downloads } from '../../stores/downloads.svelte';
   import { app } from '../../stores/app.svelte';
   import { toast } from '../../stores/toast.svelte';
-  import { isTauri, browserHide, browserSetRect } from '../../ipc';
+  import { isTauri, browserViewClosed, browserSetRect } from '../../ipc';
   import { onMount } from 'svelte';
 
   const tab = $derived(browser.active);
@@ -38,11 +38,24 @@
   onMount(() => {
     browser.wireTauri();
     return () => {
-      // The whole browser tree unmounts (App.svelte's {#if}): hide the
-      // live webview so the 500 MB budget holds while the editor is open.
-      const active = browser.active;
-      if (active && isTauri()) void browserHide(active.id);
+      // The whole browser tree unmounts (App.svelte's {#if}): sweep EVERY
+      // tab webview (kept ones included) so the 500 MB budget holds while
+      // the editor is open. Nothing page-live survives the view.
+      void browserViewClosed();
     };
+  });
+
+  // Last tab closed (Ctrl+W or the ✕): there is nothing left to browse —
+  // the browser closes and the screen that opened it comes back. The
+  // `hadTabs` guard stops the effect from closing a browser that was
+  // opened onto the speed dial with zero tabs.
+  let hadTabs = false;
+  $effect(() => {
+    if (browser.tabs.length > 0) {
+      hadTabs = true;
+    } else if (hadTabs) {
+      app.closeBrowser();
+    }
   });
 
   // Keep the native webview's rect aligned with the content area. The

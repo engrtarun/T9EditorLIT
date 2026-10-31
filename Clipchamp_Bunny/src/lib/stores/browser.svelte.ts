@@ -17,6 +17,7 @@ import {
   onBrowserNav,
   onBrowserPage,
   onBrowserPopup,
+  onBrowserTitle,
   isTauri
 } from '../ipc';
 import { downloads } from './downloads.svelte';
@@ -173,14 +174,21 @@ class BrowserStore {
     const tab = this.active;
     if (!tab || tab.url === 'about:blank') return;
     tab.loading = true;
-    // Same URL: the frontend slice re-issues navigation; the native webview
-    // side (Slice 3) maps this to a re-navigate call.
-    this.nudge?.(tab.id, tab.url);
+    // Same URL: `force` tells the native side to re-navigate even though
+    // the child is already showing it (the fast path would skip it).
+    this.nudge?.(tab.id, tab.url, undefined, true);
     if (!this.nudge) tab.loading = false;
   }
 
-  /** Slice 3 wires this to the Rust side; `null` in the dev preview. */
-  nudge: ((id: string, url: string) => void) | null = null;
+  /**
+   * Slice 3 wires this to the Rust side; `null` in the dev preview.
+   *
+   * `keep` — extra tab ids whose webview stays alive (collapsed) beyond
+   * the show target: the tab the user just left, so switching back is
+   * instant. `force` — re-navigate even if the child already shows the
+   * URL (reload, address re-submit).
+   */
+  nudge: ((id: string, url: string, keep?: string[], force?: boolean) => void) | null = null;
 
   /** A history jump navigates **without** pushing a new history entry. */
   private jump(id: string, url: string): void {
@@ -225,12 +233,14 @@ class BrowserStore {
   select(id: string): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return;
+    const prev = this.active;
     this.activeId = id;
     tab.lastActive = Date.now();
-    // Only the active tab holds a native webview: selecting a tab brings its
-    // page on screen (destroying the previous tab's webview). This is the same
-    // `browser_show` path a new tab or address-bar navigation takes.
-    this.nudge?.(tab.id, tab.url);
+    // Selecting a tab brings its page on screen. The tab the user just
+    // left stays alive but collapsed, so switching back is instant (no
+    // reload) — the live set never exceeds two webviews.
+    const keep = prev && prev.id !== id && prev.url !== 'about:blank' ? [prev.id] : [];
+    this.nudge?.(tab.id, tab.url, keep);
   }
 
   /** Close a tab. Closing the active one activates the neighbour (Firefox rule). */
@@ -240,11 +250,14 @@ class BrowserStore {
     const wasActive = this.activeId === id;
     this.tabs.splice(i, 1);
     if (wasActive) {
-      // The active tab is the only one with a live webview — closing it must
-      // destroy that webview or it would outlive the tab in the strip.
+      // The active tab owned the only uncollapsed webview — closing it
+      // must destroy that webview or it would outlive the tab in the strip.
       if (isTauri()) void browserHide(id);
       const next = this.tabs[Math.min(i, this.tabs.length - 1)];
       this.activeId = next ? next.id : null;
+      // Show the neighbour immediately — without this the content hole
+      // went blank until the user clicked something.
+      if (next) this.nudge?.(next.id, next.url);
     }
   }
 
@@ -262,7 +275,12 @@ class BrowserStore {
     if (next !== 'about:blank') this.push(target.id, next);
     // The native webview follows (Slice 3); in the dev preview the loading
     // flag is cleared immediately because there is no page to wait for.
-    this.nudge?.(target.id, next);
+    // `force`: a same-URL submit must reload, not hit the nothing-to-do
+    // fast path — browser rule.
+    //
+    // NOTE: the webview this navigates may be a KEPT (collapsed) child —
+    // browser_show un-collapses the target before reacting to `force`.
+    this.nudge?.(target.id, next, undefined, true);
     if (!this.nudge) target.loading = false;
   }
 
@@ -310,8 +328,8 @@ class BrowserStore {
 
     // Every navigation the store drives (new tab, switch, address bar,
     // back/forward, reload) funnels through this one function.
-    this.nudge = (id, url) => {
-      void browserShow(id, url);
+    this.nudge = (id, url, keep, force) => {
+      void browserShow(id, url, { keep, force });
     };
 
     // The page finished loading — clear the spinner, take its final URL
@@ -335,18 +353,31 @@ class BrowserStore {
       if (url && tab.url !== url) tab.url = url;
     });
 
+    // The page's own <title>: the strip and downloads panel prefer it over
+    // the hostname, like every real browser. Hostname stays the fallback.
+    void onBrowserTitle(({ id, title }) => {
+      const tab = this.tabs.find((t) => t.id === id);
+      if (!tab || !title) return;
+      tab.title = title;
+    });
+
     // A page asked for a new window — target=_blank (search results use it),
     // Ctrl+click, window.open. Rust denied the native popup; here the URL
     // becomes a tab in the strip, so the link stays inside the app. At the
     // nine-tab cap the current tab navigates instead (never shell out).
     void onBrowserPopup(({ url }) => {
+      // The tab that opened the popup stays alive (collapsed) — going
+      // "back" to it is instant, which is exactly the search → results →
+      // open → back flow.
+      const opener = this.active;
+      const keep = opener && opener.url !== 'about:blank' ? [opener.id] : [];
       if (this.openInNewTab(url)) {
         const tab = this.active;
         if (tab) {
           tab.title = hostOf(url);
           tab.loading = true;
           this.push(tab.id, url);
-          this.nudge?.(tab.id, url);
+          this.nudge?.(tab.id, url, keep);
           if (!this.nudge) tab.loading = false;
         }
       } else {

@@ -1,13 +1,20 @@
 //! The in-built browser's native half: one WebView2 child per tab.
 //!
-//! The design that makes the 500 MB budget structural rather than policed:
-//! **only the active tab ever has a webview**. Switching tabs destroys the
-//! old child and creates a new one for the target tab's URL, so at most one
-//! WebView2 process backs the browser no matter how many tabs are open
-//! (nine is the cap). An empty tab costs zero bytes — no webview exists
-//! until a real URL is navigated to, which is also why the speed dial
-//! renders in the main webview's DOM.
+//! The memory budget is structural rather than policed. The webview
+//! **ledger** is: the active tab plus at most one kept tab (the one the
+//! user just left) — never more than two children. Earlier tabs are
+//! destroyed on every switch. Kept webviews are collapsed to 1×1 logical
+//! pixels (rendering cost ≈ 0, page state intact), so a back-switch shows
+//! the previous page *instantly* — no reload — and z-order can never put a
+//! stale page above the active one. An empty tab costs zero bytes: no
+//! webview exists until a real URL is navigated to, which is also why the
+//! speed dial renders in the main webview's DOM.
 //!
+//! The cost is honest and documented: any tab beyond the most recent two
+//! loses its in-page state and reloads when re-selected — the trade every
+//! mobile browser already makes. The benefit is that "≤500 MB while
+//! browsing" needs no watchdog: there is nothing to evict because there
+//! are never more than two webviews, and the second is inert (1×1).
 //! The cost of that rule is honest and documented: a background tab loses
 //! its in-page state (scroll position, unsaved form input) and reloads when
 //! re-selected — the trade every mobile browser already makes. The benefit
@@ -46,6 +53,15 @@ pub struct NavPayload {
     pub url: String,
 }
 
+/// The page's own `<title>` (document title changed). The strip and the
+/// downloads panel show it instead of the hostname.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitlePayload {
+    pub id: String,
+    pub title: String,
+}
+
 /// A file WebView2 wanted to download. The referer is the tab's current URL:
 /// some hosts refuse a download that arrives with no referrer.
 #[derive(Clone, Serialize)]
@@ -66,16 +82,27 @@ pub struct ContentRect {
 }
 
 /// Managed state: the rectangle the frontend measured for the browser's
-/// content area (`[data-focus="browser-content"]`).
+/// content area (`[data-focus="browser-content"]`), and the label of the
+/// webview currently showing there (kept webviews are collapsed and must
+/// not be resized back to full by rect updates).
 pub struct BrowserState {
     rect: Mutex<ContentRect>,
+    active: Mutex<String>,
 }
 
 impl Default for BrowserState {
     fn default() -> Self {
         Self {
             rect: Mutex::new(ContentRect::default()),
+            active: Mutex::new(String::new()),
         }
+    }
+}
+
+fn set_active<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) {
+    let state = app.state::<BrowserState>();
+    if let Ok(mut a) = state.active.lock() {
+        *a = label.to_string();
     }
 }
 
@@ -85,15 +112,26 @@ fn label_for(id: &str) -> String {
     format!("tab-{id}")
 }
 
-/// Show one tab: destroy every other tab's webview, then create or navigate
-/// this one.
+/// Show one tab: destroy/collapse every other tab's webview, then create,
+/// navigate, or simply uncover this one.
 ///
 /// This is the only command that brings a page on screen. The store calls
 /// it for new tabs, tab switches, address-bar navigation, back/forward and
 /// reload — one path, so the webview's state can never disagree with the
 /// strip about what is displayed.
+///
+/// `keep` carries the tab ids (besides the target) whose webview must stay
+/// alive — the store passes the tab the user just left. Kept webviews are
+/// collapsed to 1×1; everything else is destroyed. `force` bypasses the
+/// same-URL fast path (reload button, address re-submit).
 #[tauri::command]
-pub fn browser_show(app: tauri::AppHandle, id: String, url: String) -> Result<(), String> {
+pub fn browser_show(
+    app: tauri::AppHandle,
+    id: String,
+    url: String,
+    keep: Option<Vec<String>>,
+    force: Option<bool>,
+) -> Result<(), String> {
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
@@ -104,24 +142,60 @@ pub fn browser_show(app: tauri::AppHandle, id: String, url: String) -> Result<()
         .map_err(|_| "browser rect lock poisoned".to_string())?;
 
     // A blank/new tab has nothing to show: the speed dial is plain DOM in
-    // the main webview, so the right action is to destroy any live page
+    // the main webview, so the right action is to sweep any live page
     // webview and stop. This is what makes an empty tab cost 0 MB.
     if url.is_empty() || url == "about:blank" {
-        destroy_others(&window, "");
+        destroy_others(&window, &[]);
+        set_active(&app, "");
         return Ok(());
     }
 
     let parsed = Url::parse(&url).map_err(|e| format!("invalid url: {e}"))?;
     let label = label_for(&id);
 
-    // One live webview: everything not this tab goes.
-    destroy_others(&window, &label);
+    // The keep-alive set: the target plus the tab the user just left. The
+    // live set never exceeds two webviews, and the kept one is inert.
+    let mut keep_labels: Vec<String> = vec![label.clone()];
+    if let Some(extra) = &keep {
+        for tab_id in extra {
+            keep_labels.push(label_for(tab_id));
+        }
+    }
+
+    for webview in window.webviews() {
+        let wl = webview.label();
+        if !wl.starts_with("tab-") || wl == label {
+            continue;
+        }
+        if keep_labels.iter().any(|k| k == wl) {
+            // Kept alive but collapsed: 1×1 px at the content rect's
+            // origin. Rendering cost ≈ 0, scroll position and page state
+            // intact, and z-order stops mattering because a collapsed
+            // webview is effectively invisible.
+            let _ = webview.set_size(tauri::LogicalSize::new(1.0, 1.0));
+        } else {
+            let _ = webview.close();
+        }
+    }
 
     match find_tab(&window, &label) {
         Some(webview) => {
-            // Already live — navigating to the same URL is a reload, which
-            // is exactly what the reload button should do.
-            webview.navigate(parsed).map_err(|e| e.to_string())
+            // The target is never collapsed: park it at the content rect.
+            let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
+            let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
+
+            // Fast path: the child is already showing exactly this URL —
+            // the kept-tab back-switch. Leave it alone: no reload, scroll
+            // intact. `force` (reload button, re-submit) bypasses this.
+            if !force.unwrap_or(false) {
+                if let Ok(actual) = webview.url() {
+                    if actual == parsed {
+                        set_active(&app, &label);
+                        return Ok(());
+                    }
+                }
+            }
+            webview.navigate(parsed).map_err(|e| e.to_string())?;
         }
         None => {
             let builder = build_tab_webview(&app, &id, parsed);
@@ -131,10 +205,11 @@ pub fn browser_show(app: tauri::AppHandle, id: String, url: String) -> Result<()
                     LogicalPosition::new(rect.x, rect.y),
                     LogicalSize::new(rect.width, rect.height),
                 )
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
         }
     }
+    set_active(&app, &label);
+    Ok(())
 }
 
 /// Destroy a tab's webview (tab closed, or the browser view closed). A
@@ -147,6 +222,26 @@ pub fn browser_hide(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let label = label_for(&id);
     if let Some(webview) = find_tab(&window, &label) {
         let _ = webview.close();
+    }
+    if let Ok(mut a) = app.state::<BrowserState>().active.lock() {
+        if *a == label {
+            *a = String::new();
+        }
+    }
+    Ok(())
+}
+
+/// Sweep every tab webview: the browser view unmounted (back to the
+/// editor). The ledger drops to zero live webviews — the zero-RAM rule
+/// applied to leaving the browser, kept ones included.
+#[tauri::command]
+pub fn browser_view_closed(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "main window missing".to_string())?;
+    destroy_others(&window, &[]);
+    if let Ok(mut a) = app.state::<BrowserState>().active.lock() {
+        *a = String::new();
     }
     Ok(())
 }
@@ -178,14 +273,24 @@ pub fn browser_set_rect(
         return Ok(());
     }
 
+    // Only the ACTIVE webview fills the rect. Kept (collapsed) webviews
+    // must stay 1×1 — resizing them back would float a stale page over
+    // the active one.
+    let active = app
+        .state::<BrowserState>()
+        .active
+        .lock()
+        .map_err(|_| "browser rect lock poisoned".to_string())?
+        .clone();
+    if active.is_empty() {
+        return Ok(());
+    }
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
-    for webview in window.webviews() {
-        if webview.label().starts_with("tab-") {
-            let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
-            let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
-        }
+    if let Some(webview) = find_tab(&window, &active) {
+        let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
+        let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
     }
     Ok(())
 }
@@ -198,11 +303,11 @@ fn find_tab<R: Runtime>(window: &Window<R>, label: &str) -> Option<Webview<R>> {
         .find(|w| w.label() == label)
 }
 
-/// Destroy every `tab-*` child webview except `keep` (empty = destroy all).
-fn destroy_others<R: Runtime>(window: &Window<R>, keep: &str) {
+/// Destroy every `tab-*` child webview not in `keep` (empty = sweep all).
+fn destroy_others<R: Runtime>(window: &Window<R>, keep: &[String]) {
     for webview in window.webviews() {
         let label = webview.label();
-        if label.starts_with("tab-") && label != keep {
+        if label.starts_with("tab-") && !keep.iter().any(|k| k == label) {
             let _ = webview.close();
         }
     }
@@ -249,6 +354,20 @@ fn build_tab_webview<R: Runtime>(
                 },
             );
         }
+    });
+
+    // Title hook: the page's own <title> replaces the hostname in the tab
+    // strip and the downloads panel, exactly like a real browser.
+    let ttl_app = app.clone();
+    let ttl_id = id.to_string();
+    let builder = builder.on_document_title_changed(move |_webview, title| {
+        let _ = ttl_app.emit(
+            "browser:title",
+            TitlePayload {
+                id: ttl_id.clone(),
+                title,
+            },
+        );
     });
 
     // New-window hook: target=_blank, Ctrl+click and window.open. Wry's

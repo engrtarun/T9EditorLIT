@@ -1574,6 +1574,7 @@ pub fn run() {
             polish_render,
             browser::browser_show,
             browser::browser_hide,
+            browser::browser_view_closed,
             browser::browser_set_rect
         ])
         .setup(|app| {

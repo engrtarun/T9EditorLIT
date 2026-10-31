@@ -1135,15 +1135,45 @@ export function statsSet(key: string, value: string): Promise<void> {
  * `about:blank` URL destroys the live webview and shows the speed dial
  * (which is plain DOM in the main webview, costing zero megabytes).
  */
-export function browserShow(id: string, url: string): Promise<void> {
+export function browserShow(
+  id: string,
+  url: string,
+  opts?: { keep?: string[]; force?: boolean }
+): Promise<void> {
   if (!isTauri()) return Promise.resolve();
-  return invoke<void>('browser_show', { id, url });
+  return invoke<void>('browser_show', {
+    id,
+    url,
+    keep: opts?.keep ?? [],
+    force: opts?.force ?? false
+  });
 }
 
 /** Destroy a tab's webview (tab closed, or the browser view unmounted). */
 export function browserHide(id: string): Promise<void> {
   if (!isTauri()) return Promise.resolve();
   return invoke<void>('browser_hide', { id }).catch(() => {});
+}
+
+/**
+ * The browser view unmounted (back to the editor): sweep every tab webview,
+ * kept ones included — the zero-RAM rule applied to leaving the browser.
+ */
+export function browserViewClosed(): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_view_closed').catch(() => {});
+}
+
+/** A browser page finished loading (clears the strip's spinner). */
+export function onBrowserPage(cb: (p: { id: string; url: string }) => void): Promise<() => void> {
+  return listen<{ id: string; url: string }>('browser:page', (e) => cb(e.payload));
+}
+
+/** The page set its own <title> — the strip shows it instead of the host. */
+export function onBrowserTitle(
+  cb: (p: { id: string; title: string }) => void
+): Promise<() => void> {
+  return listen<{ id: string; title: string }>('browser:title', (e) => cb(e.payload));
 }
 
 /**
@@ -1155,11 +1185,6 @@ export function browserHide(id: string): Promise<void> {
 export function browserSetRect(x: number, y: number, width: number, height: number): Promise<void> {
   if (!isTauri()) return Promise.resolve();
   return invoke<void>('browser_set_rect', { x, y, width, height }).catch(() => {});
-}
-
-/** A browser page finished loading (clears the strip's spinner). */
-export function onBrowserPage(cb: (p: { id: string; url: string }) => void): Promise<() => void> {
-  return listen<{ id: string; url: string }>('browser:page', (e) => cb(e.payload));
 }
 
 /** The page navigated itself (link click / redirect) — follow it in the store. */
