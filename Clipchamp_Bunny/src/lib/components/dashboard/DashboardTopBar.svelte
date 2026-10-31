@@ -135,6 +135,28 @@
         {/if}
       </button>
     {/each}
+
+    <!-- + : the in-built browser, one click from home as well. Same button the
+         editor bar carries; here it is always "open" (there is no tab strip on
+         the dashboard), and the close button lands back where it started. -->
+    <button
+      type="button"
+      onclick={() => app.openBrowser('home')}
+      class="ml-1 grid h-8 w-8 place-items-center rounded-md text-white/70 transition-colors duration-150 hover:bg-white/10 hover:text-white"
+      title="Browser kholo (9 tabs, fast download)"
+      aria-label="Open browser"
+    >
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+      >
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+    </button>
   </nav>
 
   <!-- everything between the tabs and the avatar is deliberately empty, and it
