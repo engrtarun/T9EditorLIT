@@ -604,3 +604,37 @@ What this means for any agent:
 5. **The daemon stays the exe.** `t9cloud.exe` ships via `deploy.ps1` - a
    container is for a future remote server, not a replacement for the
    local contract.
+
+---
+
+## 14. Skills for agents — shared baseline, per-agent extras
+
+The machine has a local skill vault (`C:\Users\pocot\.opencode\vault`). Eleven
+skills are always on (T9 guardrails, FFmpeg, Tauri, spec, plan, incremental,
+TDD, debug, perf, review, security); they are leased to `owner=baseline`, so
+one agent's `off` cannot take them away from the others.
+
+If your task needs something else (Chrome MV3, Kaggle GPU, Windows memory,
+documents, research...):
+
+```powershell
+$wh = "C:\Users\pocot\.opencode\vault\wh.ts"
+
+bun $wh pick "<3-6 keywords>" --owner "<your-agent>"   # search + enable + path
+bun $wh find "<3-6 keywords>" --limit 6                # choose manually
+bun $wh brief <name>                                   # compact digest for a child agent
+bun $wh cat <name>                                     # read it without enabling
+bun $wh off <name> --owner "<your-agent>"              # give it back when done
+```
+
+Rules:
+
+- **One owner per agent.** Use your agent/session name; never `--force` another
+  agent's skill.
+- **Project-scoped when it is repo-specific:** add
+  `--project C:\Users\pocot\Music\T9EditorLIT` so the junction lives in the repo
+  and other projects do not inherit it.
+- **Do not ask the user which skills are on.** Run
+  `bun $wh status` — it prints active items, leases and the context budget.
+- **Do not enable more than 2 extra skills per task**, and turn them off when
+  the task ends. Context budget is 8000 tokens (`bun $wh budget`).
