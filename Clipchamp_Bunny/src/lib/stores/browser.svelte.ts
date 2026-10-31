@@ -88,26 +88,42 @@ export function hostOf(url: string): string {
 const DAEMON = 'http://127.0.0.1:7878';
 
 /**
- * The favicon image source for a page URL.
+ * Every place an icon for `pageUrl` can come from, best first.
  *
- * On the desktop every icon routes through the daemon's proxy (which fetches
- * `/favicon.ico` for the host once and caches it on disk) so the webview's CSP
- * stays tight — the shell never loads an arbitrary origin directly. In the dev
- * preview there is no daemon, so the icon loads straight from the network.
- * Returns `null` for a non-http(s) URL, letting the caller fall back to a
- * letter badge or the globe.
+ * The desktop app loads its own UI under a strict Content-Security-Policy, so
+ * an icon is only allowed from `'self'`, the asset protocol, the daemon and
+ * `https:` (the CSP lives in `tauri.conf.json`). The daemon proxy is tried
+ * first because it fetches `/favicon.ico` once and caches it on disk; a direct
+ * request and Google's favicon CDN cover a daemon that is not running and the
+ * sites that 404 their own `/favicon.ico`. The dev preview has no daemon, so it
+ * starts at the direct origin.
+ *
+ * The caller (see `SiteIcon.svelte`) walks the list until one image loads —
+ * a blocked CSP request and a 404 both look like `onerror`, so the fallback
+ * chain is the same for either.
+ */
+export function faviconSources(pageUrl: string): string[] {
+  let parsed: URL;
+  try {
+    parsed = new URL(pageUrl);
+  } catch {
+    return [];
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return [];
+  const direct = `${parsed.origin}/favicon.ico`;
+  const cdn = `https://www.google.com/s2/favicons?sz=64&domain=${encodeURIComponent(parsed.hostname)}`;
+  const daemon = `${DAEMON}/v1/favicon?url=${encodeURIComponent(parsed.origin)}`;
+  return isTauri() ? [daemon, direct, cdn] : [direct, cdn];
+}
+
+/**
+ * The favicon image source for a page URL — the first candidate only.
+ *
+ * Kept for callers that need one URL; the UI uses `SiteIcon`, which walks the
+ * whole chain.
  */
 export function faviconSrc(pageUrl: string): string | null {
-  let origin: string;
-  try {
-    const u = new URL(pageUrl);
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
-    origin = u.origin;
-  } catch {
-    return null;
-  }
-  if (isTauri()) return `${DAEMON}/v1/favicon?url=${encodeURIComponent(origin)}`;
-  return `${origin}/favicon.ico`;
+  return faviconSources(pageUrl)[0] ?? null;
 }
 
 class BrowserStore {
@@ -423,6 +439,22 @@ class BrowserStore {
     void onBrowserDownload(({ url, referer }) => {
       void downloads.start(url, referer ? { referer } : undefined);
     });
+  }
+
+  /**
+   * Make the native side show the active tab.
+   *
+   * A tab can be created **before** the browser view mounts — the tools panel
+   * opens a link, then switches the app to the browser, so `wireTauri` has not
+   * run yet and the `nudge` hook is still null. Without this the store would
+   * hold a URL no webview ever shows, and the user would stare at the loading
+   * placeholder. Called once, right after wiring.
+   */
+  showActive(): void {
+    const tab = this.active;
+    if (!tab || !this.nudge) return;
+    if (!tab.url || tab.url === 'about:blank') return;
+    this.nudge(tab.id, tab.url);
   }
 }
 

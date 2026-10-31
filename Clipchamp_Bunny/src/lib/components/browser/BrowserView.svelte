@@ -2,12 +2,12 @@
   /**
    * The browser view — Firefox's window, inside T9.
    *
-   * Layout: toolbar (back · forward · reload · address bar · downloads ·
-   * close) → tab strip → content → downloads panel. The content area is an
-   * exact rectangle the native child webview is positioned over (Slice 3:
-   * `browser_set_rect` gets this element's bounding box). While no page
-   * webview exists — new tab, or the dev preview — the area renders the
-   * speed dial / an iframe itself.
+   * Firefox 157's toolbar shape: the **tab strip sits on top** of the address
+   * bar, both on one chrome surface, with round buttons and a pill-shaped
+   * address bar. The content area below is an exact rectangle the native child
+   * webview is positioned over (`browser_set_rect` gets this element's bounding
+   * box). While no page webview exists — new tab, or the dev preview — the area
+   * renders the speed dial / an iframe itself.
    *
    * Switching back to the editor unmounts this whole tree (App.svelte's
    * `{#if}`), which is also when the Rust side suspends every tab webview:
@@ -37,6 +37,9 @@
 
   onMount(() => {
     browser.wireTauri();
+    // A tab may already exist: the tools panel opens a link and *then* switches
+    // to this view, so the store created the tab before anything was wired.
+    browser.showActive();
     return () => {
       // The whole browser tree unmounts (App.svelte's {#if}): sweep EVERY
       // tab webview (kept ones included) so the 500 MB budget holds while
@@ -96,117 +99,141 @@
 </script>
 
 <div class="flex min-h-0 min-w-0 flex-1 flex-col bg-nc-bg text-nc-txt">
-  <!-- ── toolbar ─────────────────────────────────────────────────────── -->
-  <div class="flex h-9 shrink-0 items-center gap-1 border-b border-nc-line bg-nc-panel px-1.5">
-    <button
-      type="button"
-      disabled={!canBack}
-      onclick={() => browser.back()}
-      class="grid h-7 w-7 place-items-center rounded-md text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt disabled:opacity-35 disabled:hover:bg-transparent"
-      title="Back"
-      aria-label="Go back"
-    >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.9"
-      >
-        <path d="M15 5l-7 7 7 7" />
-      </svg>
-    </button>
-    <button
-      type="button"
-      disabled={!canForward}
-      onclick={() => browser.forward()}
-      class="grid h-7 w-7 place-items-center rounded-md text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt disabled:opacity-35 disabled:hover:bg-transparent"
-      title="Forward"
-      aria-label="Go forward"
-    >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.9"
-      >
-        <path d="M9 5l7 7-7 7" />
-      </svg>
-    </button>
-    <button
-      type="button"
-      onclick={() => browser.reload()}
-      class="grid h-7 w-7 place-items-center rounded-md text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt"
-      title="Reload"
-      aria-label="Reload page"
-    >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.9"
-      >
-        <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5" />
-      </svg>
-    </button>
+  <!-- ── chrome: tabs on top, address bar under, one surface ────────────── -->
+  <div class="shrink-0 border-b border-nc-line bg-nc-panel">
+    <TabStrip />
 
-    <UrlBar ondownload={downloadPage} />
-
-    <!-- downloads: opens the panel, shows the running count -->
-    <button
-      type="button"
-      onclick={() => downloads.toggle()}
-      class="relative grid h-7 w-7 place-items-center rounded-md text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt"
-      title="Downloads"
-      aria-label="Show downloads"
-    >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.8"
+    <div class="flex h-10 items-center gap-0.5 px-2 pb-1.5">
+      <button
+        type="button"
+        disabled={!canBack}
+        onclick={() => browser.back()}
+        class="grid h-8 w-8 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt disabled:opacity-35 disabled:hover:bg-transparent"
+        title="Back"
+        aria-label="Go back"
       >
-        <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />
-      </svg>
-      {#if downloads.activeCount > 0}
-        <span
-          class="absolute -top-0.5 -right-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-nc-brand px-0.5 text-[9px] leading-none font-bold text-white"
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.9"
         >
-          {downloads.activeCount}
-        </span>
-      {/if}
-    </button>
-
-    <!-- close the browser → back to the screen that opened it -->
-    <button
-      type="button"
-      onclick={() => app.closeBrowser()}
-      class="grid h-7 w-7 place-items-center rounded-md text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt"
-      title="Browser band karo (editor pe wapas)"
-      aria-label="Close browser"
-    >
-      <svg
-        width="13"
-        height="13"
-        viewBox="0 0 12 12"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.8"
+          <path d="M15 5l-7 7 7 7" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        disabled={!canForward}
+        onclick={() => browser.forward()}
+        class="grid h-8 w-8 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt disabled:opacity-35 disabled:hover:bg-transparent"
+        title="Forward"
+        aria-label="Go forward"
       >
-        <path d="M2 2l8 8M10 2l-8 8" />
-      </svg>
-    </button>
-  </div>
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.9"
+        >
+          <path d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        onclick={() => browser.reload()}
+        class="grid h-8 w-8 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt"
+        title="Reload"
+        aria-label="Reload page"
+      >
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.9"
+        >
+          <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5" />
+        </svg>
+      </button>
 
-  <!-- ── tab strip ───────────────────────────────────────────────────── -->
-  <TabStrip />
+      <div class="mx-1 min-w-0 flex-1">
+        <UrlBar />
+      </div>
+
+      <!-- downloads: opens the panel, shows the running count -->
+      <button
+        type="button"
+        onclick={() => downloads.toggle()}
+        class="relative grid h-8 w-8 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt"
+        title="Downloads"
+        aria-label="Show downloads"
+      >
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+        >
+          <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />
+        </svg>
+        {#if downloads.activeCount > 0}
+          <span
+            class="absolute -top-0.5 -right-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-nc-brand px-0.5 text-[9px] leading-none font-bold text-white"
+          >
+            {downloads.activeCount}
+          </span>
+        {/if}
+      </button>
+
+      <!-- fast download of the page's file, next to the downloads panel -->
+      <button
+        type="button"
+        onclick={downloadPage}
+        disabled={!tab || tab.url === 'about:blank'}
+        class="grid h-8 w-8 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt disabled:opacity-35 disabled:hover:bg-transparent"
+        title="Fast download (multi-segment, 1DM style)"
+        aria-label="Download this page's file"
+      >
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+        >
+          <path d="M12 4v12M8 12l4 4 4-4M4 20h16" />
+        </svg>
+      </button>
+
+      <!-- close the browser → back to the screen that opened it -->
+      <button
+        type="button"
+        onclick={() => app.closeBrowser()}
+        class="grid h-8 w-8 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt"
+        title="Browser band karo (editor pe wapas)"
+        aria-label="Close browser"
+      >
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+        >
+          <path d="M2 2l8 8M10 2l-8 8" />
+        </svg>
+      </button>
+    </div>
+  </div>
 
   <!-- ── content: the exact rect the native webview covers ───────────── -->
   <div bind:this={contentEl} class="relative min-h-0 flex-1" data-focus="browser-content">

@@ -1,21 +1,17 @@
 <script lang="ts">
   /**
-   * The address bar — Firefox Proton's pill, in the brand's tokens.
+   * The address bar — Firefox 157's pill, in the brand's tokens.
    *
    * It is **controlled by the active tab while unfocused**: the moment the
    * user clicks in, their draft takes over, so a page load mid-typing cannot
    * yank the text out from under the cursor. Enter runs `toUrl`, so a bare
    * `youtube.com` navigates and a phrase searches — one field, both jobs.
+   *
+   * No download button lives here: the toolbar owns the fast downloader, and
+   * two ⬇ buttons a few pixels apart is how a toolbar starts to feel cluttered.
    */
   import { browser, toUrl } from '../../stores/browser.svelte';
   import { toast } from '../../stores/toast.svelte';
-
-  let {
-    ondownload
-  }: {
-    /** The ⬇ button lives in the toolbar row; the click is relayed up. */
-    ondownload: () => void;
-  } = $props();
 
   const tab = $derived(browser.active);
 
@@ -31,7 +27,7 @@
   function submit(e: SubmitEvent) {
     e.preventDefault();
     const raw = draft.trim();
-    if (!raw || !tab) return;
+    if (!raw) return;
     const url = toUrl(raw);
     if (!url) return;
     browser.navigate(url);
@@ -43,8 +39,10 @@
 </script>
 
 <form
-  class="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-transparent bg-nc-panel-2 px-2 transition-colors
-         {focused ? 'border-nc-brand/70 bg-nc-panel' : 'hover:bg-nc-line/70'}"
+  class="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-full border px-3 transition-colors
+         {focused
+    ? 'border-nc-brand/70 bg-nc-bg ring-2 ring-nc-brand/20'
+    : 'border-transparent bg-nc-panel-2 hover:bg-nc-line/60'}"
   onsubmit={submit}
 >
   <!-- lock: https gets the padlock, http gets a plain info mark -->
@@ -77,24 +75,26 @@
     aria-label="Address bar"
   />
 
-  <!-- download the page's file (or the typed URL) with the fast downloader -->
+  <!-- Firefox's own trick: click the magnifier to focus from anywhere. -->
   <button
     type="button"
-    onclick={ondownload}
-    class="grid h-5 w-5 shrink-0 place-items-center rounded text-nc-mut transition-colors hover:bg-nc-line hover:text-nc-txt disabled:opacity-40"
-    disabled={!tab || tab.url === 'about:blank'}
-    title="Fast download (multi-segment, 1DM style)"
-    aria-label="Download this page's file"
+    onclick={() => {
+      input?.focus();
+      input?.select();
+    }}
+    class="grid h-5 w-5 shrink-0 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-line hover:text-nc-txt"
+    title="Address bar (Ctrl+L)"
+    aria-label="Focus address bar"
   >
     <svg
-      width="13"
-      height="13"
+      width="12"
+      height="12"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      stroke-width="1.8"
+      stroke-width="1.9"
     >
-      <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />
+      <circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" />
     </svg>
   </button>
 </form>

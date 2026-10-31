@@ -1,31 +1,30 @@
 <script lang="ts">
   /**
-   * The new-tab page — a speed dial of favicon cards.
+   * The new-tab page — Firefox 157's shortcut grid, in the brand's tokens.
    *
-   * This is the answer to "9 tabs ki limit hai, toh website ka icon dikhao
-   * jispe click karke kholo": the dial is where the icons live, one click
-   * opens the site in the active tab. It renders in the *main* webview (Svelte
-   * DOM), so an empty tab costs zero megabytes — the native page webview only
-   * exists once a real URL is navigated to.
+   * A search field first (that is what a new tab is for), then the shortcuts:
+   * the six sites a T9 user actually opens, then whatever they pinned in the
+   * 9-dots panel. Each shortcut is a light rounded tile with the site's real
+   * favicon — or a letter tile when the icon cannot be fetched — so the page
+   * never shows a broken image.
    *
-   * In the dev preview favicons load straight from the network; on the desktop
-   * they come through the daemon's proxy (Slice 3) so the CSP stays tight.
+   * Everything renders in the *main* webview (Svelte DOM), so an empty tab
+   * costs zero megabytes: the native page webview only exists once a real URL
+   * is navigated to.
    */
-  import { browser, SPEED_DIAL, hostOf, faviconSrc } from '../../stores/browser.svelte';
+  import { browser, SPEED_DIAL, toUrl } from '../../stores/browser.svelte';
+  import { pinnedTools, hostOfUrl } from '../../stores/pinned-tools.svelte';
+  import SiteIcon from './SiteIcon.svelte';
   import { isTauri } from '../../ipc';
 
-  /**
-   * Favicons that failed to load (no `/favicon.ico`, blocked, offline). Each
-   * falls back to the letter badge underneath — the dial never shows a broken
-   * image. Keyed by the site URL so a retry never flickers the whole grid.
-   */
-  let failed = $state<Record<string, boolean>>({});
+  let query = $state('');
 
-  /** Card colour: derive a stable hue from the host so each card has an identity. */
-  function hue(url: string): number {
-    let h = 0;
-    for (const ch of url) h = (h * 31 + ch.charCodeAt(0)) % 360;
-    return h;
+  function search(e: SubmitEvent) {
+    e.preventDefault();
+    const raw = query.trim();
+    if (!raw) return;
+    browser.navigate(toUrl(raw));
+    query = '';
   }
 
   function open(url: string) {
@@ -33,52 +32,107 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 flex-col items-center justify-center gap-8 px-6 py-8">
-  <div class="text-center">
-    <p class="text-[22px] font-semibold text-nc-txt">Naya tab</p>
-    <p class="mt-1 text-[13px] text-nc-mut">
-      Icon pe click karo, ya upar address bar me likho — {isTauri() ? '' : '(dev preview: '}
-      9 tabs tak<span class="hidden md:inline">, download ⬇ toolbar me</span>{isTauri() ? '' : ')'}
+<div class="flex h-full min-h-0 flex-col overflow-y-auto px-6 py-8">
+  <div class="mx-auto w-full max-w-[660px]">
+    <p class="text-center text-[11px] font-bold tracking-[0.22em] text-nc-mut-2 uppercase">
+      Naya tab
     </p>
-  </div>
 
-  <div class="grid max-w-[560px] grid-cols-3 gap-3 sm:grid-cols-3">
-    {#each SPEED_DIAL as site (site.url)}
-      {@const h = hue(site.url)}
-      {@const icon = faviconSrc(site.url)}
-      <button
-        type="button"
-        onclick={() => open(site.url)}
-        class="group flex flex-col items-center gap-2 rounded-xl border border-nc-line bg-nc-panel px-3 py-4 transition-colors hover:border-nc-brand/50 hover:bg-nc-panel-2"
-        title={site.url}
+    <!-- the one thing a new tab is for -->
+    <form
+      onsubmit={search}
+      class="mt-3 flex h-11 items-center gap-2.5 rounded-full border border-nc-line bg-nc-panel px-4
+             shadow-[0_10px_30px_rgba(0,0,0,.28)] transition-colors
+             focus-within:border-nc-brand focus-within:ring-2 focus-within:ring-nc-brand/20"
+    >
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.9"
+        class="shrink-0 text-nc-mut"
+        aria-hidden="true"
       >
-        <span
-          class="relative grid h-10 w-10 place-items-center rounded-full text-[15px] font-bold text-white transition-transform group-hover:scale-105"
-          style="background: hsl({h} 45% 42%)"
-        >
-          <!-- The letter badge is the always-there fallback. -->
-          <span aria-hidden="true">{site.label.charAt(0)}</span>
-          {#if icon && !failed[site.url]}
-            <!-- The real favicon, loaded through the daemon proxy (or the
-                 network in the dev preview), covers the badge while it
-                 loads and disappears on error. -->
-            <img
-              src={icon}
-              alt=""
-              loading="lazy"
-              class="absolute inset-0 h-10 w-10 rounded-full bg-white object-contain p-1"
-              onerror={() => (failed[site.url] = true)}
-            />
-          {/if}
-        </span>
-        <span class="max-w-full truncate text-[12px] text-nc-mut group-hover:text-nc-txt">
-          {site.label}
-        </span>
-        <span class="max-w-full truncate text-[10px] text-nc-mut/70">{hostOf(site.url)}</span>
-      </button>
-    {/each}
-  </div>
+        <circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" />
+      </svg>
+      <input
+        bind:value={query}
+        placeholder="Search ya website ka address likho…"
+        spellcheck="false"
+        autocomplete="off"
+        class="min-w-0 flex-1 bg-transparent text-[13px] leading-none text-nc-txt outline-none placeholder:text-nc-mut-2"
+        aria-label="Search or enter a website"
+      />
+      <kbd
+        class="shrink-0 rounded border border-nc-line-2 bg-nc-panel-2 px-1.5 py-0.5 text-[10px] text-nc-mut-2"
+        >↵</kbd
+      >
+    </form>
 
-  <!-- the cap, stated where the user counts cards -->
-  <p class="text-[11px] text-nc-mut/70">{browser.tabs.length} / 9 tabs open</p>
+    <!-- shortcuts -->
+    <p class="mt-7 mb-2 px-1 text-[10px] font-bold tracking-widest text-nc-mut-2">SHORTCUTS</p>
+    <div class="grid grid-cols-3 gap-1 sm:grid-cols-6">
+      {#each SPEED_DIAL as site (site.url)}
+        <button
+          type="button"
+          onclick={() => open(site.url)}
+          class="group flex flex-col items-center gap-2 rounded-xl px-1 py-2.5 transition-colors hover:bg-nc-panel-2"
+          title="{site.url} — in-built browser me khulega"
+        >
+          <span
+            class="grid h-12 w-12 place-items-center rounded-xl border border-nc-line/70 bg-white/95
+                   shadow-sm transition-colors group-hover:border-nc-line-2"
+          >
+            <SiteIcon url={site.url} label={site.label} size={26} />
+          </span>
+          <span class="max-w-full truncate text-[11px] text-nc-mut group-hover:text-nc-txt">
+            {site.label}
+          </span>
+        </button>
+      {/each}
+    </div>
+
+    <!-- the user's own pins, same tiles, pinned in the 9-dots panel -->
+    {#if pinnedTools.items.length > 0}
+      <p class="mt-6 mb-2 px-1 text-[10px] font-bold tracking-widest text-nc-mut-2">AAPKE PINS</p>
+      <div class="grid grid-cols-3 gap-1 sm:grid-cols-6">
+        {#each pinnedTools.items as site (site.id)}
+          <button
+            type="button"
+            onclick={() => open(site.url)}
+            class="group flex flex-col items-center gap-2 rounded-xl px-1 py-2.5 transition-colors hover:bg-nc-panel-2"
+            title="{site.url} — in-built browser me khulega"
+          >
+            <span
+              class="grid h-12 w-12 place-items-center rounded-xl border border-nc-line/70 bg-white/95
+                     shadow-sm transition-colors group-hover:border-nc-line-2"
+            >
+              <SiteIcon url={site.url} label={site.name} size={26} />
+            </span>
+            <span class="max-w-full truncate text-[11px] text-nc-mut group-hover:text-nc-txt">
+              {site.name}
+            </span>
+            <span class="max-w-full truncate text-[9px] text-nc-mut-2/70"
+              >{hostOfUrl(site.url)}</span
+            >
+          </button>
+        {/each}
+      </div>
+    {/if}
+
+    <!-- the cap, stated where the user counts cards -->
+    <div class="mt-8 flex flex-wrap items-center justify-center gap-2">
+      <span
+        class="rounded-full border border-nc-line bg-nc-panel px-2.5 py-1 text-[10px] text-nc-mut"
+      >
+        {browser.tabs.length} / 9 tabs
+      </span>
+      <span class="text-[10px] text-nc-mut-2">
+        Sab kuch app ke andar khulta hai — koi link system browser me nahi jata.
+        {isTauri() ? '' : '(dev preview)'}
+      </span>
+    </div>
+  </div>
 </div>

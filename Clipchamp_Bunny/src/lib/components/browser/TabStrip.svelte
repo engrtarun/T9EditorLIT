@@ -1,31 +1,31 @@
 <script lang="ts">
   /**
-   * The tab strip — Firefox's shape: a row of rounded tabs with favicon,
-   * title, a close ✕, and a `+` at the end. Hard-capped at nine.
+   * The tab strip — Firefox 157's shape: floating rounded tabs that sit *above*
+   * the address bar, a raised active tab, a favicon, a title, and a close ✕ that
+   * appears on the tab you are on or the one you hover. Hard-capped at nine.
    *
    * The cap is a *product* rule (plan: 9 tabs), so `+` goes disabled with an
-   * explaining tooltip instead of silently doing nothing — the user asked for
-   * the limit to be visible, and a dead button with a reason is visible.
+   * explaining tooltip instead of silently doing nothing.
    *
    * Each tab is a `div[role=tab]` holding **two** buttons (select + close):
    * a nested `<button>` is invalid HTML and screen readers mangle it.
    */
-  import { browser, MAX_TABS, hostOf, faviconSrc } from '../../stores/browser.svelte';
+  import { browser, MAX_TABS, hostOf } from '../../stores/browser.svelte';
+  import SiteIcon from './SiteIcon.svelte';
 
-  /**
-   * Tabs whose favicon failed to load — fall back to the globe. Keyed by tab
-   * id so one dead icon never blanks the whole strip.
-   */
-  let failed = $state<Record<string, boolean>>({});
+  /** The tab's page URL, or `null` for the new-tab page (globe, no icon). */
+  function pageUrl(url: string): string | null {
+    return url === 'about:blank' || url === '' ? null : url;
+  }
 </script>
 
 <div
-  class="flex h-9 shrink-0 items-end gap-px overflow-x-auto border-b border-nc-line bg-nc-panel px-1 select-none"
+  class="flex h-10 shrink-0 items-center gap-1 overflow-x-auto px-2 select-none"
   role="tablist"
   aria-label="Browser tabs"
 >
   {#each browser.tabs as tab (tab.id)}
-    {@const icon = tab.url === 'about:blank' ? null : faviconSrc(tab.url)}
+    {@const icon = pageUrl(tab.url)}
     <div
       role="tab"
       aria-selected={tab.id === browser.activeId}
@@ -37,11 +37,12 @@
           browser.select(tab.id);
         }
       }}
-      class="group flex h-8 min-w-[110px] max-w-[190px] shrink-0 cursor-pointer items-center gap-1.5 rounded-t-lg px-2 text-[12px] transition-colors
+      class="group flex h-8 min-w-[104px] max-w-[184px] shrink-0 cursor-pointer items-center gap-1.5
+             rounded-lg px-2.5 text-[12px] transition-colors duration-150
              {tab.id === browser.activeId
-        ? 'bg-nc-panel-2 text-nc-txt'
+        ? 'bg-nc-panel-2 text-nc-txt ring-1 ring-white/5'
         : 'text-nc-mut hover:bg-nc-panel-2/60 hover:text-nc-txt'}"
-      title={tab.url === 'about:blank' ? 'New tab' : tab.url}
+      title={icon ?? 'New tab'}
     >
       <!-- favicon (or the globe) + a spinner while the page loads -->
       <span class="grid h-4 w-4 shrink-0 place-items-center overflow-hidden">
@@ -50,18 +51,12 @@
             class="h-3 w-3 animate-spin rounded-full border border-nc-mut border-t-transparent"
             aria-hidden="true"
           ></span>
-        {:else if icon && !failed[tab.id]}
-          <img
-            src={icon}
-            alt=""
-            class="h-4 w-4 object-contain"
-            loading="lazy"
-            onerror={() => (failed[tab.id] = true)}
-          />
+        {:else if icon}
+          <SiteIcon url={icon} label={tab.title || hostOf(icon)} size={16} />
         {:else}
           <svg
-            width="13"
-            height="13"
+            width="14"
+            height="14"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -76,10 +71,10 @@
       </span>
 
       <span class="min-w-0 flex-1 truncate text-left">
-        {tab.url === 'about:blank' ? 'New tab' : tab.title || hostOf(tab.url)}
+        {icon ? tab.title || hostOf(icon) : 'New tab'}
       </span>
 
-      <!-- close — always visible on the active tab, on hover for the rest -->
+      <!-- close — visible on the active tab, on hover for the rest -->
       <button
         type="button"
         onclick={(e) => {
@@ -87,7 +82,8 @@
           browser.close(tab.id);
         }}
         aria-label="Close tab"
-        class="grid h-4 w-4 shrink-0 place-items-center rounded-sm transition-opacity
+        class="grid h-4.5 w-4.5 shrink-0 place-items-center rounded-full transition-opacity
+               hover:bg-black/25
                {tab.id === browser.activeId ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}"
       >
         <svg
@@ -109,7 +105,7 @@
     type="button"
     onclick={() => browser.open()}
     disabled={browser.atCap}
-    class="mb-0.5 ml-1 grid h-7 w-7 shrink-0 place-items-center rounded-md text-nc-mut transition-colors
+    class="ml-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full text-nc-mut transition-colors
            {browser.atCap
       ? 'cursor-not-allowed opacity-40'
       : 'hover:bg-nc-panel-2 hover:text-nc-txt'}"
@@ -131,9 +127,7 @@
   </button>
 
   {#if browser.atCap}
-    <span
-      class="mb-1.5 ml-1 shrink-0 rounded-full bg-nc-panel-2 px-2 py-0.5 text-[10px] text-nc-mut"
-    >
+    <span class="ml-1 shrink-0 rounded-full bg-nc-panel-2 px-2 py-0.5 text-[10px] text-nc-mut">
       {browser.tabs.length}/{MAX_TABS} tabs
     </span>
   {/if}

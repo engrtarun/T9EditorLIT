@@ -1,25 +1,30 @@
 <script lang="ts">
   /**
-   * Tools panel — the 9-dots launcher, rebuilt.
+   * Tools panel — the 9-dots launcher.
    *
-   * It used to be a plain Home button. It is now a small "suggested websites"
-   * panel: nine built-in tools the app ships with (search, TTS, trends, docs,
-   * the video indexes) that can never be removed, plus whatever the user pins
-   * with the + button. Pinned tools live in localStorage — there is no
-   * backend for this and there does not need to be one.
+   * Nine built-in websites the app ships with (search, TTS, trends, docs, the
+   * video indexes) that can never be removed, plus whatever the user pins with
+   * the + button. Pinned tools live in `pinnedTools`, which the browser's
+   * new-tab page reads too — pin a site once, see it in both places.
    *
-   * The icons are round Chrome-style favicons, fetched from the site itself:
-   *   1. `<origin>/favicon.ico`   — what every site serves by default,
-   *   2. Google's s2 favicon CDN  — covers sites that 404 the first hop,
-   *   3. an initials tile         — when both fail (offline, dead domain).
-   *
-   * Tiles are plain `<a target="_blank">` links: the dev preview opens them
-   * as a new tab of the in-app browser pane, and the Tauri shell routes them
-   * to the system browser. No JS bridge needed either way.
+   * **A tile never leaves the app.** It is a button, not an `<a target="_blank">`:
+   * an anchor with a target hands the URL to Windows, which opens Edge/Firefox
+   * over the editor. Clicking here switches to the in-built browser and
+   * navigates its active tab, so the page the user asked for is the page they
+   * get, inside T9.
    */
   import { i18n } from '../stores/i18n.svelte';
+  import { app } from '../stores/app.svelte';
+  import { browser } from '../stores/browser.svelte';
+  import {
+    pinnedTools,
+    normaliseUrl,
+    hostOfUrl,
+    type PinnedTool
+  } from '../stores/pinned-tools.svelte';
+  import SiteIcon from './browser/SiteIcon.svelte';
 
-  type Tool = { id: string; name: string; url: string };
+  type Tool = PinnedTool;
 
   /** Shipped and locked. Order here is the order on the grid. */
   const BUILTIN: Tool[] = [
@@ -39,39 +44,11 @@
     { id: 'hdhub4u', name: 'HDHub4U', url: 'https://hdhub4u.ms/' }
   ];
 
-  const STORE_KEY = 't9-editor-lit.tools';
-
   let open = $state(false);
   let adding = $state(false);
   let nameDraft = $state('');
   let urlDraft = $state('');
   let pos = $state({ x: 0, y: 0 });
-  /** favicon URL per tool id; '' = both sources failed, show initials. */
-  let favicons = $state<Record<string, string>>({});
-  let mine = $state<Tool[]>(loadMine());
-
-  function loadMine(): Tool[] {
-    try {
-      const raw = localStorage.getItem(STORE_KEY);
-      const parsed: unknown = raw ? JSON.parse(raw) : [];
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .filter((t): t is Partial<Tool> => !!t && typeof t === 'object')
-        .filter((t) => typeof t.url === 'string' && t.url.length > 0)
-        .map((t) => ({
-          id: String(t.id ?? 'u' + Math.random().toString(36).slice(2)),
-          name: String(t.name || hostOf(String(t.url))),
-          url: String(t.url)
-        }));
-    } catch {
-      return [];
-    }
-  }
-
-  $effect(() => {
-    // `mine` is the dependency: add / remove writes through, reloads restore.
-    localStorage.setItem(STORE_KEY, JSON.stringify(mine));
-  });
 
   /** The panel's size, so it can be kept inside the window (CloudMenu rule). */
   const MENU_W = 320;
@@ -98,77 +75,20 @@
     open = true;
   }
 
-  function hostOf(url: string): string {
-    try {
-      return new URL(url).hostname.replace(/^www\./, '');
-    } catch {
-      return url;
-    }
-  }
-
-  function favPrimary(t: Tool): string {
-    try {
-      return new URL(t.url).origin + '/favicon.ico';
-    } catch {
-      return '';
-    }
-  }
-
-  function favFallback(t: Tool): string {
-    try {
-      return (
-        'https://www.google.com/s2/favicons?sz=64&domain=' +
-        encodeURIComponent(new URL(t.url).hostname)
-      );
-    } catch {
-      return '';
-    }
-  }
-
-  function favSrc(t: Tool): string {
-    return favicons[t.id] ?? favPrimary(t);
-  }
-
-  /** First miss hops to the Google CDN, second miss gives up → initials. */
-  function favFail(t: Tool) {
-    const shown = favicons[t.id] ?? favPrimary(t);
-    const next = favFallback(t);
-    favicons[t.id] = next && next !== shown ? next : '';
-  }
-
-  function initials(name: string): string {
-    return (
-      name
-        .replace(/[^A-Za-z0-9]/g, '')
-        .slice(0, 2)
-        .toUpperCase() || '··'
-    );
+  /** Open a site in the in-built browser — never in the system browser. */
+  function openTool(url: string) {
+    open = false;
+    adding = false;
+    app.openBrowser(app.view);
+    browser.navigate(url);
   }
 
   function pin() {
-    const url = normalise(urlDraft);
-    if (!url) return;
-    const name = nameDraft.trim() || hostOf(url);
-    mine = [...mine, { id: 'u' + Date.now().toString(36), name, url }];
+    const tool = pinnedTools.add(urlDraft, nameDraft);
+    if (!tool) return;
     nameDraft = '';
     urlDraft = '';
     adding = false;
-  }
-
-  function unpin(id: string) {
-    mine = mine.filter((t) => t.id !== id);
-  }
-
-  /** `example.com` → `https://example.com/`; junk stays unpinned. */
-  function normalise(raw: string): string {
-    let url = raw.trim();
-    if (!url) return '';
-    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
-    try {
-      return new URL(url).toString();
-    } catch {
-      return '';
-    }
   }
 </script>
 
@@ -218,7 +138,7 @@
   ></button>
 
   <div
-    class="fixed z-[200] w-[320px] max-h-[min(470px,74vh)] overflow-y-auto rounded-md border border-nc-line-2 bg-[#1E1E29] shadow-2xl"
+    class="t9-fade-in fixed z-[200] w-[320px] max-h-[min(470px,74vh)] overflow-y-auto rounded-xl border border-nc-line-2 bg-[#1E1E29] shadow-2xl"
     style="left:{pos.x}px;top:{pos.y}px"
     role="dialog"
     aria-label={i18n.t('bar.tools')}
@@ -248,7 +168,7 @@
 
     <!-- add form -->
     {#if adding}
-      <div class="mx-2 mb-2 rounded border border-nc-line-2 bg-nc-panel-2 p-2">
+      <div class="mx-2 mb-2 rounded-lg border border-nc-line-2 bg-nc-panel-2 p-2">
         <input
           bind:value={urlDraft}
           placeholder={i18n.t('bar.toolsUrl')}
@@ -265,7 +185,7 @@
           />
           <button
             onclick={pin}
-            disabled={!normalise(urlDraft)}
+            disabled={!normaliseUrl(urlDraft)}
             class="shrink-0 rounded bg-nc-brand px-2.5 text-[11px] font-bold text-nc-bg transition hover:brightness-110 disabled:opacity-40"
           >
             {i18n.t('bar.toolsPin')}
@@ -280,30 +200,15 @@
     </p>
     <div class="grid grid-cols-3 gap-1 px-2">
       {#each BUILTIN as t (t.id)}
-        <a
-          href={t.url}
-          target="_blank"
-          rel="noreferrer"
-          onclick={() => (open = false)}
-          class="group relative flex flex-col items-center gap-1 rounded-lg border border-transparent px-1.5 py-2.5 text-center transition-colors hover:border-nc-line-2 hover:bg-nc-panel-2"
+        <button
+          type="button"
+          onclick={() => openTool(t.url)}
+          class="group relative flex flex-col items-center gap-1.5 rounded-lg border border-transparent px-1.5 py-2.5 text-center transition-colors hover:border-nc-line-2 hover:bg-nc-panel-2"
+          title="{t.name} — in-built browser me khulega"
         >
-          {#if favSrc(t)}
-            <img
-              src={favSrc(t)}
-              alt=""
-              loading="lazy"
-              onerror={() => favFail(t)}
-              class="h-8 w-8 rounded-full bg-white/95 object-contain p-0.5"
-            />
-          {:else}
-            <span
-              class="grid h-8 w-8 place-items-center rounded-full bg-nc-brand/20 text-[11px] font-bold text-nc-brand"
-            >
-              {initials(t.name)}
-            </span>
-          {/if}
+          <SiteIcon url={t.url} label={t.name} size={34} framed />
           <span class="w-full truncate text-[11px] font-medium text-nc-txt">{t.name}</span>
-          <span class="w-full truncate text-[9px] text-nc-mut-2">{hostOf(t.url)}</span>
+          <span class="w-full truncate text-[9px] text-nc-mut-2">{hostOfUrl(t.url)}</span>
           <!-- the lock: these nine are shipped with the app -->
           <span
             class="absolute top-1 right-1 text-nc-mut-2 opacity-0 transition-opacity group-hover:opacity-100"
@@ -315,50 +220,35 @@
               />
             </svg>
           </span>
-        </a>
+        </button>
       {/each}
     </div>
 
     <!-- the user's own pins -->
     <p class="px-2.5 pt-2.5 pb-1 text-[9px] tracking-widest text-nc-mut-2">
-      YOUR PINNED ({mine.length})
+      YOUR PINNED ({pinnedTools.items.length})
     </p>
-    {#if mine.length === 0}
+    {#if pinnedTools.items.length === 0}
       <p class="px-2.5 pb-3 text-[11px] leading-relaxed text-nc-mut-2">
         {i18n.t('bar.toolsEmpty')}
       </p>
     {:else}
       <div class="grid grid-cols-3 gap-1 px-2 pb-2.5">
-        {#each mine as t (t.id)}
+        {#each pinnedTools.items as t (t.id)}
           <div class="group relative">
-            <a
-              href={t.url}
-              target="_blank"
-              rel="noreferrer"
-              onclick={() => (open = false)}
-              class="flex w-full flex-col items-center gap-1 rounded-lg border border-transparent px-1.5 py-2.5 text-center transition-colors hover:border-nc-line-2 hover:bg-nc-panel-2"
+            <button
+              type="button"
+              onclick={() => openTool(t.url)}
+              class="flex w-full flex-col items-center gap-1.5 rounded-lg border border-transparent px-1.5 py-2.5 text-center transition-colors hover:border-nc-line-2 hover:bg-nc-panel-2"
+              title="{t.name} — in-built browser me khulega"
             >
-              {#if favSrc(t)}
-                <img
-                  src={favSrc(t)}
-                  alt=""
-                  loading="lazy"
-                  onerror={() => favFail(t)}
-                  class="h-8 w-8 rounded-full bg-white/95 object-contain p-0.5"
-                />
-              {:else}
-                <span
-                  class="grid h-8 w-8 place-items-center rounded-full bg-nc-brand/20 text-[11px] font-bold text-nc-brand"
-                >
-                  {initials(t.name)}
-                </span>
-              {/if}
+              <SiteIcon url={t.url} label={t.name} size={34} framed />
               <span class="w-full truncate text-[11px] font-medium text-nc-txt">{t.name}</span>
-              <span class="w-full truncate text-[9px] text-nc-mut-2">{hostOf(t.url)}</span>
-            </a>
+              <span class="w-full truncate text-[9px] text-nc-mut-2">{hostOfUrl(t.url)}</span>
+            </button>
             <!-- remove: only the user's own pins have one -->
             <button
-              onclick={() => unpin(t.id)}
+              onclick={() => pinnedTools.remove(t.id)}
               title={i18n.t('bar.toolsRemove')}
               aria-label="{i18n.t('bar.toolsRemove')}: {t.name}"
               class="absolute -top-1 -right-1 hidden h-4 w-4 place-items-center rounded-full border border-nc-line-2 bg-nc-panel text-[9px] leading-none text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt group-hover:grid"
