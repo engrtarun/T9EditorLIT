@@ -175,26 +175,28 @@
    * a real frame, never a blank box.
    */
   async function hydrate(list: RustProject[]) {
-    // 1. Sizes — one IPC round-trip for the whole grid.
+    // 1. Sizes — one IPC round-trip for the whole grid, and one pass over the
+    //    cards. Patching one row at a time rebuilt the whole array per row.
     void fileSizes(list.map((p) => p.sourcePath))
       .then((sizes) => {
         const byPath = new Map(sizes.map((s) => [s.path, s]));
-        for (const p of list) {
-          const s = byPath.get(p.sourcePath);
+        cards = cards.map((c) => {
+          const s = byPath.get(c.project.sourcePath);
           // A vanished file keeps whatever the card already knew; the card
           // shows its "missing" state from the project row instead.
-          if (s?.exists) patch(p.id, (c) => ({ ...c, sizeBytes: s.sizeBytes }));
-        }
+          return s?.exists ? { ...c, sizeBytes: s.sizeBytes } : c;
+        });
       })
       .catch(() => {});
 
     // 2. The custom thumb check decides everything below it.
     const pending: RustProject[] = [];
+    const customs = new Map<string, string>();
     for (const p of list) {
       try {
         const custom = await customThumbnail(p.sourcePath);
         if (custom) {
-          patch(p.id, (c) => ({ ...c, customThumb: custom, posterUrl: assetUrl(custom) }));
+          customs.set(p.id, custom);
           continue;
         }
       } catch {
@@ -202,10 +204,20 @@
       }
       pending.push(p);
     }
+    if (customs.size) {
+      cards = cards.map((c) => {
+        const custom = customs.get(c.project.id);
+        return custom ? { ...c, customThumb: custom, posterUrl: assetUrl(custom) } : c;
+      });
+    }
 
-    // 3. What is left waits for the viewport — the `$effect` below observes
-    //    the card elements and feeds them to the queue as they near it.
+    // 3. What is left waits for the viewport. The observer has already fired
+    //    by now — the grid is on screen long before these IPCs return — so
+    //    re-check what is visible instead of waiting for a scroll event that
+    //    may never come. That wait is why posters went missing.
     for (const p of pending) posterWaiting.set(p.id, p);
+    postersReady = true;
+    pumpPosters();
   }
 
   /* ------------------------------------------------ lazy poster extraction */
@@ -239,49 +251,103 @@
    * viewport.
    */
 
-  /** Card id → project row, waiting to be scrolled near. */
+  /**
+   * Card id → project row, waiting for an extracted poster.
+   *
+   * A plain `Map`, not reactive state: nothing renders from it, and re-running
+   * the observation effect on every insert is exactly the churn this avoids.
+   */
   const posterWaiting = new Map<string, RustProject>();
+
+  /** True once `hydrate` has filled `posterWaiting`. */
+  let postersReady = false;
+
   let posterObserver: IntersectionObserver | null = null;
 
-  // Card elements on screen, observed for lazy poster extraction.
+  /** Two screens of slack — `rootMargin` wants px, not viewport units. */
+  function posterMargin() {
+    return Math.round(window.innerHeight * 2);
+  }
+
+  function posterObserverInstance(): IntersectionObserver {
+    posterObserver ??= new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) queuePoster(entry.target as HTMLElement);
+        }
+      },
+      { rootMargin: `${posterMargin()}px 0px ${posterMargin()}px 0px` }
+    );
+    return posterObserver;
+  }
+
+  /** Start extraction for one card, if it is still waiting. Idempotent. */
+  function queuePoster(el: HTMLElement) {
+    const id = el.dataset.cardId;
+    if (!id) return;
+    const waiting = posterWaiting.get(id);
+    if (waiting) {
+      posterWaiting.delete(id);
+      posterObserver?.unobserve(el);
+      lazyPosterQueue(waiting);
+      return;
+    }
+    // Before `postersReady` an empty lookup only means "hydrate has not
+    // reached this card yet" — keep watching it.
+    if (postersReady) posterObserver?.unobserve(el);
+  }
+
+  /**
+   * Start the cards that are on (or near) screen right now; leave the rest
+   * observed for the scroll. Runs once the waiting list is final, because the
+   * observer's first callback always beats the custom-thumb loop.
+   */
+  function pumpPosters() {
+    const grid = document.getElementById('cards-grid');
+    if (!grid || !postersReady || !posterWaiting.size) return;
+    const obs = posterObserverInstance();
+    const limit = posterMargin();
+    for (const el of Array.from(grid.children)) {
+      if (!(el instanceof HTMLElement)) continue;
+      const id = el.dataset.cardId;
+      if (!id) continue;
+      if (!posterWaiting.has(id)) {
+        obs.unobserve(el);
+        continue;
+      }
+      const r = el.getBoundingClientRect();
+      if (r.top < window.innerHeight + limit && r.bottom > -limit) queuePoster(el);
+      else obs.observe(el);
+    }
+  }
+
+  /**
+   * Stamp each card with its project id and hand **new** elements to the one
+   * long-lived observer. Re-observing the whole grid on every patch (the old
+   * `disconnect()` in the effect cleanup) was O(n²) layout work — a big
+   * library felt heavy because of it.
+   */
   $effect(() => {
     if (!isTauri()) return;
     const list = visible;
     const grid = document.getElementById('cards-grid');
     if (!grid || !list.length) return;
-
-    posterObserver ??= new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const id = (entry.target as HTMLElement).dataset.cardId;
-          const waiting = id ? posterWaiting.get(id) : undefined;
-          if (waiting) {
-            posterWaiting.delete(id!);
-            lazyPosterQueue(waiting);
-          }
-          // Custom-thumb and already-queued cards drop out here too.
-          posterObserver?.unobserve(entry.target);
-        }
-      },
-      // Two screens ahead — by the time the card is really visible, the
-      // still usually exists already.
-      { rootMargin: '200svh 0px 200svh 0px' }
-    );
-
+    const obs = posterObserverInstance();
     // The `{#each}` renders `visible` in order, so children[i] ↔ list[i].
     Array.from(grid.children).forEach((el, i) => {
       const p = list[i];
       if (!(el instanceof HTMLElement) || !p) return;
-      el.dataset.cardId = p.project.id;
-      posterObserver?.observe(el);
+      if (el.dataset.cardId !== p.project.id) el.dataset.cardId = p.project.id;
+      if (el.dataset.posterSeen) return;
+      el.dataset.posterSeen = '1';
+      obs.observe(el);
     });
+  });
 
-    return () => {
-      // The list changed — rebuild the observation next round; already-
-      // extracted ids are simply absent from the waiting map and no-op.
-      posterObserver?.disconnect();
-    };
+  // One observer for the life of the dashboard; drop it on unmount.
+  $effect(() => () => {
+    posterObserver?.disconnect();
+    posterObserver = null;
   });
 
   async function sweepTrash(): Promise<number> {

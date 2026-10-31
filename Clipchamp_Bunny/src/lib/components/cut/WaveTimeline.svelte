@@ -1093,7 +1093,7 @@
        row. All three regions sample the one `player.el` video — no second
        decoder. -->
   <div
-    class="relative isolate flex h-[30px] shrink-0 items-center gap-1 border-b border-nc-line px-2"
+    class="relative isolate z-40 flex h-[30px] shrink-0 items-center gap-1 border-b border-nc-line px-2"
   >
     <div
       class="pointer-events-none absolute inset-0 -z-10 overflow-hidden bg-nc-panel"
@@ -1407,7 +1407,7 @@
           <div
             role="menu"
             aria-label="Tracks"
-            class="t9-fade-in absolute right-0 top-full z-30 mt-1 w-44 rounded-lg border border-nc-line-2
+            class="t9-fade-in absolute right-0 bottom-full z-30 mb-1 w-44 rounded-lg border border-nc-line-2
                    bg-nc-panel p-1 shadow-2xl"
           >
             <p
