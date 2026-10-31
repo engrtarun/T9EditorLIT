@@ -230,6 +230,16 @@ class ProjectStore {
    */
   waveform = $state.raw<WaveformData | null>(null);
   thumbnails = $state.raw<ThumbnailStrip | null>(null);
+  /**
+   * Peaks for the extra clips, keyed by **source path**.
+   *
+   * The main source has `waveform`; an extra clip is a different file with its
+   * own audio, so its lane stayed empty until this existed. Keyed by path
+   * because two clips cut from one file share exactly one waveform.
+   */
+  clipPeaks = $state.raw<Record<string, number[]>>({});
+  /** Paths whose peaks are being fetched — one request per source file. */
+  private clipPeaksInFlight = new Set<string>();
 
   /** Index of the transcript line the keyboard cursor sits on. */
   cursor = $state(0);
@@ -1047,6 +1057,7 @@ class ProjectStore {
     this.activeClipId = null;
     this.waveform = null;
     this.thumbnails = null;
+    this.clipPeaks = {};
     this.cursor = 0;
     this.selectedIds = [];
     this.clipboard = null;
@@ -1216,6 +1227,28 @@ class ProjectStore {
   /** How long one extra clip lasts on the timeline. */
   clipLength(c: ProjectClip): number {
     return Math.max(0.1, c.outSec - c.inSec);
+  }
+
+  /**
+   * Fetch an extra clip's waveform once, for its lane.
+   *
+   * Best-effort: an image, an unreadable file or the browser demo (no IPC)
+   * simply leaves the lane flat — the clip still plays and still exports.
+   */
+  ensureClipPeaks(clip: ProjectClip) {
+    if (clip.kind === 'image') return;
+    const key = clip.path;
+    if (this.clipPeaks[key] || this.clipPeaksInFlight.has(key)) return;
+    this.clipPeaksInFlight.add(key);
+    extractWaveform(key)
+      .then((w) => {
+        if (!w?.peaks?.length) return;
+        this.clipPeaks = { ...this.clipPeaks, [key]: w.peaks };
+      })
+      .catch(() => {
+        /* no audio track, unreadable file, or the browser demo */
+      })
+      .finally(() => this.clipPeaksInFlight.delete(key));
   }
 
   /** Total length of the extra clips. */
@@ -1404,6 +1437,9 @@ class ProjectStore {
     const at =
       atIndex == null ? this.clips.length : Math.max(0, Math.min(this.clips.length, atIndex));
     this.clips = [...this.clips.slice(0, at), clip, ...this.clips.slice(at)];
+    // The lane is drawn from the clip's own audio; without this the dropped
+    // clip's waveform row stayed empty.
+    this.ensureClipPeaks(clip);
     this.saveClips();
     return clip;
   }
@@ -1469,6 +1505,9 @@ class ProjectStore {
           typeof c.inSec === 'number' &&
           typeof c.outSec === 'number'
       );
+      // Restored clips need their lanes too — this is the second visit to a
+      // project, so the waveform comes from the on-disk cache.
+      for (const c of this.clips) this.ensureClipPeaks(c);
     } catch {
       /* corrupt entry - start without extras rather than block the project */
     }

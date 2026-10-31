@@ -438,6 +438,36 @@
       }
       ctx.globalAlpha = 1;
     }
+
+    // Extra clips: their own file, their own peaks. This lane used to be empty
+    // for anything dropped from My media — the loop above only knew the main
+    // cut's `segments`. Blue marks "another source", so the eye can tell the
+    // main transcript's gold/red from a clip's own audio.
+    for (const r of extras) {
+      if (r.clip.kind === 'image') continue;
+      const peaks =
+        project.clipPeaks[r.clip.path] ??
+        // The browser demo's "second asset" is the same baked file.
+        (project.media?.url && project.media.url === r.clip.url ? project.waveform?.peaks : null);
+      if (!peaks?.length) continue;
+      const x0 = r.start * zoom;
+      const wpx = Math.max(1, Math.ceil((r.end - r.start) * zoom));
+      const dur = r.clip.durationSecs || 1;
+      ctx.fillStyle = '#4d8dff';
+      for (let px = 0; px < wpx; px += 2) {
+        // `inSec` shifts the window: a trimmed clip must show the audio it
+        // actually plays, not the top of the file.
+        const sourceSec = r.clip.inSec + px / zoom;
+        const pi = Math.min(
+          peaks.length - 1,
+          Math.max(0, Math.floor((sourceSec / dur) * peaks.length))
+        );
+        const p = peaks[pi] ?? 0;
+        const hgt = Math.max(1, p * (AUDIO_H - 10));
+        ctx.fillRect(x0 + px, mid - hgt / 2, 2, hgt);
+      }
+    }
+
     ctx.fillStyle = '#2a2c38';
     ctx.fillRect(0, mid, w, 1);
   }
@@ -482,6 +512,7 @@
 
   $effect(() => {
     void project.waveform;
+    void project.clipPeaks; // a dropped clip's lane repaints when its peaks land
     void project.mutedSegments;
     void zoom;
     void contentW;
@@ -1063,6 +1094,38 @@
   </button>
 {/snippet}
 
+<!--
+  The J / L skip buttons: YouTube's circular arrow with the number in the
+  middle, drawn once so both directions stay identical. The number is the
+  user's own step from Settings, never a hard-coded 5.
+-->
+{#snippet seekIcon(dir: 'back' | 'forward')}
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path
+      d={dir === 'back' ? 'M12 4.4a7.6 7.6 0 1 0 7.6 7.6' : 'M12 4.4a7.6 7.6 0 1 1-7.6 7.6'}
+      stroke="currentColor"
+      stroke-width="1.7"
+      stroke-linecap="round"
+    />
+    <path
+      d={dir === 'back' ? 'M12 1.9 8.7 4.4 12 6.9' : 'M12 1.9 15.3 4.4 12 6.9'}
+      stroke="currentColor"
+      stroke-width="1.7"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <text
+      x="12"
+      y="15.7"
+      text-anchor="middle"
+      font-size={settings.seekStepLabel.length > 1 ? 6.4 : 7.4}
+      font-weight="700"
+      fill="currentColor"
+      stroke="none">{settings.seekStepLabel}</text
+    >
+  </svg>
+{/snippet}
+
 <!-- BOTTOM BLOCK — the EDIT timeline: the final video, gapless, with draggable clips. -->
 <section
   data-focus="timeline"
@@ -1101,6 +1164,20 @@
     >
       <AmbientGlow video={player.el} poster={glowPoster} />
     </div>
+
+    <!-- Empty space in this band scrubs the playhead: press anywhere that is
+         not a control and drag, and the timeline follows. It sits at -z-4 —
+         above the opaque glow, behind every in-flow control — so each button
+         still gets its own click and its own cursor, while the bare band
+         shows the scrub cursor. The maths is the playhead's own drag, so the
+         head drawn in this band lands exactly under the pointer. -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="absolute inset-0 -z-[4] cursor-ew-resize"
+      aria-hidden="true"
+      onpointerdown={onPlayheadDown}
+    ></div>
+
     <div class="flex items-center gap-0.5">
       <button
         onclick={autoSuggest}
@@ -1213,46 +1290,14 @@
           class="grid h-7 w-7 place-items-center rounded-full text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
           title="Back {settings.seekStepLabel}s (J)"
         >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-          >
-            <path d="M11 17l-5-5 5-5" /><path d="M18 17l-5-5 5-5" />
-            <text
-              x="12"
-              y="21"
-              font-size={settings.seekStepLabel.length > 1 ? 6 : 7}
-              fill="currentColor"
-              text-anchor="middle">{settings.seekStepLabel}</text
-            >
-          </svg>
+          {@render seekIcon('back')}
         </button>
         <button
           onclick={() => stepBy(settings.seekStepSec)}
           class="grid h-7 w-7 place-items-center rounded-full text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
           title="Forward {settings.seekStepLabel}s (L)"
         >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-          >
-            <path d="M13 17l5-5-5-5" /><path d="M6 17l5-5-5-5" />
-            <text
-              x="12"
-              y="21"
-              font-size={settings.seekStepLabel.length > 1 ? 6 : 7}
-              fill="currentColor"
-              text-anchor="middle">{settings.seekStepLabel}</text
-            >
-          </svg>
+          {@render seekIcon('forward')}
         </button>
         <button
           onclick={() => player.toggle()}
@@ -1446,6 +1491,19 @@
         {/if}
       </span>
     </div>
+
+    <!-- The playhead's head, in the toolbar band. The line in the lanes starts
+         at the ruler; this carries it up to the strip the eye is already on, so
+         it reads as one continuous line. Behind the buttons (-z-5) so it never
+         eats a click, above the opaque glow (-z-10) so it stays visible. -->
+    {#if editPlayhead != null && !layout.timelineCollapsed}
+      <div
+        class="pointer-events-none absolute inset-y-0 -z-[5] w-[2px] -translate-x-1/2 rounded-full
+               bg-gradient-to-b from-nc-brand/85 to-nc-brand/15"
+        style="left:{editPlayhead * zoom - scrollLeft}px"
+        aria-hidden="true"
+      ></div>
+    {/if}
   </div>
 
   {#if !layout.timelineCollapsed}
@@ -1829,7 +1887,10 @@
             onpointerdown={onPlayheadDown}
             title="Drag playhead"
           >
-            <div class="mx-auto h-full w-[2px] bg-nc-txt"></div>
+            <div
+              class="mx-auto h-full w-[2px] rounded-full bg-gradient-to-b from-nc-brand via-nc-txt/90 to-nc-txt/75
+                     shadow-[0_0_10px_rgba(77,141,255,0.35)]"
+            ></div>
           </div>
           <div
             role="slider"
@@ -1839,11 +1900,24 @@
             aria-valuemin="0"
             aria-valuemax={Math.round(editDur)}
             aria-valuenow={Math.round(editPlayhead ?? 0)}
-            class="absolute z-40 h-3.5 w-3.5 -translate-x-1/2 cursor-ew-resize rounded-full border border-black/30 bg-nc-txt shadow-lg"
-            style="left:{editPlayhead * zoom}px;top:{MINIMAP_H + RULER_H - 14}px"
+            class="group absolute z-40 -translate-x-1/2 cursor-ew-resize"
+            style="left:{editPlayhead * zoom}px;top:{MINIMAP_H + RULER_H - 18}px"
             onpointerdown={onPlayheadDown}
             title="Drag playhead"
-          ></div>
+          >
+            <!-- A slow halo, the only thing that moves while paused. Low
+                 amplitude on purpose: it should read as "live", not "busy". -->
+            <span
+              class="t9-playhead-halo pointer-events-none absolute -inset-2 rounded-full bg-nc-brand/35"
+            ></span>
+            <span
+              class="relative block h-[18px] w-[11px] rounded-[3px] border border-black/40 bg-nc-brand
+                     shadow-[0_2px_6px_rgba(0,0,0,0.5)] transition-transform duration-150
+                     group-hover:scale-110 group-active:scale-95"
+            >
+              <span class="mx-auto mt-[4px] block h-[2px] w-[5px] rounded-full bg-white/85"></span>
+            </span>
+          </div>
         {/if}
       </div>
     </div>

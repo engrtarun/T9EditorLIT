@@ -512,6 +512,32 @@
 }
 
 /* =========================================================
+   THE PLAYHEAD'S HALO.
+
+   A 2.8 s breath around the playhead handle — the one thing that moves while
+   the video is paused. Low amplitude and low opacity on purpose: it reads as
+   "live", never as "busy". The Reduced Motion rules above freeze it on the
+   first frame, exactly like every other animation here.
+   ========================================================= */
+
+@keyframes t9-playhead-halo {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.15;
+    transform: scale(1.4);
+  }
+}
+
+.t9-playhead-halo {
+  animation: t9-playhead-halo 2800ms ease-in-out infinite;
+  will-change: opacity, transform;
+}
+
+/* =========================================================
    SETTINGS → MOTION PREFERENCE.
 
    The same collapse as the OS query above, driven by the app's own setting so
