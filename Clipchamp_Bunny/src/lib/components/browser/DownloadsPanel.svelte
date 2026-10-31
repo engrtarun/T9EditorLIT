@@ -8,6 +8,8 @@
    * itself, so a paused download's bar stops where the writer stopped.
    */
   import { downloads } from '../../stores/downloads.svelte';
+  import { toast } from '../../stores/toast.svelte';
+  import { revealPath } from '../../ipc';
   import { fmtSize } from '../../utils';
 
   /** Bytes/s → "4.2 MB/s". */
@@ -131,8 +133,31 @@
               {/if}
             </div>
 
-            <!-- row actions: pause / resume / cancel -->
+            <!-- row actions: reveal / pause / resume / cancel -->
             <div class="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                onclick={async () => {
+                  if (await revealPath(item.path)) return;
+                  toast.push('info', 'File Downloads folder me hai (adhoori file `.part` naam se)');
+                }}
+                class="grid h-6 w-6 place-items-center rounded text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+                title="Folder me dikhao (Downloads)"
+                aria-label="Show this download in the folder"
+              >
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                >
+                  <path
+                    d="M3 8a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                  />
+                </svg>
+              </button>
               {#if item.status === 'running'}
                 <button
                   type="button"
