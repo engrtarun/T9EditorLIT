@@ -3,6 +3,8 @@ package dl
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -204,6 +206,46 @@ func TestResumeAfterAPermanentRefusal(t *testing.T) {
 	}
 	if s := served.Load(); s > int64(len(blob)) {
 		t.Fatalf("resume re-downloaded %d bytes of a %d byte file", s, len(blob))
+	}
+}
+
+// TestSocketBudgetComesBackWhenTheHostGoesQuiet: after a 429 the budget was
+// only ever refilled by a *finished* segment - hours away on a 90 GB file, so
+// one early rate limit left the whole transfer on two sockets (measured: 24.9
+// MB/s before the 429, 8 MB/s for the rest of the 1 GB). The timer hands one
+// socket back per quiet stretch, never above the segment count.
+func TestSocketBudgetComesBackWhenTheHostGoesQuiet(t *testing.T) {
+	prevAfter := limitRecoverAfter
+	t.Cleanup(func() { limitRecoverAfter = prevAfter })
+
+	d := &download{segs: make([]*segment, 8), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	d.concLimit = 8
+	d.slowDown() // 8 -> 4
+	d.slowDown() // 4 -> 2
+	if d.concLimit != 2 {
+		t.Fatalf("two 429s must leave two sockets, got %d", d.concLimit)
+	}
+
+	// Still inside the quiet window: nothing is handed back.
+	limitRecoverAfter = time.Hour
+	d.maybeSpeedUp()
+	if d.concLimit != 2 {
+		t.Fatalf("a recent 429 must not hand a socket back, got %d", d.concLimit)
+	}
+
+	// Quiet since long enough: one socket.
+	limitRecoverAfter = 0
+	d.maybeSpeedUp()
+	if d.concLimit != 3 {
+		t.Fatalf("a quiet host must get one socket back, got %d", d.concLimit)
+	}
+
+	// And it never climbs past the segment count.
+	for i := 0; i < 20; i++ {
+		d.maybeSpeedUp()
+	}
+	if d.concLimit != 8 {
+		t.Fatalf("budget must stop at the segment count, got %d", d.concLimit)
 	}
 }
 

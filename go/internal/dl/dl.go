@@ -1039,6 +1039,7 @@ type download struct {
 	gateMu    sync.Mutex
 	active    int
 	concLimit int
+	lastLimit atomic.Int64 // unix nanos of the last 429
 }
 
 // tracks reports whether a partial path already belongs to a row.
@@ -1140,6 +1141,10 @@ func (d *download) run() {
 	d.stop = cancel
 	d.status = StatusRunning
 	d.mu.Unlock()
+	// A fresh row starts with the full budget; the clock only matters after a
+	// 429, but a zero value would look like "last 429 in 1970" and hand back
+	// a socket immediately.
+	d.lastLimit.Store(time.Now().UnixNano())
 
 	// Flush the resume state while the bytes are still moving. Until this
 	// existed the sidecar was only written on pause and on error, so a crash
@@ -1156,6 +1161,27 @@ func (d *download) run() {
 				d.mu.Lock()
 				d.saveSidecarLocked()
 				d.mu.Unlock()
+			}
+		}
+	}()
+
+	// The socket recovery: a host that stopped rate-limiting gets its sockets
+	// back one at a time, as long as bytes are still arriving.
+	go func() {
+		t := time.NewTicker(limitRecoverEvery)
+		defer t.Stop()
+		last := d.received.Load()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				cur := d.received.Load()
+				if cur == last {
+					continue
+				}
+				last = cur
+				d.maybeSpeedUp()
 			}
 		}
 	}()
@@ -1373,6 +1399,7 @@ func (d *download) release() {
 // still makes progress, but a single connection rarely saturates a line, and
 // the limit climbs back as soon as the host is happy again.
 func (d *download) slowDown() {
+	d.lastLimit.Store(time.Now().UnixNano())
 	d.gateMu.Lock()
 	floor := len(d.segs)
 	if floor > 2 {
@@ -1403,6 +1430,27 @@ func (d *download) speedUp() {
 	limit := d.concLimit
 	d.gateMu.Unlock()
 	diagf("speedup id=%s sockets=%d", d.id, limit)
+}
+
+// limitRecoverAfter is how long a host must stay quiet (no 429, bytes still
+// arriving) before a socket is given back, and limitRecoverEvery is how often
+// that is checked. Variables so a test does not need real minutes.
+var (
+	limitRecoverAfter = 45 * time.Second
+	limitRecoverEvery = 20 * time.Second
+)
+
+// maybeSpeedUp returns one socket after a quiet stretch.
+//
+// Without it the budget only ever recovers when a segment *finishes* - which
+// on a 90 GB file can be hours. One 429 early in the transfer would leave the
+// whole download on two sockets: measured on a 1 GB test, 24.9 MB/s before the
+// rate limit and 8 MB/s after, for the rest of the file.
+func (d *download) maybeSpeedUp() {
+	if time.Since(time.Unix(0, d.lastLimit.Load())) < limitRecoverAfter {
+		return
+	}
+	d.speedUp()
 }
 
 // stallLimit ends a row whose host has stopped answering entirely: no byte
