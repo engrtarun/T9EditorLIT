@@ -309,25 +309,26 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 		return nil, errors.New("sirf http/https URL chalega")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	probe, err := m.probe(ctx, rawURL, referer)
-	if err != nil {
-		diagf("probe fail %s err=%v", parsed.Host, err)
-		return nil, err
-	}
-
 	// Same link, same queue: a recovered or paused row *is* the download the
 	// user means. Starting it again resumes it instead of writing a second
 	// partial file next to the first (which is how three 46 GB `.part` files
-	// ended up in Downloads).
+	// ended up in Downloads) - and it needs no probe, so a flaky host cannot
+	// refuse a resume it has already agreed to once.
 	if existing := m.runningOrPaused(rawURL); existing != nil {
 		if existing.status == StatusPaused {
 			_ = existing.resume()
 		}
 		item := existing.snapshot()
 		return &item, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	probe, err := m.probeRetry(ctx, rawURL, referer)
+	if err != nil {
+		diagf("probe fail %s err=%v", parsed.Host, err)
+		return nil, err
 	}
 
 	// The filename prefers the server's Content-Disposition (that is what a
@@ -360,6 +361,7 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 		ranged:       probe.ranged,
 		etag:         probe.etag,
 		lastModified: probe.lastModified,
+		ua:           probe.ua,
 		status:       StatusRunning,
 		client:       m.client,
 		log:          m.log,
@@ -425,6 +427,76 @@ type probeResult struct {
 	filename     string
 	etag         string
 	lastModified string
+	// ua is the identity the probe was answered under; the transfer keeps it,
+	// because a host that agreed under `curl/` will not answer a browser UA
+	// mid-download either.
+	ua string
+}
+
+// The two identities a request can carry.
+//
+// uaBrowser is the default: an in-app browser download should look like one,
+// and real file hosts (Google's CDN among them) refuse a bare `Go-http-client`
+// UA. uaPlain is the fallback for the hosts that do the opposite - measured on
+// a public speed server: Chrome-UA requests were dropped on the socket 3 out
+// of 3 times while curl's UA was answered 3 out of 3 - and it is only ever
+// tried after the browser UA has failed.
+const (
+	uaBrowser = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36"
+	uaPlain   = "curl/8.5.0"
+)
+
+// userAgent is empty on a row recovered from a sidecar, which never saw a
+// server: it starts as the browser and downgrades only if the host refuses it.
+func userAgent(ua string) string {
+	if ua == "" {
+		return uaBrowser
+	}
+	return ua
+}
+
+// probeRetry asks twice more before giving up.
+//
+// One dropped connection used to be the whole answer: HEAD, then the Range
+// question and then the plain GET all failed with `EOF`, and the user was
+// told "the server refuses to give the file" for a host that was merely
+// busy (a speed-test server rate-limiting us right after a benchmark, a CDN
+// recycling an idle socket). "90 GB file start hi nahi hui" was often this
+// one line of code. An error page is different - retrying a link that has
+// gone bad cannot help - so that one fails immediately.
+func (m *Manager) probeRetry(ctx context.Context, rawURL, referer string) (*probeResult, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			diagf("probe retry %d err=%v", attempt, lastErr)
+			time.Sleep(time.Duration(attempt) * 700 * time.Millisecond)
+		}
+		actx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		res, err := m.probe(actx, rawURL, referer, uaBrowser)
+		cancel()
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		if errors.Is(err, errHTMLPage) {
+			return nil, err
+		}
+	}
+
+	// The last question, under a different name: a host that closes the
+	// socket the moment it sees a browser User-Agent looks exactly like a
+	// dead link, and `curl`'s own UA answers it (measured: one popular speed
+	// server dropped Chrome-UA requests three times out of three while
+	// answering curl's three times out of three). Real file hosts want the
+	// browser UA, so that one is always tried first; this is the fallback.
+	actx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	res, err := m.probe(actx, rawURL, referer, uaPlain)
+	cancel()
+	if err == nil {
+		diagf("probe fallback ua=plain ok host=%s", rawURL)
+		return res, nil
+	}
+	return nil, lastErr
 }
 
 // probe asks the server what it is about to serve.
@@ -433,8 +505,8 @@ type probeResult struct {
 // HEAD (405, or a CDN that treats it differently) falls back to a one-byte
 // ranged GET, which is the more honest question anyway: a 206 answer proves
 // range support regardless of what any header claims.
-func (m *Manager) probe(ctx context.Context, rawURL, referer string) (*probeResult, error) {
-	head, err := m.newRequest(ctx, http.MethodHead, rawURL, referer)
+func (m *Manager) probe(ctx context.Context, rawURL, referer, ua string) (*probeResult, error) {
+	head, err := m.newRequest(ctx, http.MethodHead, rawURL, referer, ua)
 	if err != nil {
 		return nil, err
 	}
@@ -452,13 +524,14 @@ func (m *Manager) probe(ctx context.Context, rawURL, referer string) (*probeResu
 				filename:     filenameFromDisposition(resp.Header.Get("Content-Disposition")),
 				etag:         resp.Header.Get("ETag"),
 				lastModified: resp.Header.Get("Last-Modified"),
+				ua:           ua,
 			}
 			// Accept-Ranges missing is not proof of no support — ask with a
 			// real Range request before giving up on splitting. A chunked HEAD
 			// (no Content-Length) is the other reason to ask: the range answer
 			// carries the size in Content-Range.
 			if !res.ranged || res.total <= 0 {
-				if ranged, total := m.probeRange(ctx, rawURL, referer); ranged {
+				if ranged, total := m.probeRange(ctx, rawURL, referer, ua); ranged {
 					res.ranged = true
 					if total > 0 {
 						res.total = total
@@ -473,13 +546,13 @@ func (m *Manager) probe(ctx context.Context, rawURL, referer string) (*probeResu
 	}
 
 	// HEAD failed outright — the one-byte GET is the next question.
-	if ranged, total := m.probeRange(ctx, rawURL, referer); ranged {
-		return &probeResult{total: total, ranged: true}, nil
+	if ranged, total := m.probeRange(ctx, rawURL, referer, ua); ranged {
+		return &probeResult{total: total, ranged: true, ua: ua}, nil
 	}
 	// Last resort: some file hosts refuse HEAD *and* ignore Range. A plain GET
 	// still starts the download (one connection, unknown length), which beats
 	// refusing to start a 90 GB file at all.
-	if res, err := m.probeGet(ctx, rawURL, referer); err == nil {
+	if res, err := m.probeGet(ctx, rawURL, referer, ua); err == nil {
 		return res, nil
 	} else if err != nil {
 		lastErr = err
@@ -499,8 +572,8 @@ func isHTML(contentType string) bool {
 // probeGet is the last-resort probe: a plain GET whose body is dropped after a
 // few kilobytes. It learns the size and the filename when the server supports
 // neither HEAD nor Range, and turns an HTML error page into a real message.
-func (m *Manager) probeGet(ctx context.Context, rawURL, referer string) (*probeResult, error) {
-	req, err := m.newRequest(ctx, http.MethodGet, rawURL, referer)
+func (m *Manager) probeGet(ctx context.Context, rawURL, referer, ua string) (*probeResult, error) {
+	req, err := m.newRequest(ctx, http.MethodGet, rawURL, referer, ua)
 	if err != nil {
 		return nil, err
 	}
@@ -521,13 +594,14 @@ func (m *Manager) probeGet(ctx context.Context, rawURL, referer string) (*probeR
 		filename:     filenameFromDisposition(resp.Header.Get("Content-Disposition")),
 		etag:         resp.Header.Get("ETag"),
 		lastModified: resp.Header.Get("Last-Modified"),
+		ua:           ua,
 	}, nil
 }
 
 // probeRange sends `Range: bytes=0-0`. A 206 answers with the full size in
 // Content-Range (`bytes 0-0/12345`) and proves range support in one shot.
-func (m *Manager) probeRange(ctx context.Context, rawURL, referer string) (bool, int64) {
-	req, err := m.newRequest(ctx, http.MethodGet, rawURL, referer)
+func (m *Manager) probeRange(ctx context.Context, rawURL, referer, ua string) (bool, int64) {
+	req, err := m.newRequest(ctx, http.MethodGet, rawURL, referer, ua)
 	if err != nil {
 		return false, 0
 	}
@@ -544,7 +618,7 @@ func (m *Manager) probeRange(ctx context.Context, rawURL, referer string) (bool,
 	return true, parseContentRangeTotal(resp.Header.Get("Content-Range"))
 }
 
-func (m *Manager) newRequest(ctx context.Context, method, rawURL, referer string) (*http.Request, error) {
+func (m *Manager) newRequest(ctx context.Context, method, rawURL, referer, ua string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
 	if err != nil {
 		return nil, err
@@ -554,7 +628,7 @@ func (m *Manager) newRequest(ctx context.Context, method, rawURL, referer string
 	if referer != "" {
 		req.Header.Set("Referer", referer)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36")
+	req.Header.Set("User-Agent", userAgent(ua))
 	// Raw bytes, always. Without this Go transparently asks for gzip and
 	// decompresses on the fly, so Content-Length stops matching the bytes we
 	// write and a "45 GB" file arrives short.
@@ -804,6 +878,7 @@ type download struct {
 	ranged       bool
 	etag         string
 	lastModified string
+	ua           string // the identity the probe was answered under
 
 	client *http.Client
 	log    *slog.Logger
@@ -1173,7 +1248,7 @@ func (d *download) newRequest(ctx context.Context, start int64) (*http.Request, 
 	if d.referer != "" {
 		req.Header.Set("Referer", d.referer)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36")
+	req.Header.Set("User-Agent", userAgent(d.ua))
 	// Same reason as the probe: the byte count the server advertises must be
 	// the byte count that reaches the disk (one-connection downloads have no
 	// Range header, so Go would otherwise negotiate gzip).
