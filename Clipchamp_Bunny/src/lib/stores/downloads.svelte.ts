@@ -48,6 +48,16 @@ class DownloadsStore {
   failed = $state<FailedDownload[]>([]);
   /** The slide-up panel is open. */
   open = $state(false);
+  /**
+   * The daemon answered the last poll.
+   *
+   * The bytes live in the daemon, not here, so an unreachable daemon freezes
+   * every number on the panel — and a frozen 0.0 MB/s looks exactly like a
+   * download that died. It usually is not: the app restarts a dead daemon
+   * within ~20 s, and the sidecars make the interrupted rows continue from
+   * their last byte. This flag is "ek second", not "file gayi".
+   */
+  reachable = $state(true);
   /** Polling is armed (at least one non-terminal item, or the panel is open). */
   private timer: ReturnType<typeof setInterval> | undefined;
 
@@ -131,9 +141,13 @@ class DownloadsStore {
       if (res.ok) {
         const list = (await res.json()) as DownloadItem[];
         this.items = Array.isArray(list) ? list : [];
+        this.reachable = true;
+      } else {
+        this.reachable = false;
       }
     } catch {
-      /* daemon not up — the panel simply shows what it has */
+      /* daemon not up — the panel says so instead of showing frozen numbers */
+      this.reachable = false;
     }
     this.syncTimer();
   }

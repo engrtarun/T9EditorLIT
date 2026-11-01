@@ -119,6 +119,16 @@
       </div>
     </div>
 
+    {#if !downloads.reachable && downloads.items.length > 0}
+      <!-- The daemon owns the bytes. When it is unreachable the numbers above
+           would sit still forever with no explanation, which reads as "mera
+           download mar gaya" — say what is actually happening instead. -->
+      <p class="border-b border-nc-line/40 bg-nc-brand/10 px-3 py-1.5 text-[11px] text-nc-brand">
+        Daemon se connection nahi — app use ~20 second me restart kar deta hai, phir row wahin se
+        chalti hai.
+      </p>
+    {/if}
+
     {#if downloads.failed.length > 0}
       <ul class="border-b border-nc-line/40">
         {#each downloads.failed as fail (fail.id)}

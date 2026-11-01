@@ -1622,6 +1622,33 @@ pub fn run() {
             }
             // The cloud brain comes up with the app - no terminal needed.
             ensure_daemon(app.handle());
+            // ...and it is watched, not just started once. The daemon owns the
+            // downloads: if it dies mid-transfer (a crash, a killed process,
+            // the updater swapping the binary) nothing used to bring it back
+            // until the next launch, and a background download sat at 0 MB/s
+            // with a panel that polled a dead port. The watchdog restarts it,
+            // and the sidecars make the interrupted rows continue on their own.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let mut last_spawn: Option<std::time::Instant> = None;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(20));
+                        if daemon_is_up() {
+                            continue;
+                        }
+                        // A daemon that cannot start (missing .env, a locked
+                        // port) must not be respawned every 20 seconds forever.
+                        if let Some(at) = last_spawn
+                            && at.elapsed() < std::time::Duration::from_secs(120)
+                        {
+                            continue;
+                        }
+                        last_spawn = Some(std::time::Instant::now());
+                        ensure_daemon(&handle);
+                    }
+                });
+            }
             // "Edit with T9 Editor LIT": any video path on this process's
             // command line waits in the queue for the frontend to drain.
             {
