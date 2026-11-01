@@ -13,6 +13,7 @@ import type { BrowserTab } from '../types';
 import {
   browserShow,
   browserHide,
+  browserSetZoom,
   onBrowserDownload,
   onBrowserNav,
   onBrowserPage,
@@ -25,6 +26,24 @@ import { toast } from './toast.svelte';
 
 /** The hard cap. Nine tabs, like the plan says — no more. */
 export const MAX_TABS = 9;
+
+/** A saved page pin (Ctrl+D). Bookmarks live on the speed dial. */
+export interface Bookmark {
+  url: string;
+  label: string;
+}
+
+const BOOKMARKS_KEY = 't9-browser-lit.bookmarks';
+
+/** One visited page in the Ctrl+H panel. Bounded list, newest first. */
+export interface HistoryEntry {
+  url: string;
+  title: string;
+  at: number;
+}
+
+const HISTORY_CAP = 80;
+const CLOSED_CAP = 20;
 
 /** Brave Search, not Google: no account, no ad profile on every keystroke. */
 const SEARCH_URL = 'https://search.brave.com/search?q=';
@@ -130,6 +149,19 @@ class BrowserStore {
   tabs = $state<BrowserTab[]>([]);
   activeId = $state<string | null>(null);
 
+  /** Bookmarks (Ctrl+D) — persisted on this machine, shown on the dial. */
+  bookmarks = $state<Bookmark[]>([]);
+  private bookmarksLoaded = false;
+
+  /** The bounded visit log behind the Ctrl+H panel; Ctrl+Shift+Del empties it. */
+  historyLog = $state<HistoryEntry[]>([]);
+
+  /** The Ctrl+H panel's open state. */
+  historyOpen = $state(false);
+
+  /** The last zoom the keys set (0.2 … 10) — applied to the active tab on use. */
+  zoomLevel = $state(1);
+
   /**
    * Per-tab URL history (stack + pointer), kept **out** of `BrowserTab` so
    * the Rust struct mirror stays a one-row-per-tab affair.
@@ -143,6 +175,20 @@ class BrowserStore {
 
   private hist(id: string): { stack: string[]; index: number } {
     return (this.histories[id] ??= { stack: [], index: -1 });
+  }
+
+  /**
+   * The Ctrl+Shift+T stack: closed tabs newest-first (`plain`, private — no
+   * UI reads it). Bounded like every state in this store.
+   */
+  private closed: { url: string; title: string; index: number }[] = [];
+
+  /** One new line in the Ctrl+H log — consecutive duplicates collapse. */
+  private logVisit(url: string, title: string): void {
+    if (!url || url === 'about:blank') return;
+    if (this.historyLog[0]?.url === url) return;
+    this.historyLog.unshift({ url, title, at: Date.now() });
+    if (this.historyLog.length > HISTORY_CAP) this.historyLog.length = HISTORY_CAP;
   }
 
   private push(id: string, url: string): void {
@@ -192,9 +238,194 @@ class BrowserStore {
     if (!tab || tab.url === 'about:blank') return;
     tab.loading = true;
     // Same URL: `force` tells the native side to re-navigate even though
-    // the child is already showing it (the fast path would skip it).
+    // the child is already showing it (the fast path would skip it). Ctrl+F5
+    // and Ctrl+Shift+R land on the same forced path — one nudge, no cache.
     this.nudge?.(tab.id, tab.url, undefined, true);
     if (!this.nudge) tab.loading = false;
+  }
+
+  /** Esc — stop a page's loading spinner (the JS-visible half of Firefox's Esc). */
+  stopLoading(): void {
+    const tab = this.active;
+    if (tab) tab.loading = false;
+  }
+
+  /** Alt+Home — the speed dial is this browser's home page. */
+  goHome(): void {
+    const tab = this.active;
+    if (!tab) {
+      this.open();
+      return;
+    }
+    if (!tab.url || tab.url === 'about:blank') return;
+    tab.url = 'about:blank';
+    tab.title = 'New tab';
+    tab.loading = false;
+    tab.lastActive = Date.now();
+    // A blank nudge sweeps the page webview — the dial is plain DOM, 0 MB.
+    this.nudge?.(tab.id, 'about:blank');
+  }
+
+  /**
+   * Ctrl+U — view-source round trip. Chromium (WebView2) renders
+   * `view-source:` URLs natively; a second press walks back to the page.
+   */
+  viewSource(): void {
+    const tab = this.active;
+    if (!tab || !tab.url || tab.url === 'about:blank') return;
+    if (tab.url.startsWith('view-source:')) {
+      const real = tab.url.slice('view-source:'.length);
+      tab.url = real;
+      tab.title = hostOf(real);
+      tab.loading = true;
+      tab.lastActive = Date.now();
+      this.nudge?.(tab.id, real, undefined, true);
+      return;
+    }
+    tab.url = 'view-source:' + tab.url;
+    tab.title = 'Source';
+    tab.loading = true;
+    tab.lastActive = Date.now();
+    this.push(tab.id, tab.url);
+    this.logVisit(tab.url, tab.title);
+    this.nudge?.(tab.id, tab.url, undefined, true);
+  }
+
+  /**
+   * Ctrl+= / Ctrl+- / Ctrl+0 — the page's own zoom, inside the child webview
+   * (WebView2's scale, like Firefox's page zoom). The scale latches on the
+   * active tab; a tab switch shows the new tab at its own default until the
+   * next press — documented in docs/BROWSER_KEYS.md.
+   */
+  applyZoom(dir: -1 | 0 | 1): void {
+    const tab = this.active;
+    if (!tab) return;
+    this.zoomLevel = dir === 0 ? 1 : Math.min(10, Math.max(0.2, this.zoomLevel + dir * 0.2));
+    void browserSetZoom(tab.id, this.zoomLevel);
+  }
+
+  /** Ctrl+1..9 — the nth tab (0-based); past the end means the last tab. */
+  selectIndex(n: number): void {
+    if (this.tabs.length === 0) return;
+    this.select(this.tabs[Math.min(n, this.tabs.length - 1)].id);
+  }
+
+  /** Ctrl+Tab / Ctrl+Shift+Tab — cycle with wrap-around. */
+  cycle(dir: -1 | 1): void {
+    const n = this.tabs.length;
+    if (n < 2) return;
+    const i = Math.max(
+      0,
+      this.tabs.findIndex((t) => t.id === this.activeId)
+    );
+    this.select(this.tabs[(i + dir + n) % n].id);
+  }
+
+  /** Ctrl+Shift+PageUp / PageDown — move the active tab within the strip. */
+  moveTab(dir: -1 | 1): void {
+    const tab = this.active;
+    if (!tab) return;
+    const i = this.tabs.findIndex((t) => t.id === tab.id);
+    const j = i + dir;
+    if (j < 0 || j >= this.tabs.length) return;
+    this.tabs.splice(i, 1);
+    this.tabs.splice(j, 0, tab);
+  }
+
+  /**
+   * Ctrl+Shift+T — restore the most recently closed tab at its old slot, like
+   * Firefox. Deliberately allowed past the nine-tab cap: a restore is a
+   * correction, not a new visit. Returns false when the stack is empty.
+   */
+  reopenClosed(): boolean {
+    const last = this.closed.pop();
+    if (!last) return false;
+    const tab = makeTab(last.url);
+    tab.title = last.title;
+    const i = Math.min(last.index, this.tabs.length);
+    this.tabs.splice(i, 0, tab);
+    this.activeId = tab.id;
+    if (isTauri()) this.nudge?.(tab.id, tab.url);
+    return true;
+  }
+
+  /** Toggle the Ctrl+H panel. */
+  toggleHistory(): void {
+    this.historyOpen = !this.historyOpen;
+  }
+
+  /**
+   * Ctrl+Shift+Del (frontend half) — T9's own visit log and closed stack.
+   * The active page's webview profile is wiped by ipc (`browserClearBrowsingData`).
+   */
+  clearHistory(): void {
+    this.historyLog = [];
+    this.closed.length = 0;
+  }
+
+  /* ── bookmarks (Ctrl+D) — they pin onto the speed dial ──────────────── */
+
+  private loadBookmarks(): void {
+    if (this.bookmarksLoaded) return;
+    this.bookmarksLoaded = true;
+    try {
+      const raw = localStorage.getItem(BOOKMARKS_KEY);
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+      if (Array.isArray(parsed)) {
+        this.bookmarks = parsed.filter(
+          (b): b is Bookmark => !!b && typeof (b as Bookmark).url === 'string'
+        );
+      }
+    } catch {
+      /* corrupt store — the dial just starts empty beyond the built-ins */
+    }
+  }
+
+  private persistBookmarks(): void {
+    try {
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(this.bookmarks));
+    } catch {
+      /* private mode — the dial keeps working, pins just don't persist */
+    }
+  }
+
+  isBookmarked(url: string): boolean {
+    this.loadBookmarks();
+    return this.bookmarks.some((b) => b.url === url);
+  }
+
+  /** Ctrl+D. Returns true when the URL was ADDED (removed otherwise). */
+  toggleBookmark(url: string, label: string): boolean {
+    this.loadBookmarks();
+    const i = this.bookmarks.findIndex((b) => b.url === url);
+    if (i >= 0) {
+      this.bookmarks.splice(i, 1);
+      this.persistBookmarks();
+      return false;
+    }
+    this.bookmarks.push({ url, label: label || hostOf(url) });
+    this.persistBookmarks();
+    return true;
+  }
+
+  removeBookmark(url: string): void {
+    this.loadBookmarks();
+    this.bookmarks = this.bookmarks.filter((b) => b.url !== url);
+    this.persistBookmarks();
+  }
+
+  /** Ctrl+Shift+D — every open tab with a real URL becomes a pin. */
+  bookmarkAllTabs(): number {
+    this.loadBookmarks();
+    let added = 0;
+    for (const tab of this.tabs) {
+      if (!tab.url || tab.url === 'about:blank') continue;
+      if (this.bookmarks.some((b) => b.url === tab.url)) continue;
+      this.bookmarks.push({ url: tab.url, label: hostOf(tab.url) });
+      added++;
+    }
+    this.persistBookmarks();
+    return added;
   }
 
   /**
@@ -215,6 +446,7 @@ class BrowserStore {
     tab.title = hostOf(url);
     tab.loading = true;
     tab.lastActive = Date.now();
+    this.logVisit(url, tab.title);
     this.activeId = id;
     this.nudge?.(id, url);
     if (!this.nudge) tab.loading = false;
@@ -264,6 +496,12 @@ class BrowserStore {
   close(id: string): void {
     const i = this.tabs.findIndex((t) => t.id === id);
     if (i < 0) return;
+    const dying = this.tabs[i];
+    // Ctrl+Shift+T must be able to bring this back — real pages only.
+    if (dying.url && dying.url !== 'about:blank') {
+      this.closed.push({ url: dying.url, title: dying.title, index: i });
+      if (this.closed.length > CLOSED_CAP) this.closed.shift();
+    }
     const wasActive = this.activeId === id;
     this.tabs.splice(i, 1);
     if (wasActive) {
@@ -315,7 +553,10 @@ class BrowserStore {
     target.loading = true;
     target.lastActive = Date.now();
     this.activeId = target.id;
-    if (next !== 'about:blank') this.push(target.id, next);
+    if (next !== 'about:blank') {
+      this.push(target.id, next);
+      this.logVisit(next, target.title);
+    }
     // The native webview follows (Slice 3); in the dev preview the loading
     // flag is cleared immediately because there is no page to wait for.
     // `force`: a same-URL submit must reload, not hit the nothing-to-do
@@ -391,6 +632,7 @@ class BrowserStore {
         tab.url = url;
         tab.title = hostOf(url);
         this.push(id, url);
+        this.logVisit(url, tab.title);
       }
     });
 
@@ -426,6 +668,7 @@ class BrowserStore {
           tab.title = hostOf(url);
           tab.loading = true;
           this.push(tab.id, url);
+          this.logVisit(url, tab.title);
           this.nudge?.(tab.id, url, keep);
           if (!this.nudge) tab.loading = false;
         }
@@ -437,7 +680,10 @@ class BrowserStore {
     // WebView2 wanted to download a file; Rust cancelled it and handed the
     // URL here. The daemon's multi-segment downloader owns the bytes now.
     void onBrowserDownload(({ url, referer }) => {
-      void downloads.start(url, referer ? { referer } : undefined);
+      // A refused start (expired link, a host that blocks probes) lands in the
+      // downloads panel as a row; without this catch it was an unhandled
+      // rejection and the click simply did nothing.
+      downloads.start(url, referer ? { referer } : undefined).catch(() => {});
     });
   }
 

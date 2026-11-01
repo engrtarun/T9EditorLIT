@@ -21,6 +21,9 @@
   import { settings } from './lib/stores/settings.svelte';
   import { toast } from './lib/stores/toast.svelte';
   import { menu } from './lib/stores/menu.svelte';
+  import { downloads } from './lib/stores/downloads.svelte';
+  import { dispatchBrowserKey, type BrowserKeyDeps } from './lib/browser-keys';
+  import { browserPrint, browserClearBrowsingData } from './lib/ipc';
   import { keys, type KeyAction } from './lib/stores/keys.svelte';
   import { clamp, fmtTime } from './lib/utils';
 
@@ -61,15 +64,104 @@
     return true;
   }
 
+  /**
+   * The in-built browser owns Firefox's key map (src/lib/browser-keys.ts).
+   * Dispatch resolves the keyboard event to a NAMED action; these deps wire
+   * each action to the stores — the map itself stays store-free and testable.
+   */
+  const browserDeps = {
+    newTab: () => {
+      if (!browser.open()) toast.push('warn', '9 tabs ki limit hai — pehle ek band karo');
+    },
+    closeTab: () => {
+      const active = browser.active;
+      if (!active) return;
+      const last = browser.tabs.length === 1;
+      browser.close(active.id);
+      // Firefox rule: closing the last tab closes the browser window.
+      if (last) app.closeBrowser();
+    },
+    closeBrowserView: () => app.closeBrowser(),
+    reopenClosedTab: () => {
+      if (browser.reopenClosed()) toast.push('info', '↻ Tab wapas khul gaya');
+      else toast.push('info', 'Band kiya hua tab nahi hai');
+    },
+    selectTabN: (n: number) => browser.selectIndex(n),
+    lastTab: () => browser.selectIndex(browser.tabs.length - 1),
+    prevTab: () => browser.cycle(-1),
+    nextTab: () => browser.cycle(1),
+    moveTab: (dir: -1 | 1) => browser.moveTab(dir),
+    back: () => browser.back(),
+    forward: () => browser.forward(),
+    stopLoading: () => browser.stopLoading(),
+    reload: () => browser.reload(), // plain and forced land on the same forced nudge
+    goHome: () => browser.goHome(),
+    focusUrlbar: () => {
+      const bar = document.querySelector<HTMLInputElement>('[data-urlbar-input]');
+      bar?.focus();
+      bar?.select();
+    },
+    downloads: () => downloads.toggle(),
+    history: () => browser.toggleHistory(),
+    clearHistory: () => {
+      browser.clearHistory();
+      const tab = browser.active;
+      if (tab) void browserClearBrowsingData(tab.id);
+      toast.push('info', '🧹 Browsing history aur data saaf');
+    },
+    bookmark: () => {
+      const tab = browser.active;
+      if (!tab || !tab.url || tab.url === 'about:blank') return;
+      const added = browser.toggleBookmark(tab.url, tab.title);
+      toast.push('info', added ? `★ ${tab.title} bookmark ho gaya` : 'Bookmark hata diya gaya');
+    },
+    bookmarkAllTabs: () => {
+      const added = browser.bookmarkAllTabs();
+      toast.push('info', added ? `★ ${added} tab bookmark ho gaye` : 'Naya bookmark nahi bana');
+    },
+    openBookmarks: () => {
+      browser.open();
+      toast.push('info', 'Bookmarks — speed dial aur aapke pins yahin hain');
+    },
+    savePage: () => {
+      const tab = browser.active;
+      if (!tab || !tab.url || tab.url === 'about:blank') return;
+      void downloads
+        .start(tab.url, { referer: tab.url })
+        .then(() => toast.push('info', '⬇ Page save — multi-segment downloader me'))
+        .catch((err) => toast.push('warn', err instanceof Error ? err.message : 'Save nahi hua'));
+    },
+    openFile: () => window.dispatchEvent(new CustomEvent('t9:import')),
+    printPage: () => {
+      const tab = browser.active;
+      if (tab) void browserPrint(tab.id);
+    },
+    viewSource: () => browser.viewSource(),
+    zoom: (dir: -1 | 0 | 1) => browser.applyZoom(dir),
+    findInPage: () => {
+      toast.push('info', '⌕ Find-in-page webview ka API is build me nahi hai');
+    },
+    openHelp: () => {
+      layout.helpOpen = true;
+    }
+  } satisfies BrowserKeyDeps;
+
   function onKey(e: KeyboardEvent) {
     // System shortcuts & screenshot keys must never be captured or blocked:
-    // PrintScreen, Snapshot, F1-F12, and any Meta / Windows key chord (e.g. Win+Shift+S).
-    if (e.key === 'PrintScreen' || e.key === 'Snapshot' || e.metaKey || e.key.startsWith('F')) {
+    // PrintScreen, Snapshot, and any Meta / Windows key chord (e.g. Win+Shift+S).
+    // F-keys stay system-owned EXCEPT F1 (the shortcut sheet) — and F4/F5
+    // while the browser is open, where they mean close-tab / reload, Firefox.
+    const browserOpen = app.view === 'browser';
+    const ownsF = e.key === 'F1' || (browserOpen && (e.key === 'F4' || e.key === 'F5'));
+    if (
+      e.key === 'PrintScreen' ||
+      e.key === 'Snapshot' ||
+      e.metaKey ||
+      (e.key.startsWith('F') && !ownsF)
+    ) {
       return;
     }
 
-    const t = e.target as HTMLElement | null;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     // The profile popover owns the keyboard while it is open — including its
     // own Escape. Nothing here may steal an Arrow key from it.
     if (layout.profileOpen) return;
@@ -81,30 +173,19 @@
       return;
     }
 
-    // On the **dashboard** or in the **browser** the editor's shortcuts have
-    // nothing to act on — only the shortcut sheet still makes sense there.
+    // In the **browser** Firefox's own key map runs FIRST — it lives in
+    // src/lib/browser-keys.ts and is allowed to fire with the address bar
+    // focused (Ctrl+L re-focuses it, Ctrl+S still saves, …), so it must run
+    // before the generic typing guard below. That module polices its own
+    // typing rules (it stands down for editing chords).
+    if (browserOpen && dispatchBrowserKey(e, browserDeps)) return;
+
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+
+    // On the **dashboard** the editor's shortcuts have nothing to act on —
+    // only the shortcut sheet still makes sense there.
     if (app.view !== 'editor') {
-      // The browser owns the standard browser chords: Ctrl+T opens a tab,
-      // Ctrl+W closes the active one (and returns to the editor on the last).
-      if (app.view === 'browser' && e.ctrlKey && !e.altKey && !e.shiftKey) {
-        const k = e.key.toLowerCase();
-        if (k === 't') {
-          e.preventDefault();
-          browser.open();
-          return;
-        }
-        if (k === 'w') {
-          e.preventDefault();
-          const active = browser.active;
-          if (active) {
-            const last = browser.tabs.length === 1;
-            browser.close(active.id);
-            // Firefox rule: closing the last tab closes the browser window.
-            if (last) app.closeBrowser();
-          }
-          return;
-        }
-      }
       if (hit('help', e)) {
         layout.helpOpen = !layout.helpOpen;
         return;
@@ -189,6 +270,12 @@
       } else {
         toast.push('warn', 'Yahan playhead line ke andar nahi hai');
       }
+      return;
+    }
+    // F1 is the Firefox help key — it opens the same sheet here.
+    if (e.key === 'F1' && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      layout.helpOpen = true;
       return;
     }
     if (hit('help', e)) {

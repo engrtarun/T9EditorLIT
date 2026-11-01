@@ -17,6 +17,7 @@
   import UrlBar from './UrlBar.svelte';
   import SpeedDial from './SpeedDial.svelte';
   import DownloadsPanel from './DownloadsPanel.svelte';
+  import HistoryPanel from './HistoryPanel.svelte';
   import { browser } from '../../stores/browser.svelte';
   import { downloads } from '../../stores/downloads.svelte';
   import { app } from '../../stores/app.svelte';
@@ -46,7 +47,9 @@
     return () => {
       // The whole browser tree unmounts (App.svelte's {#if}): sweep EVERY
       // tab webview (kept ones included) so the 500 MB budget holds while
-      // the editor is open. Nothing page-live survives the view.
+      // the editor is open. Nothing page-live survives the view. The Ctrl+H
+      // panel starts closed next time, like Firefox's own history sidebar.
+      browser.historyOpen = false;
       void browserViewClosed();
     };
   });
@@ -272,4 +275,6 @@
 
   <!-- ── downloads ───────────────────────────────────────────────────── -->
   <DownloadsPanel />
+  <!-- ── history (Ctrl + H) ─────────────────────────────────────────── -->
+  <HistoryPanel />
 </div>

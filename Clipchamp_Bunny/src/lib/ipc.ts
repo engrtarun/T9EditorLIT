@@ -1229,3 +1229,39 @@ export function onBrowserDownload(
 ): Promise<() => void> {
   return listen<{ url: string; referer: string | null }>('browser:download', (e) => cb(e.payload));
 }
+
+/* ------------------------------------------------- native webview-page keys */
+
+/**
+ * Tauri's own core-webview commands behind the Firefox key map (Ctrl+P, the
+ * zoom trio, Ctrl+Shift+Del). They target one child webview by its label and
+ * are granted per-permission in `capabilities/default.json`.
+ */
+
+/** The child webview label for a tab id (mirrors Rust's `label_for`). */
+function tabLabel(id: string): string {
+  return `tab-${id}`;
+}
+
+/** Ctrl+P — the page's own print dialog. */
+export function browserPrint(id: string): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('plugin:webview|print', { label: tabLabel(id) }).catch(() => {});
+}
+
+/** Ctrl+= / Ctrl+- / Ctrl+0 — the page zoom (absolute scale, 0.2 … 10). */
+export function browserSetZoom(id: string, scale: number): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('plugin:webview|set_webview_zoom', {
+    label: tabLabel(id),
+    value: scale
+  }).catch(() => {});
+}
+
+/** Ctrl+Shift+Del's native half — clear the active page's browsing data. */
+export function browserClearBrowsingData(id: string): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('plugin:webview|clear_all_browsing_data', { label: tabLabel(id) }).catch(
+    () => {}
+  );
+}

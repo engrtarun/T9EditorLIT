@@ -36,6 +36,16 @@
     input?.blur();
     toast.push('info', `🌐 ${new URL(url).hostname}`);
   }
+
+  /** Ctrl+D's visible half: the star, filled while this page is pinned. */
+  const bookmarked = $derived(!!tab && tab.url !== 'about:blank' && browser.isBookmarked(tab.url));
+
+  function toggleStar() {
+    const t = tab;
+    if (!t || !t.url || t.url === 'about:blank') return;
+    const added = browser.toggleBookmark(t.url, t.title);
+    toast.push('info', added ? `★ ${t.title} bookmark` : 'Bookmark hata diya');
+  }
 </script>
 
 <form
@@ -66,6 +76,7 @@
   <input
     bind:this={input}
     bind:value={draft}
+    data-urlbar-input
     onfocus={() => (focused = true)}
     onblur={() => (focused = false)}
     placeholder={tab ? tab.url : 'Search ya address likho…'}
@@ -74,6 +85,34 @@
     class="min-w-0 flex-1 bg-transparent text-[13px] leading-none text-nc-txt outline-none placeholder:text-nc-mut"
     aria-label="Address bar"
   />
+
+  <!-- bookmark (Ctrl+D) — the Firefox star, live while the page is pinned -->
+  <button
+    type="button"
+    onclick={toggleStar}
+    disabled={!tab || tab.url === 'about:blank'}
+    class="grid h-5 w-5 shrink-0 place-items-center rounded-full transition-colors hover:bg-nc-line
+           {bookmarked
+      ? 'text-nc-brand'
+      : 'text-nc-mut'} disabled:opacity-40 disabled:hover:bg-transparent"
+    title="Bookmark (Ctrl+D)"
+    aria-label={bookmarked ? 'Remove bookmark' : 'Bookmark this page'}
+    aria-pressed={bookmarked}
+  >
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill={bookmarked ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linejoin="round"
+    >
+      <path
+        d="M12 4l2.35 4.76 5.25.76-3.8 3.7.9 5.23L12 15.98l-4.7 2.47.9-5.23-3.8-3.7 5.25-.76z"
+      />
+    </svg>
+  </button>
 
   <!-- Firefox's own trick: click the magnifier to focus from anywhere. -->
   <button

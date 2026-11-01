@@ -94,6 +94,45 @@
       {/each}
     </div>
 
+    <!-- bookmarks (Ctrl+D) — the user's own pins, persisted on this machine -->
+    {#if browser.bookmarks.length > 0}
+      <p class="mt-6 mb-2 px-1 text-[10px] font-bold tracking-widest text-nc-mut-2">
+        BOOKMARKS · CTRL + D
+      </p>
+      <div class="grid grid-cols-3 gap-1 sm:grid-cols-6">
+        {#each browser.bookmarks as site (site.url)}
+          <div class="group relative">
+            <button
+              type="button"
+              onclick={() => open(site.url)}
+              class="flex w-full flex-col items-center gap-2 rounded-xl px-1 py-2.5 transition-colors hover:bg-nc-panel-2"
+              title="{site.url} — bookmark"
+            >
+              <span
+                class="grid h-12 w-12 place-items-center rounded-xl border border-nc-line/70 bg-white/95
+                       shadow-sm transition-colors group-hover:border-nc-line-2"
+              >
+                <SiteIcon url={site.url} label={site.label} size={26} />
+              </span>
+              <span class="max-w-full truncate text-[11px] text-nc-mut group-hover:text-nc-txt">
+                {site.label}
+              </span>
+            </button>
+            <button
+              type="button"
+              onclick={() => browser.removeBookmark(site.url)}
+              class="absolute top-0.5 right-0.5 grid h-4 w-4 place-items-center rounded-full bg-black/50
+                     text-[9px] text-white opacity-0 transition-opacity group-hover:opacity-100"
+              title="Bookmark hatao"
+              aria-label="Remove bookmark"
+            >
+              ✕
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
     <!-- the user's own pins, same tiles, pinned in the 9-dots panel -->
     {#if pinnedTools.items.length > 0}
       <p class="mt-6 mb-2 px-1 text-[10px] font-bold tracking-widest text-nc-mut-2">AAPKE PINS</p>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { SHORTCUT_GROUPS } from '../shortcuts';
+  import { BROWSER_GROUPS } from '../browser-keys';
   import { layout } from '../stores/layout.svelte';
   import { project } from '../stores/project.svelte';
   import { mode } from '../stores/mode.svelte';
@@ -108,6 +109,43 @@
               </ul>
             </section>
           {/each}
+        </div>
+
+        <!-- The in-built browser's Firefox map — a separate table on purpose:
+             these live in src/lib/browser-keys.ts and are not rebindable. -->
+        <div class="mt-6 border-t border-nc-line/60 pt-4">
+          <h3 class="mb-1 text-[10px] font-bold tracking-widest text-nc-gold/90">
+            BROWSER VIEW — FIREFOX KEYS
+          </h3>
+          <p class="mb-3 text-[10px] text-nc-mut-2">
+            Sirf browser view me. Editor apni keymap ke saath alag rehta hai. (Ctrl + Shift + Del
+            jaisi destructive keys yahan listed hain — panel ke andar bhi kaam karti hain.)
+          </p>
+          <div class="grid gap-5 sm:grid-cols-2">
+            {#each BROWSER_GROUPS as g (g.title)}
+              <section>
+                <h4 class="mb-2 text-[10px] font-bold tracking-widest text-nc-brand">
+                  {g.title}
+                </h4>
+                <ul class="space-y-1">
+                  {#each g.rows as r (r.keys + r.action)}
+                    <li class="flex items-start gap-2 text-[11px]">
+                      <kbd
+                        class="shrink-0 rounded border border-nc-line-2 bg-nc-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-nc-txt"
+                        >{r.keys}</kbd
+                      >
+                      <span class="min-w-0 flex-1 leading-4 text-nc-mut">
+                        {r.action}
+                        {#if r.note}
+                          <span class="block text-[9px] text-nc-mut-2/80">↳ {r.note}</span>
+                        {/if}
+                      </span>
+                    </li>
+                  {/each}
+                </ul>
+              </section>
+            {/each}
+          </div>
         </div>
       {:else}
         <p class="mb-3 text-[11px] leading-relaxed text-nc-mut">
