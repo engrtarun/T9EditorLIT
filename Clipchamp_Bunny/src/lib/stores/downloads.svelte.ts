@@ -14,6 +14,7 @@
 
 import type { DownloadItem } from '../types';
 import { isTauri } from '../ipc';
+import { toast } from './toast.svelte';
 
 const DAEMON = 'http://127.0.0.1:7878';
 const POLL_MS = 800;
@@ -95,10 +96,23 @@ class DownloadsStore {
     this.failed = this.failed.filter((f) => f.id !== id);
   }
 
+  /**
+   * pause / resume / cancel. `resume` is also the Retry button on a failed
+   * row: the daemon keeps the `.part` and every byte in it, so resuming is
+   * continuing, not restarting. A refusal is shown instead of swallowed -
+   * a Retry click that does nothing is how the row looked dead forever.
+   */
   act(id: string, action: 'pause' | 'resume' | 'cancel'): void {
     if (!isTauri()) return;
     void fetch(`${DAEMON}/v1/dl/${id}/${action}`, { method: 'POST' })
-      .then(() => this.poll())
+      .then(async (res) => {
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as { error?: string } | null;
+          void toast.push('warn', body?.error ?? `download ${action} nahi hua`, 2600);
+          return;
+        }
+        await this.poll();
+      })
       .catch(() => {});
   }
 

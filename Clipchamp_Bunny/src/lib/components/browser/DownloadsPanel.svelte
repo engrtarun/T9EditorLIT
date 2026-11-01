@@ -209,14 +209,16 @@
                 </span>
               </div>
 
-              {#if item.status === 'running' || item.status === 'paused'}
+              {#if item.status === 'running' || item.status === 'paused' || item.status === 'error'}
                 <div class="mt-1 flex items-center gap-2">
                   <div class="h-1 flex-1 overflow-hidden rounded-full bg-nc-line">
                     <div
                       class="h-full rounded-full transition-[width] duration-300 {item.status ===
                       'paused'
                         ? 'bg-nc-mut'
-                        : 'bg-nc-brand'}"
+                        : item.status === 'error'
+                          ? 'bg-nc-red/70'
+                          : 'bg-nc-brand'}"
                       style="width: {pct(item)}%"
                     ></div>
                   </div>
@@ -229,7 +231,9 @@
                     {/if}
                   </span>
                 </div>
-              {:else if item.path}
+              {/if}
+
+              {#if item.status !== 'running' && item.path}
                 <!-- where it actually landed, so "kahan gaya?" never needs guessing -->
                 <button
                   type="button"
@@ -296,6 +300,28 @@
                 >
                   <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor">
                     <path d="M3 1.5l7.5 4.5L3 10.5z" />
+                  </svg>
+                </button>
+              {:else if item.status === 'error'}
+                <!-- Retry is a resume: the daemon keeps every byte it reached,
+                     so a row that died at 98 MB of 1 GB starts at 98 MB -->
+                <button
+                  type="button"
+                  onclick={() => downloads.act(item.id, 'resume')}
+                  class="grid h-6 w-6 place-items-center rounded text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+                  title="Retry (wahin se, jahan ruka tha)"
+                  aria-label="Retry download"
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M21 12a9 9 0 1 1-3-6.7" />
+                    <path d="M21 3v6h-6" />
                   </svg>
                 </button>
               {:else if item.status === 'done'}

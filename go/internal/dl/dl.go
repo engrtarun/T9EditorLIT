@@ -569,6 +569,52 @@ func isHTML(contentType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/html")
 }
 
+// rateLimitError is a host saying "too many connections from you right now"
+// (429, 408, 503). It is not a failure - reconnecting harder on the next
+// attempt turns a hiccup into a ban, so fetchSegment waits like the server
+// asked before trying again.
+type rateLimitError struct {
+	status int
+	wait   time.Duration // from Retry-After, when the server sent one
+}
+
+func (e *rateLimitError) Error() string {
+	if e.wait > 0 {
+		return fmt.Sprintf("server ne speed thamne ko kaha (status %d, %ds rukna)", e.status, int(e.wait.Seconds()))
+	}
+	return fmt.Sprintf("server ne speed thamne ko kaha (status %d)", e.status)
+}
+
+// rateLimitBase is how long to wait after a 429 with no Retry-After header,
+// and then how fast to grow it. It is a variable so tests do not sleep for
+// real seconds.
+var rateLimitBase = 8 * time.Second
+
+// isRateLimited: the three answers that mean "slow down, not never".
+func isRateLimited(status int) bool {
+	return status == http.StatusTooManyRequests ||
+		status == http.StatusRequestTimeout ||
+		status == http.StatusServiceUnavailable
+}
+
+// retryAfter reads the RFC 7231 delay in seconds. An HTTP-date is allowed by
+// the spec but almost never sent for a download link, and mis-reading it as
+// zero is exactly the exponential backoff we wanted anyway.
+func retryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs < 0 {
+		return 0
+	}
+	if secs > 120 {
+		secs = 120
+	}
+	return time.Duration(secs) * time.Second
+}
+
 // probeGet is the last-resort probe: a plain GET whose body is dropped after a
 // few kilobytes. It learns the size and the filename when the server supports
 // neither HEAD nor Range, and turns an HTML error page into a real message.
@@ -705,7 +751,8 @@ func (m *Manager) Pause(id string) (*Item, error) {
 	return &item, nil
 }
 
-// Resume restarts a paused download from its saved offsets.
+// Resume restarts a paused *or failed* download from its saved offsets. A row
+// that died at 98 MB of a 1 GB file continues at 98 MB; nothing is re-fetched.
 func (m *Manager) Resume(id string) (*Item, error) {
 	d, err := m.get(id)
 	if err != nil {
@@ -1113,13 +1160,30 @@ func (d *download) fetchSegment(ctx context.Context, i int) error {
 		if seg.finished() {
 			return nil
 		}
-		if attempt >= MaxRetries {
+
+		// A rate-limited segment is the one case where the normal budget is
+		// wrong: the host wants a pause, and burning the five quick retries in
+		// under a second (which is exactly what happened against a 429)
+		// guarantees the download dies while the file was still healthy.
+		limit := MaxRetries
+		backoff := time.Duration(1<<attempt) * 300 * time.Millisecond
+		var rl *rateLimitError
+		if errors.As(err, &rl) {
+			limit = MaxRetries + 4
+			backoff = rateLimitBase << min(attempt, 5)
+			if rl.wait > backoff {
+				backoff = rl.wait
+			}
+			if backoff > 60*time.Second {
+				backoff = 60 * time.Second
+			}
+		}
+		if attempt >= limit {
 			return fmt.Errorf("segment %d: %w", i, err)
 		}
-		backoff := time.Duration(1<<attempt) * 300 * time.Millisecond
 		d.log.Warn("download segment retrying",
-			"id", d.id, "segment", i, "attempt", attempt+1, "err", err)
-		diagf("retry id=%s seg=%d attempt=%d err=%v", d.id, i, attempt+1, err)
+			"id", d.id, "segment", i, "attempt", attempt+1, "wait", backoff, "err", err)
+		diagf("retry id=%s seg=%d attempt=%d wait=%s err=%v", d.id, i, attempt+1, backoff, err)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -1179,6 +1243,9 @@ func (d *download) fetchRange(ctx context.Context, seg *segment) error {
 			}
 		}
 	default:
+		if isRateLimited(resp.StatusCode) {
+			return &rateLimitError{status: resp.StatusCode, wait: retryAfter(resp.Header.Get("Retry-After"))}
+		}
 		return fmt.Errorf("server ne mana kar diya (status %d)", resp.StatusCode)
 	}
 
@@ -1298,7 +1365,11 @@ func (d *download) pause() error {
 
 func (d *download) resume() error {
 	d.mu.Lock()
-	if d.status != StatusPaused {
+	// An error row keeps every byte it reached (fail() writes the sidecar
+	// before it says so), so "Retry" is a resume: 98 MB of a 1 GB file starts
+	// at 98 MB instead of at zero. Cancelled and done rows stay unresumable -
+	// their files were deleted or never had a `.part` left behind.
+	if d.status != StatusPaused && d.status != StatusError {
 		d.mu.Unlock()
 		return ErrBusy
 	}
