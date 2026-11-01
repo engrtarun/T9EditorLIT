@@ -65,8 +65,10 @@ const (
 	// steady-state cost is segments × 64 KiB per download.
 	BufferBytes = 64 << 10
 
-	// MaxRetries is how often a broken segment reconnects before the whole
-	// download fails. Each attempt resumes from the exact byte it stopped at.
+	// MaxRetries is no longer a budget the download dies on: a transient
+	// failure keeps retrying (that is what a multi-hour transfer needs), and
+	// only a permanent refusal or the stall watchdog ends the row. It remains
+	// the reference point tests use for "more than a handful of blips".
 	MaxRetries = 5
 
 	// IdleTimeout drops a server that sends nothing for this long instead
@@ -654,11 +656,34 @@ func (e *rateLimitError) Error() string {
 // real seconds.
 var rateLimitBase = 8 * time.Second
 
+// retryBase is the first backoff for an ordinary broken connection; each
+// attempt doubles it. A variable for the same reason as rateLimitBase.
+var retryBase = 300 * time.Millisecond
+
 // isRateLimited: the three answers that mean "slow down, not never".
 func isRateLimited(status int) bool {
 	return status == http.StatusTooManyRequests ||
 		status == http.StatusRequestTimeout ||
 		status == http.StatusServiceUnavailable
+}
+
+// statusError is a refusal that retrying cannot fix: an expired link (404,
+// 410), a login wall (401, 403) or a body this client cannot range. It is
+// kept apart from timeouts and EOFs because those are the normal weather of a
+// multi-hour transfer, and retrying those is the whole point.
+type statusError struct{ status int }
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("server ne mana kar diya (status %d)", e.status)
+}
+
+// permanent reports whether an error is a real answer rather than a hiccup.
+func permanent(err error) bool {
+	var se *statusError
+	if errors.As(err, &se) {
+		return se.status >= 400 && se.status < 500 && !isRateLimited(se.status)
+	}
+	return false
 }
 
 // retryAfter reads the RFC 7231 delay in seconds. An HTTP-date is allowed by
@@ -1006,6 +1031,14 @@ type download struct {
 	speed      atomic.Int64
 	lastBytes  atomic.Int64
 	lastSample atomic.Int64 // unix nanos of the previous speed sample
+
+	// How many sockets are actually open right now, and how many this host
+	// has agreed to. A 429 halves the limit; each finished segment raises it
+	// back by one. Sixteen requests to a host that wants five is how a
+	// healthy file gets an IP-level ban instead of a download.
+	gateMu    sync.Mutex
+	active    int
+	concLimit int
 }
 
 // tracks reports whether a partial path already belongs to a row.
@@ -1127,6 +1160,35 @@ func (d *download) run() {
 		}
 	}()
 
+	// The stall watchdog. A transient error is allowed to retry for as long as
+	// the network needs; a host that has produced no byte at all for
+	// `stallLimit` is a different thing, and the row must say so instead of
+	// spinning "running" at 0.0 MB/s until the user gives up on it.
+	go func() {
+		t := time.NewTicker(stallEvery)
+		defer t.Stop()
+		last := d.received.Load()
+		lastAt := time.Now()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				cur := d.received.Load()
+				if cur != last {
+					last, lastAt = cur, time.Now()
+					continue
+				}
+				if d.isRunning() && time.Since(lastAt) > stallLimit {
+					d.fail(fmt.Errorf("server se %s se koi byte nahi aa raha",
+						stallLimit.Truncate(time.Second)))
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
 	var wg sync.WaitGroup
 	for i := range d.segs {
 		if d.segs[i].finished() {
@@ -1217,34 +1279,52 @@ func renameWithRetry(from, to string) error {
 func (d *download) fetchSegment(ctx context.Context, i int) error {
 	seg := d.segs[i]
 	for attempt := 0; ; attempt++ {
+		// Hold a slot only while a request is actually open, so the limit is
+		// the number of sockets, not the number of goroutines.
+		if !d.acquire(ctx) {
+			return ctx.Err()
+		}
+		before := seg.done.Load()
 		err := d.fetchRange(ctx, seg)
+		d.release()
 		if err == nil || ctx.Err() != nil {
 			return err
 		}
 		if seg.finished() {
 			return nil
 		}
+		// A 404 or a login wall is an answer. Waiting will not change it, and
+		// a multi-GB file must not sit "running" on a link that is dead.
+		if permanent(err) {
+			return fmt.Errorf("segment %d: %w", i, err)
+		}
 
-		// A rate-limited segment is the one case where the normal budget is
-		// wrong: the host wants a pause, and burning the five quick retries in
-		// under a second (which is exactly what happened against a 429)
-		// guarantees the download dies while the file was still healthy.
-		limit := MaxRetries
-		backoff := time.Duration(1<<attempt) * 300 * time.Millisecond
+		// Every byte that reached the disk means the connection was fine and
+		// this is a fresh blip: give the next attempt a fresh budget instead
+		// of carrying a half-hour-old failure count into hour three.
+		if seg.done.Load() > before {
+			attempt = 0
+			d.speedUp()
+		}
+
+		backoff := time.Duration(1<<min(attempt, 5)) * retryBase
 		var rl *rateLimitError
 		if errors.As(err, &rl) {
-			limit = MaxRetries + 4
-			backoff = rateLimitBase << min(attempt, 5)
+			// Fewer sockets is the actual fix for a 429 - retrying sixteen at
+			// once is what earned the 429.
+			d.slowDown()
+			backoff = rateLimitBase << min(attempt, 4)
 			if rl.wait > backoff {
 				backoff = rl.wait
 			}
-			if backoff > 60*time.Second {
-				backoff = 60 * time.Second
-			}
 		}
-		if attempt >= limit {
-			return fmt.Errorf("segment %d: %w", i, err)
+		// Capped, not terminal: a 90 GB file takes hours and the network is
+		// allowed to have a bad minute. The stall watchdog is what ends a row
+		// whose host has genuinely stopped answering.
+		if backoff > 30*time.Second {
+			backoff = 30 * time.Second
 		}
+
 		d.log.Warn("download segment retrying",
 			"id", d.id, "segment", i, "attempt", attempt+1, "wait", backoff, "err", err)
 		diagf("retry id=%s seg=%d attempt=%d wait=%s err=%v", d.id, i, attempt+1, backoff, err)
@@ -1254,6 +1334,89 @@ func (d *download) fetchSegment(ctx context.Context, i int) error {
 		case <-time.After(backoff):
 		}
 	}
+}
+
+// acquire takes one of the host's sockets, waiting while the limit is full.
+// A short sleep instead of a cond var: the wait is at most one backoff, and
+// the context check has to work anyway.
+func (d *download) acquire(ctx context.Context) bool {
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		d.gateMu.Lock()
+		if d.concLimit == 0 {
+			d.concLimit = len(d.segs)
+			if d.concLimit < 1 {
+				d.concLimit = 1
+			}
+		}
+		if d.active < d.concLimit {
+			d.active++
+			d.gateMu.Unlock()
+			return true
+		}
+		d.gateMu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func (d *download) release() {
+	d.gateMu.Lock()
+	if d.active > 0 {
+		d.active--
+	}
+	d.gateMu.Unlock()
+}
+
+// slowDown halves the socket budget after a 429. The floor is 2: one socket
+// still makes progress, but a single connection rarely saturates a line, and
+// the limit climbs back as soon as the host is happy again.
+func (d *download) slowDown() {
+	d.gateMu.Lock()
+	floor := len(d.segs)
+	if floor > 2 {
+		floor = 2
+	}
+	if d.concLimit == 0 {
+		d.concLimit = len(d.segs)
+	}
+	if d.concLimit > floor {
+		d.concLimit /= 2
+		if d.concLimit < floor {
+			d.concLimit = floor
+		}
+	}
+	limit := d.concLimit
+	d.gateMu.Unlock()
+	d.log.Info("download slowed down after a rate limit", "id", d.id, "sockets", limit)
+	diagf("slowdown id=%s sockets=%d", d.id, limit)
+}
+
+// speedUp raises the socket budget by one after a segment finishes cleanly.
+// It never goes above the number of segments, so nothing over-connects.
+func (d *download) speedUp() {
+	d.gateMu.Lock()
+	if d.concLimit < len(d.segs) {
+		d.concLimit++
+	}
+	limit := d.concLimit
+	d.gateMu.Unlock()
+	diagf("speedup id=%s sockets=%d", d.id, limit)
+}
+
+// stallLimit ends a row whose host has stopped answering entirely: no byte
+// for this long while running means nothing is coming, not that we should
+// wait forever. It is a variable so a test does not need five minutes.
+var stallLimit = 5 * time.Minute
+
+// stallEvery is how often the watchdog samples the byte counter.
+var stallEvery = 15 * time.Second
+
+func (d *download) isRunning() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.status == StatusRunning
 }
 
 // fetchRange performs one request for the segment's remaining bytes and
@@ -1310,7 +1473,7 @@ func (d *download) fetchRange(ctx context.Context, seg *segment) error {
 		if isRateLimited(resp.StatusCode) {
 			return &rateLimitError{status: resp.StatusCode, wait: retryAfter(resp.Header.Get("Retry-After"))}
 		}
-		return fmt.Errorf("server ne mana kar diya (status %d)", resp.StatusCode)
+		return &statusError{status: resp.StatusCode}
 	}
 
 	// The idle watchdog: when no byte has arrived for `idleTimeout`, cancel

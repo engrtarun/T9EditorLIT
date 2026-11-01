@@ -2,6 +2,7 @@ package dl
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,24 +52,113 @@ func TestRateLimitedSegmentKeepsGoing(t *testing.T) {
 	if !bytes.Equal(got, blob) {
 		t.Fatalf("file differs from the source")
 	}
-	if blocked.Load() < 2 {
-		t.Fatalf("the test never got a 429 (%d requests)", blocked.Load())
+	// A 429 must also cost the host fewer sockets - sixteen requests to a
+	// server that wants four is what turns a slow moment into a ban.
+	d, err := m.get(item.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	d.gateMu.Lock()
+	limit := d.concLimit
+	total := len(d.segs)
+	d.gateMu.Unlock()
+	if total > 2 && limit >= total {
+		t.Fatalf("a 429 left all %d sockets open (limit %d)", total, limit)
 	}
 }
 
-// TestResumeAfterARateLimitedFailure is the user's recovery path: the row went
-// red at 25%, and "Retry" must continue from the bytes already on disk rather
-// than restarting a multi-GB file from zero. It also proves the daemon now
-// accepts a resume from `error` (it used to answer ErrBusy, so a failed row
-// could only ever be dismissed).
-func TestResumeAfterARateLimitedFailure(t *testing.T) {
-	old := rateLimitBase
-	rateLimitBase = 2 * time.Millisecond
-	defer func() { rateLimitBase = old }()
+// TestTransientErrorsKeepRetryingBeyondTheOldBudget: a 90 GB download takes
+// hours, and the network is allowed more than five bad moments. The old
+// five-attempt budget failed the whole row; now only a permanent refusal or a
+// host that has gone completely silent ends it.
+func TestTransientErrorsKeepRetryingBeyondTheOldBudget(t *testing.T) {
+	prevBase := retryBase
+	retryBase = 5 * time.Millisecond
+	t.Cleanup(func() { retryBase = prevBase })
 
+	blob := bytes.Repeat([]byte("t9"), 40<<10)
+	rs := &rangeServer{data: blob}
+	var drops atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if segmentRange(r) && drops.Add(1) <= 8 {
+			// The shape of a busy CDN: the socket dies before any header.
+			if hj, ok := w.(http.Hijacker); ok {
+				if c, _, err := hj.Hijack(); err == nil {
+					c.Close()
+				}
+			}
+			return
+		}
+		rs.handler(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	m := newTestManager(t, srv)
+	item, err := m.Start(srv.URL+"/big.bin", "")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	final := waitStatus(t, m, item.ID, StatusDone)
+	got, err := os.ReadFile(final.Path)
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if !bytes.Equal(got, blob) {
+		t.Fatalf("file differs from the source")
+	}
+	if drops.Load() <= MaxRetries {
+		t.Fatalf("the test must exceed the old %d attempt budget, saw %d drops", MaxRetries, drops.Load())
+	}
+}
+
+// TestStallWatchdogEndsARowWhoseHostWentSilent: retrying a transient error
+// forever is right, waiting forever is not. A host that answers the request
+// and then never sends a byte must end as a failed row with an honest message
+// instead of a "running" bar that never moves.
+func TestStallWatchdogEndsARowWhoseHostWentSilent(t *testing.T) {
+	prevLimit, prevEvery, prevIdle := stallLimit, stallEvery, idleTimeout
+	stallLimit, stallEvery, idleTimeout = 400*time.Millisecond, 50*time.Millisecond, time.Hour
+	t.Cleanup(func() { stallLimit, stallEvery, idleTimeout = prevLimit, prevEvery, prevIdle })
+
+	blob := bytes.Repeat([]byte("t9"), 40<<10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", fmt.Sprint(len(blob)))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// Headers, then silence: connected, alive, and producing nothing.
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(blob)-1, len(blob)))
+		w.WriteHeader(http.StatusPartialContent)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	m := newTestManager(t, srv)
+	item, err := m.Start(srv.URL+"/silent.bin", "")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	dead := waitStatus(t, m, item.ID, StatusError)
+	if !strings.Contains(dead.Error, "koi byte nahi") {
+		t.Fatalf("want the stall message, got %q", dead.Error)
+	}
+	// A failed row keeps its `.part` (and the handle on it) so Retry can
+	// resume; closing it here is only so TempDir can be removed on Windows.
+	_, _ = m.Cancel(item.ID)
+}
+
+// TestResumeAfterAPermanentRefusal is the user's recovery path: the row went
+// red at 25% (an expired token, then a fresh link), and "Retry" must continue
+// from the bytes already on disk rather than restarting a multi-GB file from
+// zero. It also proves the daemon accepts a resume from `error` (it used to
+// answer ErrBusy, so a failed row could only ever be dismissed).
+func TestResumeAfterAPermanentRefusal(t *testing.T) {
 	blob := bytes.Repeat([]byte("t9"), 200<<10)
 
-	// 1 = reject every worker whose range does not start at byte 0, so the
+	// 1 = refuse every worker whose range does not start at byte 0, so the
 	// download can only make progress through segment 0 and then dies.
 	var mode atomic.Int32
 	mode.Store(1)
@@ -78,7 +168,7 @@ func TestResumeAfterARateLimitedFailure(t *testing.T) {
 	var served atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mode.Load() == 1 && segmentRange(r) && !strings.HasPrefix(r.Header.Get("Range"), "bytes=0-") {
-			w.WriteHeader(http.StatusTooManyRequests)
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 		cw := &countingWriter{ResponseWriter: w, n: &served}
