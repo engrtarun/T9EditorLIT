@@ -102,6 +102,10 @@ const (
 
 	// maxItems bounds the list; the oldest terminal rows go first.
 	maxItems = 50
+
+	// autoResumeMax is how many interrupted rows a daemon start picks back up
+	// on its own. One crash must not come back as a socket storm.
+	autoResumeMax = 2
 )
 
 // ErrNotFound is returned when an id is not in the queue.
@@ -223,6 +227,7 @@ func (m *Manager) recoverPartials() {
 	if err != nil {
 		return
 	}
+	var resume []*download
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".part.json") {
 			continue
@@ -264,6 +269,8 @@ func (m *Manager) recoverPartials() {
 			status:       StatusPaused,
 			client:       m.client,
 			log:          m.log,
+			maxSegs:      m.segments,
+			minSegBytes:  m.minSegmentBytes,
 		}
 		var got int64
 		for _, s := range sc.Segments {
@@ -289,8 +296,29 @@ func (m *Manager) recoverPartials() {
 			d.log.Info("recovered an unfinished download",
 				"path", partPath, "have", got, "total", d.totalBytes)
 			diagf("recover id=%s file=%s at=%d/%d", d.id, d.filename, got, d.totalBytes)
+			// A row that was RUNNING when the daemon died was not paused by
+			// the user — it was interrupted. Leaving it paused is how a
+			// background download looks like it "band ho gaya": the bytes are
+			// there, the queue shows it, and nothing is moving. It continues.
+			//
+			// Capped: a crash with five rows in flight must not come back as
+			// five transfers × sixteen sockets on a box that is already short
+			// of RAM. The rest stay paused with a Resume button.
+			if sc.Running && len(resume) < autoResumeMax {
+				resume = append(resume, d)
+			}
 		}
 		m.items[d.id] = d
+	}
+	for _, d := range resume {
+		if err := d.resume(); err != nil {
+			d.log.Warn("could not auto-resume an interrupted download",
+				"id", d.id, "err", err)
+			diagf("auto-resume fail id=%s err=%v", d.id, err)
+			continue
+		}
+		d.log.Info("auto-resumed an interrupted download", "id", d.id, "file", d.filename)
+		diagf("auto-resume id=%s file=%s", d.id, d.filename)
 	}
 }
 
@@ -308,17 +336,26 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 		return nil, errors.New("sirf http/https URL chalega")
 	}
 
-	// Same link, same queue: a recovered or paused row *is* the download the
-	// user means. Starting it again resumes it instead of writing a second
-	// partial file next to the first (which is how three 46 GB `.part` files
-	// ended up in Downloads) - and it needs no probe, so a flaky host cannot
-	// refuse a resume it has already agreed to once.
-	if existing := m.runningOrPaused(rawURL); existing != nil {
-		if existing.status == StatusPaused {
-			_ = existing.resume()
+	// Same link, same queue: a row we already hold for it - running, paused,
+	// errored or just finished - IS the download the user means. Starting it
+	// again must never open a second, parallel copy: the 45 GB Lucifer file
+	// went out twice (two worker hosts, one filename) and the daemon answered
+	// the second Start with a fresh row that landed it as "... (1).rar" next to
+	// the first. Paused and errored rows continue from the bytes already on
+	// disk (the same path Retry takes); a finished row just hands the state
+	// back, so re-adding a completed link is a no-op instead of a re-download.
+	if existing := m.existingFor(rawURL); existing != nil {
+		switch existing.status {
+		case StatusRunning, StatusDone:
+			item := existing.snapshot()
+			return &item, nil
+		default:
+			if err := existing.resume(); err != nil {
+				return nil, err
+			}
+			item := existing.snapshot()
+			return &item, nil
 		}
-		item := existing.snapshot()
-		return &item, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -364,6 +401,8 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 		status:       StatusRunning,
 		client:       m.client,
 		log:          m.log,
+		maxSegs:      m.segments,
+		minSegBytes:  m.minSegmentBytes,
 	}
 
 	// One segment when the server cannot range, when the size is unknown, or
@@ -541,7 +580,7 @@ func (m *Manager) probeRetry(ctx context.Context, rawURL, referer string) (*prob
 		res, err := m.probe(actx, rawURL, referer, uaBrowser)
 		cancel()
 		if err == nil {
-			return res, nil
+			return m.ensureRange(ctx, rawURL, referer, res), nil
 		}
 		lastErr = err
 		if errors.Is(err, errHTMLPage) {
@@ -563,6 +602,32 @@ func (m *Manager) probeRetry(ctx context.Context, rawURL, referer string) (*prob
 		return res, nil
 	}
 	return nil, lastErr
+}
+
+// ensureRange gives a "no range" answer one more chance under the neutral
+// User-Agent.
+//
+// The same hosts that drop a Chrome-UA socket are the ones that answer a
+// browser UA with a plain 200 and curl's UA with a 206. A wrong "no range"
+// answer is not a small thing: it costs fifteen of the sixteen sockets for the
+// entire transfer, and nothing later in the pipeline ever asks again.
+func (m *Manager) ensureRange(ctx context.Context, rawURL, referer string, res *probeResult) *probeResult {
+	// A file too small to split gets one socket whatever the answer is, so
+	// there is nothing to gain from asking again.
+	if res.ranged || res.total <= 0 || res.total < m.minSegmentBytes {
+		return res
+	}
+	actx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if ranged, total := m.confirmRange(actx, rawURL, referer, uaPlain, res.total); ranged {
+		res.ranged = true
+		res.ua = uaPlain // keep the identity that proved it
+		if total > 0 {
+			res.total = total
+		}
+		diagf("range confirmed under plain ua host=%s", rawURL)
+	}
+	return res
 }
 
 // probe asks the server what it is about to serve.
@@ -597,12 +662,7 @@ func (m *Manager) probe(ctx context.Context, rawURL, referer, ua string) (*probe
 			// (no Content-Length) is the other reason to ask: the range answer
 			// carries the size in Content-Range.
 			if !res.ranged || res.total <= 0 {
-				if ranged, total := m.probeRange(ctx, rawURL, referer, ua); ranged {
-					res.ranged = true
-					if total > 0 {
-						res.total = total
-					}
-				}
+				res.ranged, res.total = m.confirmRange(ctx, rawURL, referer, ua, res.total)
 			}
 			return res, nil
 		}
@@ -612,7 +672,7 @@ func (m *Manager) probe(ctx context.Context, rawURL, referer, ua string) (*probe
 	}
 
 	// HEAD failed outright — the one-byte GET is the next question.
-	if ranged, total := m.probeRange(ctx, rawURL, referer, ua); ranged {
+	if ranged, total := m.confirmRange(ctx, rawURL, referer, ua, 0); ranged {
 		return &probeResult{total: total, ranged: true, ua: ua}, nil
 	}
 	// Last resort: some file hosts refuse HEAD *and* ignore Range. A plain GET
@@ -733,24 +793,74 @@ func (m *Manager) probeGet(ctx context.Context, rawURL, referer, ua string) (*pr
 	}, nil
 }
 
-// probeRange sends `Range: bytes=0-0`. A 206 answers with the full size in
+// probeRange sends `Range: bytes=at-at`. A 206 answers with the full size in
 // Content-Range (`bytes 0-0/12345`) and proves range support in one shot.
-func (m *Manager) probeRange(ctx context.Context, rawURL, referer, ua string) (bool, int64) {
-	req, err := m.newRequest(ctx, http.MethodGet, rawURL, referer, ua)
+func (m *Manager) probeRange(ctx context.Context, rawURL, referer, ua string, at int64) (bool, int64) {
+	return rangeProbe(ctx, m.client, rawURL, referer, ua, at)
+}
+
+// rangeProbe is the one question that decides how many sockets a file gets:
+// does this host answer a single-byte Range request with 206? It returns the
+// total size when Content-Range carries it.
+//
+// Package-level (not a Manager method) so a running download can ask it too,
+// without holding the manager's queue lock.
+func rangeProbe(ctx context.Context, client *http.Client, rawURL, referer, ua string, at int64) (bool, int64) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return false, 0
 	}
-	req.Header.Set("Range", "bytes=0-0")
-	resp, err := m.client.Do(req)
+	if referer != "" {
+		req.Header.Set("Referer", referer)
+	}
+	req.Header.Set("User-Agent", userAgent(ua))
+	req.Header.Set("Accept-Encoding", "identity")
+	if at < 0 {
+		at = 0
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", at, at))
+	resp, err := client.Do(req)
 	if err != nil {
 		return false, 0
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusPartialContent {
+		// Drain a little so the connection can be reused rather than torn
+		// down; the body of a 200 here is the whole file.
+		_, _ = io.CopyN(io.Discard, resp.Body, 8<<10)
 		return false, 0
 	}
 	_, _ = io.CopyN(io.Discard, resp.Body, 1)
 	return true, parseContentRangeTotal(resp.Header.Get("Content-Range"))
+}
+
+// confirmRange settles the socket-count question with up to two questions
+// instead of one.
+//
+// `bytes=0-0` alone is not a reliable answer. A CDN edge can return 200 for
+// the first byte (a cache miss, a signed URL that only allows a plain GET) and
+// 206 for a mid-file byte, and the reverse happens too. This is not theory: a
+// 9.6 GB Google video was probed once, answered "no range", and spent its
+// whole life on ONE socket at a fraction of the link — the exact "speed gir
+// gayi" the user reported. Two single-byte requests cost milliseconds and
+// decide whether the file is fetched 1× or 16× in parallel.
+func (m *Manager) confirmRange(ctx context.Context, rawURL, referer, ua string, total int64) (bool, int64) {
+	if ranged, size := m.probeRange(ctx, rawURL, referer, ua, 0); ranged {
+		if total <= 0 {
+			total = size
+		}
+		return true, total
+	}
+	if total > 1 {
+		if ranged, size := m.probeRange(ctx, rawURL, referer, ua, total/2); ranged {
+			if total <= 0 {
+				total = size
+			}
+			diagf("range ok only at mid-file total=%d", total)
+			return true, total
+		}
+	}
+	return false, total
 }
 
 func (m *Manager) newRequest(ctx context.Context, method, rawURL, referer, ua string) (*http.Request, error) {
@@ -1019,13 +1129,29 @@ type download struct {
 	client *http.Client
 	log    *slog.Logger
 
+	// The split policy this row was started with. Kept on the row so a
+	// mid-transfer re-plan (see `resplitLocked`) obeys the same limits the
+	// Start path used, including a test's smaller thresholds.
+	maxSegs     int
+	minSegBytes int64
+
 	mu         sync.Mutex
 	status     string
 	errText    string
 	finishedAt time.Time
 	file       *os.File
 	stop       context.CancelFunc
+	// workCancel stops the CURRENT round of workers without touching `stop`:
+	// a re-plan (more sockets) and a stall reconnect both need the writers to
+	// let go of their ranges while the download itself keeps running.
+	workCancel context.CancelFunc
 	segs       []*segment
+	// widenReq / reconnectReq are set by the watchers and acted on by run()
+	// after the workers have stopped, because `segs` may not be swapped under
+	// a live writer. widened caps the automatic re-plan at one per row.
+	widenReq     bool
+	reconnectReq bool
+	widened      bool
 
 	received   atomic.Int64
 	speed      atomic.Int64
@@ -1054,12 +1180,15 @@ func (m *Manager) tracks(partPath string) bool {
 	return false
 }
 
-// runningOrPaused finds the row for a URL that is still unfinished.
-func (m *Manager) runningOrPaused(rawURL string) *download {
+// existingFor finds the row we already hold for a URL, in any state. A link
+// that has a row - running, paused, errored or done - must keep that one row;
+// a second Start for the same URL must continue or hand back its state instead
+// of spawning a parallel download that writes a second copy of the file.
+func (m *Manager) existingFor(rawURL string) *download {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, d := range m.items {
-		if d.url == rawURL && (d.status == StatusPaused || d.status == StatusRunning) {
+		if d.url == rawURL {
 			return d
 		}
 	}
@@ -1068,12 +1197,44 @@ func (m *Manager) runningOrPaused(rawURL string) *download {
 
 // adoptSidecar copies the progress a previous run left behind into this one.
 //
-// Segments are matched by index and only when their bounds agree: a different
-// split (the huge-file rule can raise the socket count) writes each worker at
-// a different offset, and adopting a `done` that belongs to another range would
-// silently corrupt the file. A mismatch is not an error — the download simply
-// starts clean, which is what the old code always did.
+// The plan is adopted when it tiles [0,total) exactly — whatever the split.
+// That matters now that a transfer can be re-planned mid-flight: the sidecar
+// of a widened download has a different shape from the split Start computes,
+// and insisting on an identical shape would throw away every byte on disk
+// (nine gigabytes, in the case that prompted this) just because the socket
+// count changed. Each segment's `done` belongs to its own bounds, so a
+// complete tiling is safe by construction.
+//
+// The old exact-match rule is kept as the fallback for a sidecar written
+// before this existed.
 func (d *download) adoptSidecar(sc *sidecar) int64 {
+	if len(sc.Segments) == 0 {
+		return 0
+	}
+	if d.totalBytes > 0 && tilesExactly(sc.Segments, d.totalBytes) {
+		segs := make([]*segment, 0, len(sc.Segments))
+		var total int64
+		for _, s := range sc.Segments {
+			seg := &segment{start: s.Start, end: s.End}
+			if s.Done < 0 || s.Done > seg.length() {
+				return 0
+			}
+			seg.done.Store(s.Done)
+			total += s.Done
+			segs = append(segs, seg)
+		}
+		d.segs = segs
+		// A plan with more than one segment was only ever written by a
+		// server that proved it honours Range; trusting the probe over that
+		// would send plain GETs at a multi-segment file.
+		if len(segs) > 1 {
+			d.ranged = true
+		}
+		d.received.Store(total)
+		d.lastBytes.Store(total)
+		d.lastSample.Store(time.Now().UnixNano())
+		return total
+	}
 	if len(sc.Segments) != len(d.segs) {
 		return 0
 	}
@@ -1096,6 +1257,22 @@ func (d *download) adoptSidecar(sc *sidecar) int64 {
 	d.lastBytes.Store(total)
 	d.lastSample.Store(time.Now().UnixNano())
 	return total
+}
+
+// tilesExactly reports whether a sidecar's segments cover [0,total) once, in
+// order, with no gap and no overlap.
+func tilesExactly(segs []segmentState, total int64) bool {
+	if len(segs) == 0 || total <= 0 {
+		return false
+	}
+	var at int64
+	for _, s := range segs {
+		if s.Start != at || s.End < s.Start {
+			return false
+		}
+		at = s.End + 1
+	}
+	return at == total
 }
 
 // open creates the partial file at its final size, so every segment can
@@ -1137,9 +1314,12 @@ func (d *download) run() {
 	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	d.mu.Lock()
 	d.stop = cancel
 	d.status = StatusRunning
+	d.widenReq = false
+	d.reconnectReq = false
 	d.mu.Unlock()
 	// A fresh row starts with the full budget; the clock only matters after a
 	// 429, but a zero value would look like "last 429 in 1970" and hand back
@@ -1190,11 +1370,19 @@ func (d *download) run() {
 	// the network needs; a host that has produced no byte at all for
 	// `stallLimit` is a different thing, and the row must say so instead of
 	// spinning "running" at 0.0 MB/s until the user gives up on it.
+	//
+	// Before it ends the row it forces ONE fresh connection. A stalled socket
+	// (a NAT that forgot the flow, a CDN edge that stopped sending) looks
+	// exactly like a dead host from the outside, and that reconnect is the
+	// difference between "background me download band ho gaya" and a transfer
+	// that carries on. Only a second silent window - a host that is genuinely
+	// not answering - fails the row.
 	go func() {
 		t := time.NewTicker(stallEvery)
 		defer t.Stop()
 		last := d.received.Load()
 		lastAt := time.Now()
+		reconnected := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -1203,34 +1391,80 @@ func (d *download) run() {
 				cur := d.received.Load()
 				if cur != last {
 					last, lastAt = cur, time.Now()
+					reconnected = false
 					continue
 				}
-				if d.isRunning() && time.Since(lastAt) > stallLimit {
-					d.fail(fmt.Errorf("server se %s se koi byte nahi aa raha",
-						stallLimit.Truncate(time.Second)))
-					cancel()
-					return
+				if !d.isRunning() || time.Since(lastAt) <= stallLimit {
+					continue
 				}
+				if !reconnected && d.requestReconnect() {
+					reconnected = true
+					lastAt = time.Now()
+					d.log.Warn("download stalled, forcing a fresh connection", "id", d.id)
+					diagf("stall-reconnect id=%s", d.id)
+					continue
+				}
+				d.fail(fmt.Errorf("server se %s se koi byte nahi aa raha",
+					stallLimit.Truncate(time.Second)))
+				cancel()
+				return
 			}
 		}
 	}()
 
-	var wg sync.WaitGroup
-	for i := range d.segs {
-		if d.segs[i].finished() {
-			continue
-		}
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			if err := d.fetchSegment(ctx, i); err != nil && ctx.Err() == nil {
-				d.fail(err)
-				cancel() // one broken segment ends the rest; nothing to gain
+	// The widening watcher: one socket is a guess the probe made, and a wrong
+	// guess costs fifteen sockets for the whole file. It asks again a few
+	// seconds in - when there is real evidence the URL works - and a mid-flight
+	// re-plan can still save the transfer.
+	go d.watchForWidening(ctx)
+
+	// One round of workers. A round ends when every segment is finished, when
+	// the download is paused/cancelled, or when a watcher asked for the plan to
+	// change (more sockets, or a fresh connection after a stall). Only the last
+	// case starts another round: swapping `segs` under a live writer would put
+	// two ranges into the same bytes.
+	for {
+		wctx, wcancel := context.WithCancel(ctx)
+		d.mu.Lock()
+		d.workCancel = wcancel
+		d.mu.Unlock()
+
+		var wg sync.WaitGroup
+		for i := range d.segs {
+			if d.segs[i].finished() {
+				continue
 			}
-		}(i)
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				if err := d.fetchSegment(wctx, i); err != nil && wctx.Err() == nil {
+					d.fail(err)
+					cancel() // one broken segment ends the rest; nothing to gain
+				}
+			}(i)
+		}
+		wg.Wait()
+		wcancel()
+
+		d.mu.Lock()
+		again := false
+		if ctx.Err() == nil && d.status == StatusRunning {
+			if d.widenReq {
+				again = d.resplitLocked()
+			}
+			if d.reconnectReq {
+				again = true
+			}
+		}
+		d.widenReq = false
+		d.reconnectReq = false
+		segs := len(d.segs)
+		d.mu.Unlock()
+		if !again {
+			break
+		}
+		diagf("round-restart id=%s segs=%d", d.id, segs)
 	}
-	wg.Wait()
-	cancel()
 
 	// The status may already be paused/cancelled — those paths set it and
 	// cancelled this same context; only a clean finish lands here.
@@ -1460,6 +1694,175 @@ var stallLimit = 5 * time.Minute
 
 // stallEvery is how often the watchdog samples the byte counter.
 var stallEvery = 15 * time.Second
+
+// widenAfter is how long a single-socket transfer runs before the range
+// question is asked again. Long enough that the first megabytes prove the URL
+// works, short enough that a wrong probe answer costs seconds, not the file.
+// A variable so a test does not need to wait it out.
+var widenAfter = 8 * time.Second
+
+// minWidenRemaining is the smallest slice of a file worth re-planning: below
+// it the extra connections would each finish before their TLS handshake did.
+// A variable so a test can shrink it.
+var minWidenRemaining int64 = 4 << 20
+
+// watchForWidening re-asks the range question while a one-socket transfer is
+// running, and stops as soon as the answer changes or the row ends.
+func (d *download) watchForWidening(ctx context.Context) {
+	for _, wait := range []time.Duration{widenAfter, 30 * time.Second, 60 * time.Second} {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		if !d.needsWidening() {
+			return
+		}
+		if d.widen(ctx) {
+			return
+		}
+	}
+}
+
+// needsWidening is true while the row is a single-socket transfer that the
+// server has never admitted could be split.
+func (d *download) needsWidening() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.status == StatusRunning && !d.ranged && !d.widened &&
+		len(d.segs) == 1 && d.totalBytes > 0
+}
+
+// widen asks the server whether the bytes still missing can be fetched in
+// parallel, and asks run() to re-plan if the answer is yes.
+func (d *download) widen(ctx context.Context) bool {
+	d.mu.Lock()
+	if d.status != StatusRunning || d.ranged || d.widened || len(d.segs) != 1 || d.totalBytes <= 0 {
+		d.mu.Unlock()
+		return true // nothing left to widen; stop asking
+	}
+	at := d.segs[0].start + d.segs[0].done.Load()
+	total := d.totalBytes
+	ua := d.ua
+	d.mu.Unlock()
+
+	if total-at < minWidenRemaining {
+		return true
+	}
+	if at <= 0 {
+		at = total / 2
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ranged, _ := rangeProbe(probeCtx, d.client, d.url, d.referer, userAgent(ua), at)
+	cancel()
+	if !ranged {
+		diagf("widen refused id=%s (no range at %d)", d.id, at)
+		return false // try again on the next delay
+	}
+
+	d.mu.Lock()
+	if d.status != StatusRunning || len(d.segs) != 1 {
+		d.mu.Unlock()
+		return true
+	}
+	d.ranged = true
+	d.widened = true
+	d.widenReq = true
+	stop := d.workCancel
+	d.mu.Unlock()
+	d.log.Info("download can range after all - re-planning for more sockets", "id", d.id)
+	diagf("widen id=%s at=%d", d.id, at)
+	if stop != nil {
+		stop() // the writer lets go of its range; run() re-plans and restarts
+	}
+	return true
+}
+
+// requestReconnect makes the current round stop so run() starts fresh
+// connections from the bytes already on disk.
+func (d *download) requestReconnect() bool {
+	d.mu.Lock()
+	if d.status != StatusRunning {
+		d.mu.Unlock()
+		return false
+	}
+	d.reconnectReq = true
+	stop := d.workCancel
+	d.mu.Unlock()
+	if stop == nil {
+		return false
+	}
+	stop()
+	return true
+}
+
+// resplitLocked re-plans the bytes that are still missing into parallel
+// ranges. Caller holds d.mu and no writer is running.
+//
+// The bytes already on disk stay covered by one finished segment, so the plan
+// still tiles [0,total) exactly: that is what lets a pause or a daemon restart
+// adopt it later instead of throwing the partial file away.
+func (d *download) resplitLocked() bool {
+	if !d.ranged || len(d.segs) != 1 || d.totalBytes <= 0 {
+		return false
+	}
+	first := d.segs[0].start + d.segs[0].done.Load()
+	remaining := d.totalBytes - first
+	if remaining < minWidenRemaining {
+		return false
+	}
+
+	n := d.maxSegs
+	if n <= 0 {
+		n = DefaultSegments
+	}
+	if d.totalBytes >= HugeBytes && n < HugeSegments {
+		n = HugeSegments
+	}
+	if n > HardMaxSegments {
+		n = HardMaxSegments
+	}
+	floor := d.minSegBytes / int64(max(n, 1))
+	if floor < 64<<10 {
+		floor = 64 << 10
+	}
+	for n > 1 && remaining/int64(n) < floor {
+		n /= 2
+	}
+	if n <= 1 {
+		return false
+	}
+
+	segs := make([]*segment, 0, n+1)
+	if first > 0 {
+		// What is already on disk: finished, so it gets no worker.
+		done := &segment{start: 0, end: first - 1}
+		done.done.Store(first)
+		segs = append(segs, done)
+	}
+	chunk := (remaining + int64(n) - 1) / int64(n)
+	for i := 0; i < n; i++ {
+		start := first + int64(i)*chunk
+		if start >= d.totalBytes {
+			break
+		}
+		end := start + chunk - 1
+		if end >= d.totalBytes {
+			end = d.totalBytes - 1
+		}
+		segs = append(segs, &segment{start: start, end: end})
+	}
+	if len(segs) < 2 {
+		return false
+	}
+	d.segs = segs
+	d.gateMu.Lock()
+	d.concLimit = 0 // acquire() re-initialises it to the new segment count
+	d.gateMu.Unlock()
+	d.saveSidecarLocked()
+	return true
+}
 
 func (d *download) isRunning() bool {
 	d.mu.Lock()
@@ -1759,11 +2162,19 @@ type sidecar struct {
 	Ranged       bool   `json:"ranged"`
 	ETag         string `json:"etag,omitempty"`
 	LastModified string `json:"lastModified,omitempty"`
-	Segments     []struct {
-		Start int64 `json:"start"`
-		End   int64 `json:"end"`
-		Done  int64 `json:"done"`
-	} `json:"segments"`
+	// Running is true when the sidecar was last written mid-transfer. A
+	// daemon that dies with Running=true was interrupted, not paused, and the
+	// next start continues the row instead of leaving it waiting for a click.
+	Running  bool           `json:"running,omitempty"`
+	Segments []segmentState `json:"segments"`
+}
+
+// segmentState is one segment as the sidecar stores it: where it starts, where
+// it ends, and how many of its bytes are already on disk.
+type segmentState struct {
+	Start int64 `json:"start"`
+	End   int64 `json:"end"`
+	Done  int64 `json:"done"`
 }
 
 // saveSidecarLocked persists the resume state. Caller holds d.mu.
@@ -1780,13 +2191,10 @@ func (d *download) saveSidecarLocked() {
 		Ranged:       d.ranged,
 		ETag:         d.etag,
 		LastModified: d.lastModified,
+		Running:      d.status == StatusRunning,
 	}
 	for _, s := range d.segs {
-		sc.Segments = append(sc.Segments, struct {
-			Start int64 `json:"start"`
-			End   int64 `json:"end"`
-			Done  int64 `json:"done"`
-		}{s.start, s.end, s.done.Load()})
+		sc.Segments = append(sc.Segments, segmentState{s.start, s.end, s.done.Load()})
 	}
 	b, err := json.Marshal(sc)
 	if err != nil {

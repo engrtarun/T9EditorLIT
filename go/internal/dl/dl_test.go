@@ -336,6 +336,12 @@ func TestCancelDeletesThePartial(t *testing.T) {
 	}
 }
 
+// TestDuplicateNamesGetANumber covers the case the "(1)" suffix exists for:
+// two *different* URLs whose server-side filename is the same. Two rows, two
+// files, no collision - the second carries the number. The same URL started
+// twice is a different test now (TestSameUrlStartReturnsTheSameRow), because
+// re-triggering one link must hand back its own row instead of opening a
+// parallel copy.
 func TestDuplicateNamesGetANumber(t *testing.T) {
 	blob := []byte("tiny")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -350,13 +356,13 @@ func TestDuplicateNamesGetANumber(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	m := newTestManager(t, srv)
-	first, err := m.Start(srv.URL, "")
+	first, err := m.Start(srv.URL+"/one.txt", "")
 	if err != nil {
 		t.Fatalf("Start 1: %v", err)
 	}
 	waitStatus(t, m, first.ID, StatusDone)
 
-	second, err := m.Start(srv.URL, "")
+	second, err := m.Start(srv.URL+"/two.txt", "")
 	if err != nil {
 		t.Fatalf("Start 2: %v", err)
 	}
@@ -709,11 +715,7 @@ func TestRestartResumesThePartialInsteadOfStartingOver(t *testing.T) {
 		if s.start == 0 {
 			got = done
 		}
-		sc.Segments = append(sc.Segments, struct {
-			Start int64 `json:"start"`
-			End   int64 `json:"end"`
-			Done  int64 `json:"done"`
-		}{s.start, s.end, got})
+		sc.Segments = append(sc.Segments, segmentState{s.start, s.end, got})
 	}
 	b, err := json.Marshal(sc)
 	if err != nil {
@@ -744,6 +746,66 @@ func TestRestartResumesThePartialInsteadOfStartingOver(t *testing.T) {
 	}
 	if again := served.Load(); again > int64(len(blob))-done {
 		t.Fatalf("resume re-fetched bytes already on disk: server sent %d, expected at most %d", again, int64(len(blob))-done)
+	}
+}
+
+// TestSameUrlStartReturnsTheSameRow is the "(1).rar" fix: starting a URL the
+// daemon already holds - running, paused, errored or done - hands back its
+// existing row instead of spawning a parallel copy that lands as a second
+// file next to the first.
+func TestSameUrlStartReturnsTheSameRow(t *testing.T) {
+	blob := make([]byte, 200<<10)
+	if _, err := rand.Read(blob); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.ServeContent(w, r, "big.rar", time.Unix(0, 0), bytes.NewReader(blob))
+	}))
+	t.Cleanup(srv.Close)
+
+	m := newTestManager(t, srv)
+
+	first, err := m.Start(srv.URL, "")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	final := waitStatus(t, m, first.ID, StatusDone)
+	if final.Status != StatusDone {
+		t.Fatalf("first start should finish, got %q", final.Status)
+	}
+
+	// Re-add the same link: same row back, not a new one.
+	again, err := m.Start(srv.URL, "")
+	if err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	if again.ID != first.ID {
+		t.Fatalf("second Start must hand back the same row: id=%q want %q", again.ID, first.ID)
+	}
+	if again.Status != StatusDone {
+		t.Fatalf("done row re-added must stay done, got %q", again.Status)
+	}
+	if got := m.List(); len(got) != 1 {
+		t.Fatalf("queue must hold one row for one URL, got %d", len(got))
+	}
+	// No second partial on disk: the resume path wrote nothing new.
+	parts, _ := filepath.Glob(filepath.Join(m.Dir(), "*.part"))
+	if len(parts) > 0 {
+		t.Fatalf("no *.part should exist for a completed URL, found %v", parts)
+	}
+	// And the second Start never touched the server: the probe count must
+	// be exactly where the finished download left it.
+	if hitsAfter := hits.Load(); hitsAfter == 0 {
+		t.Fatalf("the first download must have talked to the server")
+	}
+	before := hits.Load()
+	if _, err := m.Start(srv.URL, ""); err != nil {
+		t.Fatalf("third Start: %v", err)
+	}
+	if hits.Load() != before {
+		t.Fatalf("re-adding a finished URL must not touch the server: hits %d -> %d", before, hits.Load())
 	}
 }
 
@@ -779,11 +841,7 @@ func primePartial(t *testing.T, dir, name, rawURL string, blob []byte, segs []*s
 		ETag:       `"blob-v1"`,
 	}
 	for i, s := range segs {
-		sc.Segments = append(sc.Segments, struct {
-			Start int64 `json:"start"`
-			End   int64 `json:"end"`
-			Done  int64 `json:"done"`
-		}{s.start, s.end, done[i]})
+		sc.Segments = append(sc.Segments, segmentState{s.start, s.end, done[i]})
 	}
 	b, err := json.Marshal(sc)
 	if err != nil {
