@@ -119,11 +119,48 @@
       </div>
     </div>
 
-    {#if downloads.items.length === 0}
+    {#if downloads.failed.length > 0}
+      <ul class="border-b border-nc-line/40">
+        {#each downloads.failed as fail (fail.id)}
+          <li class="flex items-start gap-3 px-3 py-2">
+            <span
+              class="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-md bg-nc-red/20 text-[13px] font-bold text-nc-red"
+              aria-hidden="true">!</span
+            >
+            <div class="min-w-0 flex-1">
+              <div class="truncate text-[12px] text-nc-txt" title={fail.filename}>
+                {fail.filename}
+              </div>
+              <div class="text-[11px] leading-snug text-nc-red">{fail.error}</div>
+            </div>
+            <button
+              type="button"
+              onclick={() => downloads.dismissFailed(fail.id)}
+              class="grid h-6 w-6 shrink-0 place-items-center rounded text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+              title="Remove from list"
+              aria-label="Dismiss failed download"
+            >
+              <svg
+                width="10"
+                height="10"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path d="M2 2l8 8M10 2l-8 8" />
+              </svg>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    {#if downloads.items.length === 0 && downloads.failed.length === 0}
       <p class="px-3 py-4 text-center text-[12px] text-nc-mut">
         Abhi kuch download nahi ho raha — browser toolbar ke ⬇ se shuru karo
       </p>
-    {:else}
+    {:else if downloads.items.length > 0}
       <ul class="max-h-[230px] overflow-y-auto">
         {#each downloads.items as item (item.id)}
           <li class="flex items-start gap-3 border-b border-nc-line/40 px-3 py-2 last:border-0">

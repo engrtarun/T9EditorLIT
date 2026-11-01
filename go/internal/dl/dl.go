@@ -85,10 +85,12 @@ const (
 	// pay off: 45–90 GB over the default eight sockets leaves real
 	// throughput on the table, so huge files get more.
 	HugeBytes    = 1 << 30 // 1 GiB
-	HugeSegments = 12
+	HugeSegments = 16
 
 	// HardMaxSegments is the ceiling; some hosts refuse or throttle above
-	// a dozen connections on one file.
+	// a dozen connections on one file. Measured on this machine (1 GB test
+	// file, 15 s windows): 1 conn = 6 MB/s, 8 = 14 MB/s, 16 = 17-19 MB/s,
+	// 24 = 17 MB/s - sixteen is where the curve flattens.
 	HardMaxSegments = 16
 
 	// keepTerminalFor is how long a finished row stays in the list before
@@ -195,14 +197,102 @@ func New(opts Options) (*Manager, error) {
 		}
 	}
 
-	return &Manager{
+	m := &Manager{
 		dir:             dir,
 		segments:        segs,
 		minSegmentBytes: minSeg,
 		client:          client,
 		log:             log,
 		items:           map[string]*download{},
-	}, nil
+	}
+	// A daemon restart must not look like "my download never started": the
+	// `.part.json` sidecars on disk are the queue's memory, and every one of
+	// them becomes a paused row the user can resume.
+	m.recoverPartials()
+	return m, nil
+}
+
+// recoverPartials adopts the sidecars a previous daemon left behind.
+//
+// It runs once, at startup, before anything is listening: the list the UI
+// polls then shows the interrupted downloads instead of an empty panel, which
+// is what made a 45 GB transfer look like it had never begun. A sidecar whose
+// segments are all complete but whose rename never happened (Windows can hold
+// a freshly written file for a moment) is finished right here.
+func (m *Manager) recoverPartials() {
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".part.json") {
+			continue
+		}
+		sidePath := filepath.Join(m.dir, e.Name())
+		b, err := os.ReadFile(sidePath)
+		if err != nil {
+			continue
+		}
+		var sc sidecar
+		if json.Unmarshal(b, &sc) != nil || sc.Version != 1 || sc.TotalBytes <= 0 {
+			continue
+		}
+		partPath := strings.TrimSuffix(sidePath, ".json")
+		st, err := os.Stat(partPath)
+		if err != nil {
+			_ = os.Remove(sidePath) // a sidecar without its partial is litter
+			continue
+		}
+		if st.Size() < sc.TotalBytes {
+			_ = os.Truncate(partPath, sc.TotalBytes)
+		}
+
+		filename := sc.Filename
+		if filename == "" {
+			filename = strings.TrimSuffix(filepath.Base(partPath), ".part")
+		}
+		d := &download{
+			id:           newID(),
+			url:          sc.URL,
+			referer:      sc.Referer,
+			filename:     filename,
+			partPath:     partPath,
+			sidePath:     sidePath,
+			totalBytes:   sc.TotalBytes,
+			ranged:       sc.Ranged,
+			etag:         sc.ETag,
+			lastModified: sc.LastModified,
+			status:       StatusPaused,
+			client:       m.client,
+			log:          m.log,
+		}
+		var got int64
+		for _, s := range sc.Segments {
+			seg := &segment{start: s.Start, end: s.End}
+			if s.Done > 0 && s.Done <= seg.length() {
+				seg.done.Store(s.Done)
+				got += s.Done
+			}
+			d.segs = append(d.segs, seg)
+		}
+		if len(d.segs) == 0 {
+			continue
+		}
+		d.received.Store(got)
+
+		if got >= d.totalBytes && d.totalBytes > 0 {
+			// Every byte is on disk; only the last step is missing.
+			d.status = StatusRunning
+			d.finishLocked()
+			d.log.Info("finished an interrupted download at startup",
+				"path", partPath, "status", d.status)
+		} else {
+			d.log.Info("recovered an unfinished download",
+				"path", partPath, "have", got, "total", d.totalBytes)
+			diagf("recover id=%s file=%s at=%d/%d", d.id, d.filename, got, d.totalBytes)
+		}
+		m.items[d.id] = d
+	}
 }
 
 // Dir is the destination folder downloads land in.
@@ -219,13 +309,25 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 		return nil, errors.New("sirf http/https URL chalega")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	probe, err := m.probe(ctx, rawURL, referer)
 	if err != nil {
 		diagf("probe fail %s err=%v", parsed.Host, err)
 		return nil, err
+	}
+
+	// Same link, same queue: a recovered or paused row *is* the download the
+	// user means. Starting it again resumes it instead of writing a second
+	// partial file next to the first (which is how three 46 GB `.part` files
+	// ended up in Downloads).
+	if existing := m.runningOrPaused(rawURL); existing != nil {
+		if existing.status == StatusPaused {
+			_ = existing.resume()
+		}
+		item := existing.snapshot()
+		return &item, nil
 	}
 
 	// The filename prefers the server's Content-Disposition (that is what a
@@ -336,10 +438,14 @@ func (m *Manager) probe(ctx context.Context, rawURL, referer string) (*probeResu
 	if err != nil {
 		return nil, err
 	}
+	var lastErr error
 	if resp, err := m.client.Do(head); err == nil {
 		io.Copy(io.Discard, resp.Body) // drain, so the connection can be reused
 		resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if isHTML(resp.Header.Get("Content-Type")) {
+				return nil, errHTMLPage
+			}
 			res := &probeResult{
 				total:        resp.ContentLength,
 				ranged:       strings.EqualFold(resp.Header.Get("Accept-Ranges"), "bytes"),
@@ -348,23 +454,74 @@ func (m *Manager) probe(ctx context.Context, rawURL, referer string) (*probeResu
 				lastModified: resp.Header.Get("Last-Modified"),
 			}
 			// Accept-Ranges missing is not proof of no support — ask with a
-			// real Range request before giving up on splitting.
-			if !res.ranged {
+			// real Range request before giving up on splitting. A chunked HEAD
+			// (no Content-Length) is the other reason to ask: the range answer
+			// carries the size in Content-Range.
+			if !res.ranged || res.total <= 0 {
 				if ranged, total := m.probeRange(ctx, rawURL, referer); ranged {
-					res.ranged, res.total = true, total
+					res.ranged = true
+					if total > 0 {
+						res.total = total
+					}
 				}
 			}
 			return res, nil
 		}
+		lastErr = fmt.Errorf("HEAD ne status %d diya", resp.StatusCode)
+	} else {
+		lastErr = err
 	}
 
-	// HEAD failed outright — the one-byte GET is the fallback.
-	ranged, total := m.probeRange(ctx, rawURL, referer)
-	res := &probeResult{total: total, ranged: ranged}
-	if !ranged {
-		return nil, fmt.Errorf("server ne file dene se mana kar diya")
+	// HEAD failed outright — the one-byte GET is the next question.
+	if ranged, total := m.probeRange(ctx, rawURL, referer); ranged {
+		return &probeResult{total: total, ranged: true}, nil
 	}
-	return res, nil
+	// Last resort: some file hosts refuse HEAD *and* ignore Range. A plain GET
+	// still starts the download (one connection, unknown length), which beats
+	// refusing to start a 90 GB file at all.
+	if res, err := m.probeGet(ctx, rawURL, referer); err == nil {
+		return res, nil
+	} else if err != nil {
+		lastErr = err
+	}
+	return nil, fmt.Errorf("server ne file dene se mana kar diya (%v)", lastErr)
+}
+
+// errHTMLPage is the honest answer when a "download" URL serves a web page:
+// an expired link, a captcha or an error page looks like a file to a URL
+// parser and exactly like garbage inside a 45 GB `.part` to the user.
+var errHTMLPage = errors.New("link ek web page kholta hai, file nahi - page pe download button dabao")
+
+func isHTML(contentType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/html")
+}
+
+// probeGet is the last-resort probe: a plain GET whose body is dropped after a
+// few kilobytes. It learns the size and the filename when the server supports
+// neither HEAD nor Range, and turns an HTML error page into a real message.
+func (m *Manager) probeGet(ctx context.Context, rawURL, referer string) (*probeResult, error) {
+	req, err := m.newRequest(ctx, http.MethodGet, rawURL, referer)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("GET ne status %d diya", resp.StatusCode)
+	}
+	if isHTML(resp.Header.Get("Content-Type")) {
+		return nil, errHTMLPage
+	}
+	_, _ = io.CopyN(io.Discard, resp.Body, 32<<10)
+	return &probeResult{
+		total:        resp.ContentLength,
+		filename:     filenameFromDisposition(resp.Header.Get("Content-Disposition")),
+		etag:         resp.Header.Get("ETag"),
+		lastModified: resp.Header.Get("Last-Modified"),
+	}, nil
 }
 
 // probeRange sends `Range: bytes=0-0`. A 206 answers with the full size in
@@ -398,6 +555,10 @@ func (m *Manager) newRequest(ctx context.Context, method, rawURL, referer string
 		req.Header.Set("Referer", referer)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36")
+	// Raw bytes, always. Without this Go transparently asks for gzip and
+	// decompresses on the fly, so Content-Length stops matching the bytes we
+	// write and a "45 GB" file arrives short.
+	req.Header.Set("Accept-Encoding", "identity")
 	return req, nil
 }
 
@@ -557,6 +718,11 @@ func (m *Manager) resumable(rawURL string, probe *probeResult) (*sidecar, string
 		if _, err := os.Stat(dest + ".part"); err != nil {
 			continue
 		}
+		if m.tracks(dest + ".part") {
+			// Already a row (a recovered paused download): starting the same
+			// link again must not create a second row over one file.
+			continue
+		}
 		return &sc, dest
 	}
 	return nil, ""
@@ -656,6 +822,30 @@ type download struct {
 	lastSample atomic.Int64 // unix nanos of the previous speed sample
 }
 
+// tracks reports whether a partial path already belongs to a row.
+func (m *Manager) tracks(partPath string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range m.items {
+		if d.partPath == partPath {
+			return true
+		}
+	}
+	return false
+}
+
+// runningOrPaused finds the row for a URL that is still unfinished.
+func (m *Manager) runningOrPaused(rawURL string) *download {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range m.items {
+		if d.url == rawURL && (d.status == StatusPaused || d.status == StatusRunning) {
+			return d
+		}
+	}
+	return nil
+}
+
 // adoptSidecar copies the progress a previous run left behind into this one.
 //
 // Segments are matched by index and only when their bounds agree: a different
@@ -695,6 +885,14 @@ func (d *download) open() error {
 	if err != nil {
 		return fmt.Errorf("file nahi ban paayi: %w", err)
 	}
+	// Sparse first, truncate second. On NTFS a non-sparse file zero-fills and
+	// allocates every byte between the current end and the offset a worker
+	// writes at, which for a multi-segment download means gigabytes of zeros
+	// before the first real byte lands (see sparse_windows.go).
+	if err := markSparse(f); err != nil {
+		d.log.Warn("partial file is not sparse - unwritten gaps will cost disk",
+			"id", d.id, "path", d.partPath, "err", err)
+	}
 	if d.totalBytes > 0 {
 		if err := f.Truncate(d.totalBytes); err != nil {
 			f.Close()
@@ -711,11 +909,37 @@ func (d *download) open() error {
 // download, started once; resume starts another after the previous one
 // exited (the WaitGroup inside makes sure of that).
 func (d *download) run() {
+	defer func() {
+		if r := recover(); r != nil {
+			diagf("panic id=%s err=%v", d.id, r)
+			d.fail(fmt.Errorf("downloader panic: %v", r))
+		}
+	}()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	d.mu.Lock()
 	d.stop = cancel
 	d.status = StatusRunning
 	d.mu.Unlock()
+
+	// Flush the resume state while the bytes are still moving. Until this
+	// existed the sidecar was only written on pause and on error, so a crash
+	// (or a kill from the updater) lost every offset since the last pause - and
+	// a 45 GB partial with no sidecar cannot be resumed at all.
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				d.mu.Lock()
+				d.saveSidecarLocked()
+				d.mu.Unlock()
+			}
+		}
+	}()
 
 	var wg sync.WaitGroup
 	for i := range d.segs {
@@ -769,15 +993,36 @@ func (d *download) finishLocked() {
 		d.file = nil
 	}
 	final := strings.TrimSuffix(d.partPath, ".part")
-	if err := os.Rename(d.partPath, final); err != nil {
+	if err := renameWithRetry(d.partPath, final); err != nil {
+		// Windows can hold a file that was just written (the antivirus scan of
+		// a fresh 45 GB file is not instant). The bytes are all here, so the
+		// sidecar must stay: the next start finishes the job instead of
+		// declaring a complete download dead.
 		d.status = StatusError
 		d.errText = "file rename nahi hui: " + err.Error()
-	} else {
-		d.status = StatusDone
-		diagf("done id=%s bytes=%d", d.id, d.totalBytes)
+		d.finishedAt = time.Now()
+		d.saveSidecarLocked()
+		diagf("rename fail id=%s err=%v", d.id, err)
+		return
 	}
+	d.status = StatusDone
 	d.finishedAt = time.Now()
+	d.speed.Store(0)
+	diagf("done id=%s bytes=%d", d.id, d.totalBytes)
 	_ = os.Remove(d.sidePath)
+}
+
+// renameWithRetry gives a freshly written file a few seconds to stop being
+// held by the antivirus / indexer before reporting a failure.
+func renameWithRetry(from, to string) error {
+	var err error
+	for i := 0; i < 12; i++ {
+		if err = os.Rename(from, to); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(150+150*i) * time.Millisecond)
+	}
+	return err
 }
 
 // fetchSegment pulls one range until it is done, reconnecting on its own
@@ -929,6 +1174,10 @@ func (d *download) newRequest(ctx context.Context, start int64) (*http.Request, 
 		req.Header.Set("Referer", d.referer)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36")
+	// Same reason as the probe: the byte count the server advertises must be
+	// the byte count that reaches the disk (one-connection downloads have no
+	// Range header, so Go would otherwise negotiate gzip).
+	req.Header.Set("Accept-Encoding", "identity")
 	if d.ranged {
 		if seg := d.segAt(start); seg != nil && seg.end >= 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, seg.end))
@@ -983,6 +1232,10 @@ func (d *download) resume() error {
 		if err != nil {
 			d.mu.Unlock()
 			return fmt.Errorf("partial file nahi khul paayi: %w", err)
+		}
+		if err := markSparse(f); err != nil {
+			d.log.Warn("partial file is not sparse - unwritten gaps will cost disk",
+				"id", d.id, "path", d.partPath, "err", err)
 		}
 		if d.totalBytes > 0 {
 			_ = f.Truncate(d.totalBytes)

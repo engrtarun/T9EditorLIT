@@ -16,11 +16,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -252,5 +254,31 @@ func newLogger(level string) *slog.Logger {
 	default:
 		lv = slog.LevelInfo
 	}
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lv}))
+	// The app starts the daemon hidden, so stderr goes nowhere. A file next to
+	// the download diag log is the only way a crash or a refused start leaves
+	// evidence ("download start hi nahi hua" was unanswerable without it).
+	var w io.Writer = os.Stderr
+	if f, err := openDaemonLog(); err == nil {
+		w = io.MultiWriter(os.Stderr, f)
+	}
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: lv}))
+}
+
+// openDaemonLog appends to `%LOCALAPPDATA%\T9EditorLIT\t9cloud.log`, rolling
+// the file over at 4 MiB so a daemon left running for weeks cannot grow it
+// without bound.
+func openDaemonLog() (io.WriteCloser, error) {
+	root := os.Getenv("LOCALAPPDATA")
+	if root == "" {
+		return nil, errors.New("LOCALAPPDATA is not set")
+	}
+	dir := filepath.Join(root, "T9EditorLIT")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	p := filepath.Join(dir, "t9cloud.log")
+	if st, err := os.Stat(p); err == nil && st.Size() > 4<<20 {
+		_ = os.Remove(p)
+	}
+	return os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 }

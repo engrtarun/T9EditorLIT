@@ -18,8 +18,33 @@ import { isTauri } from '../ipc';
 const DAEMON = 'http://127.0.0.1:7878';
 const POLL_MS = 800;
 
+/** A start the daemon refused, kept where the user looks for the file. */
+export interface FailedDownload {
+  id: string;
+  filename: string;
+  error: string;
+}
+
+/** Last path segment of a URL, decoded — the best name we have before the
+ *  server tells us the real one. */
+function fileNameOf(url: string): string {
+  try {
+    const u = new URL(url);
+    const last = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() ?? '');
+    return last || u.hostname;
+  } catch {
+    return url;
+  }
+}
+
 class DownloadsStore {
   items = $state<DownloadItem[]>([]);
+  /**
+   * A toast lives five seconds. When a 90 GB link is refused ("the server said
+   * no", an expired page, a host that blocks probes) the reason has to stay
+   * somewhere the user will look again, so the panel keeps it until dismissed.
+   */
+  failed = $state<FailedDownload[]>([]);
   /** The slide-up panel is open. */
   open = $state(false);
   /** Polling is armed (at least one non-terminal item, or the panel is open). */
@@ -51,8 +76,23 @@ class DownloadsStore {
       this.syncTimer();
       await this.poll();
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      this.failed = [
+        {
+          id: `failed-${Date.now()}-${this.failed.length}`,
+          filename: fileNameOf(url),
+          error: message
+        },
+        ...this.failed
+      ].slice(0, 6);
+      this.open = true;
+      throw new Error(message);
     }
+  }
+
+  /** Drop a refused start from the panel. */
+  dismissFailed(id: string): void {
+    this.failed = this.failed.filter((f) => f.id !== id);
   }
 
   act(id: string, action: 'pause' | 'resume' | 'cancel'): void {

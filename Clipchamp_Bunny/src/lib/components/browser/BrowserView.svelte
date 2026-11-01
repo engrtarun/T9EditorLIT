@@ -40,6 +40,9 @@
     // A tab may already exist: the tools panel opens a link and *then* switches
     // to this view, so the store created the tab before anything was wired.
     browser.showActive();
+    // One poll at mount: the daemon recovers unfinished downloads from their
+    // sidecars, and the toolbar badge must show them without opening the panel.
+    downloads.boot();
     return () => {
       // The whole browser tree unmounts (App.svelte's {#if}): sweep EVERY
       // tab webview (kept ones included) so the 500 MB budget holds while

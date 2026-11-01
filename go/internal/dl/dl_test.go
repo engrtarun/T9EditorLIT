@@ -746,3 +746,143 @@ func TestRestartResumesThePartialInsteadOfStartingOver(t *testing.T) {
 		t.Fatalf("resume re-fetched bytes already on disk: server sent %d, expected at most %d", again, int64(len(blob))-done)
 	}
 }
+
+// primePartial writes the state a killed daemon leaves behind: a full-size
+// `.part` whose first `done[i]` bytes of each segment are real, plus the
+// sidecar that says exactly that.
+func primePartial(t *testing.T, dir, name, rawURL string, blob []byte, segs []*segment, done []int64) string {
+	t.Helper()
+	dest := filepath.Join(dir, name)
+	f, err := os.Create(dest + ".part")
+	if err != nil {
+		t.Fatalf("create part: %v", err)
+	}
+	if err := f.Truncate(int64(len(blob))); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	for i, s := range segs {
+		if done[i] <= 0 {
+			continue
+		}
+		if _, err := f.WriteAt(blob[s.start:s.start+done[i]], s.start); err != nil {
+			t.Fatalf("write seg %d: %v", i, err)
+		}
+	}
+	f.Close()
+
+	sc := sidecar{
+		Version:    1,
+		URL:        rawURL,
+		Filename:   name,
+		TotalBytes: int64(len(blob)),
+		Ranged:     true,
+		ETag:       `"blob-v1"`,
+	}
+	for i, s := range segs {
+		sc.Segments = append(sc.Segments, struct {
+			Start int64 `json:"start"`
+			End   int64 `json:"end"`
+			Done  int64 `json:"done"`
+		}{s.start, s.end, done[i]})
+	}
+	b, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal sidecar: %v", err)
+	}
+	if err := os.WriteFile(dest+".part.json", b, 0o644); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	return dest
+}
+
+// TestBootShowsAnInterruptedDownloadInsteadOfAnEmptyQueue is the "download
+// start hi nahi hua" report: the queue lived only in memory, so a daemon
+// restart emptied the panel while the bytes sat on disk. The sidecars are the
+// queue's memory now.
+func TestBootShowsAnInterruptedDownloadInsteadOfAnEmptyQueue(t *testing.T) {
+	rs, srv := newRangeServer(t, 512<<10)
+	dir := t.TempDir()
+	segs := splitSegments(int64(len(rs.data)), 4, true)
+	done := make([]int64, len(segs))
+	done[0] = 100 << 10
+	dest := primePartial(t, dir, "big.rar", srv.URL, rs.data, segs, done)
+
+	m, err := New(Options{
+		Dir:             dir,
+		Log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Segments:        4,
+		MinSegmentBytes: 64 << 10,
+		Client:          srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(m.Shutdown)
+
+	items := m.List()
+	if len(items) != 1 {
+		t.Fatalf("a restart must recover the interrupted row, got %d rows", len(items))
+	}
+	if items[0].Status != StatusPaused {
+		t.Fatalf("recovered row should wait for resume, got %q", items[0].Status)
+	}
+	if items[0].ReceivedBytes != done[0] {
+		t.Fatalf("recovered %d bytes, the disk holds %d", items[0].ReceivedBytes, done[0])
+	}
+	if items[0].Path != dest {
+		t.Fatalf("recovered path %q, want %q", items[0].Path, dest)
+	}
+
+	// Resuming finishes the same file, not a "(1)" copy of it.
+	if _, err := m.Resume(items[0].ID); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	final := waitStatus(t, m, items[0].ID, StatusDone)
+	if final.Path != dest {
+		t.Fatalf("resume wrote %q, the partial was %q", final.Path, dest)
+	}
+	got, err := os.ReadFile(final.Path)
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if !bytes.Equal(got, rs.data) {
+		t.Fatalf("recovered file differs from the source")
+	}
+}
+
+// TestBootFinishesADownloadWhoseRenameWasInterrupted covers the other half of
+// the same bug: every byte arrived, Windows held the fresh 45 GB file for a
+// moment, the rename failed and the old code deleted the sidecar anyway - a
+// complete download stuck forever as `.part`.
+func TestBootFinishesADownloadWhoseRenameWasInterrupted(t *testing.T) {
+	dir := t.TempDir()
+	blob := bytes.Repeat([]byte("t9"), 1000)
+	segs := splitSegments(int64(len(blob)), 2, true)
+	done := []int64{segs[0].length(), segs[1].length()}
+	dest := primePartial(t, dir, "finished.rar", "http://example.invalid/file", blob, segs, done)
+
+	m, err := New(Options{
+		Dir:             dir,
+		Log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Segments:        2,
+		MinSegmentBytes: 64 << 10,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(m.Shutdown)
+
+	items := m.List()
+	if len(items) != 1 || items[0].Status != StatusDone {
+		t.Fatalf("a full partial must be finished at boot, got %+v", items)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("final file missing: %v", err)
+	}
+	if _, err := os.Stat(dest + ".part"); !os.IsNotExist(err) {
+		t.Fatalf("the .part should be renamed away")
+	}
+	if _, err := os.Stat(dest + ".part.json"); !os.IsNotExist(err) {
+		t.Fatalf("the sidecar should be gone once the file is in place")
+	}
+}
