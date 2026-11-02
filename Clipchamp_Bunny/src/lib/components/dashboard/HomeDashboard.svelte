@@ -182,9 +182,12 @@
         const byPath = new Map(sizes.map((s) => [s.path, s]));
         cards = cards.map((c) => {
           const s = byPath.get(c.project.sourcePath);
-          // A vanished file keeps whatever the card already knew; the card
-          // shows its "missing" state from the project row instead.
-          return s?.exists ? { ...c, sizeBytes: s.sizeBytes } : c;
+          if (!s) return c;
+          if (s.exists) return { ...c, sizeBytes: s.sizeBytes };
+          // The vanished file keeps its record — and its transcript — but a
+          // stream of the missing path renders black forever, so the card
+          // goes to its "missing" state instead of faking a preview.
+          return { ...c, missing: true, previewUrl: null };
         });
       })
       .catch(() => {});
@@ -230,13 +233,23 @@
   let posterQueue: Promise<void> = Promise.resolve();
 
   function lazyPosterQueue(p: RustProject) {
+    // A source the size probe already said is gone cannot yield a still —
+    // don't spend an ffmpeg child proving it again on every scroll.
+    if (cards.some((c) => c.project.id === p.id && c.missing)) return;
     posterQueue = posterQueue.then(async () => {
       try {
         const poster = await extractPoster(p.sourcePath);
         patch(p.id, (c) => ({ ...c, posterUrl: assetUrl(poster.path) }));
-      } catch {
-        // No still — stream the video instead of showing an empty tile.
-        patch(p.id, (c) => ({ ...c, previewUrl: assetUrl(p.sourcePath) }));
+      } catch (e) {
+        // No still. The old reflex was streaming the file itself, but when
+        // the source is deleted that <video> renders black forever — the
+        // extractor's own error says exactly when that is the case.
+        patch(p.id, (c) => {
+          const gone = c.missing ?? /source file not found/i.test(String(e));
+          return gone
+            ? { ...c, missing: true, previewUrl: null }
+            : { ...c, previewUrl: assetUrl(p.sourcePath) };
+        });
       }
       // Give the UI a frame between ffmpeg children.
       await new Promise((r) => setTimeout(r, 0));
@@ -635,6 +648,15 @@
       posterUrl: null,
       previewUrl: x.previewUrl ?? assetUrl(x.project.sourcePath)
     }));
+  }
+
+  /**
+   * The fallback stream itself failed — the source cannot be read at all
+   * (moved, renamed or deleted after this card was built). The record and its
+   * transcript stay; the card just stops pretending a preview exists.
+   */
+  function previewFailed(c: Card) {
+    patch(c.project.id, (x) => ({ ...x, missing: true, previewUrl: null }));
   }
 
   /* --------------------------------------------------------------- bin */
@@ -1063,6 +1085,7 @@
                         onrenamecommit={() => void commitRename()}
                         onrenamecancel={() => (renamingId = null)}
                         onpostererror={() => posterFailed(c)}
+                        onpreviewerror={() => previewFailed(c)}
                       />
                     {/each}
                   </ul>

@@ -11,6 +11,13 @@ export interface ProjectCard {
   project: RustProject;
   /** Size of the source file on disk, in bytes (0 until it has been probed). */
   sizeBytes: number;
+  /**
+   * True when the filesystem says the source is **gone** — moved, renamed or
+   * deleted. The record (with its transcript) is still here, so the card
+   * stays, but a ghost stream must never be tried and the tile says what
+   * actually happened instead of rendering a black box.
+   */
+  missing?: boolean;
   /** `asset:` URL of the cached poster frame, once FFmpeg has made one. */
   posterUrl: string | null;
   /**

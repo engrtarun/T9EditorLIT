@@ -17,7 +17,8 @@
     onrenamechange,
     onrenamecommit,
     onrenamecancel,
-    onpostererror
+    onpostererror,
+    onpreviewerror
   }: {
     card: ProjectCard;
     index?: number;
@@ -29,6 +30,8 @@
     onrenamecancel: () => void;
     /** The cached still could not be shown — fall back to the video. */
     onpostererror: () => void;
+    /** The fallback stream itself failed — the source file is really gone. */
+    onpreviewerror: () => void;
   } = $props();
 
   const p = $derived(card.project);
@@ -56,7 +59,34 @@
       class="relative aspect-video overflow-hidden rounded-lg border border-nc-line bg-nc-panel
              transition-colors duration-150 group-hover:border-nc-line-2"
     >
-      {#if card.posterUrl}
+      {#if card.missing}
+        <!--
+          The source file is gone — no still can be made and no ghost stream
+          is attempted. The record stays (its transcript is still openable),
+          and the tile says what happened instead of rendering a black box.
+        -->
+        <div
+          class="flex h-full w-full flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-nc-line bg-transparent text-nc-mut"
+        >
+          <svg
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="6" width="13" height="12" rx="2" />
+            <path d="M16 10.5l5-3v9l-5-3" />
+            <path d="M3 3l18 18" />
+          </svg>
+          <span class="text-[12px] font-medium">File missing</span>
+          <span class="text-[10.5px] text-nc-mut-2">Source gayab — transcript safe hai</span>
+        </div>
+      {:else if card.posterUrl}
         <img
           src={card.posterUrl}
           alt=""
@@ -77,6 +107,7 @@
           muted
           playsinline
           preload="metadata"
+          onerror={onpreviewerror}
           onloadedmetadata={(e) => {
             const v = e.currentTarget;
             // A frame a little into the clip beats a black first frame.
@@ -159,7 +190,9 @@
       {/if}
       <div class="mt-0.5 truncate text-[11px] text-nc-mut-2">
         Edited {ago(p.lastOpened)}
-        {#if card.sizeBytes > 0}
+        {#if card.missing}
+          <span class="text-nc-mut-2/70"> · </span>File missing
+        {:else if card.sizeBytes > 0}
           <span class="text-nc-mut-2/70"> · </span>{fmtBytes(card.sizeBytes)}
         {/if}
       </div>
