@@ -23,7 +23,6 @@
    *   · The fill is animated, not instant: the ring eases into a new value so
    *     a limit creeping upward is visible instead of a jump cut.
    */
-  import { onMount } from 'svelte';
   import { i18n } from '../../stores/i18n.svelte';
   import {
     saveApiKey,
@@ -42,10 +41,13 @@
   let open = $state(false);
   let tab = $state<'limits' | 'usage' | 'keys'>('limits');
 
-  // Polling only while this card is on screen (and harder while the panel is
-  // open). 8 s of a ~2 kB loopback response is nothing; a websocket for a
-  // gauge would be.
-  onMount(() => {
+  // Poll while this card is on screen, and harder while the panel is open —
+  // 8 s of a ~2 kB loopback response is nothing, a websocket for a gauge
+  // would be. The effect (not onMount) is what makes "harder while open"
+  // true: an interval built once in onMount would read `open` exactly once
+  // and then poll at that first rate forever. Re-running also means opening
+  // the panel answers immediately instead of after up to 8 s.
+  $effect(() => {
     void refresh();
     const id = setInterval(() => void refresh(), open ? 4000 : 8000);
     return () => clearInterval(id);
