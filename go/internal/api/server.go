@@ -605,6 +605,11 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 
 	merged := make([]model.Segment, 0, len(req.Chunks)*8)
 	var failures []string
+	// Chunks that came back without an error - even if they contained no
+	// words. The difference matters at the end of the loop: zero successful
+	// chunks is a real failure, zero words from successful chunks is a
+	// music-only video.
+	okChunks := 0
 
 	language := strings.TrimSpace(req.Language)
 	hint := strings.TrimSpace(req.Prompt)
@@ -627,6 +632,8 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 			continue
 		}
 
+		okChunks++
+
 		if language == "" && res.Language != "" {
 			language = res.Language
 			s.deps.Log.Info("whisper language pinned", "job", jobID, "language", language)
@@ -637,7 +644,25 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 	}
 
 	if len(merged) == 0 {
-		return fmt.Errorf("every chunk failed; first error: %v", firstOr(failures, "none"))
+		if okChunks == 0 {
+			return fmt.Errorf("every chunk failed; first error: %v", firstOr(failures, "none"))
+		}
+		// Whisper ran, read the audio, and heard no words. That is a result.
+		s.deps.Log.Info("no speech detected",
+			"job", jobID, "chunks", okChunks, "failures", len(failures))
+		s.store.succeedNoSpeech(jobID, failures)
+		return nil
+	}
+
+	// The confidence filter in the Groq client drops lines Whisper did not
+	// believe. What it cannot catch is a *confident* stock phrase - music-only
+	// audio sometimes makes Whisper sure it heard "Thank you." If that is the
+	// entire transcript, it is not a transcript.
+	if cloud.OnlyStockOutros(merged) {
+		s.deps.Log.Info("only stock whisper phrases - treating as no speech",
+			"job", jobID, "lines", len(merged))
+		s.store.succeedNoSpeech(jobID, failures)
+		return nil
 	}
 
 	s.store.succeed(jobID, merged, nil, failures)

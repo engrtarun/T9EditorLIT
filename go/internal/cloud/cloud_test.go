@@ -226,6 +226,152 @@ func TestApplyAnalysisMarksCuts(t *testing.T) {
 	}
 }
 
+func TestGroqRequestsWordAndSegmentGranularities(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(8 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		got = r.MultipartForm.Value["timestamp_granularities[]"]
+		_, _ = w.Write([]byte(`{"text":"","segments":[]}`))
+	}))
+	defer srv.Close()
+
+	client := NewGroq("k", "m", "", srv.URL)
+	if _, err := client.TranscribeChunk(context.Background(), writeChunk(t, "c.m4a"), 0, "", ""); err != nil {
+		t.Fatalf("TranscribeChunk: %v", err)
+	}
+
+	// Both are required: `word` gives the editor word timings, `segment` gives
+	// the confidence fields the no-speech guard reads.
+	if len(got) != 2 || got[0] != "word" || got[1] != "segment" {
+		t.Fatalf("timestamp_granularities = %v, want [word segment]", got)
+	}
+}
+
+func TestGroqDropsNonSpeechSegments(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"text": "Thank you. real words quiet mumble",
+			"segments": [
+				{"id":0,"start":0.0,"end":2.0,"text":"Thank you.","no_speech_prob":0.92,"avg_logprob":-1.4},
+				{"id":1,"start":2.0,"end":4.0,"text":"real words","no_speech_prob":0.9,"avg_logprob":-0.2},
+				{"id":2,"start":4.0,"end":6.0,"text":"quiet mumble","no_speech_prob":0.3,"avg_logprob":-1.6}
+			]
+		}`))
+	}))
+	defer srv.Close()
+
+	client := NewGroq("k", "m", "", srv.URL)
+	segments, err := client.TranscribeChunk(context.Background(), writeChunk(t, "c.m4a"), 0, "", "")
+	if err != nil {
+		t.Fatalf("TranscribeChunk: %v", err)
+	}
+
+	// Both signals must agree. High no_speech_prob with a confident
+	// transcript is real quiet speech; low no_speech_prob with a poor
+	// logprob is a hard-to-hear real line. Only the combination is a
+	// hallucination.
+	if len(segments) != 2 {
+		t.Fatalf("got %d segments, want 2: %+v", len(segments), segments)
+	}
+	if segments[0].Text != "real words" || segments[1].Text != "quiet mumble" {
+		t.Errorf("kept the wrong lines: %+v", segments)
+	}
+}
+
+func TestGroqFilteredSegmentsDoNotFallBackToFlatWords(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// A music-only chunk: one confident-sounding hallucination, with the
+		// same words repeated in the top-level list (the shape Groq returns
+		// when only `word` granularity is honoured).
+		_, _ = w.Write([]byte(`{
+			"text": "Thank you.",
+			"segments": [
+				{"id":0,"start":0.0,"end":7.0,"text":"Thank you.","no_speech_prob":0.97,"avg_logprob":-1.8}
+			],
+			"words": [
+				{"word":"Thank","start":0.2,"end":0.6},
+				{"word":"you","start":0.7,"end":1.0}
+			]
+		}`))
+	}))
+	defer srv.Close()
+
+	client := NewGroq("k", "m", "", srv.URL)
+	segments, err := client.TranscribeChunk(context.Background(), writeChunk(t, "c.m4a"), 0, "", "")
+	if err != nil {
+		t.Fatalf("TranscribeChunk: %v", err)
+	}
+	if len(segments) != 0 {
+		t.Fatalf("got %d segments, want 0 (filtered lines must not come back via the flat word list)", len(segments))
+	}
+}
+
+func TestGroqAttachesTopLevelWordsToSegments(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"text": "thank you late",
+			"segments": [
+				{"id":0,"start":0.0,"end":1.2,"text":"thank you"},
+				{"id":1,"start":3.0,"end":4.0,"text":"late"}
+			],
+			"words": [
+				{"word":"thank","start":0.1,"end":0.4},
+				{"word":"you","start":0.5,"end":0.9},
+				{"word":"late","start":3.1,"end":3.5}
+			]
+		}`))
+	}))
+	defer srv.Close()
+
+	client := NewGroq("k", "m", "", srv.URL)
+	segments, err := client.TranscribeChunk(context.Background(), writeChunk(t, "c.m4a"), 0, "", "")
+	if err != nil {
+		t.Fatalf("TranscribeChunk: %v", err)
+	}
+	if len(segments) != 2 {
+		t.Fatalf("got %d segments, want 2", len(segments))
+	}
+	if len(segments[0].Words) != 2 || segments[0].Words[0].Word != "thank" {
+		t.Errorf("first line words = %+v", segments[0].Words)
+	}
+	if len(segments[1].Words) != 1 || segments[1].Words[0].Word != "late" {
+		t.Errorf("second line words = %+v", segments[1].Words)
+	}
+}
+
+func TestOnlyStockOutros(t *testing.T) {
+	line := func(text string) model.Segment {
+		return model.Segment{Text: text}
+	}
+
+	cases := []struct {
+		name string
+		in   []model.Segment
+		want bool
+	}{
+		{"empty", nil, false},
+		{"single thank you", []model.Segment{line("Thank you.")}, true},
+		{"two stock phrases", []model.Segment{line("Thanks for watching!"), line("Please subscribe.")}, true},
+		{"punctuation and case ignored", []model.Segment{line("  THANK   you!! ")}, true},
+		{"real speech", []model.Segment{line("aaj hum baat karenge editing ke baare me")}, false},
+		{"stock plus content", []model.Segment{line("Thank you."), line("ab shuru karte hain")}, false},
+		{"long stock repetition is left alone", []model.Segment{
+			line(strings.Repeat("thank you ", 20)),
+		}, false},
+		{"empty lines do not count as speech", []model.Segment{line("   "), line("Thank you.")}, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := OnlyStockOutros(tc.in); got != tc.want {
+				t.Errorf("OnlyStockOutros(%q) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 func writeChunk(t *testing.T, name string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)

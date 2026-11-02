@@ -122,6 +122,32 @@ func (s *jobStore) succeed(id string, transcript, analysis []model.Segment, fail
 	})
 }
 
+// succeedNoSpeech closes a transcribe job that found no speech.
+//
+// This is a success, not a failure. Whisper ran, the audio was read, and the
+// honest answer is "there are no words here" - a music-only clip, a sound
+// effect, a silent screen recording. The old path returned "every chunk failed"
+// for exactly this case, which was untrue and sent the UI down a retry loop
+// that could never succeed.
+func (s *jobStore) succeedNoSpeech(id string, failures []string) {
+	s.mutate(id, func(j *model.Job) {
+		j.Transcript = nil
+		j.NoSpeech = true
+		j.Completed = j.Total
+		j.Lines = 0
+		j.Updated = time.Now().Unix()
+
+		// Chunks that genuinely errored are still reported: partial means "the
+		// parts we read had no speech", failed means "we could not read them".
+		if len(failures) > 0 {
+			j.State = model.StatePartial
+			j.Error = joinErrors(failures)
+		} else {
+			j.State = model.StateDone
+		}
+	})
+}
+
 // succeedCorrect attaches an autocorrected transcript.
 //
 // Like succeed, a non-empty failures slice downgrades to StatePartial: most

@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/engrtarun/T9EditorLIT/go/internal/model"
 )
@@ -129,6 +130,14 @@ type groqSegment struct {
 	Text  string  `json:"text"`
 	// Word-level timings, present when the request asked for word granularity.
 	Words []groqWord `json:"words"`
+	// Whisper's own verdict on whether this span contained speech at all.
+	//
+	// `no_speech_prob` is how sure the model is that the audio was silence,
+	// music or noise; `avg_logprob` is how sure it is of the text it wrote
+	// anyway. A music-only video scores high on the first and low on the
+	// second - that is the "Thank you." hallucination the guard drops.
+	NoSpeechProb float64 `json:"no_speech_prob"`
+	AvgLogprob   float64 `json:"avg_logprob"`
 }
 
 type groqWord struct {
@@ -219,6 +228,13 @@ func (c *GroqClient) TranscribeChunkResult(
 		if writeErr = mw.WriteField("timestamp_granularities[]", "word"); writeErr != nil {
 			return
 		}
+		// Segment granularity carries the per-segment confidence fields
+		// (`no_speech_prob`, `avg_logprob`) that the no-speech guard needs.
+		// Groq accepts both granularities in one request; asking for only
+		// `word` leaves `segments: null` and the guard blind.
+		if writeErr = mw.WriteField("timestamp_granularities[]", "segment"); writeErr != nil {
+			return
+		}
 		if language != "" {
 			if writeErr = mw.WriteField("language", language); writeErr != nil {
 				return
@@ -273,6 +289,12 @@ func (c *GroqClient) TranscribeChunkResult(
 		if text == "" {
 			continue
 		}
+		// Drop the lines Whisper itself does not believe. On music, ambience
+		// or dead air it still emits a stock phrase now and then; the
+		// confidence fields are what tell that apart from real speech.
+		if isNonSpeech(s) {
+			continue
+		}
 		segments = append(segments, model.Segment{
 			ID:        fmt.Sprintf("%d-%d", int(offsetSecs*1000), i),
 			StartSecs: round3(s.Start + offsetSecs),
@@ -284,14 +306,158 @@ func (c *GroqClient) TranscribeChunkResult(
 		})
 	}
 
-	// With word granularity Groq returns `segments: null` and one flat `words`
-	// array instead. Regroup the words into lines so the rest of the pipeline
-	// (autocorrect, analysis, the editor) always sees segments.
-	if len(segments) == 0 && len(parsed.Words) > 0 {
+	hadSegments := len(parsed.Segments) > 0
+	if hadSegments {
+		// Both granularities were requested, but some Groq builds still return
+		// the timings at the top level. Attach them so a split cuts the text,
+		// not only the clock.
+		attachWordsToSegments(segments, shiftWords(parsed.Words, offsetSecs))
+	}
+
+	// With word granularity Groq can return `segments: null` and one flat
+	// `words` array instead. Regroup the words into lines so the rest of the
+	// pipeline (autocorrect, analysis, the editor) always sees segments.
+	//
+	// Only when the response really had no segments: if it had them and the
+	// guard filtered every one out, the flat words are the same hallucination
+	// and must not be resurrected as a transcript.
+	if !hadSegments && len(segments) == 0 && len(parsed.Words) > 0 {
 		segments = segmentsFromWords(parsed.Words, offsetSecs)
 	}
 
 	return ChunkTranscript{Segments: segments, Language: strings.TrimSpace(parsed.Language)}, nil
+}
+
+// Whisper's own skip thresholds (whisper/transcribe.py). A segment is treated
+// as non-speech only when BOTH hold: the model is at least 60% sure there was
+// no speech, and the text it produced anyway is improbable (avg_logprob -1.0
+// or worse). Either signal alone is not enough - real quiet speech can score
+// high on no_speech_prob, and a confident hallucination can score well on
+// avg_logprob.
+const (
+	noSpeechProbThreshold = 0.6
+	avgLogprobThreshold   = -1.0
+)
+
+// isNonSpeech reports whether Whisper itself does not believe this segment.
+func isNonSpeech(s groqSegment) bool {
+	return s.NoSpeechProb > noSpeechProbThreshold && s.AvgLogprob <= avgLogprobThreshold
+}
+
+// stockOutros are the phrases Whisper emits when there is nothing to
+// transcribe. Normalised: lowercase, punctuation stripped, spaces collapsed.
+//
+// Kept deliberately short. This list is the second line of defence (the
+// confidence filter is the first), so a phrase only belongs here when it is
+// something Whisper invents on silence rather than something a person says.
+var stockOutros = map[string]bool{
+	"thank you":                                true,
+	"thank you so much":                        true,
+	"thanks":                                   true,
+	"thanks a lot":                             true,
+	"thanks for watching":                      true,
+	"thanks for watching everyone":             true,
+	"thank you for watching":                   true,
+	"thank you for watching everyone":          true,
+	"please subscribe":                         true,
+	"please subscribe to my channel":           true,
+	"like and subscribe":                       true,
+	"subscribe to my channel":                  true,
+	"subtitles by the amara org community":     true,
+	"subscribe to the channel for more videos": true,
+	"please like and subscribe to my channel":  true,
+	"bye":     true,
+	"bye bye": true,
+	"you":     true,
+}
+
+// OnlyStockOutros reports whether the whole transcript is nothing but Whisper's
+// stock sign-off phrases.
+//
+// This is the case the confidence filter cannot catch on its own: Whisper is
+// sometimes *confident* about "Thank you." on a music-only track. A real
+// recording that says nothing but "Thank you" for its entire length is
+// indistinguishable from that hallucination, and showing a fake transcript is
+// the worse outcome.
+//
+// The word cap matters. Sixteen words is long enough for a sign-off and far too
+// short for a real talk; anything longer has content and is left alone.
+func OnlyStockOutros(segments []model.Segment) bool {
+	if len(segments) == 0 {
+		return false
+	}
+
+	const maxWords = 16
+	words := 0
+	for _, s := range segments {
+		phrase := normalizePhrase(s.Text)
+		if phrase == "" {
+			continue
+		}
+		if !stockOutros[phrase] {
+			return false
+		}
+		words += len(strings.Fields(phrase))
+	}
+	return words > 0 && words <= maxWords
+}
+
+// normalizePhrase lowercases text and reduces every run of punctuation or
+// whitespace to a single space, so "Thanks for watching!" and "thanks  for
+// watching" compare equal.
+func normalizePhrase(text string) string {
+	var sb strings.Builder
+	spaced := true
+	for _, r := range strings.ToLower(text) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			sb.WriteRune(r)
+			spaced = false
+			continue
+		}
+		if !spaced {
+			sb.WriteRune(' ')
+			spaced = true
+		}
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+// attachWordsToSegments gives lines their word timings when the provider
+// returned the word list at the top level instead of inside each segment.
+//
+// Only lines without words are filled; a segment that already carries its own
+// timings is never overwritten. Words are matched by midpoint so a word that
+// straddles a segment boundary belongs to the line it mostly falls in.
+func attachWordsToSegments(segments []model.Segment, words []model.Word) {
+	if len(words) == 0 || len(segments) == 0 {
+		return
+	}
+	missing := false
+	for _, s := range segments {
+		if len(s.Words) == 0 {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return
+	}
+
+	buckets := make([][]model.Word, len(segments))
+	for _, w := range words {
+		mid := (w.Start + w.End) / 2
+		for i := range segments {
+			if mid >= segments[i].StartSecs && mid < segments[i].EndSecs {
+				buckets[i] = append(buckets[i], w)
+				break
+			}
+		}
+	}
+	for i := range segments {
+		if len(segments[i].Words) == 0 && len(buckets[i]) > 0 {
+			segments[i].Words = buckets[i]
+		}
+	}
 }
 
 // segmentsFromWords rebuilds transcript lines from a flat word list.

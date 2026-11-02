@@ -1,10 +1,10 @@
-import type { AudioChunk } from './types';
-import { logTranscriptionJob } from './ipc';
-import { JOB_CAP_MS, jobWatchdog } from './cloud-contract';
+import type { AudioChunk } from './types.ts';
+import { logTranscriptionJob } from './ipc.ts';
+import { JOB_CAP_MS, jobWatchdog } from './cloud-contract.ts';
 
 // The flag vocabulary lives with the other pure contract rules, and is
 // re-exported here because every caller already imports it from this module.
-export { toLineFlag } from './cloud-contract';
+export { toLineFlag } from './cloud-contract.ts';
 
 /**
  * The cloud pipeline: `t9cloud` on 127.0.0.1:7878.
@@ -60,6 +60,13 @@ export interface CloudJob {
   updated_unix?: number;
   created_unix?: number;
   error?: string;
+  /**
+   * True when the source had **no speech at all**: Whisper ran, everything it
+   * emitted was filtered as hallucination, and the honest answer is "no words
+   * here". `transcript` comes back empty while the job still finished — this
+   * is a result, not a failure.
+   */
+  no_speech?: boolean;
   transcript?: CloudSegment[];
   corrected?: CloudSegment[];
   analysis?: CloudSegment[];
@@ -198,6 +205,21 @@ async function waitJob(id: string, onProgress?: Progress): Promise<CloudJob> {
  * into each later chunk, so the client only speaks up when it really knows
  * better (for example a language the user picked in Settings).
  */
+/**
+ * Thrown when the source turned out to have no speech — a music track, a toon,
+ * a silent screen recording.
+ *
+ * Not a failure: the panel shows it in its empty state, never in the red error
+ * banner, and the telemetry records a finished job. Extends Error so callers
+ * that already catch `Error` keep working unchanged.
+ */
+export class NoSpeechError extends Error {
+  constructor() {
+    super('Koi speech nahi mili — is audio me sirf music/ambience hai. Transcript nahi banaya.');
+    this.name = 'NoSpeechError';
+  }
+}
+
 export async function runTranscription(
   sourcePath: string,
   chunks: AudioChunk[],
@@ -222,6 +244,21 @@ export async function runTranscription(
       ...(opts.prompt ? { prompt: opts.prompt } : {})
     });
     const done = await waitJob(created.id, onProgress);
+    // A music-only video reaches here `done` with an empty transcript: every
+    // chunk was read and none held words. A generic error would send the user
+    // into a retry loop that can never converge, so it gets its own class and
+    // the panel its own message.
+    if (done.no_speech) {
+      logTranscriptionJob(
+        sourcePath,
+        'done',
+        'groq',
+        audioSecs,
+        'no speech detected',
+        (Date.now() - t0) / 1000
+      );
+      throw new NoSpeechError();
+    }
     // `partial` is a real result: some chunks failed, but the ones that
     // worked are paid-for words. Keeping them beats throwing them away.
     if (!done.transcript?.length) {
@@ -237,14 +274,18 @@ export async function runTranscription(
     );
     return done.transcript;
   } catch (e) {
-    logTranscriptionJob(
-      sourcePath,
-      'failed',
-      'groq',
-      audioSecs,
-      String(e),
-      (Date.now() - t0) / 1000
-    );
+    // NoSpeechError was already logged above as `done` — logging it again as
+    // `failed` would make the telemetry blame the video that did nothing wrong.
+    if (!(e instanceof NoSpeechError)) {
+      logTranscriptionJob(
+        sourcePath,
+        'failed',
+        'groq',
+        audioSecs,
+        String(e),
+        (Date.now() - t0) / 1000
+      );
+    }
     throw e;
   }
 }

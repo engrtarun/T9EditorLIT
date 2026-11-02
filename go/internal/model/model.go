@@ -178,6 +178,12 @@ type Job struct {
 	// Error carries the human-readable failure reason when State is failed.
 	Error string `json:"error,omitempty"`
 
+	// NoSpeech means the audio contained no actual speech: Whisper's output was
+	// filtered as non-speech or was nothing but its stock sign-off phrases.
+	// Transcript is empty and the job still succeeded - "no words here" is a
+	// result, not a failure, and the UI must not offer a pointless retry loop.
+	NoSpeech bool `json:"no_speech,omitempty"`
+
 	// Transcript is populated for transcribe jobs.
 	Transcript []Segment `json:"transcript,omitempty"`
 	// Corrected is populated for correct jobs — the same lines with their

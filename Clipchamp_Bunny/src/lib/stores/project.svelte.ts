@@ -29,7 +29,13 @@ import { detectQualitySuggestions, type QualitySuggestion } from '../suggestions
 import { chunkSourceKey } from '../cloud-contract';
 import { media } from './media.svelte';
 import { player } from './player.svelte';
-import { runAnalysis, runCorrection, runTranscription, toLineFlag } from '../pipeline';
+import {
+  NoSpeechError,
+  runAnalysis,
+  runCorrection,
+  runTranscription,
+  toLineFlag
+} from '../pipeline';
 import type { CloudSegment } from '../pipeline';
 import { settings } from './settings.svelte';
 import {
@@ -280,6 +286,15 @@ class ProjectStore {
   /** True until the real media has been probed. */
   ready = $state(false);
   loadError = $state<string | null>(null);
+  /**
+   * The audio produced no speech — music, ambience, a silent screencast.
+   *
+   * Distinct from `loadError` on purpose: no speech is a *result* the panel
+   * explains calmly in its empty state, while an error is red and offers a
+   * retry. The transcript really is empty in both, so the flag is what tells
+   * the user which one they are looking at.
+   */
+  noSpeech = $state(false);
 
   /** Filesystem path of the source, when running under Tauri. */
   sourcePath = $state<string | null>(null);
@@ -455,6 +470,7 @@ class ProjectStore {
     this.media = null;
     this.sourcePath = null;
     this.loadError = null;
+    this.noSpeech = false;
     this.ready = false;
     this.name = '';
     // A new project starts with an empty **My media**: the previous project's
@@ -615,9 +631,11 @@ class ProjectStore {
     try {
       this.lines = await this.ensureTranscript(canonical, info.durationSecs);
       this.loadError = null;
+      this.noSpeech = false;
     } catch (e) {
       // No mock lines here. On the desktop the user gets the real reason the
       // transcript could not be produced, and a retry.
+      this.noSpeech = e instanceof NoSpeechError;
       this.loadError = e instanceof Error ? e.message : String(e);
       // A run that failed after Whisper already saved rows must not lose them:
       // clearing here is how a long transcription vanished into an empty panel.
@@ -778,7 +796,11 @@ class ProjectStore {
       // Cuts made before any transcript existed still own their stretch.
       this.syncCutsIntoLines();
       this.loadError = null;
+      this.noSpeech = false;
     } catch (e) {
+      // No speech is its own empty state, not a red failure: the flag keeps
+      // the two stories apart in the panel.
+      this.noSpeech = e instanceof NoSpeechError;
       this.loadError = e instanceof Error ? e.message : String(e);
       // Deliberately no `this.lines = []`: whatever Whisper already wrote is
       // in `this.lines` and on disk. Dropping it because Gemini timed out is
@@ -1296,6 +1318,7 @@ class ProjectStore {
   /** Switching files must not leak the previous project's order or mutes. */
   private resetEditState() {
     this.lines = [];
+    this.noSpeech = false;
     this.clips = [];
     this.activeClipId = null;
     this.waveform = null;

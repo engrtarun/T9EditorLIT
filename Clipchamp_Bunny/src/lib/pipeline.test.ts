@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { chunkSourceKey, jobWatchdog, toLineFlag } from './cloud-contract.ts';
+import { NoSpeechError, runTranscription } from './pipeline.ts';
+import type { AudioChunk } from './types.ts';
 
 /**
  * The old `waitJob` gave up after a fixed 600 × 900 ms — nine minutes — no
@@ -57,4 +59,76 @@ test('chunkSourceKey is deterministic, shaped for the filesystem and per-source'
   // exactly that — 8 hex characters, no path syntax.
   assert.match(one, /^[0-9a-f]{8}$/);
   assert.notEqual(chunkSourceKey('D:\\videos\\two.mp4'), one);
+});
+
+/**
+ * The daemon's no-speech contract. A music-only video used to reach the UI as
+ * a generic "every chunk failed" error — a retry loop that could never
+ * converge. Now a succeeded job with zero words throws `NoSpeechError`, and
+ * that distinction is pinned here so it cannot quietly become "failed" again.
+ */
+const respond = (body: unknown): Response =>
+  new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' }
+  });
+
+const oneChunk = (): AudioChunk => ({
+  index: 0,
+  path: 'C:\\videos\\toon-c0.wav',
+  offsetSecs: 0,
+  durationSecs: 24
+});
+
+test('a done job with no_speech throws NoSpeechError, not a generic failure', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+    const url = String(input);
+    if (url.endsWith('/v1/transcribe')) {
+      return respond({ id: 'j1', kind: 'transcribe', state: 'queued', total: 1 });
+    }
+    if (url.includes('/v1/jobs/j1')) {
+      // The daemon's answer: every chunk was read, no words anywhere.
+      return respond({ id: 'j1', kind: 'transcribe', state: 'done', no_speech: true });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      () => runTranscription('D:\\videos\\toon.mp4', [oneChunk()]),
+      NoSpeechError
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('a genuinely failed job stays a plain Error', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+    const url = String(input);
+    if (url.endsWith('/v1/transcribe')) {
+      return respond({ id: 'j2', kind: 'transcribe', state: 'queued', total: 1 });
+    }
+    if (url.includes('/v1/jobs/j2')) {
+      return respond({
+        id: 'j2',
+        kind: 'transcribe',
+        state: 'failed',
+        error: 'every chunk failed; first error: quota'
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const err = await runTranscription('D:\\videos\\broken.mp4', [oneChunk()]).catch(
+      (e: unknown) => e
+    );
+    assert.ok(err instanceof Error && !(err instanceof NoSpeechError), JSON.stringify(err));
+    assert.match((err as Error).message, /every chunk failed/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

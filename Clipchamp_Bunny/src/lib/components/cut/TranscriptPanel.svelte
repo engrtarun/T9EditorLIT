@@ -362,33 +362,67 @@
       {:else if project.lines.length === 0}
         <!--
           No lines at all (as opposed to "this filter is empty"): the import
-          never asked the cloud for a transcript. Offer it — the user's click
-          is the permission; nothing is called on its own.
+          never asked the cloud for a transcript — or it asked, and the honest
+          answer was "no speech here".
         -->
-        <div class="p-6 text-center">
-          <p class="text-xs leading-relaxed text-nc-mut">
-            Is video ka transcript abhi generate nahi hua.
-            {#if isTauri()}
-              Button dabao — tabhi API call hogi.{/if}
-          </p>
-          {#if project.loadError}
-            <p class="mt-2 text-[11px] leading-relaxed text-nc-red">{project.loadError}</p>
-          {/if}
-          {#if isTauri()}
-            <button
-              onclick={() => void project.generateTranscript()}
-              class="mt-3 rounded-lg bg-nc-brand px-3 py-1.5 text-[12.5px] font-semibold
-                     text-white transition-[filter] duration-150 hover:brightness-110"
+        {#if project.noSpeech}
+          <!--
+            The daemon read every chunk and heard no words: the audio is music,
+            ambience or a silent recording. A result, not an error — amber,
+            calm, and with the one honest way forward.
+          -->
+          <div class="p-6 text-center">
+            <div
+              class="mx-auto w-fit rounded-lg border border-amber-400/40 bg-amber-400/10 px-3
+                     py-1.5 text-[11.5px] font-semibold text-amber-300"
             >
-              {project.loadError ? 'Dobara try karo' : 'Transcript generate karo'}
-            </button>
-            <p class="mt-2 text-[10.5px] text-nc-mut-2">
-              Ek baar ban gaya to SQLite me save — dobara API nahi lagegi.
+              🎵 Koi speech nahi mili
+            </div>
+            <p class="mt-3 text-[11.5px] leading-relaxed text-nc-mut">
+              Is audio me sirf music/ambience hai — Whisper ne koi words nahi suna, isliye
+              transcript nahi bana. Fake "Thank you." jaisi lines ab drop ho jaati hain.
             </p>
-          {:else}
-            <p class="mt-2 text-[10.5px] text-nc-mut-2">Transcript ke liye desktop app use karo.</p>
-          {/if}
-        </div>
+            <p class="mt-2 text-[10.5px] text-nc-mut-2">
+              Silence scanning aur cut tools bina transcript ke bhi kaam karte hain.
+            </p>
+            {#if isTauri()}
+              <button
+                onclick={() => void project.generateTranscript()}
+                class="mt-3 rounded-lg bg-nc-brand px-3 py-1.5 text-[12.5px] font-semibold
+                       text-white transition-[filter] duration-150 hover:brightness-110"
+              >
+                Phir bhi try karo
+              </button>
+            {/if}
+          </div>
+        {:else}
+          <div class="p-6 text-center">
+            <p class="text-xs leading-relaxed text-nc-mut">
+              Is video ka transcript abhi generate nahi hua.
+              {#if isTauri()}
+                Button dabao — tabhi API call hogi.{/if}
+            </p>
+            {#if project.loadError}
+              <p class="mt-2 text-[11px] leading-relaxed text-nc-red">{project.loadError}</p>
+            {/if}
+            {#if isTauri()}
+              <button
+                onclick={() => void project.generateTranscript()}
+                class="mt-3 rounded-lg bg-nc-brand px-3 py-1.5 text-[12.5px] font-semibold
+                       text-white transition-[filter] duration-150 hover:brightness-110"
+              >
+                {project.loadError ? 'Dobara try karo' : 'Transcript generate karo'}
+              </button>
+              <p class="mt-2 text-[10.5px] text-nc-mut-2">
+                Ek baar ban gaya to SQLite me save — dobara API nahi lagegi.
+              </p>
+            {:else}
+              <p class="mt-2 text-[10.5px] text-nc-mut-2">
+                Transcript ke liye desktop app use karo.
+              </p>
+            {/if}
+          </div>
+        {/if}
       {:else}
         <p class="p-6 text-center text-xs text-nc-mut">Is filter me koi line nahi hai.</p>
       {/if}
