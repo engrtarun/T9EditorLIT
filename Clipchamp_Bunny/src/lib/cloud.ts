@@ -330,19 +330,6 @@ export async function fetchUsageState(): Promise<UsageResult> {
   }
 }
 
-/** The masked key list alone, for the key CRUD list. */
-export async function listKeys(): Promise<KeyState[] | null> {
-  const res = await withTimeout(`${DAEMON}/v1/keys`);
-  if (!res || !res.ok) return null;
-  try {
-    const body = (await res.json()) as { keys?: unknown };
-    if (!Array.isArray(body.keys)) return null;
-    return deepCamel<{ keys: KeyState[] }>(body).keys;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * The daemon replies in snake_case and `snakeToCamel` above only walks one
  * level, so the usage payload — which nests — gets a deep conversion here.

@@ -407,7 +407,7 @@
               </p>
               <div class="mt-3 grid grid-cols-3 gap-3">
                 <div>
-                  <div class="text-[11px] text-nc-mut-2">{i18n.t('usage.calls')}</div>
+                  <div class="text-[11px] text-nc-mut-2">{i18n.t('usage.today')}</div>
                   <div class="text-[15px] font-semibold text-nc-txt tabular-nums">
                     {num(gemini?.today?.calls ?? 0)}
                   </div>
@@ -421,7 +421,7 @@
                 <div>
                   <div class="text-[11px] text-nc-mut-2">{i18n.t('usage.latency')}</div>
                   <div class="text-[15px] font-semibold text-nc-txt tabular-nums">
-                    {num(gemini?.avgLatencyMs ?? 0)} ms
+                    {gemini ? `${num(gemini.avgLatencyMs)} ms` : '—'}
                   </div>
                 </div>
               </div>
