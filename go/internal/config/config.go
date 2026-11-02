@@ -73,12 +73,28 @@ const (
 
 // Load reads .env from the given path and the process environment.
 //
-// Process environment wins over .env so a user can override a single value in
-// CI without editing the file.
+// Precedence for the two provider keys, highest first:
+//
+//  1. keys.local.env — the overlay this app writes when a key is saved or
+//     cleared from the UI. It beats even the process environment on purpose:
+//     a machine that exports GEMINI_API_KEY at user scope would otherwise
+//     resurrect a key the user just deleted, and the UI would look broken.
+//     An explicit empty value here means "removed", not "fall back".
+//  2. the process environment — so CI can override one value without a file
+//  3. .env — the file the user maintains by hand, never written by this code
+//
+// Everything else follows the older env-then-file order unchanged.
 func Load(envPath string) (*Config, error) {
 	fileVars, err := readEnvFile(envPath)
 	if err != nil {
 		return nil, err
+	}
+
+	// The overlay may be missing or unreadable; it is only ever written by
+	// SetKey/ClearKey in this package.
+	overlay, oerr := readEnvFile(KeysPath(envPath))
+	if oerr != nil {
+		overlay = map[string]string{}
 	}
 
 	get := func(key string) string {
@@ -88,17 +104,26 @@ func Load(envPath string) (*Config, error) {
 		return fileVars[key]
 	}
 
+	// key is get() with the overlay on top — only the two credentials the app
+	// itself can edit go through it.
+	key := func(name string) string {
+		if v, ok := overlay[name]; ok {
+			return v
+		}
+		return get(name)
+	}
+
 	cfg := &Config{
 		Addr:                pick(get("T9CLOUD_ADDR"), "127.0.0.1:7878"),
 		Workers:             pickInt(get("T9CLOUD_WORKERS"), 2),
 		QueueCapacity:       pickInt(get("T9CLOUD_QUEUE_CAPACITY"), 32),
 		MaxAttempts:         pickInt(get("T9CLOUD_MAX_ATTEMPTS"), 3),
 		BaseBackoff:         pickDuration(get("T9CLOUD_BASE_BACKOFF"), time.Second),
-		GroqAPIKey:          get("GROQ_API_KEY"),
+		GroqAPIKey:          key("GROQ_API_KEY"),
 		GroqTranscribe:      pick(get("GROQ_TRANSCRIBE_MODEL"), "whisper-large-v3"),
 		GroqMaxChunkMB:      pickInt(get("GROQ_MAX_CHUNK_MB"), 15),
 		GroqChat:            get("GROQ_CHAT_MODEL"),
-		GeminiAPIKey:        get("GEMINI_API_KEY"),
+		GeminiAPIKey:        key("GEMINI_API_KEY"),
 		GeminiModel:         pick(get("GEMINI_MODEL"), "gemini-2.5-flash"),
 		TelegramAPIID:       pickInt(get("TELEGRAM_API_ID"), 0),
 		TelegramAPIHash:     get("TELEGRAM_API_HASH"),

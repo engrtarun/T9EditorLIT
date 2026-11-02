@@ -335,6 +335,54 @@ const en: Dict = {
 
   'cloud.footer': 'Keys are used only to test each connection and are never uploaded.',
 
+  /* -------------------------------------------------- api usage & limits */
+  'usage.title': 'API usage & limits',
+  'usage.open': 'Show API rate limits, usage and keys',
+  'usage.close': 'Close',
+  'usage.blurb': '{calls} provider calls served by this daemon.',
+  'usage.lastCall': 'Last call',
+  'usage.clickFor': 'Click for limits, usage and keys',
+  'usage.updated': 'updated {t} ago',
+  'usage.noData': 'No provider call has been recorded yet.',
+  'usage.daemonDown': 'T9 Cloud daemon is not running, so there is nothing to show.',
+  'usage.tabLimits': 'Limits',
+  'usage.tabUsage': 'Usage',
+  'usage.tabKeys': 'API keys',
+  'usage.ringRequests': 'requests today',
+  'usage.ringTokens': 'tokens/min',
+  'usage.live': 'read live from headers',
+  'usage.notPublished': 'not published',
+  'usage.reqDay': 'Requests per day',
+  'usage.tokMin': 'Tokens per minute',
+  'usage.left': 'left',
+  'usage.used': 'used',
+  'usage.headerNote':
+    'Groq sends these on every inference call and the app copies them verbatim: requests per day and tokens per minute, both as Groq defines them.',
+  'usage.standbyNote':
+    'Waiting for the first inference call — quota headers only arrive when a request is actually metered.',
+  'usage.model': 'Model',
+  'usage.planNote':
+    'Free plan, quoted from console.groq.com/docs/rate-limits. Your organisation exact limits are on its Limits page.',
+  'usage.geminiNote':
+    'The Google API-key endpoints send no quota headers, so remaining quota cannot be read from here. The counts below are calls this app made; the limits themselves are in AI Studio.',
+  'usage.today': 'Today',
+  'usage.lifetime': 'Total',
+  'usage.calls': 'Calls',
+  'usage.tokensOut': 'Tokens out',
+  'usage.latency': 'Latency',
+  'usage.errors': 'Errors',
+  'usage.recent': 'Recent calls',
+  'usage.recentEmpty': 'Nothing yet.',
+  'usage.keyIntro':
+    'Add, replace or remove the keys this daemon uses. The full key is never shown back — only its first and last characters.',
+  'usage.keyPlaceholder': 'Paste a new API key',
+  'usage.keySave': 'Save',
+  'usage.keyRemove': 'Remove',
+  'usage.keySaved': 'Key saved — the daemon is using it right now.',
+  'usage.keyRemoved': 'Key removed.',
+  'usage.keySaveFailed': 'Could not save that key.',
+  'usage.keyStorage': 'Stored beside .env, written only by this app:',
+
   /* Telegram login modal */
   'cloud.tg.modalTitle': 'Link Telegram',
   'cloud.tg.modalDesc':
@@ -622,6 +670,54 @@ const hinglish: Dict = {
   'cloud.setUp': 'Setup karo',
 
   'cloud.footer': 'Keys sirf har connection test ke liye use hoti hain, kahin upload nahi hoti.',
+
+  /* -------------------------------------------------- api usage & limits */
+  'usage.title': 'API usage aur limits',
+  'usage.open': 'API rate limit, usage aur keys dikhao',
+  'usage.close': 'Band karo',
+  'usage.blurb': 'Is daemon ne abhi tak {calls} provider call serve ki hain.',
+  'usage.lastCall': 'Last call',
+  'usage.clickFor': 'Click karo — limits, usage aur keys',
+  'usage.updated': '{t} pehle update hua',
+  'usage.noData': 'Abhi tak koi provider call record nahi hui.',
+  'usage.daemonDown': 'T9 Cloud daemon chal nahi raha, isliye kuch dikhane ko nahi hai.',
+  'usage.tabLimits': 'Limits',
+  'usage.tabUsage': 'Usage',
+  'usage.tabKeys': 'API keys',
+  'usage.ringRequests': 'requests aaj',
+  'usage.ringTokens': 'tokens/min',
+  'usage.live': 'headers se live',
+  'usage.notPublished': 'publish nahi hota',
+  'usage.reqDay': 'Requests per day',
+  'usage.tokMin': 'Tokens per minute',
+  'usage.left': 'bache',
+  'usage.used': 'use hue',
+  'usage.headerNote':
+    'Groq har inference call ke saath ye headers bhejta hai aur app ise copy karta hai: requests per day aur tokens per minute — dono Groq ke apne definition se.',
+  'usage.standbyNote':
+    'Pehle inference call ka wait hai — quota headers tabhi aate hain jab request sach me count ho.',
+  'usage.model': 'Model',
+  'usage.planNote':
+    'Free plan, console.groq.com/docs/rate-limits se. Tumhare organisation ki exact limits uski Limits page par hain.',
+  'usage.geminiNote':
+    'Google ke API-key endpoints quota headers bhejte hi nahi, isliye Gemini ki remaining quota yahan se padhi nahi ja sakti. Niche ke count app ke apne hain; limits AI Studio me milti hain.',
+  'usage.today': 'Aaj',
+  'usage.lifetime': 'Kul',
+  'usage.calls': 'Calls',
+  'usage.tokensOut': 'Tokens out',
+  'usage.latency': 'Latency',
+  'usage.errors': 'Errors',
+  'usage.recent': 'Recent calls',
+  'usage.recentEmpty': 'Abhi kuch nahi.',
+  'usage.keyIntro':
+    'Is daemon ki keys yahan se add, replace ya remove karo. Poori key kabhi wapas nahi dikhti — sirf pehle aur aakhir characters.',
+  'usage.keyPlaceholder': 'Naya API key paste karo',
+  'usage.keySave': 'Save',
+  'usage.keyRemove': 'Hatao',
+  'usage.keySaved': 'Key save ho gayi — daemon abhi isse use kar raha hai.',
+  'usage.keyRemoved': 'Key hata di gayi.',
+  'usage.keySaveFailed': 'Key save nahi ho payi.',
+  'usage.keyStorage': 'Ke .env ke saath rakhi gayi hai, sirf is app se likhi jati hai:',
 
   /* Telegram login modal */
   'cloud.tg.modalTitle': 'Telegram link karo',
@@ -930,6 +1026,54 @@ const hi: Dict = {
 
   'cloud.footer':
     'कुंजियाँ केवल प्रत्येक कनेक्शन जाँचने के लिए उपयोग होती हैं, कहीं अपलोड नहीं होतीं.',
+
+  /* -------------------------------------------------- api usage & limits */
+  'usage.title': 'API उपयोग और सीमाएँ',
+  'usage.open': 'API दर सीमा, उपयोग और कुंजियाँ दिखाएँ',
+  'usage.close': 'बंद करें',
+  'usage.blurb': 'इस डेमन ने अब तक {calls} प्रोवाइडर कॉल पूरी की हैं.',
+  'usage.lastCall': 'आख़िरी कॉल',
+  'usage.clickFor': 'सीमा, उपयोग और कुंजियाँ देखने के लिए क्लिक करें',
+  'usage.updated': '{t} पहले अपडेट हुआ',
+  'usage.noData': 'अभी तक कोई प्रोवाइडर कॉल दर्ज नहीं हुई.',
+  'usage.daemonDown': 'T9 Cloud डेमन नहीं चल रहा, इसलिए दिखाने को कुछ नहीं है.',
+  'usage.tabLimits': 'सीमाएँ',
+  'usage.tabUsage': 'उपयोग',
+  'usage.tabKeys': 'API कुंजियाँ',
+  'usage.ringRequests': 'आज की रिक्वेस्ट',
+  'usage.ringTokens': 'टोकन/मिनट',
+  'usage.live': 'हेडर से लाइव',
+  'usage.notPublished': 'प्रकाशित नहीं',
+  'usage.reqDay': 'प्रति दिन अनुरोध',
+  'usage.tokMin': 'प्रति मिनट टोकन',
+  'usage.left': 'शेष',
+  'usage.used': 'उपयोग',
+  'usage.headerNote':
+    'Groq हर इन्फ़रेंस कॉल के साथ ये हेडर भेजता है और ऐप उन्हें ज्यों का त्यों रखता है: प्रति दिन अनुरोध और प्रति मिनट टोकन — दोनों Groq की अपनी परिभाषा से.',
+  'usage.standbyNote':
+    'पहली इन्फ़रेंस कॉल की प्रतीक्षा है — कोटा हेडर तभी आते हैं जब अनुरोध सचमुच गिना जाता है.',
+  'usage.model': 'मॉडल',
+  'usage.planNote':
+    'निःशुल्क योजना, console.groq.com/docs/rate-limits से. आपके संगठन की सटीक सीमाएँ उसके Limits पेज पर हैं.',
+  'usage.geminiNote':
+    'Google के API-key एंडपॉइंट कोटा हेडर ही नहीं भेजते, इसलिए Gemini की शेष कोटा यहाँ से नहीं पढ़ी जा सकती. नीचे की गणनाएँ ऐप की अपनी हैं; सीमाएँ AI Studio में मिलती हैं.',
+  'usage.today': 'आज',
+  'usage.lifetime': 'कुल',
+  'usage.calls': 'कॉल',
+  'usage.tokensOut': 'आउट टोकन',
+  'usage.latency': 'विलंबता',
+  'usage.errors': 'त्रुटियाँ',
+  'usage.recent': 'हाल की कॉल',
+  'usage.recentEmpty': 'अभी कुछ नहीं.',
+  'usage.keyIntro':
+    'इस डेमन की कुंजियाँ यहाँ से जोड़ें, बदलें या हटाएँ. पूरी कुंजी कभी वापस नहीं दिखती — केवल पहले और अंतिम अक्षर.',
+  'usage.keyPlaceholder': 'नई API कुंजी पेस्ट करें',
+  'usage.keySave': 'सहेजें',
+  'usage.keyRemove': 'हटाएँ',
+  'usage.keySaved': 'कुंजी सहेजी गई — डेमन अब इसी का उपयोग कर रहा है.',
+  'usage.keyRemoved': 'कुंजी हटा दी गई.',
+  'usage.keySaveFailed': 'कुंजी सहेजी नहीं जा सकी.',
+  'usage.keyStorage': '.env के बग़ले रखी जाती है, केवल यही ऐप इसे लिखता है:',
 
   /* Telegram login modal */
   'cloud.tg.modalTitle': 'Telegram लिंक करें',

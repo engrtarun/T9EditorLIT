@@ -84,12 +84,20 @@ func run() error {
 	}
 	defer downloads.Shutdown()
 
+	// Counters live next to the daemon's own log, so the gauge keeps its
+	// history across restarts and never depends on the working directory a
+	// launcher happened to pick.
+	usage := cloud.NewUsageRecorder(usageCounterPath())
+	defer usage.Flush()
+
 	deps := api.Deps{
-		Config: cfg,
-		Queue:  q,
-		DL:     downloads,
-		Log:    log,
-		Vault:  vault.Unconfigured(),
+		Config:  cfg,
+		Queue:   q,
+		DL:      downloads,
+		Log:     log,
+		Vault:   vault.Unconfigured(),
+		Usage:   usage,
+		EnvPath: *envPath,
 	}
 
 	v, transport := buildVault(cfg, log)
@@ -104,6 +112,9 @@ func run() error {
 
 	if cfg.HasGroq() {
 		deps.Groq = cloud.NewGroq(cfg.GroqAPIKey, cfg.GroqTranscribe, cfg.GroqChat, cloud.GroqTranscribeURL)
+		// Every call after this goes through the recorder: latency, tokens and
+		// Groq's x-ratelimit-* headers are what GET /v1/usage reports.
+		cloud.WithUsage(deps.Groq.HTTP, "groq", usage)
 		log.Info("transcription ready", "model", cfg.GroqTranscribe)
 		if cfg.GroqChat != "" {
 			log.Info("autocorrect ready", "model", cfg.GroqChat)
@@ -117,6 +128,7 @@ func run() error {
 
 	if cfg.HasGemini() {
 		deps.Gemini = cloud.NewGemini(cfg.GeminiAPIKey, cfg.GeminiModel, cloud.GeminiBaseURL)
+		cloud.WithUsage(deps.Gemini.HTTP, "gemini", usage)
 		log.Info("analysis ready", "model", cfg.GeminiModel)
 	} else {
 		log.Warn("analysis disabled", "reason", "GEMINI_API_KEY not set")
@@ -262,6 +274,22 @@ func newLogger(level string) *slog.Logger {
 		w = io.MultiWriter(os.Stderr, f)
 	}
 	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: lv}))
+}
+
+// usageCounterPath is where api-usage.json lives — beside the daemon's own
+// log, so the history survives restarts and is writable whichever directory
+// the app launched the daemon from. An empty result makes the recorder
+// memory-only, which is the right answer for a machine with no LOCALAPPDATA.
+func usageCounterPath() string {
+	root := os.Getenv("LOCALAPPDATA")
+	if root == "" {
+		return ""
+	}
+	dir := filepath.Join(root, "T9EditorLIT")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "api-usage.json")
 }
 
 // openDaemonLog appends to `%LOCALAPPDATA%\T9EditorLIT\t9cloud.log`, rolling

@@ -15,11 +15,18 @@ import (
 // The goal is NOT to write prose about the video. It is to produce a verdict
 // per line that the Cut Panel can render directly as ✕ / ✓ marks, so the
 // response format is a strict JSON contract rather than free text.
-const AnalyzePrompt = `You are editing notes for a long Hindi/Hinglish technical tutorial
-in the style of Apna College and Coder Army — screen-recorded coding, spoken
-informally, with the presenter thinking out loud.
+//
+// It deliberately does not assume a Hindi coding tutorial: the previous wording
+// ("in the style of Apna College and Coder Army") was applied to every import,
+// so a plain English screen recording was judged against a Hinglish presenter's
+// habits. The language rule below is what keeps the verdicts honest.
+const AnalyzePrompt = `You are editing notes for a long spoken recording — a tutorial, a stream
+or a podcast — with one presenter thinking out loud.
 
 You will receive transcript lines, each with an id, start_secs, end_secs and text.
+The transcript may be Hindi, Hinglish, English or a mix. Judge what was said,
+not which language it was said in, and answer in whatever language the transcript
+is already using.
 
 For EACH line decide one verdict:
 
@@ -32,7 +39,8 @@ For EACH line decide one verdict:
                     take only. The corrected repeat must be kept.
 - "wrong_example" : the presenter gives an example, realises it is wrong, and
                     says so in words (e.g. "ye galat ho gaya", "dobara batata
-                    hu", "sorry, mistake"). Mark that whole example block.
+                    hu", "sorry, mistake", "that was wrong, let me redo it").
+                    Mark that whole example block.
 - "none"          : normal, usable speech. Keep it.
 
 Rules:
@@ -49,6 +57,15 @@ Reply with ONLY a JSON array, no prose and no code fence, like:
 
 If every line is fine, reply with an empty array [].`
 
+// AnalysisBatchSize is how many transcript lines travel in one Gemini call.
+//
+// Everything used to go in a single prompt, which silently broke every video
+// longer than the model's context: the tail of a two-hour transcript was cut
+// off, so lines past the limit were never judged and came back unflagged. A
+// batch is small enough to fit with room for the reply, and the job now reports
+// progress per batch instead of sitting at 0%.
+const AnalysisBatchSize = 120
+
 // Analysis is one line's verdict.
 type Analysis struct {
 	ID     string     `json:"id"`
@@ -61,6 +78,64 @@ type Analysis struct {
 // The model is given the tone profile and creator handle so its notion of
 // "normal delivery" matches this presenter rather than a generic speaker.
 func (c *GeminiClient) Analyze(
+	ctx context.Context,
+	segments []model.Segment,
+	toneProfile string,
+	creatorHandle string,
+) ([]Analysis, error) {
+	return c.AnalyzeProgress(ctx, segments, toneProfile, creatorHandle, nil)
+}
+
+// AnalyzeProgress is Analyze with a per-batch progress hook.
+//
+// A failed batch does not sink the job: the lines it covers keep their default
+// "keep", and the rest of the transcript still gets judged. Returning an error
+// alongside usable verdicts is the same contract CorrectSegments uses, and the
+// API layer turns it into a partial job rather than a failed one.
+func (c *GeminiClient) AnalyzeProgress(
+	ctx context.Context,
+	segments []model.Segment,
+	toneProfile string,
+	creatorHandle string,
+	onBatch func(done, total int),
+) ([]Analysis, error) {
+	if len(segments) == 0 {
+		return nil, nil
+	}
+
+	totalBatches := (len(segments) + AnalysisBatchSize - 1) / AnalysisBatchSize
+	var out []Analysis
+	var failures []string
+	done := 0
+
+	for start := 0; start < len(segments); start += AnalysisBatchSize {
+		end := start + AnalysisBatchSize
+		if end > len(segments) {
+			end = len(segments)
+		}
+
+		verdicts, err := c.analyzeBatch(ctx, segments[start:end], toneProfile, creatorHandle)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("lines %d-%d: %v", start+1, end, err))
+		} else {
+			out = append(out, verdicts...)
+		}
+
+		done++
+		if onBatch != nil {
+			onBatch(done, totalBatches)
+		}
+	}
+
+	if len(failures) > 0 {
+		return out, fmt.Errorf("%d of %d analysis batches failed: %s",
+			len(failures), totalBatches, strings.Join(failures, "; "))
+	}
+	return out, nil
+}
+
+// analyzeBatch judges one batch of transcript lines.
+func (c *GeminiClient) analyzeBatch(
 	ctx context.Context,
 	segments []model.Segment,
 	toneProfile string,

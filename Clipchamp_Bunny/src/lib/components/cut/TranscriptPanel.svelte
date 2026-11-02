@@ -76,6 +76,23 @@
     return { destroy: () => anim.cancel() };
   }
 
+  /* Live "kab se chal raha hai" clock.
+     Splitting the audio reports no progress of its own — the Rust call just
+     returns when it is done — so a ticking clock is the only honest evidence
+     that the run is alive rather than hung. */
+  let now = $state(Date.now());
+  let runStart = 0;
+  $effect(() => {
+    if (project.pipeline === null) {
+      runStart = 0;
+      return;
+    }
+    if (!runStart) runStart = Date.now();
+    const id = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
+  const elapsed = $derived(runStart ? fmtShort((now - runStart) / 1000) : '');
+
   function jump(line: TranscriptLine) {
     // A transcript line belongs to the main source: previewing an extra clip
     // would seek the wrong video, so jump back to the main cut first.
@@ -158,6 +175,50 @@
     class="nc-scroll min-h-0 flex-1"
   >
     <div style="height:{padTop}px"></div>
+
+    <!--
+      Live run status. Shown *above* the rows so the user keeps reading the
+      transcript that already exists while autocorrect/AI flags finish.
+    -->
+    {#if project.pipeline && view.length > 0}
+      <div class="border-b border-nc-line bg-nc-panel-2/70 px-3 py-2">
+        <div class="flex items-center justify-between gap-2">
+          <span class="truncate text-[11px] text-nc-txt">{project.pipeline.stage}</span>
+          <span class="shrink-0 font-mono text-[10px] text-nc-mut"
+            >{elapsed} · {Math.round(project.pipeline.fraction * 100)}%</span
+          >
+        </div>
+        <div class="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-nc-panel">
+          <div
+            class="h-full rounded-full bg-nc-brand transition-[width] duration-300"
+            style="width:{Math.max(3, Math.round(project.pipeline.fraction * 100))}%"
+          ></div>
+        </div>
+        {#if project.pipeline.lastLine}
+          <p class="mt-1.5 truncate text-[10px] italic text-nc-mut-2">
+            “{project.pipeline.lastLine}”
+          </p>
+        {/if}
+      </div>
+    {/if}
+
+    <!--
+      A run that saved its Whisper output but failed later leaves real rows
+      plus a reason. Offer the cheap retry: the words are already paid for.
+    -->
+    {#if !project.pipeline && project.loadError && view.length > 0}
+      <div class="border-b border-nc-red/30 bg-nc-red/5 px-3 py-2">
+        <p class="text-[11px] leading-relaxed text-nc-red">{project.loadError}</p>
+        <button
+          onclick={() => void project.refineTranscript()}
+          class="mt-1.5 rounded border border-nc-red/40 px-2 py-1 text-[10.5px] font-semibold
+                 text-nc-red transition-colors hover:bg-nc-red/10"
+        >
+          Autocorrect + AI flags dobara chalao
+        </button>
+        <span class="ml-2 text-[10px] text-nc-mut-2">Whisper dobara nahi chalega.</span>
+      </div>
+    {/if}
     {#each slice as line, si (line.id)}
       {@const idx = startIdx + si}
       {@const isCursor = idx === cursorPos}
@@ -260,17 +321,43 @@
         is the permission; nothing is called on its own.
       -->
       {#if project.pipeline}
-        <!-- the user pressed the button: show the real progress, live -->
-        <div class="p-6 text-center">
-          <p class="text-xs leading-relaxed text-nc-mut">{project.pipeline.stage}</p>
-          <div
-            class="mx-auto mt-3 h-1 w-full max-w-[200px] overflow-hidden rounded-full bg-nc-panel-2"
-          >
+        <!--
+          The user pressed the button: show what the daemon is really doing.
+          Chunks finished, lines written so far, and the newest line — the
+          three honest answers to "kitna ban gaya?".
+        -->
+        <div class="p-5">
+          <p class="text-xs font-semibold text-nc-txt">{project.pipeline.stage}</p>
+          <div class="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-nc-panel-2">
             <div
-              class="h-full rounded-full bg-nc-brand transition-[width] duration-200"
-              style="width:{Math.max(4, Math.round(project.pipeline.fraction * 100))}%"
+              class="h-full rounded-full bg-nc-brand transition-[width] duration-300"
+              style="width:{Math.max(3, Math.round(project.pipeline.fraction * 100))}%"
             ></div>
           </div>
+          <div class="mt-2 flex items-center justify-between font-mono text-[10px] text-nc-mut">
+            <span>{elapsed} · {Math.round(project.pipeline.fraction * 100)}%</span>
+            {#if project.pipeline.total}
+              <span>{project.pipeline.completed ?? 0}/{project.pipeline.total}</span>
+            {:else if project.pipeline.lines !== undefined}
+              <span>{project.pipeline.lines} lines</span>
+            {/if}
+          </div>
+          {#if project.pipeline.lines}
+            <p class="mt-2 text-[11px] text-nc-mut">
+              {project.pipeline.lines} transcript lines ban chuki hain
+            </p>
+          {/if}
+          {#if project.pipeline.lastLine}
+            <p
+              class="mt-3 border-l-2 border-nc-brand/40 pl-2 text-left text-[11px] leading-relaxed
+                     text-nc-mut-2 italic"
+            >
+              “{project.pipeline.lastLine}”
+            </p>
+          {/if}
+          <p class="mt-3 text-[10px] leading-relaxed text-nc-mut-2">
+            Lines aate hi panel me dikhengi — poore hone ka intezaar nahi.
+          </p>
         </div>
       {:else if project.lines.length === 0}
         <!--
@@ -293,7 +380,7 @@
               class="mt-3 rounded-lg bg-nc-brand px-3 py-1.5 text-[12.5px] font-semibold
                      text-white transition-[filter] duration-150 hover:brightness-110"
             >
-              Transcript generate karo
+              {project.loadError ? 'Dobara try karo' : 'Transcript generate karo'}
             </button>
             <p class="mt-2 text-[10.5px] text-nc-mut-2">
               Ek baar ban gaya to SQLite me save — dobara API nahi lagegi.

@@ -89,13 +89,30 @@ func (c *GroqClient) CorrectSegments(
 	ctx context.Context,
 	segments []model.Segment,
 ) ([]model.Segment, error) {
+	return c.CorrectSegmentsProgress(ctx, segments, nil)
+}
+
+// CorrectSegmentsProgress is CorrectSegments with a per-batch progress hook.
+//
+// The hook exists because the job used to sit at 0% for the whole pass and then
+// snap to 100%: CorrectSegments loops internally, so the API layer had no place
+// to record which batch had finished. onBatch receives the number of finished
+// batches and the total, and is called after every batch (failed ones too —
+// they are finished work, not pending work).
+func (c *GroqClient) CorrectSegmentsProgress(
+	ctx context.Context,
+	segments []model.Segment,
+	onBatch func(done, total int),
+) ([]model.Segment, error) {
 	out := make([]model.Segment, len(segments))
 	copy(out, segments)
 	if len(segments) == 0 {
 		return out, nil
 	}
 
+	totalBatches := (len(segments) + CorrectionBatchSize - 1) / CorrectionBatchSize
 	var failures []string
+	done := 0
 	for start := 0; start < len(segments); start += CorrectionBatchSize {
 		end := start + CorrectionBatchSize
 		if end > len(segments) {
@@ -106,15 +123,19 @@ func (c *GroqClient) CorrectSegments(
 		corrections, err := c.correctBatch(ctx, batch)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("lines %d-%d: %v", start+1, end, err))
-			continue
+		} else {
+			applyCorrections(out[start:end], batch, corrections)
 		}
-		applyCorrections(out[start:end], batch, corrections)
+
+		done++
+		if onBatch != nil {
+			onBatch(done, totalBatches)
+		}
 	}
 
 	if len(failures) > 0 {
 		return out, fmt.Errorf("%d of %d batches failed: %s",
-			len(failures), (len(segments)+CorrectionBatchSize-1)/CorrectionBatchSize,
-			strings.Join(failures, "; "))
+			len(failures), totalBatches, strings.Join(failures, "; "))
 	}
 	return out, nil
 }

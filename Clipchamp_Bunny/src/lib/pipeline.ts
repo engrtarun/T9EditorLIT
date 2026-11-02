@@ -1,6 +1,10 @@
 import type { AudioChunk } from './types';
-import type { LineFlag } from './types';
 import { logTranscriptionJob } from './ipc';
+import { JOB_CAP_MS, jobWatchdog } from './cloud-contract';
+
+// The flag vocabulary lives with the other pure contract rules, and is
+// re-exported here because every caller already imports it from this module.
+export { toLineFlag } from './cloud-contract';
 
 /**
  * The cloud pipeline: `t9cloud` on 127.0.0.1:7878.
@@ -42,13 +46,46 @@ export interface CloudJob {
   state: 'queued' | 'running' | 'done' | 'failed' | 'partial' | string;
   total?: number;
   completed?: number;
+  /**
+   * How many transcript lines exist **so far**.
+   *
+   * Deliberately not derived from `completed`: `completed` counts audio
+   * chunks, and one 15-minute chunk yields forty lines. The old UI divided
+   * lines by chunks and showed "400/24".
+   */
+  lines?: number;
+  /** Tail of the newest line — proof the transcript is really filling up. */
+  last_line?: string;
+  /** Unix seconds; the daemon stamps it on every step. Drives stall detection. */
+  updated_unix?: number;
+  created_unix?: number;
   error?: string;
   transcript?: CloudSegment[];
   corrected?: CloudSegment[];
   analysis?: CloudSegment[];
 }
 
-export type Progress = (message: string, fraction: number) => void;
+/**
+ * One progress tick from a running job.
+ *
+ * `fraction` is the stage's own 0..1 (chunks finished / chunks total); the
+ * caller maps it into its band of the whole pipeline, because only the caller
+ * knows how many stages are left.
+ */
+export interface StageProgress {
+  /** Ready to show: "Whisper 3/12". */
+  message: string;
+  fraction: number;
+  /** Chunks/segments the stage has finished, when it counts in units. */
+  completed?: number;
+  total?: number;
+  /** Transcript lines written so far (transcription stage). */
+  lines?: number;
+  /** Tail of the newest line, so the panel can show real words. */
+  lastLine?: string;
+}
+
+export type Progress = (tick: StageProgress) => void;
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -69,24 +106,103 @@ async function job(id: string): Promise<CloudJob> {
   return (await res.json()) as CloudJob;
 }
 
-/** Poll a job to a terminal state. */
-async function waitJob(id: string, onProgress?: Progress): Promise<CloudJob> {
-  for (let i = 0; i < 600; i++) {
-    const j = await job(id);
-    if (j.state === 'done' || j.state === 'failed' || j.state === 'partial') return j;
-    if (onProgress && j.total) {
-      onProgress(`${j.kind} ${j.completed ?? 0}/${j.total}`, (j.completed ?? 0) / j.total);
-    }
-    await new Promise((r) => setTimeout(r, 900));
-  }
-  throw new Error('job timed out');
+/** How often a running job is asked for its state. */
+const POLL_MS = 1200;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Human name for the daemon's job kinds. */
+const KIND_LABEL: Record<string, string> = {
+  transcribe: 'Whisper',
+  correct: 'Autocorrect',
+  analyze: 'Gemini'
+};
+
+/** "Whisper 3/12" when the stage counts units, the bare name otherwise. */
+function progressMessage(j: CloudJob): string {
+  const label = KIND_LABEL[j.kind] ?? j.kind;
+  return j.total ? `${label} ${j.completed ?? 0}/${j.total}` : label;
 }
 
-/** Whisper transcription of the audio chunks the Rust side already split. */
+/**
+ * Poll a job to a terminal state.
+ *
+ * Three outcomes matter and they are different: *done*, *failed* (the job says
+ * so) and *stuck* (nothing moves). Only the middle one used to be reported;
+ * the third looked identical to a very long job, so the panel sat on "26%"
+ * forever.
+ */
+async function waitJob(id: string, onProgress?: Progress): Promise<CloudJob> {
+  const started = Date.now();
+  // Anything that moves is progress: the daemon's stamp, the chunk counter or
+  // the line count. Using all three means an older daemon without
+  // `updated_unix` is still recognised as alive instead of looking stuck.
+  let lastSignature = '';
+  let lastChange = started;
+  let fetchErrors = 0;
+
+  for (;;) {
+    let j: CloudJob;
+    try {
+      j = await job(id);
+      fetchErrors = 0;
+    } catch (e) {
+      // A single dropped poll is not a dead job — the daemon may be swapping
+      // a connection. Five in a row is.
+      if (++fetchErrors >= 5) throw e;
+      await sleep(POLL_MS);
+      continue;
+    }
+
+    if (j.state === 'done' || j.state === 'failed' || j.state === 'partial') return j;
+
+    const signature = `${j.state}|${j.completed ?? -1}|${j.lines ?? -1}|${j.updated_unix ?? -1}`;
+    if (signature !== lastSignature) {
+      lastSignature = signature;
+      lastChange = Date.now();
+    }
+    const verdict = jobWatchdog(Date.now(), started, lastChange);
+    if (verdict === 'stalled') {
+      throw new Error(
+        `${KIND_LABEL[j.kind] ?? j.kind} ${Math.round((Date.now() - lastChange) / 60_000)} min se ruka hua hai — daemon se koi update nahi aaya`
+      );
+    }
+    if (verdict === 'expired') {
+      throw new Error(`${KIND_LABEL[j.kind] ?? j.kind} 2 ghante me poora nahi hua`);
+    }
+
+    if (onProgress) {
+      const total = j.total ?? 0;
+      const completed = j.completed ?? 0;
+      onProgress({
+        message: progressMessage(j),
+        fraction: total > 0 ? Math.min(1, completed / total) : 0,
+        completed: total > 0 ? completed : undefined,
+        total: total > 0 ? total : undefined,
+        lines: j.lines,
+        lastLine: j.last_line
+      });
+    }
+    await sleep(POLL_MS);
+  }
+}
+
+/**
+ * Whisper transcription of the audio chunks the Rust side already split.
+ *
+ * `opts.language` / `opts.prompt` are **optional on purpose**. The old version
+ * always sent one hardcoded Hinglish sentence ("Aapne Hindi aur English mein
+ * baat ki, coding tutorial"), which biased every video — a Marathi lecture or
+ * a silent screencast still came back as a Hinglish coding tutorial. The
+ * daemon now detects the language once and carries the transcript's own tail
+ * into each later chunk, so the client only speaks up when it really knows
+ * better (for example a language the user picked in Settings).
+ */
 export async function runTranscription(
   sourcePath: string,
   chunks: AudioChunk[],
-  onProgress?: Progress
+  onProgress?: Progress,
+  opts: { language?: string; prompt?: string } = {}
 ): Promise<CloudSegment[]> {
   // Telemetry: one `transcription_jobs` row when the run settles — the
   // engine writes it fire-and-forget, nothing here waits on SQLite.
@@ -100,14 +216,25 @@ export async function runTranscription(
         offset_secs: c.offsetSecs,
         index: c.index
       })),
-      // Hinglish tech vocabulary bias for Whisper.
-      prompt: 'Aapne Hindi aur English mein baat ki, coding tutorial.'
+      // Only sent when the caller actually knows something. An absent field is
+      // "let Whisper detect it", which is the honest default.
+      ...(opts.language ? { language: opts.language } : {}),
+      ...(opts.prompt ? { prompt: opts.prompt } : {})
     });
     const done = await waitJob(created.id, onProgress);
+    // `partial` is a real result: some chunks failed, but the ones that
+    // worked are paid-for words. Keeping them beats throwing them away.
     if (!done.transcript?.length) {
       throw new Error(done.error || 'transcribe returned no segments');
     }
-    logTranscriptionJob(sourcePath, 'done', 'groq', audioSecs, '', (Date.now() - t0) / 1000);
+    logTranscriptionJob(
+      sourcePath,
+      done.state === 'partial' ? 'partial' : 'done',
+      'groq',
+      audioSecs,
+      done.error ?? '',
+      (Date.now() - t0) / 1000
+    );
     return done.transcript;
   } catch (e) {
     logTranscriptionJob(
@@ -125,24 +252,26 @@ export async function runTranscription(
 /** Autocorrect: clean up Whisper's spelling before the analyser judges it. */
 export async function runCorrection(
   sourcePath: string,
-  segments: CloudSegment[]
+  segments: CloudSegment[],
+  onProgress?: Progress
 ): Promise<CloudSegment[]> {
   const created = await post<CloudJob>('/v1/correct', { source_path: sourcePath, segments });
-  const done = await waitJob(created.id);
+  const done = await waitJob(created.id, onProgress);
   return done.corrected?.length ? done.corrected : segments;
 }
 
-/** Gemini: flag retakes, fumbles and wrong examples. */
+/** Gemini: flag retakes, fumbles and wrong examples, one batch at a time. */
 export async function runAnalysis(
   sourcePath: string,
-  segments: CloudSegment[]
+  segments: CloudSegment[],
+  onProgress?: Progress
 ): Promise<CloudSegment[]> {
   const created = await post<CloudJob>('/v1/analyze', {
     source_path: sourcePath,
     segments,
     creator_handle: '@EngrTarunDilwal'
   });
-  const done = await waitJob(created.id);
+  const done = await waitJob(created.id, onProgress);
   return done.analysis?.length ? done.analysis : segments;
 }
 
@@ -153,21 +282,5 @@ export async function daemonHealth(): Promise<boolean> {
     return res.ok;
   } catch {
     return false;
-  }
-}
-
-/** The daemon's flag vocabulary → ours. */
-export function toLineFlag(flag: string): LineFlag {
-  switch (flag) {
-    case 'fumble':
-      return 'fumble';
-    case 'retake':
-      return 'repeat';
-    case 'wrong_example':
-      return 'wrong-example';
-    case 'silence':
-      return 'silence';
-    default:
-      return 'none';
   }
 }

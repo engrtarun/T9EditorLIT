@@ -112,7 +112,8 @@ func (s *Server) handleGreeting(w http.ResponseWriter, r *http.Request) {
 		g.calls = 0
 	}
 
-	if s.deps.Groq == nil || g.calls >= greetingDailyCap {
+	groq := s.groqClient()
+	if groq == nil || g.calls >= greetingDailyCap {
 		writeJSON(w, http.StatusOK, greetingPayload(bankGreeting(now), true))
 		return
 	}
@@ -121,7 +122,7 @@ func (s *Server) handleGreeting(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	g.calls++
-	out, err := s.deps.Groq.ChatCreative(ctx, greetingPrompt, greetingUserPrompt)
+	out, err := groq.ChatCreative(ctx, greetingPrompt, greetingUserPrompt)
 	if err != nil {
 		s.deps.Log.Warn("greeting: groq call failed", "err", err)
 		writeJSON(w, http.StatusOK, greetingPayload(bankGreeting(now), true))

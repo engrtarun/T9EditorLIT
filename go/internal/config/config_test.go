@@ -38,6 +38,13 @@ func TestLoadAcceptsLoopbackVariants(t *testing.T) {
 }
 
 func TestLoadReadsEnvFile(t *testing.T) {
+	// This machine exports a real GEMINI_API_KEY at user scope, and the
+	// process environment legitimately beats the file. Blanking it here keeps
+	// the test about the file parser instead of about whoever's shell it
+	// happens to run in.
+	t.Setenv("GROQ_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
 

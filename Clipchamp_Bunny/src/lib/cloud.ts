@@ -186,15 +186,168 @@ async function probe(service: 'gemini' | 'groq', key: string): Promise<ProbeResu
 }
 
 /**
- * Persist a key securely, then let the daemon pick it up.
+ * Persist a key for real, then let the daemon use it immediately.
  *
- * Secure storage is the backend agent's Task 2 (DPAPI or a documented `.env`
- * limitation). Until then this is honest: it does NOT write the key to
- * localStorage (secrets never go there) and reports the capability as
- * unavailable rather than pretending to save.
+ * `PUT /v1/keys/{service}` writes the credential into the daemon's overlay
+ * file (`keys.local.env`, never the user's hand-maintained `.env`) and
+ * hot-swaps the live client, so the very next transcription or analysis uses
+ * it — no restart. The daemon answers with the key **masked**, and this
+ * function never stores what the caller typed beyond this one call.
  */
-export async function saveApiKey(_service: 'gemini' | 'groq', _key: string): Promise<ProbeResult> {
-  return { ok: false, detail: 'unavailable' };
+export async function saveApiKey(service: 'gemini' | 'groq', key: string): Promise<ProbeResult> {
+  return putKey(service, key);
+}
+
+/**
+ * Remove a key. The daemon records an explicit empty override, so the key is
+ * genuinely gone after a restart instead of coming back from `.env`.
+ */
+export async function deleteApiKey(service: 'gemini' | 'groq'): Promise<ProbeResult> {
+  const res = await withTimeout(`${DAEMON}/v1/keys/${service}`, { method: 'DELETE' });
+  if (!res) return { ok: false, detail: 'unavailable' };
+  return verdict(res);
+}
+
+async function putKey(service: 'gemini' | 'groq', key: string): Promise<ProbeResult> {
+  const res = await withTimeout(`${DAEMON}/v1/keys/${service}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key })
+  });
+  if (!res) return { ok: false, detail: 'unavailable' };
+  return verdict(res);
+}
+
+/** One place that turns a key endpoint's answer into the card's two outcomes. */
+async function verdict(res: Response): Promise<ProbeResult> {
+  if (res.status === 404) return { ok: false, detail: 'unavailable' };
+  try {
+    const body = (await res.json()) as { error?: string; configured?: boolean; masked?: string };
+    if (!res.ok) return { ok: false, detail: body.error ?? 'unavailable' };
+    return { ok: body.configured === true, detail: body.masked ?? 'ok' };
+  } catch {
+    return { ok: false, detail: 'network' };
+  }
+}
+
+/* --------------------------------------------------------------- usage */
+
+/** Groq's rate-limit headers, verbatim. Absent fields mean "did not say". */
+export interface RateLimit {
+  /** Requests per day (that is what Groq's header means). */
+  requestsLimit?: number;
+  requestsRemaining: number;
+  requestsReset?: string;
+  /** Tokens per minute. */
+  tokensLimit?: number;
+  tokensRemaining: number;
+  tokensReset?: string;
+  /** Only ever present on a 429. */
+  retryAfter?: string;
+  capturedAt?: string;
+}
+
+export interface DayUsage {
+  date: string;
+  calls: number;
+  tokensIn: number;
+  tokensOut: number;
+}
+
+export interface ServiceUsage {
+  service: string;
+  calls: number;
+  errors: number;
+  rateLimited: number;
+  tokensIn: number;
+  tokensOut: number;
+  audioSecs: number;
+  lastCall?: string;
+  lastLatencyMs: number;
+  avgLatencyMs: number;
+  p50LatencyMs: number;
+  p95LatencyMs: number;
+  maxLatencyMs: number;
+  lastError?: string;
+  lastErrorAt?: string;
+  rateLimit?: RateLimit;
+  today?: DayUsage;
+  /** -1 = the provider publishes no such limit (Gemini, /models calls). */
+  requestsUsedPct: number;
+  tokensUsedPct: number;
+}
+
+export interface CallSummary {
+  service: string;
+  at: string;
+  status: number;
+  latencyMs: number;
+  tokensIn: number;
+  tokensOut: number;
+  err?: string;
+}
+
+/** What is configured, as far as the UI may ever know: never the key itself. */
+export interface KeyState {
+  service: 'gemini' | 'groq';
+  configured: boolean;
+  masked?: string;
+  model?: string;
+  chatModel?: string;
+}
+
+export interface UsageResponse {
+  updatedAt: string;
+  services: Record<string, ServiceUsage>;
+  recent: CallSummary[];
+  keys: KeyState[];
+  overlayPath?: string;
+}
+
+/**
+ * Everything the rate-limit gauge draws, or `null` when the daemon is down
+ * or its build predates `GET /v1/usage` — the card then says "no data"
+ * rather than inventing a ring.
+ */
+export async function fetchUsage(): Promise<UsageResponse | null> {
+  const res = await withTimeout(`${DAEMON}/v1/usage`);
+  if (!res || !res.ok) return null;
+  try {
+    const raw = (await res.json()) as Record<string, unknown>;
+    return deepCamel<UsageResponse>(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** The masked key list alone, for the key CRUD list. */
+export async function listKeys(): Promise<KeyState[] | null> {
+  const res = await withTimeout(`${DAEMON}/v1/keys`);
+  if (!res || !res.ok) return null;
+  try {
+    const body = (await res.json()) as { keys?: unknown };
+    if (!Array.isArray(body.keys)) return null;
+    return deepCamel<{ keys: KeyState[] }>(body).keys;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The daemon replies in snake_case and `snakeToCamel` above only walks one
+ * level, so the usage payload — which nests — gets a deep conversion here.
+ * Converting at the edge keeps every component free of JSON-shape knowledge.
+ */
+function deepCamel<T>(value: unknown): T {
+  if (Array.isArray(value)) return value.map(deepCamel) as unknown as T;
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())] = deepCamel(v);
+    }
+    return out as T;
+  }
+  return value as T;
 }
 
 /* ----------------------------------------------------------- telegram QR */

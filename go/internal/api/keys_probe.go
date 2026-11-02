@@ -44,22 +44,22 @@ func (s *Server) handleKeysProbe(w http.ResponseWriter, r *http.Request) {
 	var res cloud.ProbeResult
 	switch service {
 	case "groq":
-		if s.deps.Groq == nil {
+		if s.groqClient() == nil {
 			res = cloud.ProbeResult{
 				OK:     false,
 				Detail: "no Groq key is configured on this daemon (set GROQ_API_KEY in .env)",
 			}
 		} else {
-			res = s.deps.Groq.Probe(r.Context(), req.Key)
+			res = s.groqClient().Probe(r.Context(), req.Key)
 		}
 	case "gemini":
-		if s.deps.Gemini == nil {
+		if s.geminiClient() == nil {
 			res = cloud.ProbeResult{
 				OK:     false,
 				Detail: "no Gemini key is configured on this daemon (set GEMINI_API_KEY in .env)",
 			}
 		} else {
-			res = s.deps.Gemini.Probe(r.Context(), req.Key)
+			res = s.geminiClient().Probe(r.Context(), req.Key)
 		}
 	case "":
 		writeJSON(w, http.StatusBadRequest, map[string]string{

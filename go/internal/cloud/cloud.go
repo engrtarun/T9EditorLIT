@@ -137,12 +137,23 @@ type groqWord struct {
 	End   float64 `json:"end"`
 }
 
+// ChunkTranscript is one audio chunk's result.
+//
+// Language is what Whisper decided this chunk was spoken in. It is the fix for
+// the most visible transcript bug on Hinglish recordings: auto-detection runs
+// per request, so chunk 3 can come back as English and chunk 4 as Hindi, and
+// the transcript flips script mid-sentence. The first chunk's answer is pinned
+// for the rest of the job (see runTranscribe).
+type ChunkTranscript struct {
+	Segments []model.Segment
+	Language string
+}
+
 // TranscribeChunk uploads one audio chunk and returns its segments with times
 // shifted into the original video's timeline.
 //
-// offsetSecs is where this chunk began; Groq reports times relative to the
-// chunk, so without this the transcript for a 2-hour video would restart at
-// zero after every chunk.
+// Kept as a thin wrapper so existing callers (and tests) keep the simple
+// signature; TranscribeChunkResult is the one that also reports the language.
 func (c *GroqClient) TranscribeChunk(
 	ctx context.Context,
 	chunkPath string,
@@ -150,9 +161,25 @@ func (c *GroqClient) TranscribeChunk(
 	language string,
 	prompt string,
 ) ([]model.Segment, error) {
+	res, err := c.TranscribeChunkResult(ctx, chunkPath, offsetSecs, language, prompt)
+	return res.Segments, err
+}
+
+// TranscribeChunkResult is TranscribeChunk plus the detected language.
+//
+// offsetSecs is where this chunk began; Groq reports times relative to the
+// chunk, so without this the transcript for a 2-hour video would restart at
+// zero after every chunk.
+func (c *GroqClient) TranscribeChunkResult(
+	ctx context.Context,
+	chunkPath string,
+	offsetSecs float64,
+	language string,
+	prompt string,
+) (ChunkTranscript, error) {
 	f, err := os.Open(chunkPath)
 	if err != nil {
-		return nil, fmt.Errorf("open chunk %s: %w", filepath.Base(chunkPath), err)
+		return ChunkTranscript{}, fmt.Errorf("open chunk %s: %w", filepath.Base(chunkPath), err)
 	}
 	defer f.Close()
 
@@ -215,29 +242,29 @@ func (c *GroqClient) TranscribeChunk(
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, pr)
 	if err != nil {
-		return nil, fmt.Errorf("build groq request: %w", err)
+		return ChunkTranscript{}, fmt.Errorf("build groq request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("groq request: %w", err)
+		return ChunkTranscript{}, fmt.Errorf("groq request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
-		return nil, fmt.Errorf("read groq response: %w", err)
+		return ChunkTranscript{}, fmt.Errorf("read groq response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &APIError{Status: resp.StatusCode, Body: string(body), Service: "groq"}
+		return ChunkTranscript{}, &APIError{Status: resp.StatusCode, Body: string(body), Service: "groq"}
 	}
 
 	var parsed groqResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("decode groq response: %w", err)
+		return ChunkTranscript{}, fmt.Errorf("decode groq response: %w", err)
 	}
 
 	segments := make([]model.Segment, 0, len(parsed.Segments))
@@ -264,7 +291,7 @@ func (c *GroqClient) TranscribeChunk(
 		segments = segmentsFromWords(parsed.Words, offsetSecs)
 	}
 
-	return segments, nil
+	return ChunkTranscript{Segments: segments, Language: strings.TrimSpace(parsed.Language)}, nil
 }
 
 // segmentsFromWords rebuilds transcript lines from a flat word list.

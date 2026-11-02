@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -284,6 +285,147 @@ func TestTranscribeProducesTranscript(t *testing.T) {
 	}
 	if !got.Transcript[0].Keep {
 		t.Error("segments must default to keep")
+	}
+}
+
+// TestTranscribeProgressCountsChunks is the regression test for a progress bar
+// that showed "400/24": the worker counted transcript lines into a total that
+// was measured in audio chunks, so the bar passed 100% and kept going.
+func TestTranscribeProgressCountsChunks(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	// Guarded close: the mid-run assertions release the held chunk, and a
+	// failed test must still release it so the worker goroutine ends and the
+	// temporary chunk files are not left open at cleanup.
+	var releaseOnce sync.Once
+	releaseChunks := func() { releaseOnce.Do(func() { close(release) }) }
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 2 {
+			// Hold the second chunk so the first one's state is observable.
+			<-release
+		}
+		_, _ = w.Write([]byte(`{"segments":[
+			{"id":0,"start":0,"end":1,"text":"a"},
+			{"id":1,"start":1,"end":2,"text":"b"},
+			{"id":2,"start":2,"end":3,"text":"c"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(releaseChunks)
+
+	s, _ := newTestServer(t, baseConfig(), srv)
+
+	rec := do(t, s, http.MethodPost, "/v1/transcribe",
+		transcribeBody(t, writeChunk(t), writeChunk(t)))
+	var job model.Job
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if job.Total != 2 {
+		t.Fatalf("Total = %d, want 2 chunks", job.Total)
+	}
+
+	// Wait until the first chunk has been reported, without letting the second
+	// one finish.
+	deadline := time.Now().Add(3 * time.Second)
+	var mid model.Job
+	for time.Now().Before(deadline) {
+		r := do(t, s, http.MethodGet, "/v1/jobs/"+job.ID, "")
+		if err := json.Unmarshal(r.Body.Bytes(), &mid); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if mid.Completed > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if mid.Completed != 1 {
+		t.Errorf("Completed = %d mid-run, want 1 chunk", mid.Completed)
+	}
+	if mid.Completed > mid.Total {
+		t.Errorf("Completed %d exceeded Total %d — progress is counting the wrong unit",
+			mid.Completed, mid.Total)
+	}
+	if mid.Lines != 3 {
+		t.Errorf("Lines = %d mid-run, want 3 (the lines produced so far)", mid.Lines)
+	}
+	if mid.LastLine != "c" {
+		t.Errorf("LastLine = %q, want the newest line so the UI can show real text", mid.LastLine)
+	}
+
+	// The mid-run state is asserted; now let the held chunk finish so the job
+	// can reach a terminal state.
+	releaseChunks()
+	done := waitForJob(t, s, job.ID)
+	if done.State != model.StateDone {
+		t.Fatalf("state = %q (error %q)", done.State, done.Error)
+	}
+	if done.Completed != done.Total {
+		t.Errorf("Completed = %d, want %d", done.Completed, done.Total)
+	}
+	if done.Lines != 6 {
+		t.Errorf("Lines = %d, want 6", done.Lines)
+	}
+}
+
+// TestTranscribePinsLanguageAndCarriesContext covers the two reasons a long
+// Hinglish transcript used to change personality at every chunk boundary:
+// Whisper auto-detected the language per request, and every chunk was prompted
+// with the same fixed sentence instead of the words that came before it.
+func TestTranscribePinsLanguageAndCarriesContext(t *testing.T) {
+	type call struct{ language, prompt string }
+
+	var mu sync.Mutex
+	var calls []call
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			t.Errorf("parse multipart: %v", err)
+		}
+
+		mu.Lock()
+		calls = append(calls, call{
+			language: r.FormValue("language"),
+			prompt:   r.FormValue("prompt"),
+		})
+		n := len(calls)
+		mu.Unlock()
+
+		if n == 1 {
+			_, _ = w.Write([]byte(`{"language":"hindi","segments":[{"id":0,"start":0,"end":2,"text":"pehla vakya"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"language":"english","segments":[{"id":0,"start":0,"end":2,"text":"dusra vakya"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	s, _ := newTestServer(t, baseConfig(), srv)
+	rec := do(t, s, http.MethodPost, "/v1/transcribe",
+		transcribeBody(t, writeChunk(t), writeChunk(t)))
+	var job model.Job
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := waitForJob(t, s, job.ID); got.State != model.StateDone {
+		t.Fatalf("state = %q (error %q)", got.State, got.Error)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("got %d upstream calls, want 2", len(calls))
+	}
+	if calls[0].language != "" {
+		t.Errorf("first chunk language = %q, want auto-detect (empty)", calls[0].language)
+	}
+	if calls[1].language != "hindi" {
+		t.Errorf("second chunk language = %q, want the first chunk's answer pinned",
+			calls[1].language)
+	}
+	if !strings.Contains(calls[1].prompt, "pehla vakya") {
+		t.Errorf("second chunk prompt = %q, want the previous line for continuity",
+			calls[1].prompt)
 	}
 }
 

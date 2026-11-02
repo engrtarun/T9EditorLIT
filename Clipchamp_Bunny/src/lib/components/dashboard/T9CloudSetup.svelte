@@ -31,6 +31,7 @@
   import { i18n } from '../../stores/i18n.svelte';
   import { fetchHealth, fetchVaultStatus, type CloudHealth, type VaultStatus } from '../../cloud';
   import ApiKeyCard from './ApiKeyCard.svelte';
+  import ApiUsageGauge from './ApiUsageGauge.svelte';
   import TelegramConnectModal from './TelegramConnectModal.svelte';
 
   /* -------------------------------------------------------- live daemon state */
@@ -103,16 +104,24 @@
   ></div>
 
   <div class="mx-auto max-w-[1180px] px-7 py-8">
-    <!-- heading (the rotating phrase lives on the nav label in DashboardTopBar) -->
-    <div>
-      <h1 class="max-w-[720px] text-[30px] leading-tight font-bold tracking-tight text-nc-txt">
-        <span class="text-nc-brand">{i18n.t('cloud.titleAccent')}</span>
-        {i18n.t('cloud.titleRest')}
-      </h1>
+    <!-- heading (the rotating phrase lives on the nav label in DashboardTopBar)
+         with the API gauge parked on the right: the one place that answers
+         "how full is the limit, what did it cost, whose key is this". -->
+    <div class="flex flex-wrap items-start justify-between gap-6">
+      <div class="min-w-0 flex-1">
+        <h1 class="max-w-[720px] text-[30px] leading-tight font-bold tracking-tight text-nc-txt">
+          <span class="text-nc-brand">{i18n.t('cloud.titleAccent')}</span>
+          {i18n.t('cloud.titleRest')}
+        </h1>
 
-      <p class="mt-2 max-w-[560px] text-[13.5px] leading-relaxed text-nc-mut">
-        {i18n.t('cloud.sub')}
-      </p>
+        <p class="mt-2 max-w-[560px] text-[13.5px] leading-relaxed text-nc-mut">
+          {i18n.t('cloud.sub')}
+        </p>
+      </div>
+
+      <div class="w-[400px] max-w-full shrink-0">
+        <ApiUsageGauge />
+      </div>
     </div>
 
     <!-- progress: counts only services the daemon says are genuinely ready -->

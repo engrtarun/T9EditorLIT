@@ -595,6 +595,11 @@ func TestStoredBackupsListsCompleteLatestFirst(t *testing.T) {
 
 	// Two manifests for one source+size share one derived file name, so the
 	// older one and the unfinished one are keyed with distinct names.
+	// The directory is normally created by saveManifest; here the test writes
+	// the files by hand, so it has to create it too.
+	if err := os.MkdirAll(manifestDir(sessionDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for name, m := range map[string]Manifest{
 		"fresh":   fresh,
 		"partial": partial,

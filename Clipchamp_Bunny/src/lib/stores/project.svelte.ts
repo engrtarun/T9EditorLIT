@@ -29,6 +29,7 @@ import { detectQualitySuggestions, type QualitySuggestion } from '../suggestions
 import { media } from './media.svelte';
 import { player } from './player.svelte';
 import { runAnalysis, runCorrection, runTranscription, toLineFlag } from '../pipeline';
+import type { CloudSegment } from '../pipeline';
 import { settings } from './settings.svelte';
 import {
   assetUrl,
@@ -55,7 +56,7 @@ import {
 import type { RustProject } from '../ipc';
 
 /**
- * Undo snapshot. Holds the whole line array, not just the keep flags â€”
+ * Undo snapshot. Holds the whole line array, not just the keep flags —
  * splits, trims, moves and groups all change the *structure*, so a
  * flags-only snapshot cannot undo them.
  *
@@ -77,7 +78,7 @@ export type TrackId = 'video' | 'audio';
 
 /**
  * Splitting produces `ln-012-1a` / `ln-012-1b`; undo must still find the parent.
- * The numeric tag is required â€” reusing the same `-a`/`-b` suffix twice would
+ * The numeric tag is required — reusing the same `-a`/`-b` suffix twice would
  * produce duplicate keys and break Svelte's keyed `{#each}`.
  */
 function baseId(id: string): string {
@@ -87,7 +88,7 @@ function baseId(id: string): string {
 /**
  * Split a line's **text** at the cut point, when word-level timings are known.
  *
- * Cutting "I LOVE U" (10 s) at 4 s then yields two rows â€” "I" and "LOVE U" â€”
+ * Cutting "I LOVE U" (10 s) at 4 s then yields two rows — "I" and "LOVE U" —
  * instead of two identical ones. Whisper returns a word array, so the backend
  * fills `words` in and this does the rest. Without word timings both halves
  * keep the original text, which is why the split still shows its time range.
@@ -265,7 +266,7 @@ class ProjectStore {
   /** Magnet: playhead snaps to line boundaries when true. */
   snap = $state(true);
 
-  /** Right-rail CC toggle â€” hides/shows the transcript panel. */
+  /** Right-rail CC toggle — hides/shows the transcript panel. */
   showTranscript = $state(false);
 
   /** Monotonic counter so every split produces unique line ids. */
@@ -310,7 +311,7 @@ class ProjectStore {
   /**
    * Load the project source.
    *
-   * In Tauri this goes through the real Rust engine: ffprobe â†’ SQLite cache,
+   * In Tauri this goes through the real Rust engine: ffprobe → SQLite cache,
    * FFmpeg waveform, FFmpeg filmstrip, SQLite transcript. In the browser it
    * falls back to the media baked by `tools/generate-media.mjs`.
    *
@@ -616,7 +617,9 @@ class ProjectStore {
       // No mock lines here. On the desktop the user gets the real reason the
       // transcript could not be produced, and a retry.
       this.loadError = e instanceof Error ? e.message : String(e);
-      this.lines = [];
+      // A run that failed after Whisper already saved rows must not lose them:
+      // clearing here is how a long transcription vanished into an empty panel.
+      if (!this.lines.length) this.lines = [];
     }
     this.restoreClips();
     this.restoreUiState();
@@ -696,11 +699,29 @@ class ProjectStore {
     }
   }
 
-  /** Live pipeline state, shown in the transcript panel while the cloud works. */
-  pipeline = $state<{ stage: string; fraction: number } | null>(null);
+  /**
+   * Live pipeline state, shown in the transcript panel while the cloud works.
+   *
+   * `stage` is plain words ("Whisper 3/12"), `fraction` is the whole
+   * pipeline's 0..1, and the rest is the honest answer to "kitna ban gaya?" —
+   * lines written so far and the newest line's text. Without those numbers the
+   * panel could only say "transcribing", which is indistinguishable from hung.
+   */
+  pipeline = $state<{
+    stage: string;
+    fraction: number;
+    /** Transcript lines written so far. */
+    lines?: number;
+    /** Chunks/segments the current stage has finished. */
+    completed?: number;
+    /** How many the current stage has in total. */
+    total?: number;
+    /** Tail of the newest line — real words, not a percentage. */
+    lastLine?: string;
+  } | null>(null);
 
   /**
-   * The transcript for a source â€” **SQLite first, cloud only on a miss**.
+   * The transcript for a source — **SQLite first, cloud only on a miss**.
    *
    * The rule that matters: the cloud API is **never** called behind the user's
    * back. On a cache miss this returns nothing unless `settings.autoTranscribe`
@@ -712,7 +733,7 @@ class ProjectStore {
   async ensureTranscript(sourcePath: string, durationSecs: number): Promise<TranscriptLine[]> {
     const db = await defaultDbPath();
 
-    // 1. SQLite cache â€” the common path, no network at all.
+    // 1. SQLite cache — the common path, no network at all.
     const cached = await loadTranscript(db, sourcePath).catch(() => []);
     if (cached?.length) {
       this.pipeline = null;
@@ -757,28 +778,75 @@ class ProjectStore {
       this.loadError = null;
     } catch (e) {
       this.loadError = e instanceof Error ? e.message : String(e);
-      this.lines = [];
+      // Deliberately no `this.lines = []`: whatever Whisper already wrote is
+      // in `this.lines` and on disk. Dropping it because Gemini timed out is
+      // exactly how a transcript used to disappear after a long run.
     }
   }
 
-  /** The one cloud pass: split -> Whisper -> correct -> Gemini flags -> SQLite. */
-  private async runPipeline(sourcePath: string): Promise<TranscriptLine[]> {
+  /**
+   * Retry only the second half — autocorrect and AI flags — on lines we
+   * already have.
+   *
+   * The panel offers this when Whisper succeeded but a later stage failed.
+   * Re-transcribing the same audio would pay Groq for the same words twice,
+   * and the words are already saved.
+   */
+  async refineTranscript(): Promise<void> {
+    const source = this.sourcePath;
+    if (this.pipeline || !source || !this.lines.length) return;
     const db = await defaultDbPath();
-    this.pipeline = { stage: 'Splitting audioâ€¦', fraction: 0.05 };
-    const chunks = await extractAudioChunks(sourcePath);
+    this.loadError = null;
+    try {
+      const segs = await this.refine(source, this.toCloudSegments(this.lines), [0.1, 0.97]);
+      this.lines = this.toTranscriptLines(segs);
+      this.syncCutsIntoLines();
+      await this.saveSegments(db, source, segs);
+    } catch (e) {
+      // The existing lines stay on screen: the failure only means the flags
+      // are missing, not that the transcript is gone.
+      this.loadError = e instanceof Error ? e.message : String(e);
+    } finally {
+      // This path does not go through `runPipeline`, so it owns the cleanup —
+      // a stuck `pipeline` would also block every later retry.
+      this.pipeline = null;
+    }
+  }
 
-    this.pipeline = { stage: 'Whisper transcribingâ€¦', fraction: 0.2 };
-    let segs = await runTranscription(sourcePath, chunks, (stage, fraction) => {
-      this.pipeline = { stage, fraction: 0.2 + fraction * 0.55 };
-    });
+  /**
+   * Our rows → the daemon's snake_case segments.
+   *
+   * One spelling for the wire format, used by every stage that sends the
+   * transcript back (refine/retry), so the two directions cannot drift.
+   */
+  private toCloudSegments(lines: TranscriptLine[]): CloudSegment[] {
+    return lines.map((l) => ({
+      id: l.id,
+      start_secs: l.startSec,
+      end_secs: l.endSec,
+      text: l.text,
+      flag: l.flag,
+      keep: l.keep === 'keep',
+      words: l.words
+    }));
+  }
 
-    this.pipeline = { stage: 'Autocorrectingâ€¦', fraction: 0.8 };
-    segs = await runCorrection(sourcePath, segs);
+  /** The daemon's segments → our rows. The only place that mapping lives. */
+  private toTranscriptLines(segs: CloudSegment[]): TranscriptLine[] {
+    return segs.map((s) => ({
+      id: s.id,
+      startSec: s.start_secs,
+      endSec: s.end_secs,
+      text: s.text,
+      flag: toLineFlag(s.flag),
+      keep: s.keep ? 'keep' : 'cut',
+      confidence: 1,
+      words: s.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
+    }));
+  }
 
-    this.pipeline = { stage: 'Gemini flagging fumblesâ€¦', fraction: 0.9 };
-    segs = await runAnalysis(sourcePath, segs);
-
-    this.pipeline = { stage: 'Saving to SQLiteâ€¦', fraction: 0.97 };
+  /** Write one stage's segments to SQLite — the single transcript save path. */
+  private async saveSegments(db: string, sourcePath: string, segs: CloudSegment[]) {
     await saveTranscript(
       db,
       sourcePath,
@@ -794,23 +862,98 @@ class ProjectStore {
         words: s.words
       }))
     );
+  }
 
-    this.pipeline = null;
-    return segs.map((s) => ({
-      id: s.id,
-      startSec: s.start_secs,
-      endSec: s.end_secs,
-      text: s.text,
-      flag: toLineFlag(s.flag),
-      keep: s.keep ? 'keep' : 'cut',
-      confidence: 1,
-      words: s.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
-    }));
+  /**
+   * The two cloud stages that sit on top of a transcript: autocorrect, then
+   * Gemini's flags. Split out because a retry needs exactly these two and
+   * must not touch Whisper again.
+   */
+  private async refine(
+    sourcePath: string,
+    segs: CloudSegment[],
+    band: [number, number]
+  ): Promise<CloudSegment[]> {
+    const [from, to] = band;
+    const mid = from + (to - from) * 0.55;
+
+    this.pipeline = { stage: 'Autocorrect shuru…', fraction: from, lines: segs.length };
+    const corrected = await runCorrection(sourcePath, segs, (p) => {
+      this.pipeline = {
+        stage: p.message,
+        fraction: from + p.fraction * (mid - from),
+        lines: segs.length,
+        completed: p.completed,
+        total: p.total
+      };
+    });
+
+    this.pipeline = { stage: 'Gemini flags shuru…', fraction: mid, lines: segs.length };
+    return runAnalysis(sourcePath, corrected, (p) => {
+      this.pipeline = {
+        stage: p.message,
+        fraction: mid + p.fraction * (to - mid),
+        lines: segs.length,
+        completed: p.completed,
+        total: p.total
+      };
+    });
+  }
+
+  /** The one cloud pass: split -> Whisper -> save -> correct -> Gemini -> save. */
+  private async runPipeline(sourcePath: string): Promise<TranscriptLine[]> {
+    const db = await defaultDbPath();
+    try {
+      // 1. Split the audio. One Rust call; until it returns there is nothing
+      //    to count, so the bar holds with the honest reason.
+      this.pipeline = { stage: 'Audio chunks bana rahe hain…', fraction: 0.04 };
+      const chunks = await extractAudioChunks(sourcePath);
+      if (!chunks.length) {
+        throw new Error('Audio chunks nahi bane — is video me audio track hai?');
+      }
+
+      // 2. Whisper. The daemon reports chunks finished AND lines written, so
+      //    the bar moves in the unit it is actually working in.
+      let segs = await runTranscription(sourcePath, chunks, (p) => {
+        this.pipeline = {
+          stage: p.message,
+          fraction: 0.04 + p.fraction * 0.66,
+          lines: p.lines,
+          completed: p.completed,
+          total: p.total,
+          lastLine: p.lastLine
+        };
+      });
+
+      // 3. Save the raw transcript **before** anything else runs. Autocorrect
+      //    and flagging are improvements on top; losing the Whisper output
+      //    because stage four failed is the bug this line fixes. The rows also
+      //    appear in the panel now, not only at the end of the run.
+      await this.saveSegments(db, sourcePath, segs);
+      this.lines = this.toTranscriptLines(segs);
+
+      // 4. Autocorrect + Gemini flags.
+      segs = await this.refine(sourcePath, segs, [0.72, 0.96]);
+
+      // 5. Final save — the flags are what changed.
+      this.pipeline = {
+        stage: 'SQLite me save kar rahe hain…',
+        fraction: 0.98,
+        lines: segs.length
+      };
+      await this.saveSegments(db, sourcePath, segs);
+      return this.toTranscriptLines(segs);
+    } finally {
+      // A failed run must never leave the panel stuck on "running", which also
+      // used to block every retry (`generateTranscript` returns early while
+      // `pipeline` is set).
+      this.pipeline = null;
+    }
   }
 
   /**
    * Find the silent spans in the source. Clipchamp's AI auto-cut scans for
-   * pauses longer than three seconds â€” that is the default here too.
+   * pauses longer than three seconds — that is the default here too.
    */
   async findSilences(minSecs = 3.0): Promise<SilenceRange[]> {
     const path = this.sourcePath;
@@ -916,7 +1059,7 @@ class ProjectStore {
   }
 
   /**
-   * Auto-cut silence â€” Clipchamp's "AI suggestions / remove silences".
+   * Auto-cut silence — Clipchamp's "AI suggestions / remove silences".
    * Uses the Rust `detect_silence` command (FFmpeg `silencedetect`), then
    * marks every transcript line that overlaps a silent span as cut.
    */
@@ -1213,7 +1356,7 @@ class ProjectStore {
     return ranges;
   });
 
-  /** Merged ranges that survive the cut â€” these become the clips on the video lane. */
+  /** Merged ranges that survive the cut — these become the clips on the video lane. */
   keptRanges = $derived.by(() => {
     const ranges: Array<[number, number]> = [];
     for (const line of this.lines) {
@@ -1230,7 +1373,7 @@ class ProjectStore {
    *
    * This is what the video lane shows and what you can drag around. A segment
    * owns the transcript lines that produced it, so reordering a segment
-   * reorders those lines in the transcript panel â€” live.
+   * reorders those lines in the transcript panel — live.
    *
    * The maths lives in `lib/segments.ts` (pure, unit-tested).
    */
@@ -1295,11 +1438,11 @@ class ProjectStore {
   /** Is there anything at all left to put in the final video? */
   hasKeptContent = $derived(this.editDuration > 0);
 
-  /** Source time â†’ position on the edit timeline (null when inside a cut). */
+  /** Source time → position on the edit timeline (null when inside a cut). */
   editTimeAt = (sourceSec: number): number | null =>
     editTimeAt(this.orderedSegments, this.segmentOffsets, sourceSec);
 
-  /** Position on the edit timeline â†’ source time (null when past the end). */
+  /** Position on the edit timeline → source time (null when past the end). */
   sourceAt = (editSec: number): number | null =>
     sourceAt(this.orderedSegments, this.segmentOffsets, editSec);
 
@@ -1668,7 +1811,7 @@ class ProjectStore {
   isCutAt = (sec: number) => this.cutRanges.some(([a, b]) => sec >= a && sec < b);
 
   /**
-   * Phantom Cut â€” returns the corrected playback time if `sec` falls inside a cut range.
+   * Phantom Cut — returns the corrected playback time if `sec` falls inside a cut range.
    * The <video> loop calls this on every timeupdate; nothing is re-encoded here.
    *
    * Raw preview (`player.previewRaw`) turns the skip off: cut material plays
@@ -1713,7 +1856,7 @@ class ProjectStore {
       // was imported for the same project and must stay.
       await this.loadFromBackend(e.path, { carryDraft: true });
     } else if (e.asset.url) {
-      // a browser blob â€” no engine, just the streamed file
+      // a browser blob — no engine, just the streamed file
       this.media = e.asset;
       this.name = e.asset.name.replace(/\.[^.]+$/, '');
     } else {
@@ -1987,7 +2130,7 @@ class ProjectStore {
   }
 
   /* ------------------------------------------------------------ trim / move */
-  /** Clipchamp: Z + â† / â†’  (trim the start of the item). */
+  /** Clipchamp: Z + ← / →  (trim the start of the item). */
   trimStart(delta: number) {
     const cur = this.lines[this.cursor];
     if (!cur) return;
@@ -1997,7 +2140,7 @@ class ProjectStore {
     this.lines = this.lines.map((l) => (l.id === cur.id ? { ...l, startSec: next } : l));
   }
 
-  /** Clipchamp: C + â† / â†’  (trim the end of the item). */
+  /** Clipchamp: C + ← / →  (trim the end of the item). */
   trimEnd(delta: number) {
     const cur = this.lines[this.cursor];
     if (!cur) return;
@@ -2231,7 +2374,7 @@ class ProjectStore {
     return true;
   }
 
-  /** Clipchamp: X + â† / â†’  (move the item earlier / later). */
+  /** Clipchamp: X + ← / →  (move the item earlier / later). */
   moveCurrent(delta: number) {
     const from = this.cursor;
     const to = from + delta;
@@ -2269,10 +2412,10 @@ class ProjectStore {
   }
 
   /**
-   * Split a transcript line in two (Clipchamp's âœ‚ / `S`).
+   * Split a transcript line in two (Clipchamp's ✂ / `S`).
    *
    * Targeting rules, in order:
-   *   1. The playhead is strictly inside a line â†’ split that line at the playhead.
+   *   1. The playhead is strictly inside a line → split that line at the playhead.
    *   2. Otherwise the cursor line is used, and the cut point is clamped so it
    *      always lands strictly inside the line. (Clicking a transcript row seeks
    *      the playhead to that line's *start*, so without the clamp `S` would
@@ -2369,7 +2512,7 @@ class ProjectStore {
   }
 
   /**
-   * **Cut at the playhead** â€” the gesture the user actually performs: drop the
+   * **Cut at the playhead** — the gesture the user actually performs: drop the
    * playhead inside a line ("I LOVE U", 10 s) and cut at 4 s. The line is split
    * there and the *head* is marked cut, so the transcript shows the two halves
    * as separate rows and the timeline shows the gap.

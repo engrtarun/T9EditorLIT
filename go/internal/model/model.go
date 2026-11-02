@@ -164,6 +164,17 @@ type Job struct {
 	Total     int `json:"total"`
 	Completed int `json:"completed"`
 
+	// Lines is how many transcript lines exist SO FAR. It answers the question
+	// a progress bar cannot: "is it actually producing text, or just spinning?"
+	//
+	// Completed counts chunks (the unit the job advertised); a chunk can yield
+	// forty lines or none, so lines and completed are different numbers and
+	// both are shown.
+	Lines int `json:"lines,omitempty"`
+	// LastLine is the tail of the newest transcript line, so the UI can show
+	// live text instead of a bar that has not moved in a minute.
+	LastLine string `json:"last_line,omitempty"`
+
 	// Error carries the human-readable failure reason when State is failed.
 	Error string `json:"error,omitempty"`
 

@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import PreviewBar from '../PreviewBar.svelte';
   import MediaPanel from '../media/MediaPanel.svelte';
   import VideoPreview from '../cut/VideoPreview.svelte';
@@ -7,7 +7,7 @@
   import { project } from '../../stores/project.svelte';
   import { layout } from '../../stores/layout.svelte';
 
-  /** Clipchamp's `role="separator" aria-label="Resize panel"` â€” drag the edge. */
+  /** Clipchamp's `role="separator" aria-label="Resize panel"` — drag the edge. */
   function startResize(e: PointerEvent) {
     e.preventDefault();
     const startX = e.clientX;
@@ -22,13 +22,13 @@
   }
 </script>
 
-<!-- 7:3 CUT PANEL â€” Clipchamp's centre column, but with the transcript panel
+<!-- 7:3 CUT PANEL — Clipchamp's centre column, but with the transcript panel
      added on the right (our core feature). Bottom timeline spans the full width. -->
 <div class="flex min-h-0 min-w-0 flex-1 flex-col">
   <PreviewBar />
 
   <div class="flex min-h-0 flex-1">
-    <!-- Left: "My media" â€” the one library panel, now that the Media page is gone -->
+    <!-- Left: "My media" — the one library panel, now that the Media page is gone -->
     <MediaPanel />
 
     <!-- Left box -->

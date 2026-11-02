@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/engrtarun/T9EditorLIT/go/internal/cloud"
@@ -42,6 +43,13 @@ type Deps struct {
 	Vault  *vault.Vault
 	DL     *dl.Manager
 	Log    *slog.Logger
+	// Usage counts every provider call: latency, tokens, and the rate-limit
+	// headers that make GET /v1/usage worth asking for. Nil is allowed and
+	// yields an empty snapshot rather than an error.
+	Usage *cloud.UsageRecorder
+	// EnvPath is the .env the daemon was started with. Keys saved from the UI
+	// go into the overlay file beside it (config.SetKey), never into that one.
+	EnvPath string
 }
 
 // Server wires the HTTP routes.
@@ -50,6 +58,11 @@ type Server struct {
 	mux      *http.ServeMux
 	store    *jobStore
 	greeting *greetingState
+	// keysMu guards the provider clients and the config fields behind them.
+	// A key saved from the UI swaps both together (applyKey), so a job handler
+	// must read either through these accessors — reading deps.Groq directly
+	// would race with a save.
+	keysMu sync.RWMutex
 	// faviconDir is the on-disk icon cache. Empty means "next to the
 	// daemon's working directory"; New() resolves it once so every request
 	// reads a plain string.
@@ -116,6 +129,17 @@ func (s *Server) routes() {
 	// logged or echoed back (api/keys_probe.go).
 	s.mux.HandleFunc("POST /v1/keys/probe", s.handleKeysProbe)
 
+	// Credential CRUD: read what is configured (masked), replace a key, remove
+	// one. Saving writes the overlay file and hot-swaps the live client, so no
+	// daemon restart is ever needed (api/keys.go).
+	s.mux.HandleFunc("GET /v1/keys", s.handleKeysList)
+	s.mux.HandleFunc("PUT /v1/keys/{service}", s.handleKeysSave)
+	s.mux.HandleFunc("DELETE /v1/keys/{service}", s.handleKeysDelete)
+
+	// Everything the rate-limit gauge draws: calls, tokens, latency and
+	// Groq's x-ratelimit-* headers, as observed (api/usage.go).
+	s.mux.HandleFunc("GET /v1/usage", s.handleUsage)
+
 	// Fast downloads (the in-built browser's downloader): the daemon owns
 	// the sockets so the webview never touches multi-segment Range requests.
 	s.mux.HandleFunc("GET /v1/dl", s.handleDLList)
@@ -135,7 +159,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Loopback daemon, but the Tauri webview is a different origin, so allow
 	// CORS for local development and the desktop app.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -193,7 +217,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 			InFlight: inFlight, Completed: completed, Failed: failed,
 			Blocked: depth >= capacity,
 		},
-		Cloud: s.deps.Config.Capabilities(),
+		Cloud: s.capabilities(),
 	})
 }
 
@@ -234,7 +258,7 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	// Guard on the dependency that will actually be dereferenced, not on the
 	// config flag. Checking config alone leaves two sources of truth that can
 	// disagree, and the worker would panic on a nil client.
-	if s.deps.Groq == nil {
+	if s.groqClient() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "transcription unavailable: GROQ_API_KEY is not set",
 		})
@@ -290,7 +314,7 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCorrect(w http.ResponseWriter, r *http.Request) {
 	// Same rule as every other pipeline: guard the dependency that will be
 	// dereferenced, not the config flag.
-	if s.deps.Groq == nil {
+	if s.groqClient() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "autocorrect unavailable: GROQ_API_KEY is not set",
 		})
@@ -331,7 +355,7 @@ func (s *Server) handleCorrect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	// Same rule as transcribe: guard the dependency, not the config flag.
-	if s.deps.Gemini == nil {
+	if s.geminiClient() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "analysis unavailable: GEMINI_API_KEY is not set",
 		})
@@ -349,7 +373,10 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := s.store.create(model.JobAnalyze, len(req.Segments))
+	// A job's unit is a batch, not a line: 120 lines travel per Gemini call,
+	// so a total counted in lines would freeze the bar and then jump.
+	total := (len(req.Segments) + cloud.AnalysisBatchSize - 1) / cloud.AnalysisBatchSize
+	job := s.store.create(model.JobAnalyze, total)
 
 	err := s.deps.Queue.Submit(r.Context(), queue.Task{
 		ID:        job.ID,
@@ -556,26 +583,57 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 // with StatePartial so the user still gets usable text for 99% of the video and
 // can decide what to do about the gap. Losing a 30-minute transcription to one
 // corrupt chunk would be far worse than a visible hole.
+//
+// Two rules keep the text itself correct across chunk seams, and they are the
+// difference between a transcript that reads like one recording and one that
+// changes language and spelling every five minutes:
+//
+//  1. The first detected language is pinned for the rest of the job. Whisper
+//     auto-detects per request, and on Hinglish audio that means chunk 3 can
+//     come back English and chunk 4 Hindi.
+//  2. Each chunk after the first is prompted with the tail of what came before
+//     it, so names, jargon and spelling carry over the boundary instead of
+//     being re-guessed from silence.
 func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.TranscribeRequest) error {
-	if s.deps.Groq == nil {
+	// Read once: every chunk of this job goes to the same client, even if the
+	// user swaps the key while the transcription is running.
+	groq := s.groqClient()
+	if groq == nil {
 		return errors.New("groq client is not configured")
 	}
 	s.store.start(jobID)
 
-	var merged []model.Segment
+	merged := make([]model.Segment, 0, len(req.Chunks)*8)
 	var failures []string
 
-	for _, chunk := range req.Chunks {
-		segs, err := s.deps.Groq.TranscribeChunk(
-			ctx, chunk.Path, chunk.OffsetSecs, req.Language, req.Prompt)
+	language := strings.TrimSpace(req.Language)
+	hint := strings.TrimSpace(req.Prompt)
+
+	for i, chunk := range req.Chunks {
+		prompt := transcriptTail(merged, 300)
+		if prompt == "" {
+			prompt = hint
+		}
+
+		res, err := groq.TranscribeChunkResult(
+			ctx, chunk.Path, chunk.OffsetSecs, language, prompt)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", filepath.Base(chunk.Path), err))
 			s.deps.Log.Warn("chunk failed",
 				"job", jobID, "chunk", filepath.Base(chunk.Path), "err", err)
+			// A failed chunk is still a finished chunk: progress must move, or
+			// the UI cannot tell "working on 4 of 24" from "stuck on 3".
+			s.store.progressTranscribe(jobID, i+1, len(merged), tailLine(merged))
 			continue
 		}
-		merged = append(merged, segs...)
-		s.store.advance(jobID, len(segs))
+
+		if language == "" && res.Language != "" {
+			language = res.Language
+			s.deps.Log.Info("whisper language pinned", "job", jobID, "language", language)
+		}
+
+		merged = append(merged, res.Segments...)
+		s.store.progressTranscribe(jobID, i+1, len(merged), tailLine(merged))
 	}
 
 	if len(merged) == 0 {
@@ -586,18 +644,62 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 	return nil
 }
 
+// transcriptTail returns the last `max` characters of the transcript so far.
+//
+// Truncation is by rune, not byte: a Devanagari or emoji character cut in half
+// would be sent to Whisper as replacement characters, which is worse than no
+// prompt at all.
+func transcriptTail(segments []model.Segment, max int) string {
+	if len(segments) == 0 || max <= 0 {
+		return ""
+	}
+
+	// Two lines is enough context for spelling and tone; walking the whole
+	// transcript would copy megabytes for a prompt that is capped at 300 runes.
+	var sb strings.Builder
+	for i := len(segments) - 1; i >= 0 && i >= len(segments)-2; i-- {
+		if sb.Len() > 0 {
+			sb.WriteString(" ")
+		}
+		sb.WriteString(strings.TrimSpace(segments[i].Text))
+	}
+
+	r := []rune(strings.TrimSpace(sb.String()))
+	if len(r) > max {
+		r = r[len(r)-max:]
+	}
+	return string(r)
+}
+
+// tailLine is the newest transcript line, trimmed for the live job payload.
+func tailLine(segments []model.Segment) string {
+	if len(segments) == 0 {
+		return ""
+	}
+	r := []rune(strings.TrimSpace(segments[len(segments)-1].Text))
+	if len(r) > 160 {
+		r = r[:160]
+	}
+	return string(r)
+}
+
 // runCorrect autocorrects the transcript.
 //
 // Total failure is an error; partial failure is not. CorrectSegments already
 // leaves the uncorrected lines exactly as Whisper produced them, so the only
 // question is whether there is anything worth returning at all.
 func (s *Server) runCorrect(ctx context.Context, jobID string, req model.CorrectRequest) error {
-	if s.deps.Groq == nil {
+	groq := s.groqClient()
+	if groq == nil {
 		return errors.New("groq client is not configured")
 	}
 	s.store.start(jobID)
 
-	corrected, err := s.deps.Groq.CorrectSegments(ctx, req.Segments)
+	corrected, err := groq.CorrectSegmentsProgress(ctx, req.Segments, func(_, _ int) {
+		// One tick per finished batch. The job's total is a batch count, so a
+		// two-hour transcript no longer sits at 0% for ten minutes and snaps.
+		s.store.advance(jobID, 1)
+	})
 
 	// Count the fixes, not just the lines: "412 lines, 118 spelling fixes" is
 	// the number that tells the user the pass actually did something.
@@ -632,12 +734,20 @@ func errBatchFailures(err error) []string {
 }
 
 func (s *Server) runAnalyze(ctx context.Context, jobID string, req model.AnalyzeRequest) error {
-	if s.deps.Gemini == nil {
+	gemini := s.geminiClient()
+	if gemini == nil {
 		return errors.New("gemini client is not configured")
 	}
 	s.store.start(jobID)
 
-	analyses, err := s.deps.Gemini.Analyze(ctx, req.Segments, req.ToneProfile, req.CreatorHandle)
+	analyses, err := gemini.AnalyzeProgress(ctx, req.Segments, req.ToneProfile, req.CreatorHandle,
+		func(_, _ int) { s.store.advance(jobID, 1) })
+
+	// Verdicts that did arrive are always applied, even when a later batch
+	// failed: a half-flagged transcript is useful, and the lines the model did
+	// judge should not be thrown away because batch 7 hit a rate limit.
+	flagged := cloud.ApplyAnalysis(req.Segments, analyses)
+
 	if err != nil {
 		// The transcript must survive even if analysis fails — an invalid or
 		// expired Gemini key (401), a rate limit, or a transient network blip
@@ -645,17 +755,38 @@ func (s *Server) runAnalyze(ctx context.Context, jobID string, req model.Analyze
 		// job. Every segment already defaults to keep=true / flag "none", so
 		// the raw transcript stays fully usable for cutting.
 		s.deps.Log.Warn("analysis failed; returning unflagged transcript",
-			"job", jobID, "segments", len(req.Segments), "err", err)
-		s.store.succeed(jobID, req.Segments, nil, []string{err.Error()})
+			"job", jobID, "segments", len(req.Segments),
+			"verdicts", len(analyses), "err", err)
+		s.store.succeed(jobID, req.Segments, flagged, errBatchFailures(err))
 		return nil
 	}
 
-	flagged := cloud.ApplyAnalysis(req.Segments, analyses)
-
-	// With no Gemini key the transcript must survive even if analysis fails,
-	// so a failed analysis degrades to "nothing flagged" rather than an error.
 	s.store.succeed(jobID, req.Segments, flagged, nil)
 	return nil
+}
+
+// ── Client access ───────────────────────────────────────────────────────
+
+// groqClient, geminiClient and capabilities are the only sanctioned reads of
+// deps.Groq / deps.Gemini / the config flags behind them. A key saved from the
+// UI replaces the client pointer and the config field under keysMu, so any
+// handler that read the field directly would race with a save.
+func (s *Server) groqClient() *cloud.GroqClient {
+	s.keysMu.RLock()
+	defer s.keysMu.RUnlock()
+	return s.deps.Groq
+}
+
+func (s *Server) geminiClient() *cloud.GeminiClient {
+	s.keysMu.RLock()
+	defer s.keysMu.RUnlock()
+	return s.deps.Gemini
+}
+
+func (s *Server) capabilities() map[string]string {
+	s.keysMu.RLock()
+	defer s.keysMu.RUnlock()
+	return s.deps.Config.Capabilities()
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

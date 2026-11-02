@@ -61,9 +61,17 @@ func (s *jobStore) create(kind model.JobKind, total int) *model.Job {
 }
 
 // start marks a job as running.
+//
+// Progress counters are reset here because a queue retry re-runs the whole
+// task: without the reset a retried job would start at "24/24 chunks" and the
+// bar would lie in the opposite direction from the one that made this fix
+// necessary.
 func (s *jobStore) start(id string) {
 	s.mutate(id, func(j *model.Job) {
 		j.State = model.StateRunning
+		j.Completed = 0
+		j.Lines = 0
+		j.LastLine = ""
 		j.Updated = time.Now().Unix()
 	})
 }
@@ -72,6 +80,21 @@ func (s *jobStore) start(id string) {
 func (s *jobStore) advance(id string, n int) {
 	s.mutate(id, func(j *model.Job) {
 		j.Completed += n
+		j.Updated = time.Now().Unix()
+	})
+}
+
+// progressTranscribe records absolute chunk progress plus the live line count.
+//
+// Absolute rather than incremental on purpose: the transcribe body already
+// knows how many chunks it has finished, so setting the value cannot drift the
+// way `advance(chunks, len(segments))` did — that mix-up counted segments into
+// a total measured in chunks, which showed "400/24" on a two-hour video.
+func (s *jobStore) progressTranscribe(id string, chunksDone, lines int, lastLine string) {
+	s.mutate(id, func(j *model.Job) {
+		j.Completed = chunksDone
+		j.Lines = lines
+		j.LastLine = lastLine
 		j.Updated = time.Now().Unix()
 	})
 }
@@ -87,6 +110,7 @@ func (s *jobStore) succeed(id string, transcript, analysis []model.Segment, fail
 			j.Analysis = analysis
 		}
 		j.Completed = j.Total
+		j.Lines = len(transcript)
 		j.Updated = time.Now().Unix()
 
 		if len(failures) > 0 {
