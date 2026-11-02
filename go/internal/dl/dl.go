@@ -733,8 +733,20 @@ func isRateLimited(status int) bool {
 // multi-hour transfer, and retrying those is the whole point.
 type statusError struct{ status int }
 
+// Error is the text the row carries. "server ne mana kar diya (status 400)"
+// was written for a server saying no; on a signed CDN link the same status
+// says the token DIED — the 5 GB Lucifer row sat at 54% with an error that
+// gave the user nothing to do about it. What fixes a dead token is the same
+// in every case: take a fresh copy of the link and add it again.
 func (e *statusError) Error() string {
-	return fmt.Sprintf("server ne mana kar diya (status %d)", e.status)
+	switch e.status {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusGone:
+		return fmt.Sprintf("server ne %d diya: link expire ho gaya hoga - naya link copy karke dobara download add karo", e.status)
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return fmt.Sprintf("server ne %d diya: us site ka login/token maare gaya hoga - dobara login karke naya link lo", e.status)
+	default:
+		return fmt.Sprintf("server ne mana kar diya (status %d)", e.status)
+	}
 }
 
 // permanent reports whether an error is a real answer rather than a hiccup.
@@ -778,7 +790,10 @@ func (m *Manager) probeGet(ctx context.Context, rawURL, referer, ua string) (*pr
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("GET ne status %d diya", resp.StatusCode)
+		// The last-resort GET's refusal is a real HTTP answer, not weather:
+		// turn it into a statusError so the item says what it means (a dead
+		// token asks for a fresh link) instead of a bare "status %d diya".
+		return nil, &statusError{status: resp.StatusCode}
 	}
 	if isHTML(resp.Header.Get("Content-Type")) {
 		return nil, errHTMLPage

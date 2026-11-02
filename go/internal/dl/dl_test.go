@@ -394,6 +394,45 @@ func TestErrorFromServerSurfacesOnTheItem(t *testing.T) {
 	m := newTestManager(t, srv)
 	if _, err := m.Start(srv.URL, ""); err == nil {
 		t.Fatal("Start against a 403 should fail the probe, not queue a doomed row")
+	} else if !strings.Contains(err.Error(), "naya link") {
+		t.Errorf("a 403 reads as a dead login/token, so the error must say what to do next; got %q", err.Error())
+	}
+}
+
+// TestDeadLinkErrorSaysWhatToRedo covers the Lucifer S03E01 row: a signed CDN
+// URL that transferred 5 GB yesterday answers 400 to everything today — the
+// token expired, no downloader can fix that. The one action that works is
+// re-copying a fresh link, so "server ne mana kar diya (status 400)" — which
+// reads like the file was refused — has to say that instead.
+func TestDeadLinkErrorSaysWhatToRedo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+
+	m := newTestManager(t, srv)
+	if _, err := m.Start(srv.URL, ""); err == nil {
+		t.Fatal("Start against a 400 should fail the probe")
+	} else if !strings.Contains(err.Error(), "naya link") {
+		t.Errorf("a dead link must ask for a fresh copy of the link; got %q", err.Error())
+	}
+}
+
+// TestGoneErrorSaysTheSame also covers 404/410 — the other expiry codes a
+// signed link dies with.
+func TestGoneErrorSaysTheSame(t *testing.T) {
+	for _, code := range []int{http.StatusNotFound, http.StatusGone} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(code)
+		}))
+		m := newTestManager(t, srv)
+		_, err := m.Start(srv.URL, "")
+		srv.Close()
+		if err == nil {
+			t.Fatalf("%d should fail the probe", code)
+		} else if !strings.Contains(err.Error(), "naya link") {
+			t.Errorf("%d must ask for a fresh copy of the link; got %q", code, err.Error())
+		}
 	}
 }
 
