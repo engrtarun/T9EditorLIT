@@ -26,9 +26,9 @@
   import { onMount } from 'svelte';
   import { i18n } from '../../stores/i18n.svelte';
   import {
-    fetchUsage,
     saveApiKey,
     deleteApiKey,
+    fetchUsageState,
     type UsageResponse,
     type KeyState
   } from '../../cloud';
@@ -36,10 +36,11 @@
   /* ------------------------------------------------------------- live data */
 
   let usage = $state<UsageResponse | null>(null);
+  /** 'ok' | 'outdated' (daemon older than this endpoint) | 'down' */
+  let link = $state<'loading' | 'ok' | 'outdated' | 'down'>('loading');
   let loading = $state(true);
   let open = $state(false);
   let tab = $state<'limits' | 'usage' | 'keys'>('limits');
-  let tick = $state(0);
 
   // Polling only while this card is on screen (and harder while the panel is
   // open). 8 s of a ~2 kB loopback response is nothing; a websocket for a
@@ -51,10 +52,10 @@
   });
 
   async function refresh(): Promise<void> {
-    const res = await fetchUsage();
-    if (res) usage = res;
+    const res = await fetchUsageState();
+    link = res.state;
+    if (res.state === 'ok') usage = res.usage;
     loading = false;
-    tick++;
   }
 
   const groq = $derived(usage?.services?.['groq'] ?? null);
@@ -232,7 +233,11 @@
     </span>
 
     <span class="min-w-0 flex-1">
-      {#if !usage}
+      {#if link === 'outdated'}
+        <span class="block text-[12.5px] leading-relaxed text-nc-mut"
+          >{i18n.t('usage.outdated')}</span
+        >
+      {:else if !usage}
         <span class="block text-[12.5px] leading-relaxed text-nc-mut"
           >{i18n.t('usage.daemonDown')}</span
         >
@@ -317,7 +322,9 @@
       </nav>
 
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        {#if !usage}
+        {#if link === 'outdated'}
+          <p class="text-[13px] text-nc-mut">{i18n.t('usage.outdated')}</p>
+        {:else if !usage}
           <p class="text-[13px] text-nc-mut">{i18n.t('usage.daemonDown')}</p>
 
           <!-- ─────────────────────────── limits ─────────────────────────── -->
@@ -538,8 +545,7 @@
 
                 {#if k?.configured}
                   <p class="mt-1.5 text-[11.5px] text-nc-mut-2">
-                    {k.model}{#if k.chatModel}
-                      · {k.chatModel}{/if}
+                    {k.model}{#if k.chatModel}{` · ${k.chatModel}`}{/if}
                   </p>
                 {/if}
 

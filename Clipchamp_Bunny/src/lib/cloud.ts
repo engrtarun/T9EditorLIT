@@ -305,18 +305,28 @@ export interface UsageResponse {
 }
 
 /**
- * Everything the rate-limit gauge draws, or `null` when the daemon is down
- * or its build predates `GET /v1/usage` — the card then says "no data"
- * rather than inventing a ring.
+ * Everything the rate-limit gauge draws.
+ *
+ * The three outcomes are kept apart on purpose, because they are three
+ * different truths: the daemon answered (`ok`), it answered but this build
+ * has no `/v1/usage` route yet (`outdated` — an older t9cloud.exe), or it is
+ * not reachable at all (`down`). Collapsing them into one `null` made the UI
+ * claim "the daemon is not running" while it was running perfectly well, just
+ * without this endpoint.
  */
-export async function fetchUsage(): Promise<UsageResponse | null> {
+export type UsageResult =
+  { state: 'ok'; usage: UsageResponse } | { state: 'outdated' } | { state: 'down' };
+
+export async function fetchUsageState(): Promise<UsageResult> {
   const res = await withTimeout(`${DAEMON}/v1/usage`);
-  if (!res || !res.ok) return null;
+  if (!res) return { state: 'down' };
+  if (res.status === 404) return { state: 'outdated' };
+  if (!res.ok) return { state: 'down' };
   try {
     const raw = (await res.json()) as Record<string, unknown>;
-    return deepCamel<UsageResponse>(raw);
+    return { state: 'ok', usage: deepCamel<UsageResponse>(raw) };
   } catch {
-    return null;
+    return { state: 'down' };
   }
 }
 

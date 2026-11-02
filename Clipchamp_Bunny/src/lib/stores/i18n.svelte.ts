@@ -345,6 +345,8 @@ const en: Dict = {
   'usage.updated': 'updated {t} ago',
   'usage.noData': 'No provider call has been recorded yet.',
   'usage.daemonDown': 'T9 Cloud daemon is not running, so there is nothing to show.',
+  'usage.outdated':
+    'This T9 Cloud build is older than the usage view — the next update turns the gauge on.',
   'usage.tabLimits': 'Limits',
   'usage.tabUsage': 'Usage',
   'usage.tabKeys': 'API keys',
@@ -681,6 +683,8 @@ const hinglish: Dict = {
   'usage.updated': '{t} pehle update hua',
   'usage.noData': 'Abhi tak koi provider call record nahi hui.',
   'usage.daemonDown': 'T9 Cloud daemon chal nahi raha, isliye kuch dikhane ko nahi hai.',
+  'usage.outdated':
+    'Ye T9 Cloud build usage view se purana hai — agla update gauge chalu kar dega.',
   'usage.tabLimits': 'Limits',
   'usage.tabUsage': 'Usage',
   'usage.tabKeys': 'API keys',
@@ -1037,6 +1041,7 @@ const hi: Dict = {
   'usage.updated': '{t} पहले अपडेट हुआ',
   'usage.noData': 'अभी तक कोई प्रोवाइडर कॉल दर्ज नहीं हुई.',
   'usage.daemonDown': 'T9 Cloud डेमन नहीं चल रहा, इसलिए दिखाने को कुछ नहीं है.',
+  'usage.outdated': 'यह T9 Cloud बिल्ड उपयोग दृश्य से पुराना है — अगला अपडेट गेज चालू कर देगा.',
   'usage.tabLimits': 'सीमाएँ',
   'usage.tabUsage': 'उपयोग',
   'usage.tabKeys': 'API कुंजियाँ',
