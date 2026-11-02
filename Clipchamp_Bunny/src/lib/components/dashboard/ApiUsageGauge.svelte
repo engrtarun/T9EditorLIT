@@ -272,7 +272,7 @@
       if (e.key === 'Escape') open = false;
     }}
   >
-    <section
+    <div
       class="t9-card-in flex max-h-[86vh] w-full max-w-[620px] flex-col overflow-hidden rounded-2xl
              border border-nc-line bg-nc-panel/95 backdrop-blur-xl"
       role="dialog"
@@ -613,6 +613,6 @@
           </div>
         {/if}
       </div>
-    </section>
+    </div>
   </div>
 {/if}
