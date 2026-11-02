@@ -1274,8 +1274,23 @@ fn installed_build() -> Result<Option<InstalledBuild>, String> {
     // changing (for example a -SkipBuild deploy) must not offer an update that
     // apply_staged_update() cannot perform.
     build.running_build_id = build_id::BUILD_ID.to_string();
-    build.update_ready = dir.join("t9-editor-lit.new.exe").is_file();
+    build.update_ready = has_staged_update(&dir);
     Ok(Some(build))
+}
+
+/**
+ * Is anything waiting to be swapped in?
+ *
+ * A deploy stages **either half** on its own: the app is swapped when it was
+ * closed, the daemon when it was still serving. Only the app used to count, so
+ * a daemon-only deploy left `t9cloud.new.exe` on disk with no button to apply
+ * it and `apply_staged_update` refusing to run — the downloader error-message
+ * fix sat staged for exactly that reason. The helper script has always handled
+ * the daemon on its own (`if not exist "{fresh}" goto daemon`), so the gate is
+ * what was wrong, not the swap.
+ */
+fn has_staged_update(dir: &std::path::Path) -> bool {
+    dir.join("t9-editor-lit.new.exe").is_file() || dir.join("t9cloud.new.exe").is_file()
 }
 
 /**
@@ -1291,8 +1306,7 @@ fn apply_staged_update(app: tauri::AppHandle) -> Result<(), String> {
     let Some(dir) = install_dir() else {
         return Err("cannot work out the install folder".to_string());
     };
-    let staged = dir.join("t9-editor-lit.new.exe");
-    if !staged.is_file() {
+    if !has_staged_update(&dir) {
         return Err("there is no staged update to apply".to_string());
     }
     // The helper is written fresh every time, so a half-finished earlier
@@ -1744,6 +1758,24 @@ mod tests {
         let marker = r#"{"builtAt":"2026-10-20T09:52:27Z","version":"0.1.0","updateReady":true}"#;
         let build: InstalledBuild = serde_json::from_str(marker).expect("marker must parse");
         assert!(build.update_ready);
+    }
+
+    /// A daemon-only deploy stages `t9cloud.new.exe` and nothing else (the app
+    /// half went live because the app was closed). The button has to count
+    /// both halves: the helper's `:swap` falls through to `:daemon`, so the
+    /// swap it offers is one it can actually perform.
+    #[test]
+    fn a_staged_daemon_offers_the_update_too() {
+        let dir = std::env::temp_dir().join(format!("t9-staged-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        assert!(!has_staged_update(&dir), "an empty folder stages nothing");
+        std::fs::write(dir.join("t9cloud.new.exe"), b"new daemon").expect("write staged file");
+        assert!(
+            has_staged_update(&dir),
+            "a daemon-only stage must light the update button"
+        );
+        std::fs::remove_dir_all(&dir).expect("clean up");
     }
 
     /// After the Update click the staged exe is gone but the marker still
