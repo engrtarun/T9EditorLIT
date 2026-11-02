@@ -1254,7 +1254,10 @@ fn install_dir() -> Option<PathBuf> {
 /// The update helper swaps the binaries and starts the app again, but it does
 /// not edit JSON. Without this, `build.json` keeps saying `mode: staged`
 /// forever after the user clicks Update, and `deploy.ps1 -Doctor` shows a
-/// contradiction ("mode=staged" next to "no staged app update").
+/// contradiction ("mode=staged" next to "no staged app update"). The daemon
+/// half has its own field (`daemonMode`) and the same contradiction: the
+/// helper swaps `t9cloud.new.exe` on its own when only the daemon was staged,
+/// and the marker kept claiming the daemon was still waiting.
 ///
 /// Failures are ignored on purpose: a read-only marker must never stop the
 /// app from starting. The next deploy rewrites the marker anyway.
@@ -1264,8 +1267,9 @@ fn normalize_installed_marker() {
     let Ok(text) = std::fs::read_to_string(&marker) else {
         return;
     };
-    let has_staged = dir.join("t9-editor-lit.new.exe").is_file();
-    let Some(updated) = normalized_marker_json(&text, has_staged) else {
+    let has_staged_app = dir.join("t9-editor-lit.new.exe").is_file();
+    let has_staged_daemon = dir.join("t9cloud.new.exe").is_file();
+    let Some(updated) = normalized_marker_json(&text, has_staged_app, has_staged_daemon) else {
         return;
     };
     let _ = std::fs::write(&marker, updated);
@@ -1273,23 +1277,35 @@ fn normalize_installed_marker() {
 
 /// Pure half of [`normalize_installed_marker`], so the rule is testable.
 ///
-/// `None` means "leave the file alone": it is not a staged marker, a staged
-/// executable is still present (so it has not been applied), or the file is
-/// not JSON we understand.
-fn normalized_marker_json(text: &str, has_staged: bool) -> Option<String> {
-    if has_staged {
-        return None;
-    }
+/// `None` means "leave the file alone": a staged executable is still present
+/// (so that half has not been applied), no half claims `staged`, or the file
+/// is not JSON we understand.
+fn normalized_marker_json(
+    text: &str,
+    has_staged_app: bool,
+    has_staged_daemon: bool,
+) -> Option<String> {
     let text = text.trim_start_matches('\u{feff}');
     let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
     let object = value.as_object_mut()?;
-    if object.get("mode").and_then(|mode| mode.as_str()) != Some("staged") {
+
+    let mut changed = false;
+    for (field, staged_left) in [("mode", has_staged_app), ("daemonMode", has_staged_daemon)] {
+        if staged_left {
+            continue;
+        }
+        if object.get(field).and_then(|mode| mode.as_str()) != Some("staged") {
+            continue;
+        }
+        object.insert(
+            field.to_string(),
+            serde_json::Value::String("installed".to_string()),
+        );
+        changed = true;
+    }
+    if !changed {
         return None;
     }
-    object.insert(
-        "mode".to_string(),
-        serde_json::Value::String("installed".to_string()),
-    );
     let applied_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
@@ -1840,8 +1856,8 @@ mod tests {
   "stagedAt": "2026-10-20T16:12:21Z",
   "appSha256": "abc"
 }"#;
-        let updated =
-            normalized_marker_json(marker, false).expect("staged marker should be repaired");
+        let updated = normalized_marker_json(marker, false, false)
+            .expect("staged marker should be repaired");
         let value: serde_json::Value = serde_json::from_str(&updated).expect("valid json");
         assert_eq!(value["mode"], "installed");
         assert_eq!(value["buildId"], "app-test");
@@ -1853,20 +1869,45 @@ mod tests {
     #[test]
     fn a_staged_marker_with_an_exe_is_left_alone() {
         let marker = r#"{"version":"0.1.0","mode":"staged"}"#;
-        assert!(normalized_marker_json(marker, true).is_none());
+        assert!(normalized_marker_json(marker, true, false).is_none());
+    }
+
+    /// The daemon half has its own field, and the helper swaps only that half
+    /// when only the daemon was staged. The marker has to stop saying it is
+    /// still waiting - "the marker never lies about what is running".
+    #[test]
+    fn an_applied_daemon_stage_is_repaired_too() {
+        let marker = r#"{
+  "version": "0.1.0",
+  "buildId": "ci-71f017b",
+  "mode": "live",
+  "daemonBuildId": "go-a10b73b7c9bc63b7",
+  "daemonMode": "staged"
+}"#;
+        let updated = normalized_marker_json(marker, false, false)
+            .expect("an applied daemon stage should be repaired");
+        let value: serde_json::Value = serde_json::from_str(&updated).expect("valid json");
+        assert_eq!(value["daemonMode"], "installed");
+        assert_eq!(value["mode"], "live", "the app half was never staged");
+        assert_eq!(value["daemonBuildId"], "go-a10b73b7c9bc63b7");
+
+        assert!(
+            normalized_marker_json(marker, false, true).is_none(),
+            "a daemon still on disk as .new.exe is not applied yet"
+        );
     }
 
     /// Installed markers are stable: no write on every app launch.
     #[test]
     fn an_installed_marker_is_left_alone() {
         let marker = r#"{"version":"0.1.0","mode":"installed"}"#;
-        assert!(normalized_marker_json(marker, false).is_none());
+        assert!(normalized_marker_json(marker, false, false).is_none());
     }
 
     /// Garbage in the marker must not panic or rewrite anything.
     #[test]
     fn an_unreadable_marker_is_left_alone() {
-        assert!(normalized_marker_json("not json", false).is_none());
-        assert!(normalized_marker_json("\u{feff}{\"mode\":\"staged\"}", true).is_none());
+        assert!(normalized_marker_json("not json", false, false).is_none());
+        assert!(normalized_marker_json("\u{feff}{\"mode\":\"staged\"}", true, false).is_none());
     }
 }
