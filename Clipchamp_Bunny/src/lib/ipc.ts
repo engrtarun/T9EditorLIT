@@ -344,9 +344,26 @@ export function checkFfmpeg(): Promise<string> {
 export function extractAudioChunks(
   path: string,
   outDir?: string,
-  segmentSecs?: number
+  segmentSecs?: number,
+  sourceKey?: string
 ): Promise<AudioChunk[]> {
-  return invoke<AudioChunk[]>('extract_audio_chunks', { path, outDir, segmentSecs });
+  return invoke<AudioChunk[]>('extract_audio_chunks', {
+    path,
+    outDir,
+    segmentSecs,
+    sourceKey
+  });
+}
+
+/**
+ * Delete the WAV chunks of one source once Whisper is done with them.
+ *
+ * The key is the same value `extractAudioChunks` was given, so the Rust side
+ * resolves it to the same per-source subdirectory. Best-effort on the caller's
+ * side: a cleanup that fails must never fail the pipeline.
+ */
+export function cleanChunkDir(sourceKey: string, outDir?: string): Promise<number> {
+  return invoke<number>('clean_chunk_dir', { sourceKey, outDir });
 }
 
 /**

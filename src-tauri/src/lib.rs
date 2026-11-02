@@ -116,16 +116,23 @@ async fn extract_audio_chunks(
     path: String,
     out_dir: Option<String>,
     segment_secs: Option<f64>,
+    source_key: Option<String>,
 ) -> Result<Vec<AudioChunk>, String> {
+    // Per-source subdirectory: the webview may name it (sanitised on arrival),
+    // and a caller without a key still gets an in-process hash of the path, so
+    // two different videos can never share one chunk directory.
+    let source_hash = audio::chunk_key(source_key.as_deref(), &path);
     let source = PathBuf::from(path);
     let out = match out_dir {
         Some(d) => PathBuf::from(d),
-        None => std::env::temp_dir().join("t9editorlit").join("chunks"),
+        None => std::env::temp_dir().join("nanamicut").join("chunks"),
     };
     let seg = segment_secs.unwrap_or(300.0);
-    tauri::async_runtime::spawn_blocking(move || audio::extract_chunks(&source, &out, seg))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        audio::extract_chunks(&source, &out, seg, &source_hash)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Detect silent spans (dead air) in a source's audio with FFmpeg.
@@ -158,6 +165,49 @@ fn default_db_path(app: tauri::AppHandle) -> Result<String, String> {
 fn default_chunk_dir(app: tauri::AppHandle) -> Result<String, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(dir.join("chunks").to_string_lossy().into_owned())
+}
+
+/// Delete WAV chunks for a specific source after transcription completes.
+///
+/// Whisper is the only stage that reads chunks — autocorrect, flag analysis
+/// and exports all use the finished transcript — so every minute a chunk file
+/// survives past transcription is pure disk pressure. The webview calls this
+/// with the **same key** it gave `extract_audio_chunks`; only files named
+/// `chunk_*.wav` inside that sanitized subdirectory are removed.
+#[tauri::command]
+fn clean_chunk_dir(out_dir: Option<String>, source_key: String) -> Result<u32, String> {
+    let base = match out_dir {
+        Some(d) => PathBuf::from(d),
+        None => std::env::temp_dir().join("nanamicut").join("chunks"),
+    };
+    let dir = base.join(audio::sanitize_chunk_key(&source_key));
+
+    let mut removed = 0u32;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("wav")
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("chunk_"))
+                    .unwrap_or(false)
+                && std::fs::remove_file(&p).is_ok()
+            {
+                removed += 1;
+            }
+        }
+    }
+
+    // The per-source directory itself goes too, once empty — stale empty dirs
+    // are clutter no other purge path ever sees.
+    if std::fs::read_dir(&dir)
+        .map(|mut it| it.next().is_none())
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    Ok(removed)
 }
 
 /// Root of the derived-media cache (thumbnail frames live here; waveform
@@ -395,6 +445,7 @@ pub fn run() {
             detect_silence,
             default_db_path,
             default_chunk_dir,
+            clean_chunk_dir,
             default_cache_dir,
             extract_thumbnails,
             import_thumbnail,

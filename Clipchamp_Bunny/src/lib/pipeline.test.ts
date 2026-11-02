@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { jobWatchdog, toLineFlag } from './cloud-contract.ts';
+import { chunkSourceKey, jobWatchdog, toLineFlag } from './cloud-contract.ts';
 
 /**
  * The old `waitJob` gave up after a fixed 600 × 900 ms — nine minutes — no
@@ -44,4 +44,17 @@ test('the flag vocabulary maps to the editor’s own names', () => {
   assert.equal(toLineFlag('silence'), 'silence');
   // Anything the analyser invents later must not blank a line's state.
   assert.equal(toLineFlag('something-new'), 'none');
+});
+
+/**
+ * Extract and cleanup must agree on the same subdirectory name or a source's
+ * chunks would be created in one folder and wiped (or never wiped) in another.
+ */
+test('chunkSourceKey is deterministic, shaped for the filesystem and per-source', () => {
+  const one = chunkSourceKey('D:\\videos\\one.mp4');
+  assert.equal(chunkSourceKey('D:\\videos\\one.mp4'), one);
+  // The Rust sanitizer passes `[0-9a-f]` through untouched, so this must stay
+  // exactly that — 8 hex characters, no path syntax.
+  assert.match(one, /^[0-9a-f]{8}$/);
+  assert.notEqual(chunkSourceKey('D:\\videos\\two.mp4'), one);
 });

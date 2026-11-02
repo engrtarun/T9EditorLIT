@@ -49,3 +49,26 @@ export function toLineFlag(flag: string): LineFlag {
       return 'none';
   }
 }
+
+/**
+ * The chunk subdirectory name for one source, as **we** compute it.
+ *
+ * Chunks used to pile up in one shared temp folder: every video mixed into
+ * `chunk_000.wav` collisions and the files were never deleted. Now each source
+ * gets its own subdirectory named after a hash of its path, and the same value
+ * is handed to `extract_audio_chunks` (to create it) and `clean_chunk_dir` (to
+ * wipe it after Whisper is done) — both sides must agree on the name, so it is
+ * pinned here as pure code instead of being an accident of two implementations.
+ *
+ * FNV-1a 32-bit: a handful of lines in TS and JS-safe integer maths, and the
+ * hex form only ever contains `[0-9a-f]`, which the Rust-side sanitizer lets
+ * through untouched.
+ */
+export function chunkSourceKey(sourcePath: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < sourcePath.length; i++) {
+    h ^= sourcePath.charCodeAt(i) & 0xff;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}

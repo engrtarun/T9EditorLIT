@@ -48,10 +48,14 @@ pub fn probe_duration(path: &Path) -> Result<f64, String> {
 /// Extract mono 16 kHz audio and split it into chunks of at most `segment_secs`
 /// seconds. Returns the ordered list of chunk files with their offsets into the
 /// original video.
+///
+/// `source_hash` is a short hash of the source path used to create a per-source
+/// chunk directory so runs for different videos never collide on disk.
 pub fn extract_chunks(
     source: &Path,
     out_dir: &Path,
     segment_secs: f64,
+    source_hash: &str,
 ) -> Result<Vec<AudioChunk>, String> {
     if !source.exists() {
         return Err(format!("source file not found: {}", source.display()));
@@ -62,11 +66,14 @@ pub fn extract_chunks(
         segment_secs
     };
 
-    fs::create_dir_all(out_dir)
-        .map_err(|e| format!("could not create chunk dir {}: {e}", out_dir.display()))?;
+    // Per-source subdirectory so different videos' chunks never collide.
+    let chunk_dir = out_dir.join(source_hash);
+    fs::create_dir_all(&chunk_dir)
+        .map_err(|e| format!("could not create chunk dir {}: {e}", chunk_dir.display()))?;
 
-    // Clean stale chunks from a previous run so we never mix old and new.
-    if let Ok(entries) = fs::read_dir(out_dir) {
+    // Clean stale chunks from a previous run of this same source so we never
+    // mix old and new. Other sources' chunks are left untouched.
+    if let Ok(entries) = fs::read_dir(&chunk_dir) {
         for entry in entries.flatten() {
             let p = entry.path();
             if p.extension().and_then(|e| e.to_str()) == Some("wav")
@@ -80,7 +87,7 @@ pub fn extract_chunks(
         }
     }
 
-    let pattern = out_dir.join("chunk_%03d.wav");
+    let pattern = chunk_dir.join("chunk_%03d.wav");
     let seg_arg = format!("{segment_secs}");
     let status = crate::ffmpeg::silent("ffmpeg")
         .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
@@ -107,8 +114,9 @@ pub fn extract_chunks(
         return Err(format!("ffmpeg audio extraction failed: {status}"));
     }
 
-    // Collect produced chunks in filename order.
-    let mut files: Vec<PathBuf> = fs::read_dir(out_dir)
+    // Collect produced chunks in filename order — from the **per-source**
+    // directory; the root would show nothing with the subdir layout.
+    let mut files: Vec<PathBuf> = fs::read_dir(&chunk_dir)
         .map_err(|e| format!("could not read chunk dir: {e}"))?
         .flatten()
         .map(|e| e.path())
@@ -143,6 +151,44 @@ pub fn extract_chunks(
 
 fn round3(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
+}
+
+/// The per-source chunk subdirectory name.
+///
+/// `Some(key)` arrives from the webview (its own hash of the source path, hex),
+/// so it goes through [`sanitize_chunk_key`] before it may touch the
+/// filesystem. `None` covers callers that never send a key: an in-process hash
+/// of the source path keeps *those* per-source isolated too, with no frontend
+/// change — two different videos can no longer share one chunks directory.
+pub fn chunk_key(source_key: Option<&str>, source_path: &str) -> String {
+    match source_key {
+        Some(key) => sanitize_chunk_key(key),
+        None => {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            source_path.hash(&mut h);
+            format!("auto-{:016x}", h.finish())
+        }
+    }
+}
+
+/// A renderer-supplied subdirectory name, made filesystem-safe.
+///
+/// Only `[A-Za-z0-9_-]` survives and the name is capped at 64 bytes, so a key
+/// can never carry a path separator or become `..\..` by joining. Real keys
+/// are 8 hex characters, making this a no-op for everything the frontend sends.
+pub fn sanitize_chunk_key(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .take(64)
+        .collect();
+    if cleaned.is_empty() {
+        "default".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// A detected silent span in the source audio.
@@ -260,6 +306,31 @@ mod tests {
     fn round3_trims_noise() {
         assert_eq!(round3(1.234567), 1.235);
         assert_eq!(round3(0.0), 0.0);
+    }
+
+    #[test]
+    fn chunk_keys_never_carry_path_syntax() {
+        assert_eq!(sanitize_chunk_key(""), "default");
+        assert_eq!(sanitize_chunk_key("3f9d2c81"), "3f9d2c81");
+        assert_eq!(sanitize_chunk_key("a/b\\c"), "abc");
+        assert_eq!(sanitize_chunk_key(".\u{2e}\\..\\\u{77}in"), "win");
+        // A 100-character key is capped, not truncated off the filesystem.
+        assert_eq!(sanitize_chunk_key(&"x".repeat(100)).len(), 64);
+    }
+
+    #[test]
+    fn legacy_callers_keep_per_source_dirs_without_a_key() {
+        assert_ne!(
+            chunk_key(None, "D:\\videos\\one.mp4"),
+            chunk_key(None, "D:\\videos\\two.mp4")
+        );
+        // No key the caller gives may smuggle a separator through.
+        assert!(!chunk_key(None, "D:\\videos\\one.mp4").contains('\\'));
+    }
+
+    #[test]
+    fn a_renderer_key_wins_when_present() {
+        assert_eq!(chunk_key(Some("abc123"), "any path at all"), "abc123");
     }
 
     #[test]

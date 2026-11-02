@@ -26,6 +26,7 @@ import {
 } from '../segments';
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 import { detectQualitySuggestions, type QualitySuggestion } from '../suggestions';
+import { chunkSourceKey } from '../cloud-contract';
 import { media } from './media.svelte';
 import { player } from './player.svelte';
 import { runAnalysis, runCorrection, runTranscription, toLineFlag } from '../pipeline';
@@ -34,6 +35,7 @@ import { settings } from './settings.svelte';
 import {
   assetUrl,
   canonicalSourcePath,
+  cleanChunkDir,
   defaultDbPath,
   demoSourcePath,
   detectSilence,
@@ -903,11 +905,14 @@ class ProjectStore {
   /** The one cloud pass: split -> Whisper -> save -> correct -> Gemini -> save. */
   private async runPipeline(sourcePath: string): Promise<TranscriptLine[]> {
     const db = await defaultDbPath();
+    // Both extract and cleanup must name the same per-source chunk directory,
+    // so the key is computed once here and carried through the whole run.
+    const chunkKey = chunkSourceKey(sourcePath);
     try {
       // 1. Split the audio. One Rust call; until it returns there is nothing
       //    to count, so the bar holds with the honest reason.
       this.pipeline = { stage: 'Audio chunks bana rahe hain…', fraction: 0.04 };
-      const chunks = await extractAudioChunks(sourcePath);
+      const chunks = await extractAudioChunks(sourcePath, undefined, undefined, chunkKey);
       if (!chunks.length) {
         throw new Error('Audio chunks nahi bane — is video me audio track hai?');
       }
@@ -944,6 +949,15 @@ class ProjectStore {
       await this.saveSegments(db, sourcePath, segs);
       return this.toTranscriptLines(segs);
     } finally {
+      // Chunks live only as long as Whisper does: correction, flag analysis
+      // and every export all work on the finished transcript. On success OR
+      // failure the per-source directory goes — a two-hour source otherwise
+      // parks hundreds of megabytes of WAV on disk until the *next* run of
+      // the same video overwrites it. Best-effort: a cleanup that fails must
+      // never fail the pipeline that already produced its transcript.
+      if (isTauri()) {
+        await cleanChunkDir(chunkKey).catch(() => {});
+      }
       // A failed run must never leave the panel stuck on "running", which also
       // used to block every retry (`generateTranscript` returns early while
       // `pipeline` is set).
