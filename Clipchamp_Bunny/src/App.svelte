@@ -10,6 +10,7 @@
   import CutMode from './lib/components/modes/CutMode.svelte';
   import ExportMode from './lib/components/modes/ExportMode.svelte';
   import HomeDashboard from './lib/components/dashboard/HomeDashboard.svelte';
+  import UsageDialog from './lib/components/dashboard/UsageDialog.svelte';
   import BrowserView from './lib/components/browser/BrowserView.svelte';
   import BackgroundVideo from './lib/components/BackgroundVideo.svelte';
   import { mode } from './lib/stores/mode.svelte';
@@ -495,6 +496,10 @@
 <ShortcutsHelp />
 <SettingsPanel />
 <Toasts />
+<!-- One usage panel for both triggers (the T9 Cloud card and the editor's
+     quota chip). Mounted here because mode isolation unmounts every screen
+     below it — a dialog living inside a screen could not outlive it. -->
+<UsageDialog />
 
 <!-- The one menu, rendered at the app root so nothing can hide it. -->
 {#if menu.current}

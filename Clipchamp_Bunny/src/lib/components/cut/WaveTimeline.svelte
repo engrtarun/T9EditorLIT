@@ -12,6 +12,7 @@
   import { clamp, fmtShort, fmtTime, formatTimecode, niceStep, parseTimecode } from '../../utils';
   import ContextMenu from '../ContextMenu.svelte';
   import MenuIcon from '../MenuIcon.svelte';
+  import UsageChip from '../dashboard/UsageChip.svelte';
   import ClipFilmstrip from './ClipFilmstrip.svelte';
   import AmbientGlow from './AmbientGlow.svelte';
   import type { MenuItem } from '../../types';
@@ -1515,6 +1516,11 @@
           </span>
         </button>
       {/if}
+      <!-- Quota, where it is actually spent: the legend says what the colours
+           mean, the chip says what is left to spend on the next transcription.
+           It sits after the legend (and after its reduced-motion variant) so
+           the pair reads as one unit on either side of the divider. -->
+      <UsageChip />
       <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
       <span class="relative" bind:this={eyeWrap}>
         <button
