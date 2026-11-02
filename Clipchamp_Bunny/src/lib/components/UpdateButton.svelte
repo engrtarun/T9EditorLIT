@@ -4,13 +4,15 @@
    *
    * The build installed next to the running executable carries a `build.json`
    * marker. When deploy.ps1 stages a newer build while this one is running,
-   * `t9-editor-lit.new.exe` exists and this button appears. It asks for the
-   * one restart that swaps the executable and starts the new build.
+   * `t9-editor-lit.new.exe` (the app) or `t9cloud.new.exe` (the daemon, when
+   * only the daemon half changed) exists and this button appears. It asks for
+   * the one restart that swaps whichever half is staged and starts the new
+   * build.
    *
    * The marker alone is not enough: a `-SkipBuild` deploy can change the
    * marker without staging a binary, and offering a button that cannot apply
    * would be a lie. `installed_build()` therefore sets `updateReady` from the
-   * staged file, not from the timestamp.
+   * staged files (`has_staged_update`), not from the timestamp.
    *
    * It lives in its own component so **every** screen can offer it: the
    * dashboard and the editor both mount this, and since only one of them is
