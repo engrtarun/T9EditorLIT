@@ -1205,6 +1205,12 @@ export function browserHide(id: string): Promise<void> {
   return invoke<void>('browser_hide', { id }).catch(() => {});
 }
 
+/** Esc / the toolbar stop button: stop the page load (native half). */
+export function browserStop(id: string): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_stop', { id }).catch(() => {});
+}
+
 /**
  * The browser view unmounted (back to the editor): sweep every tab webview,
  * kept ones included — the zero-RAM rule applied to leaving the browser.

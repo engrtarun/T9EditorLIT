@@ -31,6 +31,8 @@
   /** Back / forward ride the store's own history stack. */
   const canBack = $derived(browser.canBack());
   const canForward = $derived(browser.canForward());
+  /** Brave/Chrome behaviour: the reload button becomes Stop while loading. */
+  const loading = $derived(tab?.loading ?? false);
 
   // Wire the store to the native side once (browserShow + event listeners).
   // The rect effect below measures this element and keeps the child webview
@@ -155,21 +157,37 @@
       </button>
       <button
         type="button"
-        onclick={() => browser.reload()}
-        class="grid h-8 w-8 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt"
-        title="Reload"
-        aria-label="Reload page"
+        onclick={() => (loading ? browser.stopLoading() : browser.reload())}
+        class="relative grid h-8 w-8 place-items-center rounded-full transition-colors hover:bg-nc-panel-2
+               {loading ? 'text-nc-brand' : 'text-nc-mut hover:text-nc-txt'}"
+        title={loading ? 'Stop loading (Esc)' : 'Reload (Ctrl+R)'}
+        aria-label={loading ? 'Stop loading' : 'Reload page'}
       >
-        <svg
-          width="15"
-          height="15"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.9"
-        >
-          <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5" />
-        </svg>
+        {#if loading}
+          <!-- Brave/Chrome: refresh turns into a stop while the page loads. -->
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.1"
+            stroke-linecap="round"
+          >
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        {:else}
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.9"
+          >
+            <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5" />
+          </svg>
+        {/if}
       </button>
 
       <div class="mx-1 min-w-0 flex-1">
@@ -246,6 +264,19 @@
     </div>
   </div>
 
+  <!-- Page-load pulse: Brave's own cue that something is happening, even
+       when the page itself is still the old frame. 2px, never a layout jump. -->
+  <div
+    class="relative shrink-0 overflow-hidden transition-[height] duration-150 {loading
+      ? 'h-0.5'
+      : 'h-0'}"
+    aria-hidden="true"
+  >
+    {#if loading}
+      <div class="t9-loadbar text-nc-brand"></div>
+    {/if}
+  </div>
+
   <!-- ── content: the exact rect the native webview covers ───────────── -->
   <div bind:this={contentEl} class="relative min-h-0 flex-1" data-focus="browser-content">
     {#if !tab || tab.url === 'about:blank'}
@@ -272,7 +303,13 @@
       -->
       <div class="grid h-full w-full place-items-center bg-nc-bg">
         {#if tab.loading}
-          <p class="animate-pulse text-[13px] text-nc-mut">{tab.title} khul raha hai…</p>
+          <div class="flex flex-col items-center gap-3">
+            <span
+              class="h-8 w-8 animate-spin rounded-full border-2 border-nc-line border-t-nc-brand"
+              aria-hidden="true"
+            ></span>
+            <p class="text-[13px] text-nc-mut">{tab.title} khul raha hai…</p>
+          </div>
         {/if}
       </div>
     {/if}
@@ -283,3 +320,35 @@
   <!-- ── history (Ctrl + H) ─────────────────────────────────────────── -->
   <HistoryPanel />
 </div>
+
+<style>
+  /* Indeterminate, because WebView2 does not expose byte progress. It is
+     honest about direction (left → right) without inventing a percentage. */
+  .t9-loadbar {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      currentcolor 30%,
+      currentcolor 70%,
+      transparent 100%
+    );
+    animation: t9-load-slide 1.1s ease-in-out infinite;
+  }
+
+  @keyframes t9-load-slide {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(100%);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .t9-loadbar {
+      animation-duration: 2.6s;
+    }
+  }
+</style>

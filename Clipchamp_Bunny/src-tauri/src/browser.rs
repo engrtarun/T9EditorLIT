@@ -36,6 +36,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -141,6 +142,37 @@ fn label_for(id: &str) -> String {
     format!("tab-{id}")
 }
 
+/// Set once WebView2 has refused an extensions-enabled environment. Every
+/// later tab is then built without extensions instead of paying the exact
+/// same failure again; the UI is told the truth through `browser:extensions`.
+static EXTENSIONS_OFF: AtomicBool = AtomicBool::new(false);
+
+/// The dedicated WebView2 profile for page webviews.
+///
+/// This is the fix for `HRESULT(0x8007139F)` (`ERROR_INVALID_STATE`) when a
+/// tab was opened after uBlock arrived. WebView2 allows exactly one set of
+/// environment options per user-data folder. The main window creates the
+/// app's default environment with extensions **off**; a tab then asked for
+/// the same folder with extensions **on**, which WebView2 rejects before a
+/// single window is created.
+///
+/// Tabs now live in their own folder. That keeps the main UI environment
+/// untouched, keeps every tab on identical options, and gives the browser
+/// its own cookie/login jar that survives app restarts. (It also means a
+/// `dataDirectory` change for the app shell can never invalidate open tabs.)
+#[cfg(target_os = "windows")]
+fn tabs_profile_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
+    let base = app.path().local_data_dir().ok()?;
+    let dir = base.join("T9EditorLIT").join("browser-profile");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn tabs_profile_dir<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
+    None
+}
+
 /// Where the Go daemon unpacks uBlock Origin.
 ///
 /// Both processes resolve this folder themselves — the daemon writes it, the
@@ -211,14 +243,14 @@ struct ExtensionsPayload {
     error: Option<String>,
 }
 
-/// Ask WebView2 which extensions the profile really has, and report it.
+/// Ask WebView2 which extensions the profile really has.
 ///
 /// Tauri's `extensions_path` is fire-and-forget: wry calls
 /// `AddBrowserExtension` and ignores a failure. So "uBlock is on" is only a
 /// claim until the profile answers. `GetBrowserExtensions` is that answer —
 /// name + enabled flag from the browser itself, not from our folder listing.
 #[cfg(target_os = "windows")]
-fn report_extensions<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>, id: &str) {
+fn extension_list<R: Runtime>(webview: &Webview<R>) -> Result<Vec<(String, bool)>, String> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2BrowserExtensionList, ICoreWebView2Profile7, ICoreWebView2_13,
     };
@@ -226,35 +258,8 @@ fn report_extensions<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>
     use windows::core::{Interface, BOOL, PWSTR};
 
     let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<(String, bool)>, String>>();
-    let app = app.clone();
-    let id = id.to_string();
 
-    // Wait on a worker thread: the completion handler runs on the WebView2
-    // thread, and blocking that thread is how a browser deadlocks.
-    std::thread::spawn(move || {
-        let result = rx
-            .recv_timeout(std::time::Duration::from_secs(4))
-            .unwrap_or_else(|_| Err("WebView2 ne 4s me extension list nahi di".to_string()));
-        let (names, enabled, error) = match result {
-            Ok(list) => {
-                let names: Vec<String> = list.iter().map(|(n, _)| n.clone()).collect();
-                let enabled: Vec<bool> = list.iter().map(|(_, e)| *e).collect();
-                (names, enabled, None)
-            }
-            Err(err) => (Vec::new(), Vec::new(), Some(err)),
-        };
-        let _ = app.emit(
-            "browser:extensions",
-            ExtensionsPayload {
-                id,
-                names,
-                enabled,
-                error,
-            },
-        );
-    });
-
-    let _ = webview.with_webview(move |pw| unsafe {
+    let posted = webview.with_webview(move |pw| unsafe {
         let Ok(core) = pw.controller().CoreWebView2() else {
             let _ = tx.send(Err("CoreWebView2 unavailable".into()));
             return;
@@ -301,6 +306,73 @@ fn report_extensions<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>
         if profile7.GetBrowserExtensions(&handler).is_err() {
             let _ = fail_tx.send(Err("GetBrowserExtensions failed".into()));
         }
+    });
+    if posted.is_err() {
+        return Err("webview was not available to answer".into());
+    }
+
+    rx.recv_timeout(std::time::Duration::from_secs(4))
+        .unwrap_or_else(|_| Err("WebView2 ne 4s me extension list nahi di".to_string()))
+}
+
+/// Report the profile's real extension list to the UI.
+///
+/// The wait happens on a worker thread: the completion handler runs on the
+/// WebView2 thread, and blocking that thread is how a browser deadlocks.
+#[cfg(target_os = "windows")]
+fn report_extensions<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>, id: &str) {
+    let app = app.clone();
+    let id = id.to_string();
+
+    if EXTENSIONS_OFF.load(Ordering::Relaxed) {
+        let _ = app.emit(
+            "browser:extensions",
+            ExtensionsPayload {
+                id,
+                names: Vec::new(),
+                enabled: Vec::new(),
+                error: Some(
+                    "WebView2 ne extensions-enabled profile reject kiya; ad blocker off hai"
+                        .to_string(),
+                ),
+            },
+        );
+        return;
+    }
+
+    let webview = webview.clone();
+    std::thread::spawn(move || {
+        // `AddBrowserExtension` is asynchronous and wry does not await it, so
+        // the very first query can race the install. Three tries (500 ms
+        // apart) turn "unknown yet" into an answer instead of a false
+        // "not loaded". A genuinely missing extension still reports after
+        // the last try — the UI never gets a guess.
+        let mut result = extension_list(&webview);
+        for _ in 0..2 {
+            let settled = matches!(&result, Ok(list) if !list.is_empty());
+            if settled {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            result = extension_list(&webview);
+        }
+        let (names, enabled, error) = match result {
+            Ok(list) => {
+                let names: Vec<String> = list.iter().map(|(n, _)| n.clone()).collect();
+                let enabled: Vec<bool> = list.iter().map(|(_, e)| *e).collect();
+                (names, enabled, None)
+            }
+            Err(err) => (Vec::new(), Vec::new(), Some(err)),
+        };
+        let _ = app.emit(
+            "browser:extensions",
+            ExtensionsPayload {
+                id,
+                names,
+                enabled,
+                error,
+            },
+        );
     });
 }
 
@@ -442,18 +514,7 @@ pub async fn browser_show(
         }
         None => {
             diag("show -> creating child webview");
-            let builder = build_tab_webview(&app, &id, parsed);
-            window
-                .add_child(
-                    builder,
-                    LogicalPosition::new(rect.x, rect.y),
-                    LogicalSize::new(rect.width, rect.height),
-                )
-                .map_err(|e| {
-                    diag(&format!("create ERR {e}"));
-                    e.to_string()
-                })?;
-            diag("create ok");
+            create_tab_webview(&app, &window, &id, parsed, rect)?;
         }
     }
     if let Some(webview) = find_tab(&window, &label) {
@@ -665,18 +726,45 @@ fn build_tab_webview<R: Runtime>(
         NewWindowResponse::Deny
     });
 
-    // Extensions ride on the environment, so they are configured while the
-    // webview is still being built — before the consuming hooks below. uBlock
-    // is unpacked by the Go daemon beforehand; `None` means first run/offline
-    // and the tab opens without it.
-    let builder = match extensions_dir(app) {
+    // Page webviews get their own WebView2 profile. WebView2 refuses two
+    // different environments for one user-data folder — and that is exactly
+    // what `HRESULT(0x8007139F)` was: the app shell's environment had
+    // extensions off, the tab asked for extensions on, same folder. The tab
+    // profile is also the browser's own cookie jar, so a UI storage change
+    // cannot log the user out of every site.
+    let builder = match tabs_profile_dir(app) {
         Some(dir) => {
-            diag(&format!("extensions -> {}", dir.display()));
-            builder.browser_extensions_enabled(true).extensions_path(dir)
+            diag(&format!("profile -> {}", dir.display()));
+            builder.data_directory(dir)
         }
         None => {
-            diag("extensions -> none (uBlock not unpacked yet)");
+            diag("profile -> default (local data dir unavailable)");
             builder
+        }
+    };
+
+    // Extensions ride on the environment, so they are configured while the
+    // webview is still being built — before the consuming hooks below.
+    //
+    // The switch is always ON for tabs (even before uBlock is unpacked):
+    // environment options must stay identical for every tab in this profile.
+    // Flipping it on later, after the daemon installs uBlock, would recreate
+    // the invalid-state failure. `extensions_path` is the only part that can
+    // appear later, and it does not change the environment options.
+    let builder = if EXTENSIONS_OFF.load(Ordering::Relaxed) {
+        diag("extensions -> off (WebView2 rejected them earlier)");
+        builder
+    } else {
+        let builder = builder.browser_extensions_enabled(true);
+        match extensions_dir(app) {
+            Some(dir) => {
+                diag(&format!("extensions -> {}", dir.display()));
+                builder.extensions_path(dir)
+            }
+            None => {
+                diag("extensions -> on, none unpacked yet");
+                builder
+            }
         }
     };
 
@@ -703,6 +791,134 @@ fn build_tab_webview<R: Runtime>(
     })
 }
 
+/// Create one tab child, with the one honest fallback.
+///
+/// If WebView2 rejects the extensions-enabled environment, remember that,
+/// disable extensions for the rest of this process, and retry the exact same
+/// tab without them. A browser that cannot show a page is worse than a
+/// browser without an ad blocker — and the UI reports which one it got via
+/// `browser:extensions` instead of pretending.
+fn create_tab_webview<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    window: &Window<R>,
+    id: &str,
+    url: Url,
+    rect: ContentRect,
+) -> Result<Webview<R>, String> {
+    let position = LogicalPosition::new(rect.x, rect.y);
+    let size = LogicalSize::new(rect.width, rect.height);
+
+    match window.add_child(build_tab_webview(app, id, url.clone()), position, size) {
+        Ok(webview) => {
+            diag("create ok");
+            Ok(webview)
+        }
+        Err(first) => {
+            diag(&format!("create ERR {first}"));
+            if EXTENSIONS_OFF.load(Ordering::Relaxed) || extensions_dir(app).is_none() {
+                return Err(first.to_string());
+            }
+            // The folder exists but the runtime would not create an
+            // extensions-enabled environment. Remember it so the next tab
+            // does not pay the same failure, then retry this one without it.
+            EXTENSIONS_OFF.store(true, Ordering::Relaxed);
+            diag("extensions -> disabled after create failure; retrying tab");
+            window
+                .add_child(build_tab_webview(app, id, url), position, size)
+                .map_err(|second| {
+                    diag(&format!("create retry ERR {second}"));
+                    second.to_string()
+                })
+                .inspect(|_| diag("create ok (extensions off)"))
+        }
+    }
+}
+
+/// Esc / the toolbar's stop button: the native half of stopping a load.
+#[tauri::command]
+pub async fn browser_stop(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let Some(window) = app.get_window("main") else {
+        return Ok(());
+    };
+    let Some(webview) = find_tab(&window, &label_for(&id)) else {
+        return Ok(());
+    };
+    let _ = webview.with_webview(|pw| unsafe {
+        if let Ok(core) = pw.controller().CoreWebView2() {
+            let _ = core.Stop();
+        }
+    });
+    diag(&format!("stop {id}"));
+    Ok(())
+}
+
+/// Diagnostic lane (`T9_BROWSER_SMOKE=1`): build one real tab webview with
+/// the production builder, ask WebView2 for its extension list, write the
+/// verdict to `browser-diag.log`, then exit.
+///
+/// Tab creation normally needs a human click. This runs the exact production
+/// path (`create_tab_webview` → env options → profile → extensions) on its
+/// own, so the installed build can be verified without compiling locally.
+#[cfg(target_os = "windows")]
+pub fn smoke_probe(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        // Let the main window and its environment finish first: the whole
+        // bug was about a second environment, so the order matters.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        diag("smoke -> begin");
+        let Some(window) = app.get_window("main") else {
+            diag("smoke ERR main window missing");
+            app.exit(2);
+            return;
+        };
+        let rect = ContentRect {
+            x: -2400.0,
+            y: -2400.0,
+            width: 1.0,
+            height: 1.0,
+        };
+        let Ok(url) = Url::parse("about:blank") else {
+            diag("smoke ERR about:blank did not parse");
+            app.exit(2);
+            return;
+        };
+        match create_tab_webview(&app, &window, "smoke", url, rect) {
+            Ok(webview) => {
+                // AddBrowserExtension is asynchronous; give it a moment
+                // before asking the profile what it actually loaded.
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                match extension_list(&webview) {
+                    Ok(list) => {
+                        diag(&format!("smoke extensions -> {list:?}"));
+                        let loaded = list
+                            .iter()
+                            .any(|(n, e)| n.to_lowercase().contains("ublock") && *e);
+                        diag(if loaded {
+                            "smoke RESULT ublock=loaded"
+                        } else {
+                            "smoke RESULT ublock=missing"
+                        });
+                        let _ = webview.close();
+                        app.exit(if loaded { 0 } else { 3 });
+                    }
+                    Err(err) => {
+                        diag(&format!("smoke extensions ERR {err}"));
+                        let _ = webview.close();
+                        app.exit(3);
+                    }
+                }
+            }
+            Err(err) => {
+                diag(&format!("smoke create ERR {err}"));
+                app.exit(4);
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn smoke_probe(_app: tauri::AppHandle) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,6 +928,17 @@ mod tests {
         assert_eq!(label_for("1"), "tab-1");
         assert_eq!(label_for("42"), "tab-42");
         assert_ne!(label_for("1"), label_for("2"));
+    }
+
+    /// The regression that blanked every tab: the app shell's environment
+    /// had extensions off, the tab's had them on, and both used the same
+    /// user-data folder. These two names must stay different.
+    #[test]
+    fn tabs_use_their_own_profile_folder() {
+        let root = std::path::PathBuf::from(r"C:\Users\example\AppData\Local");
+        let app_shell = root.join("T9EditorLIT").join("EBWebView");
+        let tabs = root.join("T9EditorLIT").join("browser-profile");
+        assert_ne!(app_shell, tabs);
     }
 
     #[test]

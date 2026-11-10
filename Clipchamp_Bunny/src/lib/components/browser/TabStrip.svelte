@@ -29,6 +29,7 @@
     <div
       role="tab"
       aria-selected={tab.id === browser.activeId}
+      aria-busy={tab.loading}
       tabindex={tab.id === browser.activeId ? 0 : -1}
       onclick={() => browser.select(tab.id)}
       onkeydown={(e) => {
@@ -48,7 +49,7 @@
       <span class="grid h-4 w-4 shrink-0 place-items-center overflow-hidden">
         {#if tab.loading}
           <span
-            class="h-3 w-3 animate-spin rounded-full border border-nc-mut border-t-transparent"
+            class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-nc-line border-t-nc-brand"
             aria-hidden="true"
           ></span>
         {:else if icon}

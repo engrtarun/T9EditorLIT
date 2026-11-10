@@ -13,7 +13,7 @@ default and updates itself. Nothing about it needs a user click.
 | Install marker | Go daemon | `%LOCALAPPDATA%\T9EditorLIT\ublock\version.json` |
 | Disk status | Go daemon | `GET /v1/ublock/status` |
 | Manual re-check | Go daemon | `POST /v1/ublock/update` |
-| WebView2 load | Rust | `browser_extensions_enabled(true).extensions_path(...)` |
+| WebView2 load | Rust | `browser_extensions_enabled(true).extensions_path(...)` on a **dedicated tab profile** (`%LOCALAPPDATA%\T9EditorLIT\browser-profile`) |
 | Runtime proof | Rust + WebView2 | `ICoreWebView2Profile7::GetBrowserExtensions` → `browser:extensions` |
 | Panel UI | Svelte | Downloads → gear → "uBlock Origin" row |
 
@@ -87,6 +87,42 @@ one kept at 1×1 px), with the kept one set to
 `COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW` and the active one back to
 `NORMAL`.
 
+## Why tabs have their own WebView2 profile
+
+The regression that blanked every tab after uBlock arrived: WebView2 allows
+exactly one set of environment options per user-data folder. The app shell
+creates its default environment with extensions **off**; a tab then asked for
+the same folder with extensions **on**, which WebView2 rejects with
+`HRESULT(0x8007139F)` (`ERROR_INVALID_STATE`) before a single window is
+created. Tabs now use `%LOCALAPPDATA%\T9EditorLIT\browser-profile`:
+
+- the shell's environment stays untouched;
+- every tab in the profile keeps identical options, so adding uBlock later
+  cannot invalidate an already-open environment;
+- the browser gets its own cookie/login jar, so a change in UI storage
+  cannot log the user out of every site.
+
+If a runtime still refuses the extensions-enabled environment, the tab
+builder flips a process flag, disables extensions for the rest of the
+session, and retries the tab without them. The panel reports `not loaded`
+with the reason; tabs keep working.
+
+## Auto-update and the profile
+
+The daemon swaps the unpacked folder on a new release. WebView2's rule is
+that changing the folder content removes the extension from the profile, so
+`AddBrowserExtension` on the next tab creation reinstalls the new version —
+no manual work and no app restart required, as long as a tab is created
+after the swap. The panel's "Check now" button forces the daemon to fetch
+and swap; the next tab open picks it up.
+
+## Smoke probe
+
+`T9_BROWSER_SMOKE=1` runs the installed app's production tab builder on a
+hidden 1×1 webview, asks the profile which extensions actually loaded, writes
+the verdict to `browser-diag.log`, and exits with 0 (uBlock loaded) or 3/4
+(missing / create failed). It is the evidence lane for the CI build: no
+compile, no click.
 ## Tests
 
 `go test ./internal/ublock` covers:

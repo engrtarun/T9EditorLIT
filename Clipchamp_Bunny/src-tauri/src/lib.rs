@@ -1660,6 +1660,7 @@ pub fn run() {
             browser::browser_hide,
             browser::browser_view_closed,
             browser::browser_set_rect,
+            browser::browser_stop,
             dl_settings::dl_settings_get,
             dl_settings::dl_settings_save
         ])
@@ -1673,6 +1674,12 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window("main") {
                 window_chrome::apply(&window);
+            }
+            // `T9_BROWSER_SMOKE=1`: prove tab webview creation + the real
+            // extension list on this machine, then exit. It runs the same
+            // builder the UI uses, so a green result is evidence, not a proxy.
+            if std::env::var("T9_BROWSER_SMOKE").as_deref() == Ok("1") {
+                browser::smoke_probe(app.handle().clone());
             }
             // The update helper cannot edit JSON. Once the swap has happened,
             // turn `mode: staged` into `mode: installed` so the marker and

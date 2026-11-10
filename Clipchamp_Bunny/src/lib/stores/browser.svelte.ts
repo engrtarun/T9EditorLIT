@@ -13,6 +13,7 @@ import type { BrowserTab } from '../types';
 import {
   browserShow,
   browserHide,
+  browserStop,
   browserSetZoom,
   onBrowserDownload,
   onBrowserExtensions,
@@ -249,7 +250,11 @@ class BrowserStore {
   /** Esc — stop a page's loading spinner (the JS-visible half of Firefox's Esc). */
   stopLoading(): void {
     const tab = this.active;
-    if (tab) tab.loading = false;
+    if (!tab) return;
+    tab.loading = false;
+    // Native half: WebView2 stops fetching. Without it the spinner vanished
+    // but the page kept downloading — a lie the user could see in Task Manager.
+    if (this.wired) void browserStop(tab.id);
   }
 
   /** Alt+Home — the speed dial is this browser's home page. */
@@ -607,6 +612,12 @@ class BrowserStore {
    * preview so the browser shell stays usable without a webview.
    */
   private wired = false;
+  /**
+   * One toast per failure burst. A blank tab clicked five times used to stack
+   * five identical walls of native error text over the page; the same error
+   * within a few seconds now only bumps the clock.
+   */
+  private lastNavError = { message: '', at: 0 };
 
   wireTauri(): void {
     if (this.wired || !isTauri()) return;
@@ -614,13 +625,20 @@ class BrowserStore {
 
     // Every navigation the store drives (new tab, switch, address bar,
     // back/forward, reload) funnels through this one function. A failure
-    // that used to be swallowed now reaches the user — the toast carries
-    // the native error verbatim.
+    // that used to be swallowed now reaches the user — once per burst,
+    // with a sentence that says what to do instead of a raw HRESULT.
     this.nudge = (id, url, keep, force) => {
       browserShow(id, url, { keep, force }).catch((err) => {
         const tab = this.tabs.find((t) => t.id === id);
         if (tab) tab.loading = false;
-        toast.push('warn', `Browser tab nahi khula: ${String(err)}`);
+        const message = String(err);
+        const now = Date.now();
+        if (this.lastNavError.message === message && now - this.lastNavError.at < 4000) {
+          this.lastNavError.at = now;
+          return;
+        }
+        this.lastNavError = { message, at: now };
+        toast.push('warn', friendlyTabError(message));
       });
     };
 
@@ -710,6 +728,24 @@ class BrowserStore {
     if (!tab.url || tab.url === 'about:blank') return;
     this.nudge(tab.id, tab.url);
   }
+}
+
+/**
+ * Turn the native failure into one actionable sentence.
+ *
+ * The raw string stays in `browser-diag.log`; the user needs to know whether
+ * to retry, restart, or wait — not the COM HRESULT. 0x8007139F is the
+ * environment-mismatch error that used to blank every tab, so it gets its
+ * own text even though the code path now prevents it.
+ */
+function friendlyTabError(raw: string): string {
+  if (/0x8007139F/i.test(raw)) {
+    return 'Tab khul nahi paya (WebView2 state error 0x8007139F) — app restart karke try karo.';
+  }
+  if (/content area was not measured|rect 0x0/i.test(raw)) {
+    return 'Browser area abhi measure nahi hui — ek baar phir try karo.';
+  }
+  return `Tab khul nahi paya: ${raw}`;
 }
 
 export const browser = new BrowserStore();

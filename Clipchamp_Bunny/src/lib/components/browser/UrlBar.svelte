@@ -53,25 +53,35 @@
          {focused
     ? 'border-nc-brand/70 bg-nc-bg ring-2 ring-nc-brand/20'
     : 'border-transparent bg-nc-panel-2 hover:bg-nc-line/60'}"
+  aria-busy={tab?.loading ?? false}
   onsubmit={submit}
 >
-  <!-- lock: https gets the padlock, http gets a plain info mark -->
-  <svg
-    width="13"
-    height="13"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.8"
-    class="shrink-0 {tab?.url.startsWith('https://') ? 'text-nc-mut' : 'text-nc-mut/60'}"
-    aria-hidden="true"
-  >
-    {#if tab?.url.startsWith('https://')}
-      <rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" />
-    {:else}
-      <circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" />
-    {/if}
-  </svg>
+  <!-- lock: https gets the padlock, http gets a plain info mark. While the
+       page loads it becomes a spinner — Chrome/Brave's "something is
+       happening" cue where the security icon sits. -->
+  {#if tab?.loading}
+    <span
+      class="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-nc-line border-t-nc-brand"
+      aria-hidden="true"
+    ></span>
+  {:else}
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      class="shrink-0 {tab?.url.startsWith('https://') ? 'text-nc-mut' : 'text-nc-mut/60'}"
+      aria-hidden="true"
+    >
+      {#if tab?.url.startsWith('https://')}
+        <rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" />
+      {:else}
+        <circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" />
+      {/if}
+    </svg>
+  {/if}
 
   <input
     bind:this={input}
