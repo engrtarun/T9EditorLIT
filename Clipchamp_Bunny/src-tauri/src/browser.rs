@@ -141,6 +141,180 @@ fn label_for(id: &str) -> String {
     format!("tab-{id}")
 }
 
+/// Where the Go daemon unpacks uBlock Origin.
+///
+/// Both processes resolve this folder themselves — the daemon writes it, the
+/// webview reads it — so neither has to ask the other before a tab opens.
+/// `%LOCALAPPDATA%\T9EditorLIT\ublock\extensions` on Windows; the daemon's
+/// `os.UserCacheDir()` lands on the same `%LOCALAPPDATA%`.
+///
+/// `None` means "not unpacked yet" (first run, offline, or a failed update):
+/// the webview is then created without extensions instead of pointing WebView2
+/// at an empty folder and pretending.
+#[cfg(target_os = "windows")]
+fn extensions_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
+    let base = app.path().local_data_dir().ok()?;
+    let dir = base.join("T9EditorLIT").join("ublock").join("extensions");
+    if dir.join("uBlock0.chromium").join("manifest.json").is_file() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// Tell WebView2 how much memory this webview is allowed to keep.
+///
+/// A collapsed tab (the one the user just left, parked at 1×1 px) keeps its
+/// page state but never needs to be render-ready: `LOW` lets WebView2 drop
+/// caches and trim its working set. The active tab gets `NORMAL` back, so
+/// scrolling does not pay for the trim. This is the part the "≤2 webviews"
+/// cap cannot do on its own: it is the difference between a live background
+/// page and an inert one.
+#[cfg(target_os = "windows")]
+fn set_memory_target<R: Runtime>(webview: &Webview<R>, low: bool) {
+    let label = webview.label().to_string();
+    let _ = webview.with_webview(move |pw| unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL, ICoreWebView2_19,
+        };
+        use windows::core::Interface;
+        let Ok(core) = pw.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(core19) = core.cast::<ICoreWebView2_19>() else {
+            diag(&format!(
+                "memory target {label} -> unavailable (WebView2 runtime too old)"
+            ));
+            return;
+        };
+        let level = if low {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+        } else {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+        };
+        if core19.SetMemoryUsageTargetLevel(level).is_ok() {
+            diag(&format!(
+                "memory target {label} -> {}",
+                if low { "low" } else { "normal" }
+            ));
+        }
+    });
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtensionsPayload {
+    id: String,
+    names: Vec<String>,
+    enabled: Vec<bool>,
+    error: Option<String>,
+}
+
+/// Ask WebView2 which extensions the profile really has, and report it.
+///
+/// Tauri's `extensions_path` is fire-and-forget: wry calls
+/// `AddBrowserExtension` and ignores a failure. So "uBlock is on" is only a
+/// claim until the profile answers. `GetBrowserExtensions` is that answer —
+/// name + enabled flag from the browser itself, not from our folder listing.
+#[cfg(target_os = "windows")]
+fn report_extensions<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>, id: &str) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2BrowserExtensionList, ICoreWebView2Profile7, ICoreWebView2_13,
+    };
+    use webview2_com::{take_pwstr, ProfileGetBrowserExtensionsCompletedHandler};
+    use windows::core::{Interface, BOOL, PWSTR};
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<(String, bool)>, String>>();
+    let app = app.clone();
+    let id = id.to_string();
+
+    // Wait on a worker thread: the completion handler runs on the WebView2
+    // thread, and blocking that thread is how a browser deadlocks.
+    std::thread::spawn(move || {
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(4))
+            .unwrap_or_else(|_| Err("WebView2 ne 4s me extension list nahi di".to_string()));
+        let (names, enabled, error) = match result {
+            Ok(list) => {
+                let names: Vec<String> = list.iter().map(|(n, _)| n.clone()).collect();
+                let enabled: Vec<bool> = list.iter().map(|(_, e)| *e).collect();
+                (names, enabled, None)
+            }
+            Err(err) => (Vec::new(), Vec::new(), Some(err)),
+        };
+        let _ = app.emit(
+            "browser:extensions",
+            ExtensionsPayload {
+                id,
+                names,
+                enabled,
+                error,
+            },
+        );
+    });
+
+    let _ = webview.with_webview(move |pw| unsafe {
+        let Ok(core) = pw.controller().CoreWebView2() else {
+            let _ = tx.send(Err("CoreWebView2 unavailable".into()));
+            return;
+        };
+        let Ok(profile) = core
+            .cast::<ICoreWebView2_13>()
+            .and_then(|c| c.Profile())
+        else {
+            let _ = tx.send(Err("profile unavailable".into()));
+            return;
+        };
+        let Ok(profile7) = profile.cast::<ICoreWebView2Profile7>() else {
+            let _ = tx.send(Err("ICoreWebView2Profile7 unavailable".into()));
+            return;
+        };
+
+        let fail_tx = tx.clone();
+        let handler = ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(
+            move |_hr, list: Option<ICoreWebView2BrowserExtensionList>| {
+                let Some(list) = list else {
+                    let _ = tx.send(Err("browser extension list was null".into()));
+                    return Ok(());
+                };
+                let mut count = 0u32;
+                if list.Count(&mut count).is_err() {
+                    let _ = tx.send(Err("extension count failed".into()));
+                    return Ok(());
+                }
+                let mut out = Vec::with_capacity(count as usize);
+                for i in 0..count {
+                    let Ok(ext) = list.GetValueAtIndex(i) else {
+                        continue;
+                    };
+                    let mut name = PWSTR::null();
+                    let mut enabled = BOOL(0);
+                    if ext.Name(&mut name).is_ok() && ext.IsEnabled(&mut enabled).is_ok() {
+                        out.push((take_pwstr(name), enabled.as_bool()));
+                    }
+                }
+                let _ = tx.send(Ok(out));
+                Ok(())
+            },
+        ));
+        if profile7.GetBrowserExtensions(&handler).is_err() {
+            let _ = fail_tx.send(Err("GetBrowserExtensions failed".into()));
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_memory_target<R: Runtime>(_webview: &Webview<R>, _low: bool) {}
+
+#[cfg(not(target_os = "windows"))]
+fn report_extensions<R: Runtime>(_app: &tauri::AppHandle<R>, _webview: &Webview<R>, _id: &str) {}
+
+#[cfg(not(target_os = "windows"))]
+fn extensions_dir<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
+    None
+}
+
 /// Show one tab: destroy/collapse every other tab's webview, then create,
 /// navigate, or simply uncover this one.
 ///
@@ -227,6 +401,10 @@ pub async fn browser_show(
             // intact, and z-order stops mattering because a collapsed
             // webview is effectively invisible.
             let _ = webview.set_size(tauri::LogicalSize::new(1.0, 1.0));
+            // Half of the RAM contract: a page that is kept but not visible
+            // tells WebView2 to trim. The 1×1 size stops it painting; this
+            // stops it hoarding.
+            set_memory_target(&webview, true);
         } else {
             let _ = webview.close();
         }
@@ -245,6 +423,10 @@ pub async fn browser_show(
                 if let Ok(actual) = webview.url() {
                     if actual == parsed {
                         set_active(&app, &label);
+                        // Coming back from LOW is the other half of the trim:
+                        // the visible page must be render-ready again.
+                        set_memory_target(&webview, false);
+                        report_extensions(&app, &webview, &id);
                         diag("show kept fast-path (already at url)");
                         return Ok(());
                     }
@@ -273,6 +455,12 @@ pub async fn browser_show(
                 })?;
             diag("create ok");
         }
+    }
+    if let Some(webview) = find_tab(&window, &label) {
+        // The visible tab returns to NORMAL and reports the profile's real
+        // extension list (the UI's "uBlock loaded" claim).
+        set_memory_target(&webview, false);
+        report_extensions(&app, &webview, &id);
     }
     set_active(&app, &label);
     Ok(())
@@ -476,6 +664,21 @@ fn build_tab_webview<R: Runtime>(
         );
         NewWindowResponse::Deny
     });
+
+    // Extensions ride on the environment, so they are configured while the
+    // webview is still being built — before the consuming hooks below. uBlock
+    // is unpacked by the Go daemon beforehand; `None` means first run/offline
+    // and the tab opens without it.
+    let builder = match extensions_dir(app) {
+        Some(dir) => {
+            diag(&format!("extensions -> {}", dir.display()));
+            builder.browser_extensions_enabled(true).extensions_path(dir)
+        }
+        None => {
+            diag("extensions -> none (uBlock not unpacked yet)");
+            builder
+        }
+    };
 
     // Download hook: WebView2's own download UI never appears — returning
     // false cancels it, and the URL goes to the frontend, which hands it to

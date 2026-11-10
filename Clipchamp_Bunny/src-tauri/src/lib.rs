@@ -70,6 +70,9 @@ mod background_video;
 /// The in-built browser's native half: one WebView2 child per live tab.
 mod browser;
 
+/// Downloader settings (SQLite is the durable copy; the daemon is told).
+mod dl_settings;
+
 /// Rounded corners + no 1 px frame on the undecorated window (Windows only).
 #[cfg(target_os = "windows")]
 mod window_chrome;
@@ -1656,7 +1659,9 @@ pub fn run() {
             browser::browser_show,
             browser::browser_hide,
             browser::browser_view_closed,
-            browser::browser_set_rect
+            browser::browser_set_rect,
+            dl_settings::dl_settings_get,
+            dl_settings::dl_settings_save
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

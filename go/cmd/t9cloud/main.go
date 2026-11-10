@@ -31,6 +31,7 @@ import (
 	"github.com/engrtarun/T9EditorLIT/go/internal/config"
 	"github.com/engrtarun/T9EditorLIT/go/internal/dl"
 	"github.com/engrtarun/T9EditorLIT/go/internal/queue"
+	"github.com/engrtarun/T9EditorLIT/go/internal/ublock"
 	"github.com/engrtarun/T9EditorLIT/go/internal/vault"
 )
 
@@ -78,11 +79,23 @@ func run() error {
 	// The browser's fast downloader. Shutdown pauses anything still running
 	// so its sidecar is written — the next daemon start offers the row for
 	// resume instead of losing the bytes.
-	downloads, err := dl.New(dl.Options{Log: log})
+	downloads, err := dl.New(dl.Options{
+		Log: log,
+		// The app owns the settings (SQLite); this is the startup cache that
+		// makes `autoResume` honest before the app's first push.
+		SettingsPath: dl.DefaultSettingsPath(),
+	})
 	if err != nil {
 		return err
 	}
 	defer downloads.Shutdown()
+
+	// uBlock Origin: the daemon fetches the official release, verifies the
+	// SHA-256 GitHub publishes, unpacks it for WebView2, and checks again
+	// every few hours. The webview never downloads an extension itself.
+	updater := ublock.New(ublock.DefaultDir(), log)
+	updater.Start(context.Background())
+	log.Info("uBlock Origin auto-update armed", "extensions", updater.ExtensionsPath())
 
 	// Counters live next to the daemon's own log, so the gauge keeps its
 	// history across restarts and never depends on the working directory a
@@ -94,6 +107,7 @@ func run() error {
 		Config:  cfg,
 		Queue:   q,
 		DL:      downloads,
+		UBlock:  updater,
 		Log:     log,
 		Vault:   vault.Unconfigured(),
 		Usage:   usage,

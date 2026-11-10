@@ -1,3 +1,6 @@
 [submodule "deepclonewebsite"]
 	path = deepclonewebsite
 	url = https://github.com/hi5jeff/deepclonewebsite.git
+[submodule "modules/uBlock"]
+	path = modules/uBlock
+	url = https://github.com/gorhill/uBlock

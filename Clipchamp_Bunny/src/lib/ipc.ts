@@ -19,6 +19,8 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import type {
   AudioChunk,
   BackgroundState,
+  BrowserExtensionsEvent,
+  DownloadSettings,
   MemoryStats,
   MediaInfo,
   SilenceRange,
@@ -692,6 +694,19 @@ export async function openPath(path: string): Promise<boolean> {
 }
 
 /**
+ * Downloader settings: the durable copy is Rust's SQLite, the live copy is
+ * the Go daemon. The UI edits the row, this wrapper writes it, and the store
+ * pushes the resolved answer to `PUT /v1/dl/settings`.
+ */
+export function dlSettingsGet(): Promise<DownloadSettings> {
+  return invoke<DownloadSettings>('dl_settings_get');
+}
+
+export function dlSettingsSave(settings: DownloadSettings): Promise<DownloadSettings> {
+  return invoke<DownloadSettings>('dl_settings_save', { settings });
+}
+
+/**
  * Drain the video paths this process was launched with.
  *
  * The Explorer verb ("Edit with T9 Editor LIT") starts the exe with the
@@ -1245,6 +1260,16 @@ export function onBrowserDownload(
   cb: (p: { url: string; referer: string | null }) => void
 ): Promise<() => void> {
   return listen<{ url: string; referer: string | null }>('browser:download', (e) => cb(e.payload));
+}
+
+/**
+ * WebView2's own extension list for a tab's profile, emitted after the tab
+ * becomes visible. This is the only honest answer to "is uBlock running?" -
+ * the unpacked folder on disk proves the download, not the load, and wry
+ * ignores an `AddBrowserExtension` failure.
+ */
+export function onBrowserExtensions(cb: (p: BrowserExtensionsEvent) => void): Promise<() => void> {
+  return listen<BrowserExtensionsEvent>('browser:extensions', (e) => cb(e.payload));
 }
 
 /* ------------------------------------------------- native webview-page keys */

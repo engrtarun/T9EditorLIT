@@ -26,6 +26,14 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
+# WebView2's own interfaces: the extension list and the per-webview memory
+# target level are not surfaced by Tauri, but they exist on the same COM
+# objects Tauri hands us. Windows-only, so the other platforms do not pay for
+# the bindings.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows = { version = "0.62", features = [] }
+
 [profile.release]
 # "thin" instead of "fat": the binary is a couple of percent bigger and the
 # runtime speed is the same, but the link step drops from ~20 minutes to a

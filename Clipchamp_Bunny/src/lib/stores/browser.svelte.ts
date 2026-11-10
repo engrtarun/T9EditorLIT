@@ -15,6 +15,7 @@ import {
   browserHide,
   browserSetZoom,
   onBrowserDownload,
+  onBrowserExtensions,
   onBrowserNav,
   onBrowserPage,
   onBrowserPopup,
@@ -22,6 +23,7 @@ import {
   isTauri
 } from '../ipc';
 import { downloads } from './downloads.svelte';
+import { ublock } from './ublock.svelte';
 import { toast } from './toast.svelte';
 
 /** The hard cap. Nine tabs, like the plan says — no more. */
@@ -684,6 +686,12 @@ class BrowserStore {
       // downloads panel as a row; without this catch it was an unhandled
       // rejection and the click simply did nothing.
       downloads.start(url, referer ? { referer } : undefined).catch(() => {});
+    });
+
+    // WebView2's own extension list — the only honest answer to "is uBlock
+    // running?". The unpacked folder proves the download, not the load.
+    void onBrowserExtensions((p) => {
+      ublock.noteRuntime(p);
     });
   }
 

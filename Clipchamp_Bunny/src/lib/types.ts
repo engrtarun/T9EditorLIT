@@ -339,4 +339,52 @@ export interface DownloadItem {
   /** `running` · `paused` · `done` · `error` · `cancelled`. */
   status: string;
   error: string | null;
+  /**
+   * What the row is doing that the counters cannot say on their own.
+   * `resuming` = a host without Range support is re-reading the prefix it
+   * already has on disk, which is real network work at 0 written bytes.
+   */
+  phase?: string;
+  /** Cumulative bytes re-read from the prefix on a resume (honest waste). */
+  rereadBytes?: number;
+}
+
+/**
+ * The downloader settings, stored in SQLite by Rust and pushed to the Go
+ * daemon. `connections` is the per-download socket budget (1-16), `saveDir`
+ * is absolute, and `autoResume` continues interrupted rows on daemon start.
+ */
+export interface DownloadSettings {
+  connections: number;
+  saveDir: string;
+  autoResume: boolean;
+  notifyDone: boolean;
+}
+
+/**
+ * The ad blocker's state, mirroring the Go daemon's `ublock.Status`.
+ *
+ * `installed` is the *disk* truth (an unpacked manifest exists). It is not the
+ * same claim as "the browser is running it" — that only WebView2 can say, and
+ * it arrives separately through the `browser:extensions` event.
+ */
+export interface UBlockStatus {
+  enabled: boolean;
+  installed: boolean;
+  version: string;
+  latestVersion?: string;
+  path: string;
+  extensionDir: string;
+  updating: boolean;
+  autoUpdate: boolean;
+  checkedAt?: string;
+  error?: string;
+}
+
+/** WebView2's own extension list for one tab's profile. */
+export interface BrowserExtensionsEvent {
+  id: string;
+  names: string[];
+  enabled: boolean[];
+  error: string | null;
 }

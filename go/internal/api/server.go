@@ -28,6 +28,7 @@ import (
 	"github.com/engrtarun/T9EditorLIT/go/internal/model"
 	"github.com/engrtarun/T9EditorLIT/go/internal/netspeed"
 	"github.com/engrtarun/T9EditorLIT/go/internal/queue"
+	"github.com/engrtarun/T9EditorLIT/go/internal/ublock"
 	"github.com/engrtarun/T9EditorLIT/go/internal/vault"
 )
 
@@ -42,6 +43,8 @@ type Deps struct {
 	Gemini *cloud.GeminiClient
 	Vault  *vault.Vault
 	DL     *dl.Manager
+	// UBlock keeps the browser's ad blocker unpacked and auto-updated.
+	UBlock *ublock.Updater
 	Log    *slog.Logger
 	// Usage counts every provider call: latency, tokens, and the rate-limit
 	// headers that make GET /v1/usage worth asking for. Nil is allowed and
@@ -144,7 +147,14 @@ func (s *Server) routes() {
 	// the sockets so the webview never touches multi-segment Range requests.
 	s.mux.HandleFunc("GET /v1/dl", s.handleDLList)
 	s.mux.HandleFunc("POST /v1/dl", s.handleDLStart)
+	s.mux.HandleFunc("GET /v1/dl/settings", s.handleDLSettingsGet)
+	s.mux.HandleFunc("PUT /v1/dl/settings", s.handleDLSettingsSave)
 	s.mux.HandleFunc("POST /v1/dl/{id}/{action}", s.handleDLAction)
+
+	// uBlock Origin: the daemon keeps the official release unpacked and
+	// verified, the app points WebView2 at that folder.
+	s.mux.HandleFunc("GET /v1/ublock/status", s.handleUBlockStatus)
+	s.mux.HandleFunc("POST /v1/ublock/update", s.handleUBlockUpdate)
 
 	// Favicon proxy: the webview's CSP forbids loading arbitrary origins,
 	// so every site icon goes through here — fetched once, cached on disk,

@@ -50,6 +50,45 @@ func (s *Server) handleDLStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, item)
 }
 
+// handleDLSettingsGet reports what the queue is *actually* using. The app
+// stores the user's choice in SQLite and pushes it here; this answer is what
+// the UI compares against, so a stale database row cannot make the panel lie
+// about the socket count or the destination folder.
+func (s *Server) handleDLSettingsGet(w http.ResponseWriter, _ *http.Request) {
+	if s.deps.DL == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "downloader unavailable",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.deps.DL.Settings())
+}
+
+// handleDLSettingsSave applies connections / save folder / auto-resume.
+//
+// Only the next download is affected: a running row keeps the split it
+// started with, because moving a live writer's range is how two connections
+// land on the same bytes. The reply is the resolved settings (absolute folder,
+// clamped connections), not a bare 200.
+func (s *Server) handleDLSettingsSave(w http.ResponseWriter, r *http.Request) {
+	if s.deps.DL == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "downloader unavailable",
+		})
+		return
+	}
+	var in dl.Settings
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.deps.DL.ApplySettings(in)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // handleDLAction is pause / resume / cancel on one row: POST
 // /v1/dl/{id}/{action}.
 func (s *Server) handleDLAction(w http.ResponseWriter, r *http.Request) {

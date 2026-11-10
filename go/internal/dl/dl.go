@@ -62,7 +62,9 @@ const (
 	DefaultMinSegmentBytes = 8 << 20 // 8 MiB
 
 	// BufferBytes is one segment's read buffer. The pool reuses them, so the
-	// steady-state cost is segments × 64 KiB per download.
+	// steady-state cost is segments × 64 KiB per download. (Measured, not
+	// assumed: a 64 KiB WriteAt loop writes at ~470 MB/s on this box's NVMe,
+	// well above any link this app sees, so a bigger buffer buys nothing.)
 	BufferBytes = 64 << 10
 
 	// MaxRetries is no longer a budget the download dies on: a transient
@@ -129,6 +131,17 @@ type Item struct {
 	Segments      int    `json:"segments"`
 	Status        string `json:"status"`
 	Error         string `json:"error,omitempty"`
+	// Phase is a transient, UI-facing hint about what the row is doing that
+	// the counters cannot say on their own. Empty means "just downloading".
+	// `resuming` is the important one: a server that ignores Range always
+	// answers from byte 0, so the bytes already on disk must be read again
+	// before the writer can continue. That re-read is real network work and
+	// used to look like a dead 0.0 MB/s row.
+	Phase string `json:"phase,omitempty"`
+	// ReReadBytes is how much of the prefix has been read a second time for
+	// this row (cumulative). It is honest waste, shown so a user can see why
+	// a resume is not instant on a host without Range support.
+	ReReadBytes int64 `json:"rereadBytes,omitempty"`
 }
 
 // Options configure a Manager. Zero values get the defaults above.
@@ -144,6 +157,10 @@ type Options struct {
 	MinSegmentBytes int64
 	// Client is injected by tests; nil builds the default one.
 	Client *http.Client
+	// SettingsPath overrides where the startup settings cache lives. Empty
+	// means DefaultSettingsPath(); tests pass a temp file so they never read
+	// or write the real one.
+	SettingsPath string
 }
 
 // Manager owns the queue. It is safe for concurrent use.
@@ -151,8 +168,16 @@ type Manager struct {
 	dir             string
 	segments        int
 	minSegmentBytes int64
-	client          *http.Client
-	log             *slog.Logger
+	autoResume      bool
+	notifyDone      bool
+	// settingsPath is the daemon's startup cache of the settings the app
+	// pushed. The app's SQLite row is the source of truth; this file exists
+	// because the daemon may start (or be restarted by the supervisor) before
+	// the app has a chance to push, and `autoResume` decides what happens to
+	// interrupted rows during New() - before any HTTP route is listening.
+	settingsPath string
+	client       *http.Client
+	log          *slog.Logger
 
 	mu    sync.Mutex
 	items map[string]*download
@@ -204,9 +229,34 @@ func New(opts Options) (*Manager, error) {
 		dir:             dir,
 		segments:        segs,
 		minSegmentBytes: minSeg,
+		autoResume:      true,
+		notifyDone:      true,
+		settingsPath:    opts.SettingsPath,
 		client:          client,
 		log:             log,
 		items:           map[string]*download{},
+	}
+	// The app's SQLite row is the source of truth, but it may not have been
+	// pushed yet: the daemon can be restarted by the supervisor at any time.
+	// The last applied settings are cached here, and they are read BEFORE
+	// recovery, because `autoResume` decides whether an interrupted row
+	// continues or comes back paused.
+	if cached, ok := loadCachedSettings(m.settingsPath); ok {
+		conns := cached.Connections
+		if conns <= 0 {
+			conns = segs
+		}
+		if conns > HardMaxSegments {
+			conns = HardMaxSegments
+		}
+		if cached.SaveDir != "" && os.MkdirAll(cached.SaveDir, 0o755) == nil {
+			m.dir = cached.SaveDir
+		}
+		m.segments = conns
+		m.autoResume = cached.AutoResume
+		m.notifyDone = cached.NotifyDone
+		log.Info("download settings restored",
+			"connections", m.segments, "dir", m.dir, "autoResume", m.autoResume)
 	}
 	// A daemon restart must not look like "my download never started": the
 	// `.part.json` sidecars on disk are the queue's memory, and every one of
@@ -304,7 +354,7 @@ func (m *Manager) recoverPartials() {
 			// Capped: a crash with five rows in flight must not come back as
 			// five transfers × sixteen sockets on a box that is already short
 			// of RAM. The rest stay paused with a Resume button.
-			if sc.Running && len(resume) < autoResumeMax {
+			if sc.Running && m.autoResume && len(resume) < autoResumeMax {
 				resume = append(resume, d)
 			}
 		}
@@ -323,7 +373,153 @@ func (m *Manager) recoverPartials() {
 }
 
 // Dir is the destination folder downloads land in.
-func (m *Manager) Dir() string { return m.dir }
+func (m *Manager) Dir() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dir
+}
+
+// Settings is the part of the queue's configuration the app owns.
+//
+// The app stores it in SQLite and pushes it here over HTTP; the daemon never
+// writes that database. That direction matters: a daemon restart (the
+// supervisor restarts it, the updater swaps it) must not silently forget what
+// the user chose, and two writers to one sqlite file is how a settings table
+// starts disagreeing with itself.
+type Settings struct {
+	// Connections is the per-download socket budget, 1..HardMaxSegments.
+	// It applies to the next download; a running row keeps its plan.
+	Connections int `json:"connections"`
+	// SaveDir is the destination folder. Empty means the user's Downloads.
+	SaveDir string `json:"saveDir"`
+	// AutoResume continues interrupted rows when the daemon starts.
+	AutoResume bool `json:"autoResume"`
+	// NotifyDone is the app's completion toast. The daemon never shows a
+	// notification; it keeps the flag only so its settings answer round-trips
+	// the exact object the app saved (the API rejects unknown fields).
+	NotifyDone bool `json:"notifyDone"`
+}
+
+// Settings returns what the queue is actually using (not what was asked for:
+// the save folder is resolved to an absolute path and the connections value is
+// clamped, so the UI can show the truth).
+func (m *Manager) Settings() Settings {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return Settings{
+		Connections: m.segments,
+		SaveDir:     m.dir,
+		AutoResume:  m.autoResume,
+		NotifyDone:  m.notifyDone,
+	}
+}
+
+// DefaultSettingsPath is the daemon's startup cache of the app's settings:
+// `%LOCALAPPDATA%\T9EditorLIT\dl-settings.json` on Windows.
+//
+// It is a mirror, not a second source of truth. The app writes the SQLite row
+// and pushes it; this file only makes the FIRST second of daemon life (before
+// any route is listening) match the last thing the user chose.
+func DefaultSettingsPath() string {
+	base, err := os.UserCacheDir()
+	if err != nil || base == "" {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, "T9EditorLIT", "dl-settings.json")
+}
+
+func loadCachedSettings(path string) (Settings, bool) {
+	if path == "" {
+		return Settings{}, false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return Settings{}, false
+	}
+	var s Settings
+	if json.Unmarshal(b, &s) != nil {
+		return Settings{}, false
+	}
+	return s, true
+}
+
+func saveCachedSettings(path string, s Settings) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// ApplySettings validates the numbers, creates the folder, and makes them the
+// defaults for every later Start. Existing rows are deliberately untouched:
+// changing a running download's split under live writers is how two writers
+// land on the same bytes.
+func (m *Manager) ApplySettings(in Settings) (Settings, error) {
+	conns := in.Connections
+	if conns <= 0 {
+		conns = DefaultSegments
+	}
+	if conns > HardMaxSegments {
+		conns = HardMaxSegments
+	}
+	if conns < 1 {
+		conns = 1
+	}
+
+	dir := strings.TrimSpace(in.SaveDir)
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Settings{}, fmt.Errorf("cannot locate the Downloads folder: %w", err)
+		}
+		dir = filepath.Join(home, "Downloads")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return Settings{}, fmt.Errorf("download folder ban nahi paya: %w", err)
+	}
+
+	m.mu.Lock()
+	m.segments = conns
+	m.dir = dir
+	m.autoResume = in.AutoResume
+	m.notifyDone = in.NotifyDone
+	out := Settings{
+		Connections: conns,
+		SaveDir:     dir,
+		AutoResume:  in.AutoResume,
+		NotifyDone:  in.NotifyDone,
+	}
+	path := m.settingsPath
+	m.mu.Unlock()
+
+	if err := saveCachedSettings(path, out); err != nil {
+		// A settings cache that cannot be written must not fail the save:
+		// the app's SQLite copy is the durable one and it already succeeded.
+		m.log.Warn("download settings cache not written", "err", err)
+	}
+
+	m.log.Info("download settings applied",
+		"connections", conns, "dir", dir, "autoResume", in.AutoResume)
+	return out, nil
+}
+
+// forget drops a dead row so the same URL can start again.
+func (m *Manager) forget(id string) {
+	m.mu.Lock()
+	delete(m.items, id)
+	m.mu.Unlock()
+}
 
 // Start probes the URL and begins downloading it.
 //
@@ -349,6 +545,11 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 		case StatusRunning, StatusDone:
 			item := existing.snapshot()
 			return &item, nil
+		case StatusCancelled:
+			// Cancel already deleted its `.part` and sidecar. Keeping the
+			// dead row would answer a re-add of the same link with ErrBusy
+			// ("that download is not in a state where that works") forever.
+			m.forget(existing.id)
 		default:
 			if err := existing.resume(); err != nil {
 				return nil, err
@@ -357,6 +558,13 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 			return &item, nil
 		}
 	}
+
+	// One read of the mutable settings: a settings save while the probe is in
+	// flight must not give this row half of the old plan and half of the new
+	// one.
+	m.mu.Lock()
+	segments := m.segments
+	m.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -401,13 +609,13 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 		status:       StatusRunning,
 		client:       m.client,
 		log:          m.log,
-		maxSegs:      m.segments,
+		maxSegs:      segments,
 		minSegBytes:  m.minSegmentBytes,
 	}
 
 	// One segment when the server cannot range, when the size is unknown, or
 	// when the file is too small for splitting to pay off.
-	n := m.segments
+	n := segments
 	if !probe.ranged || probe.total <= 0 || probe.total < m.minSegmentBytes {
 		n = 1
 	}
@@ -423,7 +631,7 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 	// Each segment must hold its own worth: below ~64 KiB the per-connection
 	// round trips cost more than the parallelism returns. The floor scales
 	// with the configured threshold so tests (64 KiB total) still split.
-	floor := m.minSegmentBytes / int64(m.segments)
+	floor := m.minSegmentBytes / int64(segments)
 	if floor < 64<<10 {
 		floor = 64 << 10
 	}
@@ -905,6 +1113,7 @@ func (m *Manager) reservePath(name string) string {
 		taken[d.partPath] = true
 		taken[strings.TrimSuffix(d.partPath, ".part")] = true
 	}
+	dir := m.dir
 	m.mu.Unlock()
 
 	ext := filepath.Ext(name)
@@ -914,7 +1123,7 @@ func (m *Manager) reservePath(name string) string {
 		if i > 0 {
 			candidate = fmt.Sprintf("%s (%d)%s", stem, i, ext)
 		}
-		full := filepath.Join(m.dir, candidate)
+		full := filepath.Join(dir, candidate)
 		if taken[full] || taken[full+".part"] {
 			continue
 		}
@@ -1027,7 +1236,10 @@ func (m *Manager) get(id string) (*download, error) {
 // same ETag (when both sides know one). The `.part` it points at must still
 // exist; a sidecar without its partial is a leftover, not a resume.
 func (m *Manager) resumable(rawURL string, probe *probeResult) (*sidecar, string) {
-	entries, err := os.ReadDir(m.dir)
+	m.mu.Lock()
+	dir := m.dir
+	m.mu.Unlock()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, ""
 	}
@@ -1035,7 +1247,7 @@ func (m *Manager) resumable(rawURL string, probe *probeResult) (*sidecar, string
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".part.json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(m.dir, e.Name()))
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			continue
 		}
@@ -1049,7 +1261,7 @@ func (m *Manager) resumable(rawURL string, probe *probeResult) (*sidecar, string
 		if sc.ETag != "" && probe.etag != "" && sc.ETag != probe.etag {
 			continue // the URL now serves a different file
 		}
-		dest := strings.TrimSuffix(filepath.Join(m.dir, e.Name()), ".part.json")
+		dest := strings.TrimSuffix(filepath.Join(dir, e.Name()), ".part.json")
 		if _, err := os.Stat(dest + ".part"); err != nil {
 			continue
 		}
@@ -1169,9 +1381,13 @@ type download struct {
 	widened      bool
 
 	received   atomic.Int64
+	reread     atomic.Int64
 	speed      atomic.Int64
 	lastBytes  atomic.Int64
 	lastSample atomic.Int64 // unix nanos of the previous speed sample
+
+	// phase is a short UI hint ("" or "resuming"), guarded by mu.
+	phase string
 
 	// How many sockets are actually open right now, and how many this host
 	// has agreed to. A 429 halves the limit; each finished segment raises it
@@ -1386,6 +1602,10 @@ func (d *download) run() {
 	// `stallLimit` is a different thing, and the row must say so instead of
 	// spinning "running" at 0.0 MB/s until the user gives up on it.
 	//
+	// "Byte" means socket activity, not written bytes: a resume on a host that
+	// ignores Range re-reads the prefix, and counting only writes would kill
+	// that healthy connection after five minutes and restart the whole file.
+	//
 	// Before it ends the row it forces ONE fresh connection. A stalled socket
 	// (a NAT that forgot the flow, a CDN edge that stopped sending) looks
 	// exactly like a dead host from the outside, and that reconnect is the
@@ -1395,7 +1615,7 @@ func (d *download) run() {
 	go func() {
 		t := time.NewTicker(stallEvery)
 		defer t.Stop()
-		last := d.received.Load()
+		last := d.activity()
 		lastAt := time.Now()
 		reconnected := false
 		for {
@@ -1403,7 +1623,7 @@ func (d *download) run() {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				cur := d.received.Load()
+				cur := d.activity()
 				if cur != last {
 					last, lastAt = cur, time.Now()
 					reconnected = false
@@ -1918,34 +2138,11 @@ func (d *download) fetchRange(ctx context.Context, seg *segment) error {
 	}
 	defer resp.Body.Close()
 
-	switch resp.StatusCode {
-	case http.StatusPartialContent:
-		// the expected answer for a ranged request
-	case http.StatusOK:
-		// A server that ignores Range would corrupt a multi-segment file
-		// with overlapping writes — refuse instead. For the single-segment
-		// (non-ranged) download this is the normal answer, and since the
-		// response always starts at byte 0, a resume must skip the bytes
-		// that are already on the disk before the writers take over.
-		if d.ranged && len(d.segs) > 1 {
-			return errors.New("server ne Range header ko ignore kar diya")
-		}
-		if !d.ranged && start > 0 {
-			if _, serr := io.CopyN(io.Discard, resp.Body, start); serr != nil {
-				return serr
-			}
-		}
-	default:
-		if isRateLimited(resp.StatusCode) {
-			return &rateLimitError{status: resp.StatusCode, wait: retryAfter(resp.Header.Get("Retry-After"))}
-		}
-		return &statusError{status: resp.StatusCode}
-	}
-
-	// The idle watchdog: when no byte has arrived for `idleTimeout`, cancel
-	// rwctx (net/http closes the connection, which unblocks the read below)
-	// and let the reconnect in fetchSegment resume from the exact offset
-	// that reached the disk.
+	// The idle watchdog starts before the status switch because the
+	// Range-ignored re-read below is a body read too. A server that accepts a
+	// fresh connection and then goes silent used to leave that re-read blocked
+	// with no deadline at all — 5m0s of "0 bytes" that looked like a dead row
+	// while the socket was merely parked.
 	var lastProgress atomic.Int64
 	lastProgress.Store(time.Now().UnixNano())
 	watched := make(chan struct{})
@@ -1971,6 +2168,56 @@ func (d *download) fetchRange(ctx context.Context, seg *segment) error {
 
 	buf := bufPool.Get().([]byte)
 	defer bufPool.Put(buf)
+
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		// the expected answer for a ranged request
+	case http.StatusOK:
+		// A server that ignores Range would corrupt a multi-segment file
+		// with overlapping writes — refuse instead. For the single-segment
+		// (non-ranged) download this is the normal answer, and since the
+		// response always starts at byte 0, a resume must skip the bytes
+		// that are already on the disk before the writers take over.
+		if d.ranged && len(d.segs) > 1 {
+			return errors.New("server ne Range header ko ignore kar diya")
+		}
+		if !d.ranged && start > 0 {
+			// The prefix on disk is good, but Google's video host (the one
+			// that ignores Range) starts every answer at byte 0, so those
+			// bytes have to cross the network a second time before the writer
+			// can continue at `start`.
+			//
+			// Two things used to go wrong here. The re-read was invisible:
+			// `received` did not move, so the panel sat at "0 MB/s" for the
+			// whole prefix and the stall watchdog killed a connection that
+			// was working. Now the bytes count as activity (speed + watchdog)
+			// and the row says `resuming`, so the wait is explained instead of
+			// looking like a dead download.
+			d.setPhase("resuming")
+			remaining := start
+			for remaining > 0 {
+				want := int64(len(buf))
+				if remaining < want {
+					want = remaining
+				}
+				n, rerr := io.ReadFull(resp.Body, buf[:want])
+				if n > 0 {
+					d.reread.Add(int64(n))
+					lastProgress.Store(time.Now().UnixNano())
+					remaining -= int64(n)
+				}
+				if rerr != nil {
+					return rerr
+				}
+			}
+			d.setPhase("")
+		}
+	default:
+		if isRateLimited(resp.StatusCode) {
+			return &rateLimitError{status: resp.StatusCode, wait: retryAfter(resp.Header.Get("Retry-After"))}
+		}
+		return &statusError{status: resp.StatusCode}
+	}
 
 	for {
 		n, rerr := resp.Body.Read(buf)
@@ -2129,8 +2376,13 @@ func (d *download) fail(err error) {
 
 // computeSpeed turns the byte delta between two polls into bytes/second.
 // Caller holds d.mu (or has exclusive List access) and the row is running.
+//
+// Re-read bytes count: on a host without Range support a resume re-reads the
+// prefix, and a speed meter that ignored that would show 0.0 MB/s while the
+// socket is genuinely busy. The progress bar still shows only written bytes —
+// the two numbers answer different questions.
 func (d *download) computeSpeed(now time.Time) {
-	cur := d.received.Load()
+	cur := d.received.Load() + d.reread.Load()
 	lastAt := d.lastSample.Load()
 	if lastAt == 0 {
 		d.lastSample.Store(now.UnixNano())
@@ -2147,9 +2399,27 @@ func (d *download) computeSpeed(now time.Time) {
 	d.lastSample.Store(now.UnixNano())
 }
 
+func (d *download) setPhase(p string) {
+	d.mu.Lock()
+	d.phase = p
+	d.mu.Unlock()
+}
+
+// activity is every byte the socket moved for this row: written bytes plus
+// the prefix that had to be read again because the server ignores Range.
+// The stall watchdog watches this, not `received` — otherwise a resume on a
+// no-Range host is a guaranteed false "5m0s se koi byte nahi aa raha".
+func (d *download) activity() int64 {
+	return d.received.Load() + d.reread.Load()
+}
+
 func (d *download) snapshot() Item {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	phase := d.phase
+	if d.status != StatusRunning {
+		phase = ""
+	}
 	return Item{
 		ID:            d.id,
 		URL:           d.url,
@@ -2161,6 +2431,8 @@ func (d *download) snapshot() Item {
 		Segments:      len(d.segs),
 		Status:        d.status,
 		Error:         d.errText,
+		Phase:         phase,
+		ReReadBytes:   d.reread.Load(),
 	}
 }
 

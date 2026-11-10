@@ -20,6 +20,7 @@
   import HistoryPanel from './HistoryPanel.svelte';
   import { browser } from '../../stores/browser.svelte';
   import { downloads } from '../../stores/downloads.svelte';
+  import { ublock } from '../../stores/ublock.svelte';
   import { app } from '../../stores/app.svelte';
   import { toast } from '../../stores/toast.svelte';
   import { isTauri, browserViewClosed, browserSetRect } from '../../ipc';
@@ -44,7 +45,11 @@
     // One poll at mount: the daemon recovers unfinished downloads from their
     // sidecars, and the toolbar badge must show them without opening the panel.
     downloads.boot();
+    // uBlock: disk status from the daemon, runtime truth from WebView2. The
+    // folder is already unpacked by the time a tab exists; this only reports.
+    ublock.boot();
     return () => {
+      ublock.dispose();
       // The whole browser tree unmounts (App.svelte's {#if}): sweep EVERY
       // tab webview (kept ones included) so the 500 MB budget holds while
       // the editor is open. Nothing page-live survives the view. The Ctrl+H

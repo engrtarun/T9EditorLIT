@@ -12,12 +12,24 @@
  * breaks because a downloader is missing.
  */
 
-import type { DownloadItem } from '../types';
-import { isTauri } from '../ipc';
+import type { DownloadItem, DownloadSettings } from '../types';
+import { dlSettingsGet, dlSettingsSave, isTauri } from '../ipc';
 import { toast } from './toast.svelte';
 
 const DAEMON = 'http://127.0.0.1:7878';
 const POLL_MS = 800;
+
+/**
+ * What a fresh install uses until the first save. This mirrors the Rust
+ * default (`dl_settings::DEFAULT_CONNECTIONS`) and the Go fallback; the daemon
+ * clamps anything out of range, so a drift can never break a download.
+ */
+const DEFAULT_SETTINGS: DownloadSettings = {
+  connections: 8,
+  saveDir: '',
+  autoResume: true,
+  notifyDone: true
+};
 
 /** A start the daemon refused, kept where the user looks for the file. */
 export interface FailedDownload {
@@ -61,19 +73,107 @@ class DownloadsStore {
   /** Polling is armed (at least one non-terminal item, or the panel is open). */
   private timer: ReturnType<typeof setInterval> | undefined;
 
+  /**
+   * The settings the daemon is actually using (clamped sockets, absolute
+   * folder). SQLite is the durable copy; the daemon is told on every boot and
+   * on every save, so a daemon restart never forgets what the user chose.
+   */
+  settings = $state<DownloadSettings>({ ...DEFAULT_SETTINGS });
+  settingsLoaded = $state(false);
+  savingSettings = $state(false);
+
+  /** Everything the daemon reported, including rows the user hid. */
+  private raw: DownloadItem[] = [];
+  /** Rows dismissed this session. The daemon keeps its own record. */
+  private hidden = new Set<string>();
+  /** Previous status per id, so exactly one completion toast fires. */
+  private lastStatus = new Map<string, string>();
+  private wasReachable = true;
+
   get activeCount(): number {
     return this.items.filter((i) => i.status === 'running' || i.status === 'paused').length;
   }
 
+  /** Terminal rows still visible — what "clear finished" would remove. */
+  get finishedCount(): number {
+    return this.items.filter(
+      (i) => i.status === 'done' || i.status === 'error' || i.status === 'cancelled'
+    ).length;
+  }
+
   toggle(): void {
     this.open = !this.open;
+    if (this.open) void this.pushSettings();
     this.syncTimer();
+  }
+
+  /**
+   * Load the SQLite copy and hand it to the daemon. Called once when the
+   * browser view mounts; a daemon that is still starting simply gets the
+   * values again on the next `reachable` transition.
+   */
+  async loadSettings(): Promise<void> {
+    if (!isTauri()) {
+      this.settingsLoaded = true;
+      return;
+    }
+    try {
+      this.settings = await dlSettingsGet();
+    } catch {
+      /* SQLite unavailable (dev preview): the defaults are still honest */
+    }
+    this.settingsLoaded = true;
+    await this.pushSettings();
+  }
+
+  /**
+   * Save to SQLite first, then to the daemon. The database is the source of
+   * truth: if the daemon is down the choice is not lost, and the next put
+   * (panel open, next download, daemon back) applies it.
+   */
+  async persistSettings(patch: Partial<DownloadSettings>): Promise<void> {
+    if (!isTauri()) {
+      this.settings = { ...this.settings, ...patch };
+      return;
+    }
+    this.savingSettings = true;
+    try {
+      this.settings = await dlSettingsSave({ ...this.settings, ...patch });
+      await this.pushSettings();
+    } catch (err) {
+      toast.push('warn', err instanceof Error ? err.message : String(err), 4000);
+      throw err;
+    } finally {
+      this.savingSettings = false;
+    }
+  }
+
+  private async pushSettings(): Promise<void> {
+    if (!isTauri() || !this.settingsLoaded) return;
+    try {
+      const res = await fetch(`${DAEMON}/v1/dl/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(this.settings)
+      });
+      if (res.ok) {
+        // The daemon answers with what it resolved (clamped/absolute), so the
+        // panel shows the truth rather than the request.
+        this.settings = (await res.json()) as DownloadSettings;
+      }
+    } catch {
+      /* daemon down; retried when it comes back or the next download starts */
+    }
   }
 
   /** Ask the daemon to start a multi-segment download. */
   async start(url: string, opts?: { referer?: string }): Promise<void> {
     if (!isTauri()) return;
     try {
+      // The socket count / folder are daemon settings, and a start is the
+      // moment they must be current: a user who moved the slider expects the
+      // next click to use it, not the one after a restart.
+      await this.pushSettings();
       const res = await fetch(`${DAEMON}/v1/dl`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -129,9 +229,19 @@ class DownloadsStore {
   dismiss(id: string): void {
     // Terminal rows only leave the list when asked; the daemon keeps its own
     // record until the file is cleaned.
-    this.items = this.items.filter(
-      (i) => i.id !== id || i.status === 'running' || i.status === 'paused'
-    );
+    const item = this.items.find((i) => i.id === id);
+    if (!item || item.status === 'running' || item.status === 'paused') return;
+    this.hidden.add(id);
+    this.items = this.items.filter((i) => i.id !== id);
+  }
+
+  /** Hide every terminal row at once — the × on a long session's list. */
+  clearFinished(): void {
+    for (const item of this.items) {
+      if (item.status !== 'running' && item.status !== 'paused') this.hidden.add(item.id);
+    }
+    this.items = this.items.filter((i) => i.status === 'running' || i.status === 'paused');
+    if (this.items.length === 0) this.syncTimer();
   }
 
   private async poll(): Promise<void> {
@@ -140,16 +250,60 @@ class DownloadsStore {
       const res = await fetch(`${DAEMON}/v1/dl`, { cache: 'no-store' });
       if (res.ok) {
         const list = (await res.json()) as DownloadItem[];
-        this.items = Array.isArray(list) ? list : [];
+        this.raw = Array.isArray(list) ? list : [];
+        this.noteCompletions(this.raw);
+        this.pruneHidden(this.raw);
+        this.items = this.raw.filter((i) => !this.hidden.has(i.id));
         this.reachable = true;
+        if (!this.wasReachable) {
+          // The daemon just came back (or started late). It forgot its
+          // in-memory settings, so hand them over again before the next row.
+          void this.pushSettings();
+        }
+        this.wasReachable = true;
       } else {
         this.reachable = false;
+        this.wasReachable = false;
       }
     } catch {
       /* daemon not up — the panel says so instead of showing frozen numbers */
       this.reachable = false;
+      this.wasReachable = false;
     }
     this.syncTimer();
+  }
+
+  /**
+   * A finished row is a file the user was waiting for. The panel is often
+   * closed by then (the download keeps running in the daemon), so completion
+   * has to reach them where they are: one toast, once, and only if they asked
+   * for it.
+   */
+  private noteCompletions(list: DownloadItem[]): void {
+    for (const item of list) {
+      const prev = this.lastStatus.get(item.id);
+      if (
+        item.status === 'done' &&
+        prev !== undefined &&
+        prev !== 'done' &&
+        this.settings.notifyDone
+      ) {
+        toast.push('cut', `${item.filename} download ho gaya`, 5000);
+      }
+      this.lastStatus.set(item.id, item.status);
+    }
+    for (const id of [...this.lastStatus.keys()]) {
+      if (!list.some((i) => i.id === id)) this.lastStatus.delete(id);
+    }
+  }
+
+  /** A hidden id that fell out of the daemon's list must not leak forever. */
+  private pruneHidden(list: DownloadItem[]): void {
+    if (this.hidden.size === 0) return;
+    const live = new Set(list.map((i) => i.id));
+    for (const id of this.hidden) {
+      if (!live.has(id)) this.hidden.delete(id);
+    }
   }
 
   /** Poll only while something can change; stop when the queue is quiet. */
@@ -165,6 +319,7 @@ class DownloadsStore {
 
   /** One poll at boot, so an unfinished queue from last session shows up. */
   boot(): void {
+    void this.loadSettings();
     void this.poll();
   }
 }
