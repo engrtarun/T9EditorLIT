@@ -129,7 +129,7 @@ function Convert-SarkariTime {
 
 function Find-PythonFiles {
     param([string]$Root)
-    $excluded = @('node_modules', 'target', 'dist', '.git', '.venv', 'venv', '__pycache__', '.next', '.svelte-kit')
+    $excluded = @('node_modules', 'target', 'dist', '.git', '.venv', 'venv', '__pycache__', '.next', '.svelte-kit', 'modules')
     $stack = New-Object System.Collections.Stack
     $stack.Push($Root)
     $found = New-Object System.Collections.Generic.List[string]
