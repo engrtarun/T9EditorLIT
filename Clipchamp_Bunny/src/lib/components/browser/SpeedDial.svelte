@@ -34,14 +34,14 @@
 
 <div class="flex h-full min-h-0 flex-col overflow-y-auto px-6 py-8">
   <div class="mx-auto w-full max-w-[660px]">
-    <p class="text-center text-[11px] font-bold tracking-[0.22em] text-nc-mut-2 uppercase">
+    <p class="dial-in text-center text-[11px] font-bold tracking-[0.22em] text-nc-mut-2 uppercase">
       Naya tab
     </p>
 
     <!-- the one thing a new tab is for -->
     <form
       onsubmit={search}
-      class="mt-3 flex h-11 items-center gap-2.5 rounded-full border border-nc-line bg-nc-panel px-4
+      class="dial-in dial-in-1 mt-3 flex h-11 items-center gap-2.5 rounded-full border border-nc-line bg-nc-panel px-4
              shadow-[0_10px_30px_rgba(0,0,0,.28)] transition-colors
              focus-within:border-nc-brand focus-within:ring-2 focus-within:ring-nc-brand/20"
     >
@@ -72,8 +72,10 @@
     </form>
 
     <!-- shortcuts -->
-    <p class="mt-7 mb-2 px-1 text-[10px] font-bold tracking-widest text-nc-mut-2">SHORTCUTS</p>
-    <div class="grid grid-cols-3 gap-1 sm:grid-cols-6">
+    <p class="dial-in dial-in-2 mt-7 mb-2 px-1 text-[10px] font-bold tracking-widest text-nc-mut-2">
+      SHORTCUTS
+    </p>
+    <div class="dial-in dial-in-2 grid grid-cols-3 gap-1 sm:grid-cols-6">
       {#each SPEED_DIAL as site (site.url)}
         <button
           type="button"
@@ -175,3 +177,40 @@
     </div>
   </div>
 </div>
+
+<style>
+  /*
+   * One restrained entrance: a 6 px rise and a fade, once, staggered in three
+   * steps. No looping gradient, no scale bounce, no shimmer - a new tab is a
+   * quiet place, and the animation exists only to hide the one-frame blank
+   * that a native-page webview unmount leaves behind.
+   */
+  @keyframes t9-dial-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .dial-in {
+    animation: t9-dial-in 220ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  }
+
+  .dial-in-1 {
+    animation-delay: 40ms;
+  }
+
+  .dial-in-2 {
+    animation-delay: 90ms;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dial-in {
+      animation: none;
+    }
+  }
+</style>

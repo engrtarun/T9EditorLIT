@@ -1659,6 +1659,8 @@ pub fn run() {
             browser::browser_show,
             browser::browser_hide,
             browser::browser_view_closed,
+            browser::browser_set_pinned,
+            browser::browser_focus_shell,
             browser::browser_set_rect,
             browser::browser_stop,
             dl_settings::dl_settings_get,

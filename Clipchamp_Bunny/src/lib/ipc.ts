@@ -1249,6 +1249,32 @@ export function onBrowserNav(cb: (p: { id: string; url: string }) => void): Prom
 }
 
 /**
+ * A Firefox shortcut pressed while the native page webview had the keyboard.
+ * `browser_shim.js` sends the same action names the DOM key map uses, so
+ * App.svelte runs one dep table for both paths.
+ */
+export function onBrowserKey(
+  cb: (p: { id: string; action: string; value: number | null }) => void
+): Promise<() => void> {
+  if (!isTauri()) return Promise.resolve(() => {});
+  return listen<{ id: string; action: string; value: number | null }>('browser:key', (e) =>
+    cb(e.payload)
+  );
+}
+
+/** Ctrl+L from a page: give the OS keyboard focus back to the app shell. */
+export function browserFocusShell(): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_focus_shell').catch(() => {});
+}
+
+/** Pin a tab: its webview survives tab switches, so audio keeps running. */
+export function browserSetPinned(id: string, pinned: boolean): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_set_pinned', { id, pinned }).catch(() => {});
+}
+
+/**
  * A page asked for a new window (target=_blank, Ctrl+click, window.open).
  * Rust denies the native popup and hands the URL here — the store opens it
  * as a tab in the strip, so no link can ever leave the in-built browser.

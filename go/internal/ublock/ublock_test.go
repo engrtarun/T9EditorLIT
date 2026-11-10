@@ -73,7 +73,7 @@ func newReleaseServer(t *testing.T, tag string, payload []byte) *releaseServer {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"tag_name": tag,
 				"assets": []map[string]any{{
-					"name":                 fmt.Sprintf("uBlock0_%s.chromium.zip", tag),
+					"name":                 fmt.Sprintf("uBOLite_%s.chromium.zip", tag),
 					"size":                 len(payload),
 					"digest":               digest,
 					"browser_download_url": rs.srv.URL + "/download",
@@ -117,7 +117,7 @@ func useServer(t *testing.T, rs *releaseServer) {
 }
 
 func manifestFor(version string) string {
-	return fmt.Sprintf(`{"manifest_version":2,"name":"uBlock Origin","version":%q}`, version)
+	return fmt.Sprintf(`{"manifest_version":3,"name":"uBlock Origin Lite","version":%q}`, version)
 }
 
 func TestEnsureInstallsTheVerifiedReleaseAndDoesNotRedownloadIt(t *testing.T) {
@@ -284,7 +284,7 @@ func TestStatusIsHonestBeforeTheFirstInstall(t *testing.T) {
 	if !st.Enabled || !st.AutoUpdate {
 		t.Fatalf("uBlock is shipped on and auto-updating: %+v", st)
 	}
-	if filepath.Base(st.Path) != "extensions" {
-		t.Fatalf("path = %q, want the extensions folder", st.Path)
+	if filepath.Base(st.Path) != ExtensionsFolder {
+		t.Fatalf("path = %q, want the %s folder", st.Path, ExtensionsFolder)
 	}
 }

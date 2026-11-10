@@ -1,16 +1,20 @@
 // Package ublock keeps the in-built browser's ad blocker current.
 //
-// The extension WebView2 loads is the **official release build** of uBlock
-// Origin (gorhill/uBlock, tracked as the `modules/uBlock` submodule). The
-// daemon, not the webview, owns the download: the archive is fetched from the
-// GitHub release, its SHA-256 is checked against the digest GitHub publishes,
-// and only then is it unpacked. A tampered or truncated archive never reaches
-// the extensions folder.
+// The extension WebView2 loads is the **official release build of uBlock
+// Origin Lite** (`uBlockOrigin/uBOL-home`). Lite is the Manifest V3 build:
+// upstream uBlock Origin is Manifest V2, and Chromium 139 removed MV2
+// entirely - the old extension still reported "loaded" while filtering
+// nothing, which is exactly why YouTube ads came back. uBOL is the same
+// filter lists in the only manifest the browser still runs.
+//
+// The daemon, not the webview, owns the download: the archive is fetched from
+// the GitHub release, its SHA-256 is checked against the digest GitHub
+// publishes, and only then is it unpacked. A tampered or truncated archive
+// never reaches the extensions folder.
 //
 // The check runs at daemon start and every few hours after that, so a new
-// uBlock release needs no user action. `Status` is the honest view the UI
-// shows: which version is installed, which is latest, and why an update
-// failed (if it did).
+// release needs no user action. `Status` is the honest view the UI shows:
+// which version is installed, which is latest, and why an update failed.
 package ublock
 
 import (
@@ -35,14 +39,22 @@ import (
 const (
 	// ExtensionFolder is the name WebView2 sees. Wry iterates every entry in
 	// the extensions path, so the parent holds exactly one folder.
-	ExtensionFolder = "uBlock0.chromium"
+	ExtensionFolder = "uBOLite.chromium"
+
+	// ExtensionsFolder is a NEW folder, not the MV2 one. Pointing WebView2 at
+	// a fresh path is what keeps a leftover MV2 uBlock (which the runtime now
+	// refuses) from being scanned at all.
+	ExtensionsFolder = "extensions-mv3"
+
+	// legacyFolder is the dead MV2 extension. Best-effort deleted on start.
+	legacyFolder = "uBlock0.chromium"
 
 	// markerFile remembers which release is unpacked. It is written after the
 	// folder swap, so "marker says vX" always means "vX is on disk".
 	markerFile = "version.json"
 
 	// maxZipBytes / maxUnzippedBytes bound a malformed or hostile archive.
-	// The real asset is ~6 MB packed and ~16 MB unpacked.
+	// The real uBOL asset is ~9 MB packed and ~30 MB unpacked.
 	maxZipBytes      = 48 << 20
 	maxUnzippedBytes = 96 << 20
 	maxZipEntries    = 8000
@@ -50,7 +62,7 @@ const (
 
 // Var (not const) so tests can point at an httptest server.
 var (
-	apiURL     = "https://api.github.com/repos/gorhill/uBlock/releases/latest"
+	apiURL     = "https://api.github.com/repos/uBlockOrigin/uBOL-home/releases/latest"
 	checkEvery = 6 * time.Hour
 	// allowInsecure lets tests use http://127.0.0.1. Production stays https:
 	// the digest protects the bytes, not the channel that named them.
@@ -117,7 +129,7 @@ func New(dir string, log *slog.Logger) *Updater {
 	if log == nil {
 		log = slog.Default()
 	}
-	ext := filepath.Join(dir, "extensions")
+	ext := filepath.Join(dir, ExtensionsFolder)
 	_ = os.MkdirAll(ext, 0o755)
 	u := &Updater{
 		dir: dir,
@@ -127,7 +139,24 @@ func New(dir string, log *slog.Logger) *Updater {
 		log: log,
 	}
 	u.st = u.readStatus()
+	u.dropLegacy()
 	return u
+}
+
+// dropLegacy removes the MV2 extension folder. Chromium 139+ refuses MV2, and
+// leaving it behind is how "uBlock is loaded" and "YouTube still shows ads"
+// were both true. Best-effort: an app still running may hold the folder open,
+// in which case the next daemon start finishes the job.
+func (u *Updater) dropLegacy() {
+	legacy := filepath.Join(u.dir, "extensions", legacyFolder)
+	if _, err := os.Stat(legacy); err != nil {
+		return
+	}
+	if err := os.RemoveAll(legacy); err != nil {
+		u.log.Info("legacy MV2 uBlock folder still in use", "path", legacy, "err", err)
+		return
+	}
+	u.log.Info("legacy MV2 uBlock removed", "path", legacy)
 }
 
 // DefaultDir is `%LocalAppData%\T9EditorLIT\ublock` on Windows and the user
@@ -143,7 +172,7 @@ func DefaultDir() string {
 
 // ExtensionsPath is what WebView2 is pointed at: a folder whose children are
 // unpacked Chrome extensions.
-func (u *Updater) ExtensionsPath() string { return filepath.Join(u.dir, "extensions") }
+func (u *Updater) ExtensionsPath() string { return filepath.Join(u.dir, ExtensionsFolder) }
 
 // ExtensionDir is the unpacked uBlock itself.
 func (u *Updater) ExtensionDir() string {
@@ -180,7 +209,15 @@ func (u *Updater) Start(ctx context.Context) {
 // for GitHub). The UI polls Status for the result.
 func (u *Updater) UpdateNow(ctx context.Context) Status {
 	if u.claim() {
-		go u.run(ctx)
+		// The HTTP response ends the moment this returns, which cancels the
+		// request context - the goroutine would then see `context canceled`
+		// before GitHub answered (that was the error the panel showed).
+		// Detach from the request and give the job its own bound instead.
+		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
+		go func() {
+			defer cancel()
+			u.run(bg)
+		}()
 	}
 	return u.Status()
 }
@@ -247,7 +284,7 @@ func (u *Updater) checkAndInstall(ctx context.Context) error {
 
 	asset, ok := pickAsset(rel)
 	if !ok {
-		return fmt.Errorf("uBlock %s me chromium zip nahi mila", version)
+		return fmt.Errorf("uBlock Origin Lite %s me chromium zip nahi mila", version)
 	}
 
 	current := u.readMarker()
@@ -295,7 +332,8 @@ func (u *Updater) checkAndInstall(ctx context.Context) error {
 		return err
 	}
 
-	u.log.Info("uBlock Origin installed", "version", version, "sha256", sum)
+	u.log.Info("uBlock Origin Lite installed", "version", version, "sha256", sum)
+	u.dropLegacy()
 	u.mu.Lock()
 	u.st = u.readStatusLocked()
 	u.mu.Unlock()
@@ -420,15 +458,39 @@ func unzip(zipPath, dest string) error {
 		return fmt.Errorf("zip me bahut entries hain (%d)", len(r.File))
 	}
 
-	var total int64
+	// Find the archive root: uBOL packs manifest.json at the top level, while
+	// some release builds nest everything under one folder. Extracting
+	// relative to the folder that holds manifest.json means the extension
+	// always lands at dest/manifest.json, whichever shape shipped.
+	prefix := ""
+	rootManifest := false
 	for _, f := range r.File {
 		name := filepath.ToSlash(f.Name)
-		// The official archive nests everything under uBlock0.chromium/.
-		rel := strings.TrimPrefix(name, ExtensionFolder+"/")
-		if rel == name {
-			// Some releases pack the contents at the root; accept that too.
-			rel = name
+		if name == "manifest.json" {
+			rootManifest = true
+			break
 		}
+	}
+	if !rootManifest {
+		for _, f := range r.File {
+			name := filepath.ToSlash(f.Name)
+			if !strings.HasSuffix(name, "/manifest.json") {
+				continue
+			}
+			dir := strings.TrimSuffix(name, "/manifest.json")
+			if dir != "" && !strings.Contains(dir, "/") {
+				prefix = dir + "/"
+			}
+			break
+		}
+		if prefix == "" {
+			return errors.New("zip me manifest.json nahi hai - archive adhoora lagta hai")
+		}
+	}
+
+	var total int64
+	for _, f := range r.File {
+		rel := strings.TrimPrefix(filepath.ToSlash(f.Name), prefix)
 		if rel == "" || strings.HasSuffix(rel, "/") {
 			continue
 		}

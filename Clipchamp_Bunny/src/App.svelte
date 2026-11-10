@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import TopBar from './lib/components/TopBar.svelte';
   import ModeRail from './lib/components/ModeRail.svelte';
   import RightRail from './lib/components/RightRail.svelte';
@@ -23,8 +24,13 @@
   import { toast } from './lib/stores/toast.svelte';
   import { menu } from './lib/stores/menu.svelte';
   import { downloads } from './lib/stores/downloads.svelte';
-  import { dispatchBrowserKey, type BrowserKeyDeps } from './lib/browser-keys';
-  import { browserPrint, browserClearBrowsingData } from './lib/ipc';
+  import { dispatchBrowserKey, runBrowserAction, type BrowserKeyDeps } from './lib/browser-keys';
+  import {
+    browserPrint,
+    browserClearBrowsingData,
+    onBrowserKey,
+    browserFocusShell
+  } from './lib/ipc';
   import { keys, type KeyAction } from './lib/stores/keys.svelte';
   import { clamp, fmtTime } from './lib/utils';
 
@@ -65,6 +71,13 @@
     return true;
   }
 
+  /** Put the caret in the address bar (Ctrl+L, Ctrl+K, a new tab). */
+  function focusUrlbar() {
+    const bar = document.querySelector<HTMLInputElement>('[data-urlbar-input]');
+    bar?.focus();
+    bar?.select();
+  }
+
   /**
    * The in-built browser owns Firefox's key map (src/lib/browser-keys.ts).
    * Dispatch resolves the keyboard event to a NAMED action; these deps wire
@@ -72,7 +85,13 @@
    */
   const browserDeps = {
     newTab: () => {
-      if (!browser.open()) toast.push('warn', '9 tabs ki limit hai — pehle ek band karo');
+      if (!browser.open()) {
+        toast.push('warn', '9 tabs ki limit hai — pehle ek band karo');
+        return;
+      }
+      // Firefox puts the caret in the address bar on a new tab; without this
+      // Ctrl+T left the user on the speed dial with nowhere to type.
+      requestAnimationFrame(focusUrlbar);
     },
     closeTab: () => {
       const active = browser.active;
@@ -97,11 +116,7 @@
     stopLoading: () => browser.stopLoading(),
     reload: () => browser.reload(), // plain and forced land on the same forced nudge
     goHome: () => browser.goHome(),
-    focusUrlbar: () => {
-      const bar = document.querySelector<HTMLInputElement>('[data-urlbar-input]');
-      bar?.focus();
-      bar?.select();
-    },
+    focusUrlbar: () => focusUrlbar(),
     downloads: () => downloads.toggle(),
     history: () => browser.toggleHistory(),
     clearHistory: () => {
@@ -146,6 +161,36 @@
       layout.helpOpen = true;
     }
   } satisfies BrowserKeyDeps;
+
+  /**
+   * Keys pressed while the *page* webview has focus never reach this window's
+   * keydown handler — that webview is a separate native child. The
+   * document-start shim (`src-tauri/src/browser_shim.js`) reports them as
+   * `browser:key`; this runs the exact same dep table through
+   * `runBrowserAction`, so both paths stay one implementation.
+   */
+  onMount(() => {
+    let off: (() => void) | null = null;
+    let dead = false;
+    void onBrowserKey(({ action, value }) => {
+      if (app.view !== 'browser') return;
+      runBrowserAction(action, value ?? 0, browserDeps);
+      // Actions that need the chrome also have to pull the OS keyboard focus
+      // out of the page webview, or the address bar has a caret but no keys.
+      if (action === 'focusUrlbar' || action === 'newTab') void browserFocusShell();
+    })
+      .then((unlisten) => {
+        if (dead) unlisten();
+        else off = unlisten;
+      })
+      .catch(() => {
+        /* browser-only dev build: there is no native key bridge */
+      });
+    return () => {
+      dead = true;
+      off?.();
+    };
+  });
 
   function onKey(e: KeyboardEvent) {
     // System shortcuts & screenshot keys must never be captured or blocked:

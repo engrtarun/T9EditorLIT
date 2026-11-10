@@ -125,11 +125,6 @@ export const BINDINGS: Entry[] = [
   B('openHelp', ['f1'], true)
 ];
 
-/** Deps that take no argument — the plain `deps[action]()` branch below. */
-type ZeroArgAction = {
-  [K in keyof BrowserKeyDeps]: Parameters<BrowserKeyDeps[K]> extends [] ? K : never;
-}[keyof BrowserKeyDeps];
-
 const norm = (key: string): string => {
   const k = key.toLowerCase();
   if (k === ' ') return 'space';
@@ -170,6 +165,44 @@ const digitOf = (combo: string): number => {
   return m ? Number(m[1]) : 0;
 };
 
+/** The value a combo carries: 0-based tab index, direction, force flag. */
+export function comboValue(action: string, combo: string): number {
+  if (action === 'selectTabN') return digitOf(combo) - 1;
+  if (action === 'moveTab') return combo.endsWith('pageup') ? -1 : 1;
+  if (action === 'reload') return combo === 'ctrl+f5' || combo === 'ctrl+shift+r' ? 1 : 0;
+  if (action === 'zoom') return combo === 'ctrl+-' ? -1 : combo === 'ctrl+0' ? 0 : 1;
+  return 0;
+}
+
+/**
+ * Run one named browser action with the value the binding carries.
+ *
+ * This is the single entry point for **both** key paths: a DOM `keydown`
+ * (address bar or shell focused) and the native shim (page webview focused).
+ * Native keys arrive with `value` already resolved, so the two paths can never
+ * disagree about what Ctrl+1, Ctrl+Shift+PageUp or Ctrl+F5 mean.
+ */
+export function runBrowserAction(action: string, value: number, deps: BrowserKeyDeps): void {
+  switch (action) {
+    case 'selectTabN':
+      return deps.selectTabN(value);
+    case 'lastTab':
+      return deps.lastTab();
+    case 'moveTab':
+      return deps.moveTab(value < 0 ? -1 : 1);
+    case 'reload':
+      return deps.reload(value === 1);
+    case 'zoom':
+      return deps.zoom(value < 0 ? -1 : value > 0 ? 1 : 0);
+    default:
+      break;
+  }
+  // An action the page sent that this app does not implement is ignored. A
+  // typeof check (not `in`) so the proxy-based test recorder still works.
+  const fn = (deps as unknown as Record<string, (() => void) | undefined>)[action];
+  if (typeof fn === 'function') fn();
+}
+
 /**
  * Fire a browser key. Returns true when the event was a browser shortcut
  * (App.svelte stops its own handling then) — the editor's path is untouched.
@@ -179,19 +212,7 @@ export function dispatchBrowserKey(e: KeyEvt, deps: BrowserKeyDeps): boolean {
   const hit = matchBrowserKey(e);
   if (!hit) return false;
   if (typeof e.preventDefault === 'function') e.preventDefault();
-  if (hit.action === 'selectTabN') {
-    // Ctrl+1..8 = tab n (0-based here; the store clamps past the end).
-    deps.selectTabN(digitOf(hit.combo) - 1);
-  } else if (hit.action === 'moveTab') {
-    deps.moveTab(hit.combo.endsWith('pageup') ? -1 : 1);
-  } else if (hit.action === 'reload') {
-    // plain F5 / Ctrl+R reload; Ctrl+F5 and Ctrl+Shift+R bypass the cache.
-    deps.reload(hit.combo === 'ctrl+f5' || hit.combo === 'ctrl+shift+r');
-  } else if (hit.action === 'zoom') {
-    deps.zoom(hit.combo === 'ctrl+-' ? -1 : hit.combo === 'ctrl+0' ? 0 : 1);
-  } else {
-    deps[hit.action as ZeroArgAction]();
-  }
+  runBrowserAction(hit.action, comboValue(hit.action, hit.combo), deps);
   return true;
 }
 

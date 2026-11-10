@@ -79,24 +79,53 @@
   // downloads panel opens, window resizes) because the ResizeObserver
   // writes into the `rect` signal.
   let rect = $state({ x: 0, y: 0, width: 0, height: 0 });
+  // Debounce: the ResizeObserver fires on every sub-pixel change during a
+  // CSS transition (menu / panel open). Each call is an IPC round trip that
+  // marshals onto the main thread, and a flood of them is what made the
+  // browser feel frozen ("buttons not responding") while a panel animated.
+  let rectTimer: ReturnType<typeof setTimeout> | null = null;
+  function pushRect(r: { x: number; y: number; width: number; height: number }) {
+    if (rectTimer) clearTimeout(rectTimer);
+    rectTimer = setTimeout(() => {
+      if (r.width > 0 && r.height > 0) {
+        // -1 safety margin so the native webview can never paint over the
+        // panel header sitting immediately below the content box.
+        void browserSetRect(r.x, r.y, r.width, Math.max(1, r.height - 1));
+      }
+    }, 30);
+  }
   $effect(() => {
     const el = contentEl;
     if (!el || !isTauri()) return;
     const ro = new ResizeObserver(() => {
       const r = el.getBoundingClientRect();
       rect = { x: r.left, y: r.top, width: r.width, height: r.height };
+      pushRect(rect);
     });
     ro.observe(el);
     // Seed the first measurement immediately (RO fires async).
     const r = el.getBoundingClientRect();
     rect = { x: r.left, y: r.top, width: r.width, height: r.height };
-    return () => ro.disconnect();
+    pushRect(rect);
+    return () => {
+      if (rectTimer) clearTimeout(rectTimer);
+      ro.disconnect();
+    };
   });
 
+  // When the downloads panel toggles, re-measure right away — the native
+  // webview must never sit over the panel's header buttons, even for a
+  // frame. (The RO above catches it too, but this is synchronous.)
   $effect(() => {
-    if (rect.width > 0 && rect.height > 0) {
-      void browserSetRect(rect.x, rect.y, rect.width, rect.height);
-    }
+    downloads.open;
+    const el = contentEl;
+    if (!el || !isTauri()) return;
+    requestAnimationFrame(() => {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) {
+        void browserSetRect(r.left, r.top, r.width, Math.max(1, r.height - 1));
+      }
+    });
   });
 </script>
 

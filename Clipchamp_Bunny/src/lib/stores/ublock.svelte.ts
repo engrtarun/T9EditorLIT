@@ -1,5 +1,5 @@
 /**
- * The ad blocker's view model — uBlock Origin, shipped on.
+ * The ad blocker's view model — uBlock Origin Lite (MV3), shipped on.
  *
  * There are two independent truths and the panel shows both, because they
  * answer different questions:
@@ -7,8 +7,9 @@
  *  - **disk** (`GET /v1/ublock/status` from the Go daemon): which release is
  *    unpacked, whether the next check failed, and when the last one ran. The
  *    daemon downloads the official GitHub release, verifies the SHA-256 that
- *    GitHub publishes, and re-checks every few hours — so a new uBlock needs
- *    no user action.
+ *    GitHub publishes, and re-checks every few hours — so a new release needs
+ *    no user action. Lite (MV3) is deliberate: classic uBO is MV2 and current
+ *    Chromium refuses to run it at all.
  *  - **runtime** (`browser:extensions` from Rust/WebView2): whether the tab
  *    profile *actually loaded* it. `extensions_path` is fire-and-forget — wry
  *    ignores `AddBrowserExtension` failures — so a folder on disk is not proof

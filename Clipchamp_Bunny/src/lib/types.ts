@@ -312,7 +312,9 @@ export interface BrowserTab {
   live: boolean;
   /** True while the page is loading (spinner on the strip). */
   loading: boolean;
-  /** Unix ms of the last activation — the LRU rule suspends the oldest. */
+  /** Pinned: the webview survives tab switches (and leaving the browser). */
+  pinned: boolean;
+  /** Unix ms of the last activation - the LRU rule suspends the oldest. */
   lastActive: number;
 }
 

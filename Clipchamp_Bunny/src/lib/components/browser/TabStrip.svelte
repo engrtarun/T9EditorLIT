@@ -75,6 +75,22 @@
         {icon ? tab.title || hostOf(icon) : 'New tab'}
       </span>
 
+      {#if tab.pinned}
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linejoin="round"
+          class="shrink-0 text-nc-brand"
+          aria-label="Pinned tab"
+        >
+          <path d="M9 3h6l-1 5 3 3H7l3-3-1-5zM12 11v9" />
+        </svg>
+      {/if}
+
       <!-- close — visible on the active tab, on hover for the rest -->
       <button
         type="button"

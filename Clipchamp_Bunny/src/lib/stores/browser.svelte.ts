@@ -15,6 +15,7 @@ import {
   browserHide,
   browserStop,
   browserSetZoom,
+  browserSetPinned,
   onBrowserDownload,
   onBrowserExtensions,
   onBrowserNav,
@@ -94,6 +95,7 @@ function makeTab(url: string): BrowserTab {
     favicon: null,
     live: false,
     loading: false,
+    pinned: false,
     lastActive: Date.now()
   };
 }
@@ -605,6 +607,30 @@ class BrowserStore {
   setFavicon(id: string, favicon: string | null): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (tab) tab.favicon = favicon;
+  }
+
+  /**
+   * Pin / unpin a tab. A pinned tab's native webview stays alive while it is
+   * not the active tab (parked at 1×1, low memory), so audio keeps playing —
+   * Firefox's pinned tab, aimed at "YouTube chalta rahe while I edit".
+   *
+   * Not to be confused with a bookmark (Ctrl+D): that is a link on the speed
+   * dial, this is the live page. Session-only, by design — a restart starts
+   * with no pins.
+   */
+  setPinned(id: string, pinned: boolean): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab || tab.pinned === pinned) return;
+    tab.pinned = pinned;
+    if (isTauri()) void browserSetPinned(id, pinned);
+  }
+
+  /** The menu's Pin/Unpin row. Returns the tab's state after the toggle. */
+  togglePin(): boolean {
+    const tab = this.active;
+    if (!tab) return false;
+    this.setPinned(tab.id, !tab.pinned);
+    return tab.pinned;
   }
 
   /**

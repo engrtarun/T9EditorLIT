@@ -9,7 +9,7 @@
    *
    * What is inside mirrors Firefox's application menu, minus the things this
    * browser genuinely does not have (private windows, passwords, Sync,
-   * add-on store). uBlock Origin is the one add-on; its real status lives in
+   * add-on store). uBlock Origin Lite is the one add-on; its real status lives in
    * BrowserSettings, so "Add-ons" and "Settings" are one truthful section
    * instead of two empty ones.
    */
@@ -30,6 +30,7 @@
       | 'downloads'
       | 'history'
       | 'bookmark'
+      | 'pin'
       | 'home'
       | 'source'
       | 'page-download'
@@ -75,6 +76,19 @@
         if (!t) return;
         const added = browser.toggleBookmark(t.url, t.title);
         toast.push('info', added ? `★ ${t.title} bookmark` : 'Bookmark hata diya');
+      }
+    },
+    {
+      id: 'pin',
+      label: tab?.pinned ? 'Unpin tab' : 'Pin tab (background me chale)',
+      active: !!tab?.pinned,
+      disabled: !canPage,
+      run: () => {
+        const pinned = browser.togglePin();
+        toast.push(
+          'info',
+          pinned ? '📌 Tab pin — dusre tab me bhi chalta rahega' : 'Pin hata diya'
+        );
       }
     },
     {
@@ -265,6 +279,16 @@
                   ><path
                     d="M12 4l2.35 4.76 5.25.76-3.8 3.7.9 5.23L12 15.98l-4.7 2.47.9-5.23-3.8-3.7 5.25-.76z"
                   /></svg
+                >
+              {:else if item.id === 'pin'}
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill={item.active ? 'currentColor' : 'none'}
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                  stroke-linejoin="round"><path d="M9 3h6l-1 5 3 3H7l3-3-1-5zM12 11v9" /></svg
                 >
               {:else if item.id === 'home'}
                 <svg

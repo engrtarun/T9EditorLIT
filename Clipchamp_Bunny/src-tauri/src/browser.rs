@@ -34,6 +34,7 @@
 //!                           URL to the Go daemon's multi-segment
 //!                           downloader instead        { url, referer }
 
+use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -92,6 +93,36 @@ pub struct TitlePayload {
     pub title: String,
 }
 
+/// A key combo the page webview sent through the document-start shim. The
+/// action names are the same ones `src/lib/browser-keys.ts` resolves, so one
+/// dep table in App.svelte serves both the DOM and the native path.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyPayload {
+    pub id: String,
+    pub action: String,
+    /// 0-based tab index, -1/+1 tab move, force-reload flag, or zoom direction.
+    pub value: Option<i32>,
+}
+
+/// A message from `browser_shim.js`. `t9` is the marker that keeps a page's
+/// own `postMessage` traffic from being mistaken for a browser command.
+#[derive(serde::Deserialize)]
+struct ShimMessage {
+    t9: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    value: Option<i32>,
+}
+
+/// The document-start script: new-window links → `browser:popup`, Firefox
+/// keys → `browser:key`. Compiled into the binary, so it can never drift from
+/// the build that ships it.
+const SHIM: &str = include_str!("browser_shim.js");
+
 /// A file WebView2 wanted to download. The referer is the tab's current URL:
 /// some hosts refuse a download that arrives with no referrer.
 #[derive(Clone, Serialize)]
@@ -118,6 +149,11 @@ pub struct ContentRect {
 pub struct BrowserState {
     rect: Mutex<ContentRect>,
     active: Mutex<String>,
+    /// Tabs the user pinned: their webview is never destroyed while another
+    /// tab is active, so audio and page state keep running (Firefox's pinned
+    /// tab, which is what "listen to YouTube for hours" actually needs).
+    /// Session-only: a restart starts with no pins.
+    pinned: Mutex<HashSet<String>>,
 }
 
 impl Default for BrowserState {
@@ -125,8 +161,18 @@ impl Default for BrowserState {
         Self {
             rect: Mutex::new(ContentRect::default()),
             active: Mutex::new(String::new()),
+            pinned: Mutex::new(HashSet::new()),
         }
     }
+}
+
+/// Read the pinned set without letting a poisoned lock break a command.
+fn pinned_ids<R: Runtime>(app: &tauri::AppHandle<R>) -> HashSet<String> {
+    app.state::<BrowserState>()
+        .pinned
+        .lock()
+        .map(|set| set.clone())
+        .unwrap_or_default()
 }
 
 fn set_active<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) {
@@ -173,12 +219,16 @@ fn tabs_profile_dir<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<std::path:
     None
 }
 
-/// Where the Go daemon unpacks uBlock Origin.
+/// Where the Go daemon unpacks uBlock Origin Lite.
 ///
 /// Both processes resolve this folder themselves — the daemon writes it, the
 /// webview reads it — so neither has to ask the other before a tab opens.
-/// `%LOCALAPPDATA%\T9EditorLIT\ublock\extensions` on Windows; the daemon's
+/// `%LOCALAPPDATA%\T9EditorLIT\ublock\extensions-mv3` on Windows; the daemon's
 /// `os.UserCacheDir()` lands on the same `%LOCALAPPDATA%`.
+///
+/// The `-mv3` suffix is deliberate: Chromium 139+ refuses Manifest V2
+/// extensions, so the old `extensions/uBlock0.chromium` folder must never be
+/// scanned again. A fresh path is the cleanest way to guarantee that.
 ///
 /// `None` means "not unpacked yet" (first run, offline, or a failed update):
 /// the webview is then created without extensions instead of pointing WebView2
@@ -186,8 +236,8 @@ fn tabs_profile_dir<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<std::path:
 #[cfg(target_os = "windows")]
 fn extensions_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
     let base = app.path().local_data_dir().ok()?;
-    let dir = base.join("T9EditorLIT").join("ublock").join("extensions");
-    if dir.join("uBlock0.chromium").join("manifest.json").is_file() {
+    let dir = base.join("T9EditorLIT").join("ublock").join("extensions-mv3");
+    if dir.join("uBOLite.chromium").join("manifest.json").is_file() {
         Some(dir)
     } else {
         None
@@ -387,6 +437,192 @@ fn extensions_dir<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<std::path::P
     None
 }
 
+/// Collapse a live but not-visible webview: 1×1 px, and tell WebView2 to trim.
+/// Audio and timers keep running (the page is still "visible" to Chromium), but
+/// it paints nothing and cannot sit above the active tab.
+fn park_webview<R: Runtime>(webview: &Webview<R>) {
+    let _ = webview.set_size(LogicalSize::new(1.0, 1.0));
+    set_memory_target(webview, true);
+}
+
+/// Interpret one message from `browser_shim.js`.
+///
+/// The tab id comes from the webview closure, never from the payload: a page
+/// can only act as the tab it is.
+fn handle_shim_message<R: Runtime>(app: &tauri::AppHandle<R>, id: &str, raw: &str) {
+    let Ok(msg) = serde_json::from_str::<ShimMessage>(raw) else {
+        return;
+    };
+    match msg.t9.as_str() {
+        "open" => {
+            let Some(url) = msg.url else { return };
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                return;
+            }
+            diag(&format!("event popup {id} -> {url}"));
+            let _ = app.emit(
+                "browser:popup",
+                NavPayload {
+                    id: id.to_string(),
+                    url,
+                },
+            );
+        }
+        "key" => {
+            let Some(action) = msg.action else { return };
+            diag(&format!("event key {id} -> {action} {:?}", msg.value));
+            let _ = app.emit(
+                "browser:key",
+                KeyPayload {
+                    id: id.to_string(),
+                    action,
+                    value: msg.value,
+                },
+            );
+        }
+        _ => {}
+    }
+}
+
+/// Wire a freshly created page webview to the app: keyboard bridge, browser
+/// accelerators off, notification permission, and a notification log line.
+///
+/// Safe to call only after `add_child` succeeded; every step is best-effort so
+/// an older WebView2 runtime degrades to "no notifications"/"no shortcut
+/// bridge" instead of losing the tab.
+#[cfg(target_os = "windows")]
+fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>, id: &str) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2PermissionRequestedEventArgs2, ICoreWebView2Settings3, ICoreWebView2_24,
+        COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION,
+        COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+    };
+    use webview2_com::{
+        take_pwstr, NotificationReceivedEventHandler, PermissionRequestedEventHandler,
+        WebMessageReceivedEventHandler,
+    };
+    use windows::core::{Interface, PWSTR};
+
+    let label = webview.label().to_string();
+    let msg_app = app.clone();
+    let msg_id = id.to_string();
+    let note_id = id.to_string();
+
+    let posted = webview.with_webview(move |pw| unsafe {
+        let Ok(core) = pw.controller().CoreWebView2() else {
+            diag("configure -> CoreWebView2 unavailable");
+            return;
+        };
+
+        // WebView2's own Ctrl+F / Ctrl+R / Ctrl+P / F5 would fire before the
+        // page sees the key, which is why the shim never received them.
+        if let Ok(settings) = core.Settings() {
+            if let Ok(s3) = settings.cast::<ICoreWebView2Settings3>() {
+                match s3.SetAreBrowserAcceleratorKeysEnabled(false) {
+                    Ok(()) => diag(&format!("accelerators {label} -> off")),
+                    Err(err) => diag(&format!("accelerators {label} ERR {err}")),
+                }
+            }
+        }
+
+        // The page -> Rust bridge behind new-window links and browser keys.
+        let mut bridge_token = 0i64;
+        let bridge = WebMessageReceivedEventHandler::create(Box::new(move |_sender, args| {
+            if let Some(args) = args {
+                let mut raw = PWSTR::null();
+                if args.TryGetWebMessageAsString(&mut raw).is_ok() {
+                    handle_shim_message(&msg_app, &msg_id, &take_pwstr(raw));
+                }
+            }
+            Ok(())
+        }));
+        if core
+            .add_WebMessageReceived(&bridge, &mut bridge_token)
+            .is_err()
+        {
+            diag(&format!("shim bridge {label} ERR"));
+        }
+
+        // Site notifications (YouTube's bell, web chat). The browser has one
+        // user and no second profile, so the permission prompt is noise:
+        // grant it. WebView2 then paints the native Windows toast.
+        let mut perm_token = 0i64;
+        let perm = PermissionRequestedEventHandler::create(Box::new(|_sender, args| {
+            if let Some(args) = args {
+                let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+                if args.PermissionKind(&mut kind).is_ok()
+                    && kind == COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS
+                {
+                    let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+                    // `Handled` lives on the _2 interface; the base one only
+                    // carries State. Marking it handled suppresses WebView2's
+                    // own prompt, which a single-user browser does not need.
+                    if let Ok(args2) = args.cast::<ICoreWebView2PermissionRequestedEventArgs2>() {
+                        let _ = args2.SetHandled(true);
+                    }
+                }
+            }
+            Ok(())
+        }));
+        let _ = core.add_PermissionRequested(&perm, &mut perm_token);
+
+        // Handled stays FALSE on purpose: that is what makes WebView2 show its
+        // default notification UI. This handler only writes the diag proof.
+        if let Ok(core24) = core.cast::<ICoreWebView2_24>() {
+            let mut note_token = 0i64;
+            let note = NotificationReceivedEventHandler::create(Box::new(move |_sender, args| {
+                if let Some(args) = args {
+                    if let Ok(note) = args.Notification() {
+                        let mut title = PWSTR::null();
+                        let mut body = PWSTR::null();
+                        let _ = note.Title(&mut title);
+                        let _ = note.Body(&mut body);
+                        diag(&format!(
+                            "event notification {note_id} -> {} | {}",
+                            take_pwstr(title),
+                            take_pwstr(body)
+                        ));
+                    }
+                }
+                Ok(())
+            }));
+            let _ = core24.add_NotificationReceived(&note, &mut note_token);
+        }
+    });
+    if posted.is_err() {
+        diag("configure -> webview was not available");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_tab_webview<R: Runtime>(_app: &tauri::AppHandle<R>, _webview: &Webview<R>, _id: &str) {}
+
+/// Ctrl+L from inside a page: move WebView2's focus back to the shell, so the
+/// address-bar input the frontend focuses actually receives the typing. The
+/// page webview owns the OS focus until this runs, which is why focusing the
+/// DOM input alone left the caret in the page.
+#[tauri::command]
+pub async fn browser_focus_shell(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "main window missing".to_string())?;
+    let Some(shell) = window.webviews().into_iter().find(|w| w.label() == "main") else {
+        return Ok(());
+    };
+    #[cfg(target_os = "windows")]
+    shell
+        .with_webview(|pw| unsafe {
+            use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC;
+            let _ = pw
+                .controller()
+                .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+        })
+        .map_err(|e| e.to_string())?;
+    #[cfg(not(target_os = "windows"))]
+    let _ = shell;
+    Ok(())
+}
+
 /// Show one tab: destroy/collapse every other tab's webview, then create,
 /// navigate, or simply uncover this one.
 ///
@@ -432,9 +668,12 @@ pub async fn browser_show(
 
     // A blank/new tab has nothing to show: the speed dial is plain DOM in
     // the main webview, so the right action is to sweep any live page
-    // webview and stop. This is what makes an empty tab cost 0 MB.
+    // webview and stop. This is what makes an empty tab cost 0 MB. Pinned
+    // tabs are the exception - they stay alive (parked at 1×1) so the music
+    // keeps playing behind the speed dial.
     if url.is_empty() || url == "about:blank" {
-        destroy_others(&window, &[]);
+        let pinned = pinned_ids(&app);
+        destroy_others(&window, &[], &pinned);
         set_active(&app, "");
         diag("show blank -> swept");
         return Ok(());
@@ -453,12 +692,20 @@ pub async fn browser_show(
     let parsed = Url::parse(&url).map_err(|e| format!("invalid url: {e}"))?;
     let label = label_for(&id);
 
-    // The keep-alive set: the target plus the tab the user just left. The
-    // live set never exceeds two webviews, and the kept one is inert.
+    // The keep-alive set: the target, the tab the user just left, and every
+    // pinned tab. Without pins the live set never exceeds two webviews; a pin
+    // is the user's explicit exception, because "listen to YouTube for hours"
+    // needs the page alive. Pinned-but-hidden webviews are parked at 1×1.
     let mut keep_labels: Vec<String> = vec![label.clone()];
     if let Some(extra) = &keep {
         for tab_id in extra {
             keep_labels.push(label_for(tab_id));
+        }
+    }
+    for tab_id in pinned_ids(&app) {
+        let pinned_label = label_for(&tab_id);
+        if !keep_labels.iter().any(|k| k == &pinned_label) {
+            keep_labels.push(pinned_label);
         }
     }
 
@@ -472,11 +719,7 @@ pub async fn browser_show(
             // origin. Rendering cost ≈ 0, scroll position and page state
             // intact, and z-order stops mattering because a collapsed
             // webview is effectively invisible.
-            let _ = webview.set_size(tauri::LogicalSize::new(1.0, 1.0));
-            // Half of the RAM contract: a page that is kept but not visible
-            // tells WebView2 to trim. The 1×1 size stops it painting; this
-            // stops it hoarding.
-            set_memory_target(&webview, true);
+            park_webview(&webview);
         } else {
             let _ = webview.close();
         }
@@ -539,6 +782,11 @@ pub async fn browser_hide(app: tauri::AppHandle, id: String) -> Result<(), Strin
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
+    // A closed tab is never pinned any more: drop it from the keep set first,
+    // or the next show would park a webview for a tab that no longer exists.
+    if let Ok(mut set) = app.state::<BrowserState>().pinned.lock() {
+        set.remove(&id);
+    }
     let label = label_for(&id);
     if let Some(webview) = find_tab(&window, &label) {
         let _ = webview.close();
@@ -563,11 +811,63 @@ pub async fn browser_view_closed(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
-    destroy_others(&window, &[]);
+    // Pinned tabs are the one thing that survives leaving the browser: that
+    // is what "pin YouTube and keep listening while editing" means. They are
+    // parked at 1×1 (so they can never paint over the editor) and told to
+    // trim; every unpinned webview is destroyed as before.
+    let pinned = pinned_ids(&app);
+    destroy_others(&window, &[], &pinned);
     if let Ok(mut a) = app.state::<BrowserState>().active.lock() {
         *a = String::new();
     }
-    diag("view closed -> swept all");
+    diag(&format!(
+        "view closed -> swept all, {} pinned kept",
+        pinned.len()
+    ));
+    Ok(())
+}
+
+/// Pin or unpin a tab.
+///
+/// A pinned tab's webview survives every tab switch (and leaving the browser),
+/// parked at 1×1 with WebView2's low-memory target, so audio keeps playing
+/// while the tab is out of sight. Unpinning makes it ordinary again: if it is
+/// not the active tab, its webview is destroyed right away, exactly like any
+/// other background tab.
+#[tauri::command]
+pub async fn browser_set_pinned(
+    app: tauri::AppHandle,
+    id: String,
+    pinned: bool,
+) -> Result<(), String> {
+    if let Ok(mut set) = app.state::<BrowserState>().pinned.lock() {
+        if pinned {
+            set.insert(id.clone());
+        } else {
+            set.remove(&id);
+        }
+    }
+
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "main window missing".to_string())?;
+    let label = label_for(&id);
+    let active = app
+        .state::<BrowserState>()
+        .active
+        .lock()
+        .map(|a| a.clone())
+        .unwrap_or_default();
+
+    match find_tab(&window, &label) {
+        Some(webview) if active != label && pinned => park_webview(&webview),
+        Some(webview) if active != label => {
+            let _ = webview.close();
+        }
+        _ => {}
+    }
+
+    diag(&format!("pin {id} -> {pinned}"));
     Ok(())
 }
 
@@ -636,11 +936,17 @@ fn find_tab<R: Runtime>(window: &Window<R>, label: &str) -> Option<Webview<R>> {
         .find(|w| w.label() == label)
 }
 
-/// Destroy every `tab-*` child webview not in `keep` (empty = sweep all).
-fn destroy_others<R: Runtime>(window: &Window<R>, keep: &[String]) {
+/// Destroy every `tab-*` child webview not in `keep` (empty = sweep all),
+/// except pinned tabs, which are parked at 1×1 instead of destroyed.
+fn destroy_others<R: Runtime>(window: &Window<R>, keep: &[String], pinned: &HashSet<String>) {
     for webview in window.webviews() {
         let label = webview.label();
-        if label.starts_with("tab-") && !keep.iter().any(|k| k == label) {
+        if !label.starts_with("tab-") || keep.iter().any(|k| k == label) {
+            continue;
+        }
+        if pinned.iter().any(|id| label_for(id) == label) {
+            park_webview(&webview);
+        } else {
             let _ = webview.close();
         }
     }
@@ -660,8 +966,17 @@ fn build_tab_webview<R: Runtime>(
     // allows it; blocking would make the browser useless.
     let nav_app = app.clone();
     let nav_id = id.to_string();
-    let builder = WebviewBuilder::new(label, WebviewUrl::External(url)).on_navigation(
-        move |target: &Url| {
+    let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
+        // New-window links + the Firefox key map, compiled into the binary.
+        // Tauri runs this before any page script, in the main frame only.
+        .initialization_script(SHIM)
+        .on_navigation(move |target: &Url| {
+            // The tab is created at about:blank so the shim is installed
+            // before the first real document; that blank commit is not a
+            // navigation the store should record.
+            if target.scheme() == "about" {
+                return true;
+            }
             diag(&format!("event nav {} -> {target}", nav_id));
             let _ = nav_app.emit(
                 "browser:nav",
@@ -671,8 +986,7 @@ fn build_tab_webview<R: Runtime>(
                 },
             );
             true
-        },
-    );
+        });
 
     // Page-load hook: "Finished" clears the strip's spinner and carries the
     // final URL after redirects. The `webview` argument is the tab itself,
@@ -808,15 +1122,45 @@ fn create_tab_webview<R: Runtime>(
     let position = LogicalPosition::new(rect.x, rect.y);
     let size = LogicalSize::new(rect.width, rect.height);
 
-    match window.add_child(build_tab_webview(app, id, url.clone()), position, size) {
+    // Create at about:blank first: `initialization_script` only applies to
+    // documents created after the webview exists, so the real page is
+    // navigated to *after* the shim is in place. The blank commit costs
+    // nothing and is filtered out of the store's navigation feed.
+    let blank = Url::parse("about:blank").map_err(|e| e.to_string())?;
+
+    match window.add_child(
+        build_tab_webview(app, id, blank.clone()),
+        position,
+        size,
+    ) {
         Ok(webview) => {
             diag("create ok");
+            configure_tab_webview(app, &webview, id);
+            webview.navigate(url).map_err(|e| {
+                diag(&format!("create navigate ERR {e}"));
+                e.to_string()
+            })?;
             Ok(webview)
         }
         Err(first) => {
-            diag(&format!("create ERR {first}"));
-            if EXTENSIONS_OFF.load(Ordering::Relaxed) || extensions_dir(app).is_none() {
-                return Err(first.to_string());
+            let message = first.to_string();
+            diag(&format!("create ERR {message}"));
+            // A duplicate label is a race with another show for the same tab,
+            // not an extension problem. Hand back the child that won - and
+            // never let this disable extensions for the whole process (that
+            // one misread kept uBlock off for the rest of a session).
+            if message.contains("already exists") {
+                if let Some(existing) = find_tab(window, &label_for(id)) {
+                    return Ok(existing);
+                }
+            }
+            let environment_mismatch =
+                message.contains("0x8007139F") || message.contains("0x8007139f");
+            if !environment_mismatch
+                || EXTENSIONS_OFF.load(Ordering::Relaxed)
+                || extensions_dir(app).is_none()
+            {
+                return Err(message);
             }
             // The folder exists but the runtime would not create an
             // extensions-enabled environment. Remember it so the next tab
@@ -824,12 +1168,20 @@ fn create_tab_webview<R: Runtime>(
             EXTENSIONS_OFF.store(true, Ordering::Relaxed);
             diag("extensions -> disabled after create failure; retrying tab");
             window
-                .add_child(build_tab_webview(app, id, url), position, size)
+                .add_child(build_tab_webview(app, id, blank), position, size)
                 .map_err(|second| {
                     diag(&format!("create retry ERR {second}"));
                     second.to_string()
                 })
-                .inspect(|_| diag("create ok (extensions off)"))
+                .and_then(|webview| {
+                    diag("create ok (extensions off)");
+                    configure_tab_webview(app, &webview, id);
+                    webview.navigate(url).map_err(|e| {
+                        diag(&format!("create navigate ERR {e}"));
+                        e.to_string()
+                    })?;
+                    Ok(webview)
+                })
         }
     }
 }

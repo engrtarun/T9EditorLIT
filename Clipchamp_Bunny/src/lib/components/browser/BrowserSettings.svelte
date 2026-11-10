@@ -39,14 +39,14 @@
 </script>
 
 <div class="grid gap-3">
-  <!-- ── Add-ons: uBlock Origin ─────────────────────────────────────────── -->
+  <!-- ── Add-ons: uBlock Origin Lite ────────────────────────────────────── -->
   <section aria-label="Add-ons">
     <div class="flex items-center gap-1.5">
       <span
         class="rounded bg-nc-brand/20 px-1 py-0.5 text-[9px] font-semibold tracking-wide text-nc-brand uppercase"
         >add-on</span
       >
-      <span class="text-[11px] font-semibold text-nc-txt">uBlock Origin</span>
+      <span class="text-[11px] font-semibold text-nc-txt">uBlock Origin Lite</span>
       {#if ublock.version}
         <span class="text-[10px] text-nc-mut-2">v{ublock.version}</span>
       {/if}
