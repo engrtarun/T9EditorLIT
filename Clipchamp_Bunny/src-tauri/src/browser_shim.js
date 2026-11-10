@@ -36,6 +36,82 @@
     }
   };
 
+  /* ── SPA URL changes ─────────────────────────────────────────────────
+   * YouTube moves from one video to the next with history.pushState: the
+   * document never navigates, so WebView2's navigation event never fires and
+   * the tab strip keeps showing the old URL. That stale URL is also what made
+   * a pinned video jump back to the home page when the browser view was
+   * remounted. Report every real URL change to Rust; it updates the tab.
+   */
+  let lastHref = location.href;
+  const reportUrl = () => {
+    try {
+      if (location.href !== lastHref) {
+        lastHref = location.href;
+        send({ t9: 'url', url: lastHref });
+      }
+    } catch (e) {
+      /* about:blank or a document being torn down */
+    }
+  };
+  for (const name of ['pushState', 'replaceState']) {
+    try {
+      const original = history[name];
+      if (typeof original !== 'function') continue;
+      history[name] = function (...args) {
+        const result = original.apply(this, args);
+        reportUrl();
+        return result;
+      };
+    } catch (e) {
+      /* a page froze history; its real navigations still work */
+    }
+  }
+  window.addEventListener('popstate', reportUrl, true);
+  window.addEventListener('hashchange', reportUrl, true);
+
+  /* ── YouTube in-stream ads ───────────────────────────────────────────
+   * uBlock Origin Lite strips YouTube's ad placement data with its own
+   * scriptlet, but only with host access. When the extension is in Basic
+   * mode, or off after the environment fallback, the player still receives
+   * `adPlacements` / `playerAds` and plays the ad. This is the same fix
+   * uBO uses: prune those keys from the player response before YouTube's
+   * code reads them. An ad-free response is a normal response - nothing
+   * else in the JSON changes.
+   */
+  if (/(^|\.)youtube\.com$/.test(location.hostname)) {
+    const AD_KEYS = ['adPlacements', 'adSlots', 'playerAds', 'adBreakHeartbeatParams'];
+    const pruneAds = (data, depth) => {
+      if (!data || typeof data !== 'object' || depth > 3) return data;
+      for (const key of AD_KEYS) {
+        if (key in data) {
+          try {
+            delete data[key];
+          } catch (e) {
+            /* frozen object: the page wins, ads stay */
+          }
+        }
+      }
+      if (data.playerResponse && typeof data.playerResponse === 'object') {
+        pruneAds(data.playerResponse, depth + 1);
+      }
+      return data;
+    };
+    try {
+      const parse = JSON.parse;
+      JSON.parse = function (text, reviver) {
+        const parsed = parse.call(this, text, reviver);
+        try {
+          return pruneAds(parsed, 0);
+        } catch (e) {
+          return parsed;
+        }
+      };
+    } catch (e) {
+      /* a page that locked JSON.parse: ads stay, everything else works */
+    }
+  }
+
   /* ── new-window links ──────────────────────────────────────────────── */
 
   const base = () => document.baseURI || location.href;

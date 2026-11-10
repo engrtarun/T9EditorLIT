@@ -71,7 +71,7 @@ reason is written) · **⛔ not available** (with the reason).
 
 | Key                                                    | Firefox action        | T9 browser view                                                                                              |
 | ------------------------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Ctrl + = / Ctrl + Shift + = / Ctrl + - / Ctrl + 0      | Zoom in / out / reset | ✅ real page zoom inside the child webview (0.2 … 10, 20 % steps)                                            |
+| Ctrl + = / Ctrl + Shift + = / Ctrl + - / Ctrl + 0      | Zoom in / out / reset | ✅ real page zoom inside the child webview (0.2 … 10, 20 % steps), kept per tab; the URL bar shows a `%` chip only when it is not 100 % and one click resets it |
 | F12 / Ctrl + Shift + I / K / C / E / J / M / S         | DevTools suite        | ⛔ release builds compile devtools out, and Tauri documents child-webview devtools as unsupported on Windows |
 | Ctrl + Shift + A                                       | Add-ons manager       | ⛔ there is no add-on system                                                                                 |
 | F7                                                     | Caret browsing        | ⛔ WebView2 has no caret-browsing API                                                                        |

@@ -76,11 +76,12 @@
       SHORTCUTS
     </p>
     <div class="dial-in dial-in-2 grid grid-cols-3 gap-1 sm:grid-cols-6">
-      {#each SPEED_DIAL as site (site.url)}
+      {#each SPEED_DIAL as site, i (site.url)}
         <button
           type="button"
           onclick={() => open(site.url)}
-          class="group flex flex-col items-center gap-2 rounded-xl px-1 py-2.5 transition-colors hover:bg-nc-panel-2"
+          style="--i: {i}"
+          class="dial-card group flex flex-col items-center gap-2 rounded-xl px-1 py-2.5 transition-colors hover:bg-nc-panel-2"
           title="{site.url} — in-built browser me khulega"
         >
           <span
@@ -102,12 +103,13 @@
         BOOKMARKS · CTRL + D
       </p>
       <div class="grid grid-cols-3 gap-1 sm:grid-cols-6">
-        {#each browser.bookmarks as site (site.url)}
+        {#each browser.bookmarks as site, i (site.url)}
           <div class="group relative">
             <button
               type="button"
               onclick={() => open(site.url)}
-              class="flex w-full flex-col items-center gap-2 rounded-xl px-1 py-2.5 transition-colors hover:bg-nc-panel-2"
+              style="--i: {i}"
+              class="dial-card flex w-full flex-col items-center gap-2 rounded-xl px-1 py-2.5 transition-colors hover:bg-nc-panel-2"
               title="{site.url} — bookmark"
             >
               <span
@@ -139,11 +141,12 @@
     {#if pinnedTools.items.length > 0}
       <p class="mt-6 mb-2 px-1 text-[10px] font-bold tracking-widest text-nc-mut-2">AAPKE PINS</p>
       <div class="grid grid-cols-3 gap-1 sm:grid-cols-6">
-        {#each pinnedTools.items as site (site.id)}
+        {#each pinnedTools.items as site, i (site.id)}
           <button
             type="button"
             onclick={() => open(site.url)}
-            class="group flex flex-col items-center gap-2 rounded-xl px-1 py-2.5 transition-colors hover:bg-nc-panel-2"
+            style="--i: {i}"
+            class="dial-card group flex flex-col items-center gap-2 rounded-xl px-1 py-2.5 transition-colors hover:bg-nc-panel-2"
             title="{site.url} — in-built browser me khulega"
           >
             <span
@@ -180,24 +183,36 @@
 
 <style>
   /*
-   * One restrained entrance: a 6 px rise and a fade, once, staggered in three
-   * steps. No looping gradient, no scale bounce, no shimmer - a new tab is a
-   * quiet place, and the animation exists only to hide the one-frame blank
-   * that a native-page webview unmount leaves behind.
+   * A short 3D entrance, not a bounce: the page tips forward out of the
+   * screen once (rotateX + a little depth), and the shortcut tiles follow in
+   * a 45 ms stagger, furthest-back first. It covers the one-frame blank that
+   * a native-page webview unmount leaves behind, then stops — a new tab is a
+   * quiet place, so nothing loops and nothing bounces.
    */
   @keyframes t9-dial-in {
     from {
       opacity: 0;
-      transform: translateY(6px);
+      transform: perspective(900px) rotateX(10deg) translate3d(0, 12px, -30px);
     }
     to {
       opacity: 1;
-      transform: translateY(0);
+      transform: perspective(900px) rotateX(0deg) translate3d(0, 0, 0);
+    }
+  }
+
+  @keyframes t9-dial-card {
+    from {
+      opacity: 0;
+      transform: perspective(640px) rotateX(30deg) translate3d(0, 14px, -24px) scale(0.94);
+    }
+    to {
+      opacity: 1;
+      transform: perspective(640px) rotateX(0deg) translate3d(0, 0, 0) scale(1);
     }
   }
 
   .dial-in {
-    animation: t9-dial-in 220ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+    animation: t9-dial-in 280ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
   }
 
   .dial-in-1 {
@@ -208,8 +223,15 @@
     animation-delay: 90ms;
   }
 
+  .dial-card {
+    transform-origin: 50% 100%;
+    animation: t9-dial-card 380ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+    animation-delay: calc(140ms + var(--i, 0) * 45ms);
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .dial-in {
+    .dial-in,
+    .dial-card {
       animation: none;
     }
   }

@@ -73,6 +73,9 @@ mod browser;
 /// Downloader settings (SQLite is the durable copy; the daemon is told).
 mod dl_settings;
 
+/// Native OS notifications for events that finish while the app is hidden.
+mod notify;
+
 /// Rounded corners + no 1 px frame on the undecorated window (Windows only).
 #[cfg(target_os = "windows")]
 mod window_chrome;
@@ -1586,6 +1589,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(memory::MemoryProbe::new()))
         .manage(Mutex::new(NetworkProbe::new()))
         .manage(AppStorageProbe::new())
@@ -1664,7 +1668,8 @@ pub fn run() {
             browser::browser_set_rect,
             browser::browser_stop,
             dl_settings::dl_settings_get,
-            dl_settings::dl_settings_save
+            dl_settings::dl_settings_save,
+            notify::app_notify
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

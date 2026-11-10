@@ -182,7 +182,7 @@
         onclick={() =>
           void downloads.persistSettings({ notifyDone: !downloads.settings.notifyDone })}
         class="flex items-center gap-1.5 text-[11px] text-nc-mut hover:text-nc-txt"
-        title="Download pura hone par toast"
+        title="Download shuru hone par, aur 1 GB se bada ho to poora hone par bhi OS notification"
       >
         <span
           class="relative h-3.5 w-6 rounded-full transition-colors {downloads.settings.notifyDone
@@ -196,7 +196,7 @@
               : 'left-0.5'}"
           ></span>
         </span>
-        Done hone par batao
+        Start + done notify
       </button>
     </div>
     <p class="mt-1 text-[10px] text-nc-mut-2">

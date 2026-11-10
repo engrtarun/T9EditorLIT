@@ -109,8 +109,32 @@ one kept at 1×1 px), with the kept one set to
 
 The one exception is a **pinned tab**: it is the user's explicit "keep this
 alive" (YouTube playing while another tab is open, or while editing). A pinned
-webview is parked at 1×1 and set to `LOW`, so it costs no pixels and no
-render work, but audio and page state keep running.
+webview is parked at 1×1 like any kept tab, but it is **not** pushed to `LOW` —
+`LOW` is a hint the renderer may act on by throttling work, and the whole point
+of a pin is that the page keeps running at full speed. It costs no pixels and
+no render work; audio, timers and page state keep running.
+
+## The native safety net
+
+uBOL is the primary blocker, but two states leave it unable to filter and
+neither is visible in the UI:
+
+- **Basic mode**: the extension has DNR rulesets but no host permission;
+- **extensions-off fallback**: WebView2 refused the extensions-enabled
+  environment, so no extension runs at all.
+
+So the browser enforces two more layers itself, in `browser.rs` and
+`browser_shim.js`:
+
+| Layer | What it catches | Why it is safe |
+| --- | --- | --- |
+| Tracking prevention `STRICT` (`ICoreWebView2Profile3`) | Known cross-site trackers Chromium already classifies | First-party content is never touched |
+| Native request shield (`WebResourceRequested` → 403) | Ad-only hosts (`doubleclick.net`, `googlesyndication.com`, …) and YouTube's `/pagead/`, `/ptracking`, `/api/stats/ads` | The host list excludes `googlevideo.com`/`ytimg.com`, so playback is never on the block list |
+| YouTube player-response prune (document-start shim) | In-stream ads: `adPlacements`, `adSlots`, `playerAds`, `adBreakHeartbeatParams` are deleted from parsed JSON on `youtube.com` | The same keys uBO's own scriptlet deletes; an ad-free response is a normal response |
+
+Every block is written to `browser-diag.log` (`ad shield -> N blocked`), which
+is how "is it actually filtering?" is answered without guessing.
+
 
 ## Why tabs have their own WebView2 profile
 

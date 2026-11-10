@@ -13,11 +13,15 @@
  */
 
 import type { DownloadItem, DownloadSettings } from '../types';
-import { dlSettingsGet, dlSettingsSave, isTauri } from '../ipc';
+import { appNotify, dlSettingsGet, dlSettingsSave, isTauri } from '../ipc';
+import { fmtBytes } from '../dashboard';
 import { toast } from './toast.svelte';
 
 const DAEMON = 'http://127.0.0.1:7878';
 const POLL_MS = 800;
+
+/** The "big file" line the user asked for: end toast + OS notification. */
+const BIG_DOWNLOAD = 1024 ** 3;
 
 /**
  * What a fresh install uses until the first save. This mirrors the Rust
@@ -183,9 +187,14 @@ class DownloadsStore {
         const body = (await res.json().catch(() => null)) as { error?: string } | null;
         throw new Error(body?.error ?? `daemon refused the download (${res.status})`);
       }
+      // The daemon answers with the row it accepted, so the start notification
+      // can carry the real filename and the size it measured. A response with
+      // no body still means "accepted" — fall back to the URL's last segment.
+      const accepted = (await res.json().catch(() => null)) as DownloadItem | null;
       this.open = true;
       this.syncTimer();
       await this.poll();
+      this.notifyStart(accepted, url);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.failed = [
@@ -277,7 +286,8 @@ class DownloadsStore {
    * A finished row is a file the user was waiting for. The panel is often
    * closed by then (the download keeps running in the daemon), so completion
    * has to reach them where they are: one toast, once, and only if they asked
-   * for it.
+   * for it. A file over 1 GB also gets an OS notification — those are the
+   * downloads that finish while the app is in the background.
    */
   private noteCompletions(list: DownloadItem[]): void {
     for (const item of list) {
@@ -289,12 +299,31 @@ class DownloadsStore {
         this.settings.notifyDone
       ) {
         toast.push('cut', `${item.filename} download ho gaya`, 5000);
+        if (item.totalBytes >= BIG_DOWNLOAD) {
+          void appNotify(
+            'Download poora hua',
+            `${item.filename} · ${fmtBytes(item.totalBytes)} — Downloads folder me hai`
+          );
+        }
       }
       this.lastStatus.set(item.id, item.status);
     }
     for (const id of [...this.lastStatus.keys()]) {
       if (!list.some((i) => i.id === id)) this.lastStatus.delete(id);
     }
+  }
+
+  /**
+   * The download began. Windows' notification centre is the only surface
+   * that reaches the user when the panel is behind the editor, so every
+   * accepted start gets one line there. Respects the single "notify me"
+   * switch the settings row already owns.
+   */
+  private notifyStart(item: DownloadItem | null, url: string): void {
+    if (!this.settings.notifyDone) return;
+    const name = item?.filename || fileNameOf(url);
+    const size = item && item.totalBytes > 0 ? ` · ${fmtBytes(item.totalBytes)}` : '';
+    void appNotify('Download shuru', `${name}${size}`);
   }
 
   /** A hidden id that fell out of the daemon's list must not leak forever. */

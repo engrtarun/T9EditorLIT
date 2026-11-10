@@ -46,6 +46,21 @@
     const added = browser.toggleBookmark(t.url, t.title);
     toast.push('info', added ? `★ ${t.title} bookmark` : 'Bookmark hata diya');
   }
+
+  /**
+   * Pin — Firefox's pinned tab, not a bookmark. The page's webview stays alive
+   * (parked, never trimmed) when you leave the tab or the browser, so a
+   * YouTube video keeps playing while you edit. Click again to unpin.
+   */
+  function togglePin() {
+    const t = tab;
+    if (!t || !t.url || t.url === 'about:blank') return;
+    const pinned = browser.togglePin();
+    toast.push('info', pinned ? '📌 Tab pinned — background me chalta rahega' : 'Pin hata diya');
+  }
+
+  /** The zoom chip's number — Firefox shows the percentage, not a ratio. */
+  const zoomPct = $derived(Math.round(browser.zoomLevel * 100));
 </script>
 
 <form
@@ -95,6 +110,53 @@
     class="min-w-0 flex-1 bg-transparent text-[13px] leading-none text-nc-txt outline-none placeholder:text-nc-mut"
     aria-label="Address bar"
   />
+
+  <!-- Firefox's zoom indicator: absent at 100%, a brand chip otherwise.
+       Clicking it snaps the page back to 100% (Firefox's "Reset zoom"). -->
+  {#if tab && tab.url !== 'about:blank' && zoomPct !== 100}
+    <button
+      type="button"
+      onclick={() => browser.applyZoom(0)}
+      class="shrink-0 rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums
+             text-nc-brand transition-colors hover:bg-nc-line"
+      title="Zoom {zoomPct}% — click to reset to 100%"
+      aria-label="Zoom {zoomPct} percent, click to reset"
+    >
+      {zoomPct}%
+    </button>
+  {/if}
+
+  <!-- pin (not the star): the live page keeps running in the background, so
+       YouTube audio survives a trip to the editor. Immediately left of the
+       bookmark star, where Firefox's pin lives in the address bar. -->
+  <button
+    type="button"
+    onclick={togglePin}
+    disabled={!tab || tab.url === 'about:blank'}
+    class="grid h-5 w-5 shrink-0 place-items-center rounded-full transition-colors hover:bg-nc-line
+           {tab?.pinned ? 'text-nc-brand' : 'text-nc-mut'}
+           disabled:opacity-40 disabled:hover:bg-transparent"
+    title={tab?.pinned ? 'Unpin tab' : 'Pin tab — background me chalta rahega'}
+    aria-label={tab?.pinned ? 'Unpin tab' : 'Pin tab'}
+    aria-pressed={tab?.pinned ?? false}
+  >
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill={tab?.pinned ? 'currentColor' : 'none'}
+      fill-opacity="0.25"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M12 17v5" />
+      <path
+        d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"
+      />
+    </svg>
+  </button>
 
   <!-- bookmark (Ctrl+D) — the Firefox star, live while the page is pinned -->
   <button

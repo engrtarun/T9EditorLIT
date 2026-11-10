@@ -707,6 +707,20 @@ export function dlSettingsSave(settings: DownloadSettings): Promise<DownloadSett
 }
 
 /**
+ * One native OS notification (Rust → Windows notification centre).
+ *
+ * The app's own toast is part of the webview, so it is invisible when the
+ * user is in the editor or in another app — exactly when a long download
+ * starts or finishes. Rust owns the call so the frontend needs no extra
+ * notification package, and a refused toast is swallowed: it is a courtesy,
+ * never part of the download.
+ */
+export function appNotify(title: string, body: string): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('app_notify', { title, body }).catch(() => {});
+}
+
+/**
  * Drain the video paths this process was launched with.
  *
  * The Explorer verb ("Edit with T9 Editor LIT") starts the exe with the
@@ -1188,14 +1202,19 @@ export function statsSet(key: string, value: string): Promise<void> {
 export function browserShow(
   id: string,
   url: string,
-  opts?: { keep?: string[]; force?: boolean }
+  opts?: { keep?: string[]; force?: boolean; resume?: boolean }
 ): Promise<void> {
   if (!isTauri()) return Promise.resolve();
   return invoke<void>('browser_show', {
     id,
     url,
     keep: opts?.keep ?? [],
-    force: opts?.force ?? false
+    force: opts?.force ?? false,
+    // `resume` = "bring this live page back on screen, do not navigate it".
+    // The page, not the store, is where a resumed tab actually is: YouTube
+    // moves with history.pushState, so the store's URL can lag behind. Any
+    // address-bar submit or reload passes false and still navigates.
+    resume: opts?.resume ?? false
   });
 }
 
@@ -1246,6 +1265,16 @@ export function browserSetRect(x: number, y: number, width: number, height: numb
 /** The page navigated itself (link click / redirect) — follow it in the store. */
 export function onBrowserNav(cb: (p: { id: string; url: string }) => void): Promise<() => void> {
   return listen<{ id: string; url: string }>('browser:nav', (e) => cb(e.payload));
+}
+
+/**
+ * An SPA moved the page with `history.pushState` (YouTube video → video).
+ * No navigation event fires for that, so `browser_shim.js` reports the URL
+ * and Rust re-emits it here. Same shape as `browser:nav` on purpose: the
+ * store treats both the same way, so the tab strip can never go stale.
+ */
+export function onBrowserSpa(cb: (p: { id: string; url: string }) => void): Promise<() => void> {
+  return listen<{ id: string; url: string }>('browser:spa', (e) => cb(e.payload));
 }
 
 /**

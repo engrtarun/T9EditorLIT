@@ -21,6 +21,7 @@ import {
   onBrowserNav,
   onBrowserPage,
   onBrowserPopup,
+  onBrowserSpa,
   onBrowserTitle,
   isTauri
 } from '../ipc';
@@ -177,8 +178,18 @@ class BrowserStore {
     if (this.settingsOpen) this.historyOpen = false;
   }
 
-  /** The last zoom the keys set (0.2 … 10) — applied to the active tab on use. */
-  zoomLevel = $state(1);
+  /**
+   * Per-tab page zoom (0.2 … 10). Firefox keeps zoom per tab and shows the
+   * percentage only while it is not 100% — the URL bar reads `zoomLevel` for
+   * the active tab and paints the chip only when it differs from 1.
+   */
+  private zooms = $state<Record<string, number>>({});
+
+  /** The active tab's zoom. `1` = 100%, which the UI treats as "no chip". */
+  get zoomLevel(): number {
+    const tab = this.active;
+    return tab ? (this.zooms[tab.id] ?? 1) : 1;
+  }
 
   /**
    * Per-tab URL history (stack + pointer), kept **out** of `BrowserTab` so
@@ -315,15 +326,19 @@ class BrowserStore {
 
   /**
    * Ctrl+= / Ctrl+- / Ctrl+0 — the page's own zoom, inside the child webview
-   * (WebView2's scale, like Firefox's page zoom). The scale latches on the
-   * active tab; a tab switch shows the new tab at its own default until the
-   * next press — documented in docs/BROWSER_KEYS.md.
+   * (WebView2's scale, like Firefox's page zoom). Firefox keeps this per tab,
+   * so switching back to a tab returns its zoom; a fresh tab starts at 100%.
    */
   applyZoom(dir: -1 | 0 | 1): void {
     const tab = this.active;
     if (!tab) return;
-    this.zoomLevel = dir === 0 ? 1 : Math.min(10, Math.max(0.2, this.zoomLevel + dir * 0.2));
-    void browserSetZoom(tab.id, this.zoomLevel);
+    const current = this.zooms[tab.id] ?? 1;
+    const next = dir === 0 ? 1 : Math.min(10, Math.max(0.2, current + dir * 0.2));
+    // Two decimals: `1 + 0.2 - 0.2` is 0.9999999999999999 in binary floating
+    // point, which would paint "100%" through the `!== 1` test or "99%"
+    // through a round — the chip must say exactly what the page shows.
+    this.zooms[tab.id] = Math.round(next * 100) / 100;
+    void browserSetZoom(tab.id, this.zooms[tab.id]);
   }
 
   /** Ctrl+1..9 — the nth tab (0-based); past the end means the last tab. */
@@ -456,9 +471,13 @@ class BrowserStore {
    * `keep` — extra tab ids whose webview stays alive (collapsed) beyond
    * the show target: the tab the user just left, so switching back is
    * instant. `force` — re-navigate even if the child already shows the
-   * URL (reload, address re-submit).
+   * URL (reload, address re-submit). `resume` — bring a live page back on
+   * screen **without** navigating it; the page, not the store, is the truth
+   * (YouTube moves with pushState and the store's URL can lag one beat).
    */
-  nudge: ((id: string, url: string, keep?: string[], force?: boolean) => void) | null = null;
+  nudge:
+    ((id: string, url: string, keep?: string[], force?: boolean, resume?: boolean) => void) | null =
+    null;
 
   /** A history jump navigates **without** pushing a new history entry. */
   private jump(id: string, url: string): void {
@@ -509,9 +528,11 @@ class BrowserStore {
     tab.lastActive = Date.now();
     // Selecting a tab brings its page on screen. The tab the user just
     // left stays alive but collapsed, so switching back is instant (no
-    // reload) — the live set never exceeds two webviews.
+    // reload) — the live set never exceeds two webviews. `resume`: a live
+    // page is shown where it actually is, never re-navigated from the
+    // store's (possibly one beat stale) URL.
     const keep = prev && prev.id !== id && prev.url !== 'about:blank' ? [prev.id] : [];
-    this.nudge?.(tab.id, tab.url, keep);
+    this.nudge?.(tab.id, tab.url, keep, false, true);
   }
 
   /** Close a tab. Closing the active one activates the neighbour (Firefox rule). */
@@ -533,8 +554,9 @@ class BrowserStore {
       const next = this.tabs[Math.min(i, this.tabs.length - 1)];
       this.activeId = next ? next.id : null;
       // Show the neighbour immediately — without this the content hole
-      // went blank until the user clicked something.
-      if (next) this.nudge?.(next.id, next.url);
+      // went blank until the user clicked something. It is resumed, not
+      // re-navigated: its page may have moved with pushState while hidden.
+      if (next) this.nudge?.(next.id, next.url, undefined, false, true);
     }
   }
 
@@ -634,6 +656,27 @@ class BrowserStore {
   }
 
   /**
+   * Firefox's Duplicate Tab: the same URL in the next slot, active, with the
+   * pin carried over (a pinned video is duplicated as a pinned tab). The page
+   * loads fresh rather than cloning the webview — two live copies of a page is
+   * the one thing the memory budget does not allow.
+   */
+  duplicateTab(id?: string): boolean {
+    const src = id ? this.tabs.find((t) => t.id === id) : this.active;
+    if (!src || this.atCap) return false;
+    const at = this.tabs.findIndex((t) => t.id === src.id);
+    const copy = makeTab(src.url);
+    copy.title = src.title;
+    copy.pinned = src.pinned;
+    this.tabs.splice(at + 1, 0, copy);
+    this.activeId = copy.id;
+    this.push(copy.id, copy.url);
+    if (copy.pinned && isTauri()) void browserSetPinned(copy.id, true);
+    this.nudge?.(copy.id, copy.url);
+    return true;
+  }
+
+  /**
    * The LRU pick for the next suspension: the oldest *live* tab that is not
    * the active one. `null` when there is nothing to suspend (fewer than two
    * live tabs) — the watchdog calls this, and the 500 MB budget holds because
@@ -666,8 +709,8 @@ class BrowserStore {
     // back/forward, reload) funnels through this one function. A failure
     // that used to be swallowed now reaches the user — once per burst,
     // with a sentence that says what to do instead of a raw HRESULT.
-    this.nudge = (id, url, keep, force) => {
-      browserShow(id, url, { keep, force }).catch((err) => {
+    this.nudge = (id, url, keep, force, resume) => {
+      browserShow(id, url, { keep, force, resume }).catch((err) => {
         const tab = this.tabs.find((t) => t.id === id);
         if (tab) tab.loading = false;
         const message = String(err);
@@ -701,6 +744,21 @@ class BrowserStore {
       tab.loading = false;
       tab.live = true;
       if (url && tab.url !== url) tab.url = url;
+    });
+
+    // An SPA moved the page without a navigation (YouTube video → video):
+    // `history.pushState` changes the document URL and WebView2 fires no
+    // event for it. The shim reports it, so the strip stays honest — and a
+    // pinned tab no longer looks like it is still on the video it started
+    // from, which is what sent it back home on remount.
+    void onBrowserSpa(({ id, url }) => {
+      const tab = this.tabs.find((t) => t.id === id);
+      if (!tab || !url || tab.url === url) return;
+      tab.url = url;
+      tab.title = hostOf(url);
+      tab.loading = false;
+      this.push(id, url);
+      this.logVisit(url, tab.title);
     });
 
     // The page's own <title>: the strip and downloads panel prefer it over
@@ -765,7 +823,11 @@ class BrowserStore {
     const tab = this.active;
     if (!tab || !this.nudge) return;
     if (!tab.url || tab.url === 'about:blank') return;
-    this.nudge(tab.id, tab.url);
+    // Resume, never navigate: the browser view was unmounted and remounted,
+    // and the tab's page may be further along than the store knows. This is
+    // the pinned-YouTube case: leaving for the editor and coming back must
+    // not reload the video.
+    this.nudge(tab.id, tab.url, undefined, false, true);
   }
 }
 

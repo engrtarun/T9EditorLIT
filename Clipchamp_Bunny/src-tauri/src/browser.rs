@@ -75,6 +75,86 @@ fn diag(msg: &str) {
     let _ = writeln!(file, "[{ts}] {msg}");
 }
 
+/// Hosts that exist only to serve ads or count users.
+///
+/// uBlock Origin Lite is the primary blocker, but its Basic mode (no host
+/// permission) grants it DNR rules and no site access, and the
+/// extensions-off fallback has no blocker at all. Neither state is visible
+/// in the UI, so the browser refuses the worst offenders itself.
+///
+/// Deliberately no `googlevideo.com` and no `ytimg.com`: the ad stream and
+/// the real stream arrive from the same CDNs, so a host block there would
+/// break playback instead of ads. YouTube's in-stream ads are handled by the
+/// player-response prune in `browser_shim.js`.
+const AD_HOSTS: &[&str] = &[
+    "2mdn.net",
+    "adform.net",
+    "adnxs.com",
+    "adsrvr.org",
+    "amazon-adsystem.com",
+    "casalemedia.com",
+    "criteo.com",
+    "criteo.net",
+    "doubleclick.net",
+    "google-analytics.com",
+    "googleadservices.com",
+    "googlesyndication.com",
+    "googletagmanager.com",
+    "moatads.com",
+    "openx.net",
+    "outbrain.com",
+    "pubmatic.com",
+    "quantserve.com",
+    "rubiconproject.com",
+    "scorecardresearch.com",
+    "serving-sys.com",
+    "smartadserver.com",
+    "taboola.com",
+    "teads.tv",
+    "zedo.com",
+];
+
+/// YouTube's own ad endpoints: they serve an ad click, count an ad view, or
+/// report ad playback. None of them is on the video playback path.
+const AD_PATHS: &[&str] = &["/pagead/", "/ptracking", "/api/stats/ads"];
+
+/// Requests refused by the native ad shield since launch — diag proof that
+/// the shield is doing something, not a counter the UI has to hold.
+static AD_BLOCKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Is this URL one the browser refuses on its own?
+///
+/// Host-suffix match on the authority (so `ads.doubleclick.net` matches and
+/// `notdoubleclick.net` does not), plus YouTube's ad endpoints. Pure, so the
+/// rule is unit-tested without a webview.
+fn ad_request(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let Some(scheme_end) = lower.find("://") else {
+        return false;
+    };
+    let rest = &lower[scheme_end + 3..];
+    let host_end = rest.find(['/', ':', '?', '#']).unwrap_or(rest.len());
+    let host = &rest[..host_end];
+
+    if (host == "youtube.com" || host.ends_with(".youtube.com"))
+        && AD_PATHS.iter().any(|path| rest[host_end..].starts_with(path))
+    {
+        return true;
+    }
+
+    AD_HOSTS.iter().any(|blocked| {
+        host == *blocked
+            || (host.len() > blocked.len()
+                && host.ends_with(*blocked)
+                && host.as_bytes()[host.len() - blocked.len() - 1] == b'.')
+    })
+}
+
+/// One UTF-16, NUL-terminated buffer for the Win32 string parameters.
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 /// A page or self-navigation report. Mirrors what the store needs to update
 /// one tab row (`camelCase` over the wire).
 #[derive(Clone, Serialize)]
@@ -437,12 +517,17 @@ fn extensions_dir<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<std::path::P
     None
 }
 
-/// Collapse a live but not-visible webview: 1×1 px, and tell WebView2 to trim.
-/// Audio and timers keep running (the page is still "visible" to Chromium), but
-/// it paints nothing and cannot sit above the active tab.
-fn park_webview<R: Runtime>(webview: &Webview<R>) {
+/// Collapse a live but not-visible webview: 1×1 px, and optionally tell
+/// WebView2 to trim.
+///
+/// Audio and timers keep running (the page is still "visible" to Chromium),
+/// but it paints nothing and cannot sit above the active tab. `keep_awake`
+/// is for pinned tabs: the user asked for that page to keep running, so it
+/// is parked but never pushed to WebView2's LOW memory target — the renderer
+/// stays fully awake for YouTube playback.
+fn park_webview<R: Runtime>(webview: &Webview<R>, keep_awake: bool) {
     let _ = webview.set_size(LogicalSize::new(1.0, 1.0));
-    set_memory_target(webview, true);
+    set_memory_target(webview, !keep_awake);
 }
 
 /// Interpret one message from `browser_shim.js`.
@@ -480,6 +565,23 @@ fn handle_shim_message<R: Runtime>(app: &tauri::AppHandle<R>, id: &str, raw: &st
                 },
             );
         }
+        // SPA navigation (YouTube's video-to-video clicks): the document URL
+        // changed via history.pushState, so no `on_navigation` fired. The
+        // store needs it, or the tab strip lies and a re-show thinks the page
+        // is still on the old URL.
+        "url" => {
+            let Some(url) = msg.url else { return };
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return;
+            }
+            let _ = app.emit(
+                "browser:spa",
+                NavPayload {
+                    id: id.to_string(),
+                    url,
+                },
+            );
+        }
         _ => {}
     }
 }
@@ -493,15 +595,18 @@ fn handle_shim_message<R: Runtime>(app: &tauri::AppHandle<R>, id: &str, raw: &st
 #[cfg(target_os = "windows")]
 fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>, id: &str) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2PermissionRequestedEventArgs2, ICoreWebView2Settings3, ICoreWebView2_24,
+        ICoreWebView2PermissionRequestedEventArgs2, ICoreWebView2Profile3, ICoreWebView2Settings3,
+        ICoreWebView2_13, ICoreWebView2_2, ICoreWebView2_24,
         COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION,
-        COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_STRICT,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
     };
     use webview2_com::{
         take_pwstr, NotificationReceivedEventHandler, PermissionRequestedEventHandler,
-        WebMessageReceivedEventHandler,
+        WebMessageReceivedEventHandler, WebResourceRequestedEventHandler,
     };
-    use windows::core::{Interface, PWSTR};
+    use windows::core::{Interface, PCWSTR, PWSTR};
+    use windows::Win32::System::Com::IStream;
 
     let label = webview.label().to_string();
     let msg_app = app.clone();
@@ -523,6 +628,89 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
                     Err(err) => diag(&format!("accelerators {label} ERR {err}")),
                 }
             }
+        }
+
+        // Strict tracking prevention is the layer *under* the extension: even
+        // with uBOL in Basic mode (DNR rules, no host permission), WebView2
+        // still refuses the trackers Chromium already knows. It never touches
+        // first-party content, so a site's own pages keep working.
+        if let Ok(profile) = core.cast::<ICoreWebView2_13>().and_then(|c| c.Profile()) {
+            if let Ok(profile3) = profile.cast::<ICoreWebView2Profile3>() {
+                match profile3.SetPreferredTrackingPreventionLevel(
+                    COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_STRICT,
+                ) {
+                    Ok(()) => diag(&format!("tracking {label} -> strict")),
+                    Err(err) => diag(&format!("tracking {label} ERR {err}")),
+                }
+            }
+        }
+
+        // The native ad shield. uBOL does the fine-grained work; this is the
+        // net under it for the two states the extension cannot cover (Basic
+        // mode, extensions-off fallback). Only ad-only hosts are filtered, so
+        // an ordinary request never reaches the handler.
+        for host in AD_HOSTS {
+            for scheme in ["https", "http"] {
+                let pattern = wide(&format!("{scheme}://*.{host}/*"));
+                let _ = core.AddWebResourceRequestedFilter(
+                    PCWSTR::from_raw(pattern.as_ptr()),
+                    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                );
+            }
+        }
+        for path in AD_PATHS {
+            let pattern = wide(&format!("https://*.youtube.com{path}*"));
+            let _ = core.AddWebResourceRequestedFilter(
+                PCWSTR::from_raw(pattern.as_ptr()),
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            );
+        }
+
+        let environment = core
+            .cast::<ICoreWebView2_2>()
+            .ok()
+            .and_then(|c| c.Environment().ok());
+        let mut shield_token = 0i64;
+        let shield = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else { return Ok(()) };
+            let Ok(request) = args.Request() else {
+                return Ok(());
+            };
+            let mut raw = PWSTR::null();
+            if request.Uri(&mut raw).is_err() {
+                return Ok(());
+            }
+            let url = take_pwstr(raw);
+            if !ad_request(&url) {
+                return Ok(());
+            }
+            if let Some(env) = &environment {
+                // A 403 with no body is what a blocker has always looked
+                // like: the request fails fast and the page's own fallback
+                // runs. Returning nothing would leave the request pending.
+                let reason = wide("Blocked");
+                let headers = wide("Content-Type: text/plain");
+                if let Ok(response) = env.CreateWebResourceResponse(
+                    None::<&IStream>,
+                    403,
+                    PCWSTR::from_raw(reason.as_ptr()),
+                    PCWSTR::from_raw(headers.as_ptr()),
+                ) {
+                    let _ = args.SetResponse(&response);
+                }
+            }
+            let n = AD_BLOCKED.fetch_add(1, Ordering::Relaxed) + 1;
+            if n == 1 || n % 50 == 0 {
+                let shown: String = url.chars().take(120).collect();
+                diag(&format!("ad shield -> {n} blocked (last: {shown})"));
+            }
+            Ok(())
+        }));
+        if core
+            .add_WebResourceRequested(&shield, &mut shield_token)
+            .is_err()
+        {
+            diag(&format!("ad shield {label} ERR"));
         }
 
         // The page -> Rust bridge behind new-window links and browser keys.
@@ -653,6 +841,7 @@ pub async fn browser_show(
     url: String,
     keep: Option<Vec<String>>,
     force: Option<bool>,
+    resume: Option<bool>,
 ) -> Result<(), String> {
     let window = app
         .get_window("main")
@@ -663,7 +852,7 @@ pub async fn browser_show(
         .lock()
         .map_err(|_| "browser rect lock poisoned".to_string())?;
     diag(&format!(
-        "show id={id} url={url} keep={keep:?} force={force:?} rect={rect:?}"
+        "show id={id} url={url} keep={keep:?} force={force:?} resume={resume:?} rect={rect:?}"
     ));
 
     // A blank/new tab has nothing to show: the speed dial is plain DOM in
@@ -702,8 +891,9 @@ pub async fn browser_show(
             keep_labels.push(label_for(tab_id));
         }
     }
-    for tab_id in pinned_ids(&app) {
-        let pinned_label = label_for(&tab_id);
+    let pinned_now = pinned_ids(&app);
+    for tab_id in &pinned_now {
+        let pinned_label = label_for(tab_id);
         if !keep_labels.iter().any(|k| k == &pinned_label) {
             keep_labels.push(pinned_label);
         }
@@ -718,8 +908,13 @@ pub async fn browser_show(
             // Kept alive but collapsed: 1×1 px at the content rect's
             // origin. Rendering cost ≈ 0, scroll position and page state
             // intact, and z-order stops mattering because a collapsed
-            // webview is effectively invisible.
-            park_webview(&webview);
+            // webview is effectively invisible. A pinned tab is NOT told to
+            // trim: the user explicitly asked for it to stay awake (YouTube
+            // audio/video), and LOW is a memory hint the renderer may act on.
+            let keep_awake = pinned_now
+                .iter()
+                .any(|tab_id| label_for(tab_id) == wl);
+            park_webview(&webview, keep_awake);
         } else {
             let _ = webview.close();
         }
@@ -730,6 +925,22 @@ pub async fn browser_show(
             // The target is never collapsed: park it at the content rect.
             let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
             let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
+
+            // Resume: the caller is only bringing a live tab back on screen
+            // (view remount, tab switch). The page — not the store — is the
+            // source of truth for where it is, because YouTube and friends
+            // move with history.pushState and never fire a navigation event.
+            // Comparing the store's URL here was what navigated a pinned
+            // YouTube video back to the home page the moment the user
+            // returned from the editor. `resume` says "show what is there";
+            // an address-bar submit passes false and still navigates.
+            if resume.unwrap_or(false) {
+                set_active(&app, &label);
+                set_memory_target(&webview, false);
+                report_extensions(&app, &webview, &id);
+                diag("show -> resumed live page (no navigation)");
+                return Ok(());
+            }
 
             // Fast path: the child is already showing exactly this URL —
             // the kept-tab back-switch. Leave it alone: no reload, scroll
@@ -860,7 +1071,7 @@ pub async fn browser_set_pinned(
         .unwrap_or_default();
 
     match find_tab(&window, &label) {
-        Some(webview) if active != label && pinned => park_webview(&webview),
+        Some(webview) if active != label && pinned => park_webview(&webview, true),
         Some(webview) if active != label => {
             let _ = webview.close();
         }
@@ -945,7 +1156,9 @@ fn destroy_others<R: Runtime>(window: &Window<R>, keep: &[String], pinned: &Hash
             continue;
         }
         if pinned.iter().any(|id| label_for(id) == label) {
-            park_webview(&webview);
+            // Pinned: parked but kept awake (no LOW trim), so leaving the
+            // browser for the editor does not pause a YouTube video.
+            park_webview(&webview, true);
         } else {
             let _ = webview.close();
         }
@@ -1293,9 +1506,31 @@ mod tests {
         assert_ne!(app_shell, tabs);
     }
 
+    /// The native ad shield: suffix match on the host authority, never a
+    /// substring, and only YouTube's ad paths. A video URL that merely
+    /// contains "ad" must keep loading.
     #[test]
-    fn payloads_serialize_camel_case() {
-        let nav = NavPayload {
+    fn ad_shield_blocks_hosts_and_spares_playback() {
+        assert!(ad_request("https://ads.doubleclick.net/pixel.gif"));
+        assert!(ad_request("https://doubleclick.net/x"));
+        assert!(ad_request(
+            "http://www.googlesyndication.com/pagead/js/adsbygoogle.js"
+        ));
+        assert!(ad_request("https://www.youtube.com/pagead/abc"));
+        assert!(ad_request("https://www.youtube.com/ptracking?x=1"));
+        assert!(ad_request("https://www.youtube.com/api/stats/ads?x=1"));
+
+        assert!(!ad_request("https://notdoubleclick.net/x"));
+        assert!(!ad_request("https://example.com/ad"));
+        assert!(!ad_request("https://www.youtube.com/watch?v=ad"));
+        assert!(!ad_request("https://www.youtube.com/api/stats/playback?x=1"));
+        assert!(!ad_request(
+            "https://rr3---sn-abc.googlevideo.com/videoplayback?x=1"
+        ));
+    }
+
+    #[test]
+    fn payloads_serialize_camel_case() {        let nav = NavPayload {
             id: "3".into(),
             url: "https://example.com".into(),
         };

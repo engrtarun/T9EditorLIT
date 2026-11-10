@@ -31,6 +31,7 @@
       | 'history'
       | 'bookmark'
       | 'pin'
+      | 'duplicate'
       | 'home'
       | 'source'
       | 'page-download'
@@ -89,6 +90,14 @@
           'info',
           pinned ? '📌 Tab pin — dusre tab me bhi chalta rahega' : 'Pin hata diya'
         );
+      }
+    },
+    {
+      id: 'duplicate',
+      label: 'Duplicate tab',
+      disabled: !canPage || browser.atCap,
+      run: () => {
+        if (browser.duplicateTab()) toast.push('info', '⧉ Tab duplicate ho gaya');
       }
     },
     {
