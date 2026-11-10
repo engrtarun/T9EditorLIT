@@ -15,7 +15,7 @@ default and updates itself. Nothing about it needs a user click.
 | Manual re-check | Go daemon | `POST /v1/ublock/update` |
 | WebView2 load | Rust | `browser_extensions_enabled(true).extensions_path(...)` on a **dedicated tab profile** (`%LOCALAPPDATA%\T9EditorLIT\browser-profile`) |
 | Runtime proof | Rust + WebView2 | `ICoreWebView2Profile7::GetBrowserExtensions` → `browser:extensions` |
-| Panel UI | Svelte | Downloads → gear → "uBlock Origin" row |
+| Panel UI | Svelte | Browser toolbar ☰ → uBlock Origin section (also downloader settings) |
 
 ## Why the release zip, not the submodule
 

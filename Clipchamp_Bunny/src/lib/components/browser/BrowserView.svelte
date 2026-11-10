@@ -18,11 +18,11 @@
   import SpeedDial from './SpeedDial.svelte';
   import DownloadsPanel from './DownloadsPanel.svelte';
   import HistoryPanel from './HistoryPanel.svelte';
+  import BrowserMenu from './BrowserMenu.svelte';
   import { browser } from '../../stores/browser.svelte';
   import { downloads } from '../../stores/downloads.svelte';
   import { ublock } from '../../stores/ublock.svelte';
   import { app } from '../../stores/app.svelte';
-  import { toast } from '../../stores/toast.svelte';
   import { isTauri, browserViewClosed, browserSetRect } from '../../ipc';
   import { onMount } from 'svelte';
 
@@ -98,17 +98,6 @@
       void browserSetRect(rect.x, rect.y, rect.width, rect.height);
     }
   });
-
-  /** ⬇ in the toolbar: hand the active tab's URL to the fast downloader. */
-  async function downloadPage() {
-    if (!tab || tab.url === 'about:blank') return;
-    try {
-      await downloads.start(tab.url, { referer: tab.url });
-      toast.push('info', '⬇ Download shuru — multi-segment speed me');
-    } catch (err) {
-      toast.push('warn', err instanceof Error ? err.message : 'Download start nahi hua');
-    }
-  }
 </script>
 
 <div class="flex min-h-0 min-w-0 flex-1 flex-col bg-nc-bg text-nc-txt">
@@ -221,14 +210,23 @@
         {/if}
       </button>
 
-      <!-- fast download of the page's file, next to the downloads panel -->
+      <!--
+        The Firefox hamburger. Everything that is not an everyday control
+        lives here: downloads, history, bookmarks, speed dial, page source,
+        the fast download, shortcuts, zoom, uBlock and downloader settings.
+        It is a layout sheet, not a popover — the page is a native child
+        webview and would paint above any floating menu.
+      -->
       <button
         type="button"
-        onclick={downloadPage}
-        disabled={!tab || tab.url === 'about:blank'}
-        class="grid h-8 w-8 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt disabled:opacity-35 disabled:hover:bg-transparent"
-        title="Fast download (multi-segment, 1DM style)"
-        aria-label="Download this page's file"
+        onclick={() => browser.toggleSettings()}
+        class="grid h-8 w-8 place-items-center rounded-full transition-colors
+               {browser.settingsOpen
+          ? 'bg-nc-panel-2 text-nc-brand'
+          : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
+        title="Menu (settings, bookmarks, downloads)"
+        aria-label="Open browser menu"
+        aria-expanded={browser.settingsOpen}
       >
         <svg
           width="15"
@@ -236,33 +234,17 @@
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.8"
+          stroke-width="2"
+          stroke-linecap="round"
         >
-          <path d="M12 4v12M8 12l4 4 4-4M4 20h16" />
-        </svg>
-      </button>
-
-      <!-- close the browser → back to the screen that opened it -->
-      <button
-        type="button"
-        onclick={() => app.closeBrowser()}
-        class="grid h-8 w-8 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt"
-        title="Browser band karo (editor pe wapas)"
-        aria-label="Close browser"
-      >
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 12 12"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.8"
-        >
-          <path d="M2 2l8 8M10 2l-8 8" />
+          <path d="M4 7h16M4 12h16M4 17h16" />
         </svg>
       </button>
     </div>
   </div>
+
+  <!-- ── the menu sheet (takes layout space, never floats over the page) ── -->
+  <BrowserMenu />
 
   <!-- Page-load pulse: Brave's own cue that something is happening, even
        when the page itself is still the old frame. 2px, never a layout jump. -->

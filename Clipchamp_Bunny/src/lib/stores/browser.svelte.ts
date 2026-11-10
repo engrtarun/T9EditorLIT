@@ -162,6 +162,19 @@ class BrowserStore {
   /** The Ctrl+H panel's open state. */
   historyOpen = $state(false);
 
+  /**
+   * The hamburger "Menu" sheet. It takes layout space instead of floating:
+   * a native child webview always paints above the main DOM, so a popover
+   * over the page would be invisible. Opening this shrinks the content rect;
+   * ResizeObserver moves the page webview under it.
+   */
+  settingsOpen = $state(false);
+
+  toggleSettings(): void {
+    this.settingsOpen = !this.settingsOpen;
+    if (this.settingsOpen) this.historyOpen = false;
+  }
+
   /** The last zoom the keys set (0.2 … 10) — applied to the active tab on use. */
   zoomLevel = $state(1);
 
