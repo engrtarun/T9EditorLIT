@@ -563,9 +563,20 @@ class BrowserStore {
   /** Open a new tab (or focus the existing new-tab page). Capped at nine. */
   open(url = ''): BrowserTab | null {
     if (this.atCap) return null;
+    const prev = this.active;
     const tab = makeTab(url || 'about:blank');
     this.tabs.push(tab);
     this.activeId = tab.id;
+    // A new-tab page is plain DOM in the shell, so the page webview that was
+    // on screen has to come off it. Without this the old tab's page kept
+    // painting over the speed dial: the strip said "New tab", the address bar
+    // said about:blank, and the content still showed YouTube — every Ctrl+T /
+    // Ctrl+N looked like it had done nothing ("still on the previous tab").
+    // The tab the user just left is kept parked (1×1), so switching back is
+    // still instant instead of a reload.
+    const blank = !url || url === 'about:blank';
+    const keep = blank && prev && prev.id !== tab.id && prev.url !== 'about:blank' ? [prev.id] : [];
+    this.nudge?.(tab.id, blank ? 'about:blank' : url, keep, false, true);
     return tab;
   }
 

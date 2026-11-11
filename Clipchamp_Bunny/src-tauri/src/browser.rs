@@ -305,7 +305,17 @@ static EXTENSIONS_OFF: AtomicBool = AtomicBool::new(false);
 /// owner. `HardwareMediaKeyHandling` is the sibling flag: it is the browser
 /// process itself grabbing the media keys, which would survive a disabled
 /// session service and swallow the earbud press before Windows routes it.
-const TAB_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MediaSessionService,HardwareMediaKeyHandling --autoplay-policy=no-user-gesture-required";
+///
+/// `CalculateNativeWinOcclusion` is what made some sites (YouTube was the
+/// one that reproduced) come up as a permanent skeleton: Chromium decides a
+/// window is "occluded" from Win32 z-order, marks the page hidden, and
+/// throttles its timers/rAF. A WebView2 child inside a Tauri window is easy
+/// to mis-classify, especially while the browser view mounts or another
+/// window is in front — the page's lazy loader then never runs and the site
+/// sits on its loading placeholders until a hard reload. This app never
+/// wants occlusion throttling: a hidden page in it is either parked at 1×1
+/// (pinned tabs, deliberately kept awake) or destroyed outright.
+const TAB_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MediaSessionService,HardwareMediaKeyHandling,CalculateNativeWinOcclusion --autoplay-policy=no-user-gesture-required";
 
 /// The dedicated WebView2 profile for page webviews.
 ///
@@ -1000,10 +1010,36 @@ pub async fn browser_show(
     // tabs are the exception - they stay alive (parked at 1×1) so the music
     // keeps playing behind the speed dial.
     if url.is_empty() || url == "about:blank" {
+        // A blank tab has no page webview of its own: the speed dial is plain
+        // DOM in the shell. The tab the user just left is *kept* (parked at
+        // 1×1), exactly like any other tab switch, so coming back to it is
+        // instant; when `keep` is empty every non-pinned webview is swept and
+        // the blank tab costs 0 MB. Pinned tabs are always parked, never
+        // destroyed — their audio has to keep playing behind the dial.
+        let mut keep_labels: Vec<String> = keep
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|tab_id| label_for(tab_id))
+            .collect();
         let pinned = pinned_ids(&app);
-        destroy_others(&window, &[], &pinned);
+        for tab_id in &pinned {
+            let pinned_label = label_for(tab_id);
+            if !keep_labels.iter().any(|k| k == &pinned_label) {
+                keep_labels.push(pinned_label);
+            }
+        }
+        for webview in window.webviews() {
+            let wl = webview.label();
+            if !wl.starts_with("tab-") || !keep_labels.iter().any(|k| k == &wl) {
+                continue;
+            }
+            let keep_awake = pinned.iter().any(|tab_id| label_for(tab_id) == wl);
+            park_webview(&webview, keep_awake);
+        }
+        destroy_others(&window, &keep_labels, &pinned);
         set_active(&app, "");
-        diag("show blank -> swept");
+        diag(&format!("show blank -> swept (kept {keep_labels:?})"));
         return Ok(());
     }
 
