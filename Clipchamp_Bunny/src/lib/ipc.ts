@@ -717,7 +717,10 @@ export function dlSettingsSave(settings: DownloadSettings): Promise<DownloadSett
  */
 export function appNotify(title: string, body: string): Promise<void> {
   if (!isTauri()) return Promise.resolve();
-  return invoke<void>('app_notify', { title, body }).catch(() => {});
+  // The rejection is NOT swallowed here: Settings' "Test notification" button
+  // has to be able to say *why* nothing appeared. Fire-and-forget callers
+  // (.catch(() => {})) still stay silent.
+  return invoke<void>('app_notify', { title, body });
 }
 
 /**
@@ -1260,6 +1263,27 @@ export function onBrowserTitle(
 export function browserSetRect(x: number, y: number, width: number, height: number): Promise<void> {
   if (!isTauri()) return Promise.resolve();
   return invoke<void>('browser_set_rect', { x, y, width, height }).catch(() => {});
+}
+
+/**
+ * Show/hide the active page while a DOM overlay covers the content rect.
+ *
+ * A child WebView2 always paints **above** the main webview, so a popover
+ * that crosses the page area (the 9-dots tools panel) had its lower half
+ * painted over by the page. Hiding parks the webview at 1×1; audio and timers
+ * keep running, and showing it again puts it back on the stored rect.
+ */
+export function browserSetVisible(visible: boolean): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_set_visible', { visible }).catch(() => {});
+}
+
+/** A page entered or left the Fullscreen API (YouTube's ⛶) — hide the chrome. */
+export function onBrowserFullscreen(
+  cb: (p: { id: string; on: boolean }) => void
+): Promise<() => void> {
+  if (!isTauri()) return Promise.resolve(() => {});
+  return listen<{ id: string; on: boolean }>('browser:fullscreen', (e) => cb(e.payload));
 }
 
 /** The page navigated itself (link click / redirect) — follow it in the store. */

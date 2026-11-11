@@ -31,7 +31,8 @@ reason is written) · **⛔ not available** (with the reason).
 | Ctrl + Shift + PgUp / PgDn           | Move tab left / right     | ✅ reorders the strip                                                        |
 | Ctrl + N                             | New **window**            | 🔁 new tab — T9 is a single-window app                                       |
 | Ctrl + Shift + W / Ctrl + Shift + F4 | Close window              | 🔁 closes the browser view and returns to the editor                         |
-| Ctrl + Shift + P                     | New private window        | ⛔ one window, no profile isolation — a "private" toggle here would be a lie |
+| Ctrl + Shift + P                     | New private window        | 🔁 pins/unpins the active tab — one window, no profile isolation, so the chord is put to the use the user asked for (a pinned tab keeps its page and audio alive) |
+| Ctrl + Shift + B                     | Bookmark toolbar          | 🔁 opens the in-built browser from **any** screen (dashboard, editor); inside the browser it does nothing, the key map owns that view |
 | Ctrl + Shift + N                     | Reopen last closed window | ⛔ same single-window reason                                                 |
 
 ## Navigation
@@ -42,7 +43,7 @@ reason is written) · **⛔ not available** (with the reason).
 | Alt + → / Shift + Backspace                         | Forward                                      | ✅                                                                                                      |
 | F5 / Ctrl + R                                       | Reload                                       | ✅                                                                                                      |
 | Ctrl + F5 / Ctrl + Shift + R                        | Reload, override cache                       | ✅ same forced nudge — T9 never shows a cached page from the old webview                                |
-| Esc                                                 | Stop loading                                 | ✅ the loading spinner stops (the JS-visible half; the WebView2 "cancel navigation" API is not exposed) |
+| Esc                                                 | Stop loading                                 | ✅ the loading spinner stops — unless a page is fullscreen, where Esc goes to the page so YouTube can leave fullscreen |
 | Alt + Home                                          | Home page                                    | ✅ the speed dial **is** the home page                                                                  |
 | Ctrl + L / Alt + D                                  | Focus address bar                            | ✅ (the toolbar magnifier's tooltip now tells the truth)                                                |
 | Ctrl + K                                            | Focus search bar                             | ✅ same pill; a phrase becomes a Brave search                                                           |
@@ -71,7 +72,7 @@ reason is written) · **⛔ not available** (with the reason).
 
 | Key                                                    | Firefox action        | T9 browser view                                                                                              |
 | ------------------------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Ctrl + = / Ctrl + Shift + = / Ctrl + - / Ctrl + 0      | Zoom in / out / reset | ✅ real page zoom inside the child webview (0.2 … 10, 20 % steps), kept per tab; the URL bar shows a `%` chip only when it is not 100 % and one click resets it |
+| Ctrl + = / Ctrl + Shift + = / Ctrl + - / Ctrl + 0      | Zoom in / out / reset | ✅ real page zoom inside the child webview (**30 % … 300 %, 10 % per press**, like Firefox), kept per tab; the URL bar shows a `%` chip only when it is not 100 % and one click resets it |
 | F12 / Ctrl + Shift + I / K / C / E / J / M / S         | DevTools suite        | ⛔ release builds compile devtools out, and Tauri documents child-webview devtools as unsupported on Windows |
 | Ctrl + Shift + A                                       | Add-ons manager       | ⛔ there is no add-on system                                                                                 |
 | F7                                                     | Caret browsing        | ⛔ WebView2 has no caret-browsing API                                                                        |
@@ -88,9 +89,15 @@ Firefox's page area. Keyboard events go to whatever has focus:
 - **T9 chrome has focus** (tab strip, toolbar, address bar, panels) → the map
   above runs. Ctrl+L / Ctrl+K even re-focus the address bar _while you are
   typing in it_, like Firefox.
-- **The page has focus** (you clicked inside the page) → the page owns its
-  keyboard, as it should. Ctrl+L / Ctrl+Tab from inside a page reach the page
-  first in this build; click the toolbar once and they work.
+- **The page has focus** (you clicked inside the page) → `browser_shim.js`
+  reports the same combos to Rust, and App.svelte runs that through the exact
+  same dep table. Ctrl+L / Ctrl+Tab therefore work from inside a page too; the
+  chrome actions pull the OS keyboard focus back to the app shell when the
+  address bar needs the caret.
+
+Pinned tabs and the visit log are durable: pins are written to localStorage
+(URL + title) and restored as tabs on the next launch, and the Ctrl+H log
+survives a restart instead of starting empty.
 
 The editor keys are a separate, rebindable map (`src/lib/stores/keys.svelte.ts`)
 and never fire in the browser view; these browser keys never fire in the

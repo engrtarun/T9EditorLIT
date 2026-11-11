@@ -45,6 +45,51 @@
     return i > 0 ? p.slice(0, i) : p;
   }
 
+  /** A compact, local timestamp: "11 Nov, 15:42". Missing → "—". */
+  function fmtWhen(ms: number): string {
+    if (!ms) return '—';
+    const d = new Date(ms);
+    return d.toLocaleString(undefined, {
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  }
+
+  /** Wall-clock duration: "9m 12s", "1h 04m", "42s". Unknown → "—". */
+  function fmtTaken(seconds: number): string {
+    if (seconds <= 0) return '—';
+    if (seconds < 60) return `${seconds}s`;
+    const m = Math.floor(seconds / 60);
+    if (m < 60) {
+      const s = seconds % 60;
+      return s ? `${m}m ${s}s` : `${m}m`;
+    }
+    return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
+  }
+
+  /** Seconds a live row took (finished) or has been running (running). */
+  function tookOf(item: DownloadItem): number {
+    const started = item.startedAt ?? 0;
+    const ended = item.finishedAt ?? (item.status === 'running' ? Date.now() : 0);
+    return started > 0 && ended >= started ? Math.round((ended - started) / 1000) : 0;
+  }
+
+  /**
+   * Which row's full detail block is open. The one-line summary is always
+   * visible on a terminal row; this adds the full path and the source URL.
+   */
+  let details = $state<string | null>(null);
+
+  /**
+   * Older downloads from the durable history. A row that is still in the
+   * daemon's live list is already on screen above, so it is not repeated.
+   */
+  const past = $derived(
+    downloads.history.filter((h) => !downloads.items.some((i) => i.id === h.id)).slice(0, 40)
+  );
+
   async function reveal(item: DownloadItem): Promise<void> {
     const ok = await revealPath(item.path);
     if (!ok) toast.push('warn', 'Explorer nahi khul paya — path: ' + item.path);
@@ -279,6 +324,55 @@
                 </div>
               {/if}
 
+              {#if item.status !== 'running' && item.status !== 'paused'}
+                <!-- When it ran and how long it took — "download history" is
+                     these numbers, not just a row that disappears. -->
+                <button
+                  type="button"
+                  onclick={() => (details = details === item.id ? null : item.id)}
+                  class="mt-0.5 flex max-w-full items-center gap-1 text-left text-[10px] text-nc-mut-2 hover:text-nc-mut"
+                  aria-expanded={details === item.id}
+                  title="Download detail — start, finish, time, path, URL"
+                >
+                  <svg
+                    width="8"
+                    height="8"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    class="shrink-0 transition-transform"
+                    class:rotate-90={details === item.id}
+                  >
+                    <path d="M4 2l4 4-4 4" />
+                  </svg>
+                  <span class="truncate">
+                    {fmtWhen(item.startedAt ?? 0)} → {fmtWhen(item.finishedAt ?? 0)}
+                    · {fmtTaken(tookOf(item))}
+                    {#if item.totalBytes > 0 && tookOf(item) > 0}
+                      · avg {fmtSpeed(Math.round(item.totalBytes / tookOf(item)))}
+                    {/if}
+                  </span>
+                </button>
+              {/if}
+
+              {#if details === item.id}
+                <dl
+                  class="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 rounded bg-nc-panel-2/60 px-2 py-1.5 text-[10px] leading-snug"
+                >
+                  <dt class="text-nc-mut-2">Started</dt>
+                  <dd class="text-nc-mut">{fmtWhen(item.startedAt ?? 0)}</dd>
+                  <dt class="text-nc-mut-2">Finished</dt>
+                  <dd class="text-nc-mut">{fmtWhen(item.finishedAt ?? 0)}</dd>
+                  <dt class="text-nc-mut-2">Took</dt>
+                  <dd class="text-nc-mut">{fmtTaken(tookOf(item))}</dd>
+                  <dt class="text-nc-mut-2">Path</dt>
+                  <dd class="break-all text-nc-mut">{item.path || '—'}</dd>
+                  <dt class="text-nc-mut-2">URL</dt>
+                  <dd class="break-all text-nc-mut">{item.url}</dd>
+                </dl>
+              {/if}
+
               {#if item.status !== 'running' && item.path}
                 <!-- where it actually landed, so "kahan gaya?" never needs guessing -->
                 <button
@@ -457,5 +551,128 @@
         {/each}
       </ul>
     {/if}
+
+    <!--
+      History is the durable half. The daemon is a queue, not an archive: it
+      drops a finished row 15 minutes after it completes, which is why old
+      downloads kept "auto-cleaning". The store writes every terminal row to
+      localStorage the moment it finishes, so this list is the user's, and
+      only they clear it.
+    -->
+    <div class="border-t border-nc-line/60">
+      <div class="flex h-8 items-center justify-between px-3">
+        <button
+          type="button"
+          onclick={() => (downloads.showHistory = !downloads.showHistory)}
+          class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-nc-mut uppercase hover:text-nc-txt"
+          aria-expanded={downloads.showHistory}
+        >
+          <svg
+            width="8"
+            height="8"
+            viewBox="0 0 12 12"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            class="transition-transform"
+            class:rotate-90={downloads.showHistory}
+          >
+            <path d="M4 2l4 4-4 4" />
+          </svg>
+          History
+          {#if downloads.history.length > 0}
+            <span class="rounded-full bg-nc-panel-2 px-1.5 text-[10px] font-bold text-nc-mut"
+              >{downloads.history.length}</span
+            >
+          {/if}
+        </button>
+        {#if downloads.showHistory && downloads.history.length > 0}
+          <button
+            type="button"
+            onclick={() => downloads.clearHistory()}
+            class="grid h-6 w-6 place-items-center rounded text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+            title="Download history clear karo (files disk par rehti hain)"
+            aria-label="Clear download history"
+          >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+            >
+              <path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13" />
+            </svg>
+          </button>
+        {/if}
+      </div>
+
+      {#if downloads.showHistory}
+        {#if past.length === 0}
+          <p class="px-3 pb-3 text-center text-[11px] text-nc-mut">
+            Abhi koi purana download nahi — jo complete hoga, yahin rehta hai.
+          </p>
+        {:else}
+          <ul class="max-h-[200px] overflow-y-auto border-t border-nc-line/40">
+            {#each past as h (h.id)}
+              <li
+                class="flex items-start gap-3 border-b border-nc-line/30 px-3 py-1.5 last:border-0"
+              >
+                <span
+                  class="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-nc-panel-2 text-nc-mut"
+                  aria-hidden="true"
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                  >
+                    {#if h.status === 'done'}
+                      <path d="M5 13l4 4L19 7" />
+                    {:else}
+                      <path d="M12 8v5M12 16h.01M4 20h16L12 4z" />
+                    {/if}
+                  </svg>
+                </span>
+                <div class="min-w-0 flex-1">
+                  {#if h.path}
+                    <button
+                      type="button"
+                      onclick={() =>
+                        void revealPath(h.path).then((ok) => {
+                          if (!ok) toast.push('warn', 'File abhi disk par nahi — ' + h.path);
+                        })}
+                      class="block max-w-full truncate text-left text-[11px] text-nc-txt hover:underline"
+                      title={h.path}
+                    >
+                      {h.filename}
+                    </button>
+                  {:else}
+                    <span class="block truncate text-[11px] text-nc-txt">{h.filename}</span>
+                  {/if}
+                  <div class="truncate text-[10px] text-nc-mut-2">
+                    {fmtWhen(h.startedAt)} → {fmtWhen(h.finishedAt)}
+                    · {fmtTaken(h.seconds)}
+                    {#if h.avgBps > 0}
+                      · avg {fmtSpeed(h.avgBps)}
+                    {/if}
+                    · {fmtSize(h.bytes)}
+                  </div>
+                </div>
+                <span
+                  class="shrink-0 text-[10px] {h.status === 'done'
+                    ? 'text-nc-mut-2'
+                    : 'text-nc-red'}">{h.status}</span
+                >
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+    </div>
   </div>
 {/if}

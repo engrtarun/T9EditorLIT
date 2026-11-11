@@ -24,12 +24,23 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\T9EditorLIT'),
-    [string]$AppId = 'com.engrtarun.t9editorlit',
+    [string]$AppId = '',
     [string]$DisplayName = 'T9 Editor LIT'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+# The AUMID has to be *exactly* the identifier the app sends to the toast
+# platform (tauri.conf.json's `identifier`), or Windows drops every toast as
+# "unknown app". Read it instead of trusting a second copy of the string.
+if (-not $AppId) {
+    $conf = Join-Path (Split-Path $PSScriptRoot -Parent) 'src-tauri\tauri.conf.json'
+    if (Test-Path $conf) {
+        $AppId = (Get-Content $conf -Raw | ConvertFrom-Json).identifier
+    }
+    if (-not $AppId) { $AppId = 'com.engrtarun.t9editorlit' }
+}
 
 $ExeName = 't9-editor-lit.exe'
 $Exe = Join-Path $InstallDir $ExeName
@@ -56,49 +67,9 @@ if (-not ('T9Pinning' -as [type])) {
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace T9Pinning
 {
-    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
-    internal class ShellLinkCoClass { }
-
-    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"),
-     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    internal interface IShellLinkW
-    {
-        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cch, IntPtr pfd, uint fFlags);
-        void GetIDList(out IntPtr ppidl);
-        void SetIDList(IntPtr pidl);
-        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
-        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
-        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cch);
-        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
-        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cch);
-        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
-        void GetHotkey(out short pwHotkey);
-        void SetHotkey(short wHotkey);
-        void GetShowCmd(out int piShowCmd);
-        void SetShowCmd(int iShowCmd);
-        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch, out int piIcon);
-        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
-        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel);
-        void Resolve(IntPtr hwnd, uint fFlags);
-        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
-    }
-
-    [ComImport, Guid("0000010b-0000-0000-C000-000000000046"),
-     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    internal interface IPersistFile
-    {
-        void GetClassID(out Guid pClassID);
-        [PreserveSig] int IsDirty();
-        void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, uint dwMode);
-        void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, [MarshalAs(UnmanagedType.Bool)] bool fRemember);
-        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
-        void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string ppszFileName);
-    }
-
     [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"),
      InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     internal interface IPropertyStore
@@ -127,17 +98,30 @@ namespace T9Pinning
 
     public static class Shell
     {
-        // {9F4C2855-9F79-4B39-A8D0-E1D42DE1D936}, 5  ->  System.AppUserModel.ID
+        // {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, 5  ->  System.AppUserModel.ID
         private static readonly PROPERTYKEY AppUserModelIdKey =
-            new PROPERTYKEY(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D936"), 5);
+            new PROPERTYKEY(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
+
+        private const uint GPS_READWRITE = 0x2;
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+        private static extern void SHGetPropertyStoreFromParsingName(
+            string pszPath, IntPtr pbc, uint flags, ref Guid riid,
+            [MarshalAs(UnmanagedType.Interface)] out IPropertyStore ppv);
 
         /// <summary>Write an AppUserModelID into an existing .lnk file.</summary>
+        /// <remarks>
+        /// The property store is opened on the shortcut itself. Going through
+        /// IShellLink + IPersistFile and committing on that same object fails
+        /// with STG_E_ACCESSDENIED on Windows 11 (the file is already held by
+        /// the object that loaded it), which is exactly how the shortcut ended
+        /// up with no AUMID — and then no toast ever reached the shell.
+        /// </remarks>
         public static void SetAppUserModelId(string shortcutPath, string appUserModelId)
         {
-            var link = (IShellLinkW)new ShellLinkCoClass();
-            ((IPersistFile)link).Load(shortcutPath, 0);
-
-            var store = (IPropertyStore)link;
+            Guid iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+            IPropertyStore store;
+            SHGetPropertyStoreFromParsingName(shortcutPath, IntPtr.Zero, GPS_READWRITE, ref iid, out store);
 
             IntPtr text = Marshal.StringToHGlobalUni(appUserModelId);
             try
@@ -150,10 +134,8 @@ namespace T9Pinning
             finally
             {
                 Marshal.FreeHGlobal(text);
+                Marshal.ReleaseComObject(store);
             }
-
-            ((IPersistFile)link).Save(shortcutPath, true);
-            Marshal.ReleaseComObject(link);
         }
     }
 }
@@ -173,6 +155,11 @@ $lnk.WorkingDirectory = $InstallDir
 $lnk.IconLocation     = "$Exe,0"
 $lnk.Description      = 'T9 Editor LIT - transcript-first video cutter'
 $lnk.Save()
+# Drop the COM handle before the property store opens the same file: a
+# shortcut still held open cannot be committed (STG_E_ACCESSDENIED).
+[void][Runtime.InteropServices.Marshal]::ReleaseComObject($lnk)
+[void][Runtime.InteropServices.Marshal]::ReleaseComObject($ws)
+Remove-Variable lnk, ws
 Write-Host "    [ok] $Shortcut" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
@@ -183,10 +170,11 @@ try {
     [T9Pinning.Shell]::SetAppUserModelId($Shortcut, $AppId)
     Write-Host "    [ok] $AppId" -ForegroundColor Green
 } catch {
-    # Some Windows builds refuse the property write on a shortcut that is
-    # already registered. Not fatal: the pin can still be done by hand, and
-    # the AppUserModelId registration below is what the shell really needs.
+    # Without this property Windows has no idea which app a toast belongs to
+    # and silently drops every notification for it — the exact reason
+    # "notification nahi aa raha" had no visible cause.
     Write-Host "    [!] could not write the property: $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host '    [!] OS notifications will NOT appear until this succeeds' -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------

@@ -33,7 +33,16 @@ custom-protocol = ["tauri/custom-protocol"]
 # the bindings.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
-windows = { version = "0.62", features = ["Win32_System_Com"] }
+# `Media`/`Foundation`/`Storage_Streams` are the Windows media flyout (SMTC);
+# `Win32_System_WinRT` is the interop factory that binds it to our HWND.
+windows = { version = "0.62", features = [
+    "Win32_System_Com",
+    "Win32_System_WinRT",
+    "Win32_Foundation",
+    "Media",
+    "Foundation",
+    "Storage_Streams",
+] }
 
 [profile.release]
 # "thin" instead of "fat": the binary is a couple of percent bigger and the

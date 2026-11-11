@@ -42,6 +42,36 @@ export interface FailedDownload {
   error: string;
 }
 
+/**
+ * One finished download, kept in this webview's disk-backed store.
+ *
+ * The daemon is a queue, not an archive: it drops a terminal row 15 minutes
+ * after it finishes (`keepTerminalFor`), which is why old downloads kept
+ * "auto-cleaning". History belongs to the user, so it is written here the
+ * moment a row finishes and is never touched again until they clear it.
+ */
+export interface DownloadHistoryEntry {
+  id: string;
+  url: string;
+  filename: string;
+  path: string;
+  bytes: number;
+  status: string;
+  error: string | null;
+  /** Unix ms the transfer started (0 = unknown, e.g. a row from a sidecar). */
+  startedAt: number;
+  /** Unix ms it reached its terminal status. */
+  finishedAt: number;
+  /** Wall-clock seconds the download took (0 when the start was unknown). */
+  seconds: number;
+  /** Whole-file average, bytes/s (0 when the duration is unknown). */
+  avgBps: number;
+}
+
+const HISTORY_KEY = 't9.downloads.history.v1';
+/** Old rows go only when this many newer ones exist — a real cap, not a timer. */
+const HISTORY_CAP = 300;
+
 /** Last path segment of a URL, decoded — the best name we have before the
  *  server tells us the real one. */
 function fileNameOf(url: string): string {
@@ -62,6 +92,14 @@ class DownloadsStore {
    * somewhere the user will look again, so the panel keeps it until dismissed.
    */
   failed = $state<FailedDownload[]>([]);
+  /**
+   * Finished downloads the panel can still show, oldest at the end. Persisted
+   * (localStorage = the webview profile on disk), so the daemon's 15-minute
+   * prune cannot erase what the user did yesterday.
+   */
+  history = $state<DownloadHistoryEntry[]>([]);
+  /** The history list is expanded in the panel. */
+  showHistory = $state(false);
   /** The slide-up panel is open. */
   open = $state(false);
   /**
@@ -303,14 +341,74 @@ class DownloadsStore {
           void appNotify(
             'Download poora hua',
             `${item.filename} · ${fmtBytes(item.totalBytes)} — Downloads folder me hai`
-          );
+          ).catch(() => {
+            /* a denied toast must not break the queue */
+          });
         }
       }
+      // Every terminal row enters the durable history exactly once — done,
+      // failed or cancelled. It is the only record that survives the daemon's
+      // 15-minute prune, and it is what the panel's detail line reads.
+      if (item.status !== 'running' && item.status !== 'paused') this.record(item);
       this.lastStatus.set(item.id, item.status);
     }
     for (const id of [...this.lastStatus.keys()]) {
       if (!list.some((i) => i.id === id)) this.lastStatus.delete(id);
     }
+  }
+
+  /** Write one terminal row to the durable history (idempotent). */
+  private record(item: DownloadItem): void {
+    if (this.history.some((h) => h.id === item.id)) return;
+    const started = item.startedAt ?? 0;
+    const finished = item.finishedAt ?? Date.now();
+    const seconds = started > 0 ? Math.max(0, Math.round((finished - started) / 1000)) : 0;
+    const avgBps = seconds > 0 && item.totalBytes > 0 ? Math.round(item.totalBytes / seconds) : 0;
+    this.history = [
+      {
+        id: item.id,
+        url: item.url,
+        filename: item.filename,
+        path: item.path,
+        bytes: item.totalBytes,
+        status: item.status,
+        error: item.error,
+        startedAt: started,
+        finishedAt: finished,
+        seconds,
+        avgBps
+      },
+      ...this.history
+    ].slice(0, HISTORY_CAP);
+    this.persistHistory();
+  }
+
+  /** Load the durable history. Called once at boot. */
+  loadHistory(): void {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as DownloadHistoryEntry[];
+      if (!Array.isArray(parsed)) return;
+      this.history = parsed.filter((h) => h && typeof h.id === 'string').slice(0, HISTORY_CAP);
+    } catch {
+      /* private mode or a corrupted key: an empty history is not a crash */
+    }
+  }
+
+  private persistHistory(): void {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(this.history));
+    } catch {
+      /* quota / private mode: this session's rows stay in memory */
+    }
+  }
+
+  /** The explicit, user-driven way history disappears. */
+  clearHistory(): void {
+    this.history = [];
+    this.persistHistory();
+    toast.push('info', 'Download history clear ho gayi');
   }
 
   /**
@@ -323,7 +421,9 @@ class DownloadsStore {
     if (!this.settings.notifyDone) return;
     const name = item?.filename || fileNameOf(url);
     const size = item && item.totalBytes > 0 ? ` · ${fmtBytes(item.totalBytes)}` : '';
-    void appNotify('Download shuru', `${name}${size}`);
+    void appNotify('Download shuru', `${name}${size}`).catch(() => {
+      /* see above */
+    });
   }
 
   /** A hidden id that fell out of the daemon's list must not leak forever. */
@@ -348,6 +448,7 @@ class DownloadsStore {
 
   /** One poll at boot, so an unfinished queue from last session shows up. */
   boot(): void {
+    this.loadHistory();
     void this.loadSettings();
     void this.poll();
   }

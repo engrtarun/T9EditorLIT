@@ -605,7 +605,17 @@ function Invoke-SarkariInstall([object]$BuildOutput) {
         Write-Host '    [..] custom install folder - taskbar/Start menu pinning skipped (test target)' -ForegroundColor Yellow
     } elseif (Test-Path $PinScript) {
         Write-Host "    [ok] Updating Start menu / taskbar shortcut..." -ForegroundColor DarkGray
-        & pwsh -NoProfile -ExecutionPolicy Bypass -File $PinScript -InstallDir $InstallDir 2>$null | Out-Null
+        # Never silent: this script is what attaches the AppUserModelID that
+        # Windows needs to deliver a toast. It used to fail with a warning
+        # that went to Out-Null, so every notification was dropped with no
+        # trace anywhere. Warnings are surfaced; a failed *pin* stays
+        # non-fatal (the Start menu entry still works).
+        $pinOut = & pwsh -NoProfile -ExecutionPolicy Bypass -File $PinScript -InstallDir $InstallDir 2>&1
+        $pinWarnings = @($pinOut | Where-Object { "$_" -match '\[!\]' })
+        if ($pinWarnings.Count -gt 0) {
+            Write-Host '    [!] shortcut / notification identity warnings:' -ForegroundColor Yellow
+            foreach ($line in $pinWarnings) { Write-Host "        $line" -ForegroundColor Yellow }
+        }
     }
 
     return [pscustomobject]@{

@@ -70,6 +70,209 @@
   window.addEventListener('popstate', reportUrl, true);
   window.addEventListener('hashchange', reportUrl, true);
 
+  /* ── fullscreen ──────────────────────────────────────────────────────
+   * A page's ⛶ only fills the webview. Rust grows that webview to the whole
+   * window (and puts it back afterwards), so YouTube's fullscreen is a real
+   * fullscreen instead of a letterboxed video inside the content rect.
+   */
+  const reportFullscreen = () => {
+    let on = 0;
+    try {
+      on = document.fullscreenElement ? 1 : 0;
+    } catch (e) {
+      return;
+    }
+    send({ t9: 'fullscreen', value: on });
+  };
+  document.addEventListener('fullscreenchange', reportFullscreen, true);
+
+  /* ── media state for the Windows flyout (SMTC) ───────────────────────
+   * The app owns the only media session (Chromium's own is switched off in
+   * `browser.rs`), so this report is what puts the video's title on the
+   * flyout and what gives an earbud press one owner. The page's own
+   * `navigator.mediaSession` handlers are captured here too: "next" means
+   * the page's playlist next, not "seek the <video> somewhere".
+   */
+  const mediaSession = (() => {
+    try {
+      return navigator.mediaSession || null;
+    } catch (e) {
+      return null;
+    }
+  })();
+  const mediaHandlers = Object.create(null);
+  if (mediaSession) {
+    try {
+      const setActionHandler = mediaSession.setActionHandler;
+      if (typeof setActionHandler === 'function') {
+        mediaSession.setActionHandler = function (action, handler) {
+          if (handler) mediaHandlers[action] = handler;
+          else delete mediaHandlers[action];
+          try {
+            return setActionHandler.call(mediaSession, action, handler);
+          } catch (e) {
+            // Chromium's session is off; the page's call must not throw.
+            return undefined;
+          }
+        };
+      }
+    } catch (e) {
+      /* frozen MediaSession: next/prev fall back to the element */
+    }
+  }
+
+  const mediaElement = () => {
+    try {
+      return document.querySelector('video') || document.querySelector('audio');
+    } catch (e) {
+      return null;
+    }
+  };
+
+  let mediaTimer = 0;
+  let mediaSentAt = 0;
+  let mediaKey = '';
+
+  const reportMedia = () => {
+    mediaTimer = 0;
+    const el = mediaElement();
+    const metadata = (() => {
+      try {
+        return mediaSession && mediaSession.metadata;
+      } catch (e) {
+        return null;
+      }
+    })();
+    const duration = el && isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
+    const position = el && isFinite(el.currentTime) ? el.currentTime : 0;
+    const playing = !!el && !el.paused && !el.ended;
+    const state = !el || (!playing && !position && !duration) ? 'none' : playing ? 'playing' : 'paused';
+    const title = (metadata && metadata.title) || document.title || '';
+    const artworkList = metadata && metadata.artwork ? metadata.artwork : [];
+    const artwork = artworkList.length ? artworkList[artworkList.length - 1].src || '' : '';
+    const host = location.hostname.replace(/^www\./, '');
+    const artist = (metadata && metadata.artist) || host;
+    // The page's handlers are the real thing; YouTube's own next/previous
+    // buttons are the fallback so the flyout arrows are never dead on a
+    // watch page that skipped MediaSession registration.
+    const next = !!mediaHandlers.nexttrack || !!document.querySelector('.ytp-next-button');
+    const prev = !!mediaHandlers.previoustrack || !!document.querySelector('.ytp-prev-button');
+    // Position-only heartbeats: the key ignores position/time, so a moving
+    // timeline never repaints the flyout's metadata.
+    const key = [state, title, artist, artwork, next, prev].join('|');
+    const now = Date.now();
+    if (key === mediaKey && now - mediaSentAt < 1400) {
+      if (state === 'playing') mediaTimer = setTimeout(reportMedia, 300);
+      return;
+    }
+    mediaKey = key;
+    mediaSentAt = now;
+    send({
+      t9: 'media',
+      state,
+      title,
+      artist,
+      album: host,
+      artwork,
+      position,
+      duration,
+      rate: el && isFinite(el.playbackRate) ? el.playbackRate : 1,
+      next,
+      prev
+    });
+    if (state === 'playing') {
+      // Some players only use requestVideoFrameCallback; this keeps the
+      // flyout's position moving without depending on timeupdate.
+      mediaTimer = setTimeout(reportMedia, 1600);
+    }
+  };
+
+  const scheduleMedia = () => {
+    if (mediaTimer) return;
+    mediaTimer = setTimeout(reportMedia, 300);
+  };
+
+  for (const name of [
+    'play',
+    'playing',
+    'pause',
+    'ended',
+    'seeked',
+    'loadedmetadata',
+    'durationchange',
+    'ratechange',
+    'timeupdate',
+    'emptied',
+    'canplay'
+  ]) {
+    document.addEventListener(name, scheduleMedia, true);
+  }
+  document.addEventListener('DOMContentLoaded', scheduleMedia, true);
+  window.addEventListener('load', scheduleMedia, true);
+
+  const runMediaAction = (name, details, fallback) => {
+    const handler = mediaHandlers[name];
+    if (typeof handler === 'function') {
+      try {
+        handler(details);
+        return;
+      } catch (e) {
+        /* fall through to the element */
+      }
+    }
+    try {
+      fallback();
+    } catch (e) {
+      /* nothing here to control */
+    }
+  };
+
+  // Called by Rust when the flyout, a media key or an earbud button fires.
+  window.__t9MediaAction = (action, value) => {
+    const el = mediaElement();
+    switch (action) {
+      case 'play':
+        return runMediaAction('play', { action: 'play' }, () => el && el.play && el.play().catch(() => {}));
+      case 'pause':
+        return runMediaAction('pause', { action: 'pause' }, () => el && el.pause());
+      case 'next':
+        return runMediaAction('nexttrack', { action: 'nexttrack' }, () => {
+          const button = document.querySelector('.ytp-next-button');
+          if (button) button.click();
+        });
+      case 'prev':
+        return runMediaAction('previoustrack', { action: 'previoustrack' }, () => {
+          const button = document.querySelector('.ytp-prev-button');
+          if (button) button.click();
+        });
+      case 'stop':
+        return runMediaAction('stop', { action: 'stop' }, () => {
+          if (el) {
+            el.pause();
+            el.currentTime = 0;
+          }
+        });
+      case 'forward':
+        return runMediaAction('seekforward', { action: 'seekforward', seekOffset: 10 }, () => {
+          if (el) el.currentTime = Math.min(el.duration || 1e9, el.currentTime + 10);
+          scheduleMedia();
+        });
+      case 'rewind':
+        return runMediaAction('seekbackward', { action: 'seekbackward', seekOffset: 10 }, () => {
+          if (el) el.currentTime = Math.max(0, el.currentTime - 10);
+          scheduleMedia();
+        });
+      case 'seek':
+        if (!isFinite(value)) return;
+        return runMediaAction('seekto', { action: 'seekto', seekTime: Number(value) }, () => {
+          if (el) el.currentTime = Number(value);
+          scheduleMedia();
+        });
+      default:
+        return;
+    }
+  };
+
   /* ── YouTube in-stream ads ───────────────────────────────────────────
    * uBlock Origin Lite strips YouTube's ad placement data with its own
    * scriptlet, but only with host access. When the extension is in Basic
@@ -270,7 +473,13 @@
          it would break every text field on every site. */
       if (!e.ctrlKey) {
         if (key === 'F5') return hit(e, 'reload', 0);
-        if (key === 'Escape') return hit(e, 'stopLoading');
+        if (key === 'Escape') {
+          // Fullscreen: Escape belongs to the page (YouTube's exit), not to
+          // the browser's stop-loading. Grabbing it here trapped the user in
+          // a fullscreen video with no way out except the ⛶ button.
+          if (document.fullscreenElement) return;
+          return hit(e, 'stopLoading');
+        }
         if (key === 'F1') return hit(e, 'openHelp');
         return;
       }
@@ -285,6 +494,7 @@
         if (key === 'F5') return hit(e, 'reload', 1);
         if (key === 'Delete') return hit(e, 'clearHistory');
         if (lower === 't') return hit(e, 'reopenClosedTab');
+        if (lower === 'p') return hit(e, 'pinTab');
         if (lower === 'w') return hit(e, 'closeBrowserView');
         if (lower === 'r') return hit(e, 'reload', 1);
         if (lower === 'd') return hit(e, 'bookmarkAllTabs');

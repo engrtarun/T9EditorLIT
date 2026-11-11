@@ -49,6 +49,47 @@ export interface HistoryEntry {
 
 const HISTORY_CAP = 80;
 const CLOSED_CAP = 20;
+/** The visit log is disk-backed: a panel that empties on restart is useless. */
+const HISTORY_KEY = 't9-browser-lit.history.v1';
+/** Pinned tabs, restored as tabs on the next boot. */
+const PINS_KEY = 't9-browser-lit.pins.v1';
+
+/** A pinned tab as it is written to disk: the page, not the webview. */
+interface PinnedTab {
+  url: string;
+  title: string;
+}
+
+function loadStoredHistory(): HistoryEntry[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((e): e is HistoryEntry => !!e && typeof (e as HistoryEntry).url === 'string')
+      .slice(0, HISTORY_CAP)
+      .map((e) => ({
+        url: e.url,
+        title: String(e.title || hostOf(e.url)),
+        at: Number(e.at) || 0
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function loadPinnedTabs(): PinnedTab[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(PINS_KEY) ?? '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((p): p is PinnedTab => !!p && typeof (p as PinnedTab).url === 'string')
+      .map((p) => ({ url: p.url, title: String(p.title || hostOf(p.url)) }))
+      .filter((p) => p.url && p.url !== 'about:blank')
+      .slice(0, MAX_TABS);
+  } catch {
+    return [];
+  }
+}
 
 /** Brave Search, not Google: no account, no ad profile on every keystroke. */
 const SEARCH_URL = 'https://search.brave.com/search?q=';
@@ -159,8 +200,12 @@ class BrowserStore {
   bookmarks = $state<Bookmark[]>([]);
   private bookmarksLoaded = false;
 
-  /** The bounded visit log behind the Ctrl+H panel; Ctrl+Shift+Del empties it. */
-  historyLog = $state<HistoryEntry[]>([]);
+  /**
+   * The bounded visit log behind the Ctrl+H panel; Ctrl+Shift+Del empties it.
+   * Loaded from disk at construction so the panel is never empty after a
+   * restart — the same durability the bookmarks already have.
+   */
+  historyLog = $state<HistoryEntry[]>(loadStoredHistory());
 
   /** The Ctrl+H panel's open state. */
   historyOpen = $state(false);
@@ -218,6 +263,15 @@ class BrowserStore {
     if (this.historyLog[0]?.url === url) return;
     this.historyLog.unshift({ url, title, at: Date.now() });
     if (this.historyLog.length > HISTORY_CAP) this.historyLog.length = HISTORY_CAP;
+    this.persistHistory();
+  }
+
+  private persistHistory(): void {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(this.historyLog));
+    } catch {
+      /* private mode / quota — this session's log still works */
+    }
   }
 
   private push(id: string, url: string): void {
@@ -328,15 +382,18 @@ class BrowserStore {
    * Ctrl+= / Ctrl+- / Ctrl+0 — the page's own zoom, inside the child webview
    * (WebView2's scale, like Firefox's page zoom). Firefox keeps this per tab,
    * so switching back to a tab returns its zoom; a fresh tab starts at 100%.
+   *
+   * **10% per press**, like current Firefox — not the old 20% step that made
+   * two presses skip straight past the size the user wanted. The range is
+   * 30%…300% (Firefox's own), and the value is rounded to one decimal so the
+   * `%` chip can never say 99% for a page that is at 100%.
    */
   applyZoom(dir: -1 | 0 | 1): void {
     const tab = this.active;
     if (!tab) return;
     const current = this.zooms[tab.id] ?? 1;
-    const next = dir === 0 ? 1 : Math.min(10, Math.max(0.2, current + dir * 0.2));
-    // Two decimals: `1 + 0.2 - 0.2` is 0.9999999999999999 in binary floating
-    // point, which would paint "100%" through the `!== 1` test or "99%"
-    // through a round — the chip must say exactly what the page shows.
+    const next =
+      dir === 0 ? 1 : Math.min(3, Math.max(0.3, Math.round((current + dir * 0.1) * 10) / 10));
     this.zooms[tab.id] = Math.round(next * 100) / 100;
     void browserSetZoom(tab.id, this.zooms[tab.id]);
   }
@@ -398,6 +455,7 @@ class BrowserStore {
   clearHistory(): void {
     this.historyLog = [];
     this.closed.length = 0;
+    this.persistHistory();
   }
 
   /* ── bookmarks (Ctrl+D) — they pin onto the speed dial ──────────────── */
@@ -547,6 +605,7 @@ class BrowserStore {
     }
     const wasActive = this.activeId === id;
     this.tabs.splice(i, 1);
+    if (dying.pinned) this.persistPins();
     if (wasActive) {
       // The active tab owned the only uncollapsed webview — closing it
       // must destroy that webview or it would outlive the tab in the strip.
@@ -637,14 +696,50 @@ class BrowserStore {
    * Firefox's pinned tab, aimed at "YouTube chalta rahe while I edit".
    *
    * Not to be confused with a bookmark (Ctrl+D): that is a link on the speed
-   * dial, this is the live page. Session-only, by design — a restart starts
-   * with no pins.
+   * dial, this is the live page. Pins are written to disk (URL + title) and
+   * restored as tabs on the next boot — re-pinning the same three sites every
+   * launch was the annoyance the user reported.
    */
   setPinned(id: string, pinned: boolean): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab || tab.pinned === pinned) return;
     tab.pinned = pinned;
+    this.persistPins();
     if (isTauri()) void browserSetPinned(id, pinned);
+  }
+
+  private persistPins(): void {
+    try {
+      const pins = this.tabs
+        .filter((t) => t.pinned && t.url && t.url !== 'about:blank')
+        .map((t) => ({ url: t.url, title: t.title }));
+      localStorage.setItem(PINS_KEY, JSON.stringify(pins));
+    } catch {
+      /* private mode / quota — the pins still live for this session */
+    }
+  }
+
+  /**
+   * Bring back the pinned tabs from the last session. Called once, right
+   * after `wireTauri`, before the first `showActive`: a browser that boots
+   * with zero tabs is the only moment restoring makes sense.
+   *
+   * Restored tabs are marked pinned in Rust too, so the first tab switch
+   * parks them awake instead of treating them as ordinary background tabs.
+   */
+  restorePinned(): void {
+    if (this.tabs.length > 0) return;
+    const pins = loadPinnedTabs();
+    if (pins.length === 0) return;
+    for (const pin of pins) {
+      const tab = makeTab(pin.url);
+      tab.title = pin.title || hostOf(pin.url);
+      tab.pinned = true;
+      this.tabs.push(tab);
+      this.push(tab.id, pin.url);
+      if (isTauri()) void browserSetPinned(tab.id, true);
+    }
+    this.activeId = this.tabs[0].id;
   }
 
   /** The menu's Pin/Unpin row. Returns the tab's state after the toggle. */
@@ -735,6 +830,7 @@ class BrowserStore {
         tab.title = hostOf(url);
         this.push(id, url);
         this.logVisit(url, tab.title);
+        if (tab.pinned) this.persistPins();
       }
     });
 
@@ -759,6 +855,7 @@ class BrowserStore {
       tab.loading = false;
       this.push(id, url);
       this.logVisit(url, tab.title);
+      if (tab.pinned) this.persistPins();
     });
 
     // The page's own <title>: the strip and downloads panel prefer it over
@@ -767,6 +864,7 @@ class BrowserStore {
       const tab = this.tabs.find((t) => t.id === id);
       if (!tab || !title) return;
       tab.title = title;
+      if (tab.pinned) this.persistPins();
     });
 
     // A page asked for a new window — target=_blank (search results use it),

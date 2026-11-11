@@ -37,6 +37,8 @@ export interface BrowserKeyDeps {
   prevTab(): void;
   nextTab(): void;
   moveTab(dir: -1 | 1): void;
+  /** Pin/unpin the active tab (Ctrl+Shift+P) — it keeps playing in background. */
+  pinTab(): void;
   back(): void;
   forward(): void;
   stopLoading(): void;
@@ -97,6 +99,10 @@ export const BINDINGS: Entry[] = [
   ),
   B('lastTab', ['ctrl+9'], true),
   B('moveTab', ['ctrl+shift+pageup', 'ctrl+shift+pagedown'], true),
+  // Firefox's Ctrl+Shift+P is a private window; T9 is one window and has no
+  // private mode, so the chord pins the active tab instead (the user asked
+  // for a key for pin).
+  B('pinTab', ['ctrl+shift+p'], true),
   B('closeBrowserView', ['ctrl+shift+w'], true),
   // ── navigation ──────────────────────────────────────────────────────────
   B('back', ['alt+arrowleft', 'backspace']),
@@ -238,6 +244,11 @@ export const BROWSER_GROUPS: Array<{ title: string; rows: BrowserSheetRow[] }> =
       { keys: 'Ctrl + Shift + Tab  /  Ctrl + PgUp', action: 'Pichla tab' },
       { keys: 'Ctrl + 1 … 9', action: 'Tab n / last tab' },
       { keys: 'Ctrl + Shift + PgUp / PgDn', action: 'Tab ko aage / peeche move' },
+      {
+        keys: 'Ctrl + Shift + P',
+        action: 'Tab pin / unpin',
+        note: 'pinned tab background me chalta rehta hai'
+      },
       { keys: 'Ctrl + Shift + W', action: 'Browser band — editor pe wapas' }
     ]
   },

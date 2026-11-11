@@ -16,6 +16,7 @@
   import { i18n } from '../stores/i18n.svelte';
   import { app } from '../stores/app.svelte';
   import { browser } from '../stores/browser.svelte';
+  import { layout } from '../stores/layout.svelte';
   import {
     pinnedTools,
     normaliseUrl,
@@ -44,11 +45,19 @@
     { id: 'hdhub4u', name: 'HDHub4U', url: 'https://hdhub4u.ms/' }
   ];
 
-  let open = $state(false);
   let adding = $state(false);
   let nameDraft = $state('');
   let urlDraft = $state('');
   let pos = $state({ x: 0, y: 0 });
+
+  /**
+   * The panel's open state lives in `layout` (not here): the browser view
+   * must know when this popover is over its page so it can park the native
+   * webview, and the panel unmounts whenever the app changes screens.
+   */
+  $effect(() => () => {
+    layout.toolsOpen = false;
+  });
 
   /** The panel's size, so it can be kept inside the window (CloudMenu rule). */
   const MENU_W = 320;
@@ -56,8 +65,8 @@
   const EDGE = 8;
 
   function toggle(e: MouseEvent) {
-    if (open) {
-      open = false;
+    if (layout.toolsOpen) {
+      layout.toolsOpen = false;
       return;
     }
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -72,12 +81,12 @@
     if (y + MENU_H > vh - EDGE) y = Math.max(EDGE, Math.round(r.top - MENU_H - 6));
 
     pos = { x, y };
-    open = true;
+    layout.toolsOpen = true;
   }
 
   /** Open a site in the in-built browser — never in the system browser. */
   function openTool(url: string) {
-    open = false;
+    layout.toolsOpen = false;
     adding = false;
     app.openBrowser(app.view);
     browser.navigate(url);
@@ -95,7 +104,7 @@
 <svelte:window
   onkeydown={(e) => {
     if (e.key === 'Escape') {
-      open = false;
+      layout.toolsOpen = false;
       adding = false;
     }
   }}
@@ -108,7 +117,7 @@
   title={i18n.t('bar.tools')}
   aria-label={i18n.t('bar.tools')}
   aria-haspopup="dialog"
-  aria-expanded={open}
+  aria-expanded={layout.toolsOpen}
 >
   <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
     <circle cx="3" cy="3" r="1.4" /><circle cx="8" cy="3" r="1.4" /><circle
@@ -129,12 +138,12 @@
   </svg>
 </button>
 
-{#if open}
+{#if layout.toolsOpen}
   <!-- click-away catcher -->
   <button
     class="fixed inset-0 z-[190] cursor-default"
     aria-label="Close tools"
-    onclick={() => (open = false)}
+    onclick={() => (layout.toolsOpen = false)}
   ></button>
 
   <div

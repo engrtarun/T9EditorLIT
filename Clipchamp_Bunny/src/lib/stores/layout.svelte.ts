@@ -38,6 +38,14 @@ class LayoutStore {
    * must move between menu items, not nudge the playhead behind the popover.
    */
   profileOpen = $state(false);
+  /**
+   * The 9-dots tools panel (top bar) is open.
+   *
+   * It is a DOM popover that can cross the browser's content rectangle, and a
+   * native child webview always paints **above** the DOM. The browser hides
+   * its page while this is true so the panel's lower half stays visible.
+   */
+  toolsOpen = $state(false);
 
   setTranscriptWidth(px: number) {
     this.transcriptWidth = Math.max(240, Math.min(560, Math.round(px)));

@@ -142,6 +142,11 @@ type Item struct {
 	// this row (cumulative). It is honest waste, shown so a user can see why
 	// a resume is not instant on a host without Range support.
 	ReReadBytes int64 `json:"rereadBytes,omitempty"`
+	// StartedAt / FinishedAt are Unix milliseconds. They are what the
+	// downloads panel shows as "started", "finished" and "took N minutes";
+	// without them a finished row is just a name and a size.
+	StartedAt  int64 `json:"startedAt,omitempty"`
+	FinishedAt int64 `json:"finishedAt,omitempty"`
 }
 
 // Options configure a Manager. Zero values get the defaults above.
@@ -607,6 +612,7 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 		lastModified: probe.lastModified,
 		ua:           probe.ua,
 		status:       StatusRunning,
+		startedAt:    time.Now(),
 		client:       m.client,
 		log:          m.log,
 		maxSegs:      segments,
@@ -1365,6 +1371,7 @@ type download struct {
 	mu         sync.Mutex
 	status     string
 	errText    string
+	startedAt  time.Time
 	finishedAt time.Time
 	file       *os.File
 	stop       context.CancelFunc
@@ -2330,6 +2337,13 @@ func (d *download) resume() error {
 	}
 	d.status = StatusRunning
 	d.errText = ""
+	// A row recovered from a sidecar has no start stamp; the retry is its
+	// first real transfer. A terminal stamp from the failed attempt must go —
+	// the row is live again, and `FinishedAt` is what the panel reads.
+	if d.startedAt.IsZero() {
+		d.startedAt = time.Now()
+	}
+	d.finishedAt = time.Time{}
 	d.mu.Unlock()
 
 	go d.run()
@@ -2343,6 +2357,7 @@ func (d *download) cancel() {
 		return
 	}
 	d.status = StatusCancelled
+	d.finishedAt = time.Now()
 	cancel := d.stop
 	d.mu.Unlock()
 
@@ -2420,6 +2435,13 @@ func (d *download) snapshot() Item {
 	if d.status != StatusRunning {
 		phase = ""
 	}
+	var started, finished int64
+	if !d.startedAt.IsZero() {
+		started = d.startedAt.UnixMilli()
+	}
+	if !d.finishedAt.IsZero() {
+		finished = d.finishedAt.UnixMilli()
+	}
 	return Item{
 		ID:            d.id,
 		URL:           d.url,
@@ -2433,6 +2455,8 @@ func (d *download) snapshot() Item {
 		Error:         d.errText,
 		Phase:         phase,
 		ReReadBytes:   d.reread.Load(),
+		StartedAt:     started,
+		FinishedAt:    finished,
 	}
 }
 

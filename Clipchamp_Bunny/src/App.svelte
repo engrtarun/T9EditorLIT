@@ -111,6 +111,15 @@
     prevTab: () => browser.cycle(-1),
     nextTab: () => browser.cycle(1),
     moveTab: (dir: -1 | 1) => browser.moveTab(dir),
+    pinTab: () => {
+      const tab = browser.active;
+      if (!tab) return;
+      const pinned = browser.togglePin();
+      toast.push(
+        'info',
+        pinned ? `📌 ${tab.title} pinned — background me chalta rahega` : '📌 Pin hata diya'
+      );
+    },
     back: () => browser.back(),
     forward: () => browser.forward(),
     stopLoading: () => browser.stopLoading(),
@@ -225,6 +234,17 @@
     // before the generic typing guard below. That module polices its own
     // typing rules (it stands down for editing chords).
     if (browserOpen && dispatchBrowserKey(e, browserDeps)) return;
+
+    // One chord opens the in-built browser from anywhere — dashboard, studio,
+    // the editor — so a quick lookup never means hunting for the 9-dots menu
+    // first. Ctrl+Shift+B is unclaimed elsewhere in the app and Firefox uses
+    // it for a toolbar this browser does not have. Inside the browser it is a
+    // no-op: that view's own key map owns the keyboard.
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'b' && app.view !== 'browser') {
+      e.preventDefault();
+      app.openBrowser(app.view);
+      return;
+    }
 
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;

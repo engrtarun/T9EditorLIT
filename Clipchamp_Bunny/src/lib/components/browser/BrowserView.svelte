@@ -23,7 +23,15 @@
   import { downloads } from '../../stores/downloads.svelte';
   import { ublock } from '../../stores/ublock.svelte';
   import { app } from '../../stores/app.svelte';
-  import { isTauri, browserViewClosed, browserSetRect } from '../../ipc';
+  import { layout } from '../../stores/layout.svelte';
+  import { menu } from '../../stores/menu.svelte';
+  import {
+    isTauri,
+    browserViewClosed,
+    browserSetRect,
+    browserSetVisible,
+    onBrowserFullscreen
+  } from '../../ipc';
   import { onMount } from 'svelte';
 
   const tab = $derived(browser.active);
@@ -39,8 +47,15 @@
   // aligned with it.
   let contentEl = $state<HTMLDivElement | null>(null);
 
+  /** A page (YouTube's ⛶) is fullscreen — Rust grew its webview over the chrome. */
+  let fullscreen = $state(false);
+
   onMount(() => {
     browser.wireTauri();
+    // Pins from the last session come back as tabs before the first show, so
+    // the user is not re-pinning YouTube on every launch. No-op once any tab
+    // exists (the browser is already in use).
+    browser.restorePinned();
     // A tab may already exist: the tools panel opens a link and *then* switches
     // to this view, so the store created the tab before anything was wired.
     browser.showActive();
@@ -50,7 +65,26 @@
     // uBlock: disk status from the daemon, runtime truth from WebView2. The
     // folder is already unpacked by the time a tab exists; this only reports.
     ublock.boot();
+    // Fullscreen: the chrome's rows are covered by the grown webview anyway,
+    // so they only need to stop painting (no layout change — a layout change
+    // here would feed a new rect back to Rust mid-fullscreen).
+    let dead = false;
+    let offFullscreen: (() => void) | null = null;
+    void onBrowserFullscreen(({ id, on }) => {
+      if (browser.activeId !== id) return;
+      fullscreen = on;
+    })
+      .then((off) => {
+        if (dead) off();
+        else offFullscreen = off;
+      })
+      .catch(() => {
+        /* dev preview: no native event bus */
+      });
     return () => {
+      dead = true;
+      offFullscreen?.();
+      fullscreen = false;
       ublock.dispose();
       // The whole browser tree unmounts (App.svelte's {#if}): sweep EVERY
       // tab webview (kept ones included) so the 500 MB budget holds while
@@ -84,15 +118,41 @@
   // marshals onto the main thread, and a flood of them is what made the
   // browser feel frozen ("buttons not responding") while a panel animated.
   let rectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * The last rectangle actually sent. The ResizeObserver also fires for
+   * sub-pixel changes that round to the same box; every duplicate was a full
+   * IPC trip onto the main thread (the diag log showed dozens a minute for a
+   * page that had not moved at all). Whole pixels only — the native side
+   * positions whole pixels.
+   */
+  let lastSent = { x: -1, y: -1, width: -1, height: -1 };
+
+  function applyRect(r: { x: number; y: number; width: number; height: number }) {
+    if (r.width <= 0 || r.height <= 0) return;
+    const next = {
+      x: Math.round(r.x),
+      y: Math.round(r.y),
+      width: Math.round(r.width),
+      // -1 safety margin so the native webview can never paint over the
+      // panel header sitting immediately below the content box.
+      height: Math.max(1, Math.round(r.height) - 1)
+    };
+    if (
+      next.x === lastSent.x &&
+      next.y === lastSent.y &&
+      next.width === lastSent.width &&
+      next.height === lastSent.height
+    ) {
+      return;
+    }
+    lastSent = next;
+    void browserSetRect(next.x, next.y, next.width, next.height);
+  }
+
   function pushRect(r: { x: number; y: number; width: number; height: number }) {
     if (rectTimer) clearTimeout(rectTimer);
-    rectTimer = setTimeout(() => {
-      if (r.width > 0 && r.height > 0) {
-        // -1 safety margin so the native webview can never paint over the
-        // panel header sitting immediately below the content box.
-        void browserSetRect(r.x, r.y, r.width, Math.max(1, r.height - 1));
-      }
-    }, 30);
+    rectTimer = setTimeout(() => applyRect(r), 30);
   }
   $effect(() => {
     const el = contentEl;
@@ -122,16 +182,30 @@
     if (!el || !isTauri()) return;
     requestAnimationFrame(() => {
       const r = el.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) {
-        void browserSetRect(r.left, r.top, r.width, Math.max(1, r.height - 1));
-      }
+      applyRect({ x: r.left, y: r.top, width: r.width, height: r.height });
     });
+  });
+
+  // Every DOM overlay that can cross the content rect — the 9-dots tools
+  // panel, the top bar's profile popover, the settings / help dialogs, a
+  // right-click menu — is painted *under* a native child webview, so its
+  // lower half used to disappear behind the page. Park the page while any of
+  // them is open; audio and page state survive because nothing is closed.
+  $effect(() => {
+    const open =
+      layout.toolsOpen ||
+      layout.profileOpen ||
+      layout.settingsOpen ||
+      layout.helpOpen ||
+      !!menu.current;
+    if (!isTauri()) return;
+    void browserSetVisible(!open);
   });
 </script>
 
 <div class="flex min-h-0 min-w-0 flex-1 flex-col bg-nc-bg text-nc-txt">
   <!-- ── chrome: tabs on top, address bar under, one surface ────────────── -->
-  <div class="shrink-0 border-b border-nc-line bg-nc-panel">
+  <div class="shrink-0 border-b border-nc-line bg-nc-panel" class:invisible={fullscreen}>
     <TabStrip />
 
     <div class="flex h-10 items-center gap-0.5 px-2 pb-1.5">

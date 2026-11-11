@@ -9,7 +9,7 @@
    */
   import { downloads } from '../../stores/downloads.svelte';
   import { ublock } from '../../stores/ublock.svelte';
-  import { pickFolder } from '../../ipc';
+  import { pickFolder, appNotify } from '../../ipc';
   import { toast } from '../../stores/toast.svelte';
 
   /** Range dragging has to feel immediate; SQLite is written on release. */
@@ -34,6 +34,28 @@
       /* persistSettings already showed the reason */
     } finally {
       connDraft = null;
+    }
+  }
+
+  /**
+   * Fire one real toast and report the native error when it fails.
+   *
+   * "Notification nahi aa raha" is impossible to debug from the UI when the
+   * send is fire-and-forget: the button either shows a toast in the Windows
+   * notification centre or says exactly what the plugin refused.
+   */
+  async function testNotification(): Promise<void> {
+    try {
+      await appNotify(
+        'T9 Editor LIT — test notification',
+        'Agar ye dikh raha hai to download notifications bhi aayenge.'
+      );
+      toast.push('info', '📣 Test notification bheja — Windows notification centre dekho');
+    } catch (err) {
+      toast.push(
+        'warn',
+        `Notification nahi chala: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }
 </script>
@@ -202,5 +224,13 @@
     <p class="mt-1 text-[10px] text-nc-mut-2">
       Background me chalti rehti hai jab tak tum cancel na karo.
     </p>
+    <button
+      type="button"
+      onclick={() => void testNotification()}
+      class="mt-2 rounded bg-nc-panel-2 px-2 py-1 text-[10px] font-medium text-nc-mut hover:bg-nc-panel-2/70 hover:text-nc-txt"
+      title="Windows notification abhi test karo — fail ho to reason toast me aayega"
+    >
+      Test notification
+    </button>
   </section>
 </div>

@@ -54,7 +54,7 @@ use tauri::{
 /// "page does not render" can be told apart from "webview never created"
 /// from a file read — without a new build. Best-effort: a logging problem
 /// must never break the command.
-fn diag(msg: &str) {
+pub(crate) fn diag(msg: &str) {
     let Some(path) = std::env::var_os("LOCALAPPDATA").map(|root| {
         std::path::PathBuf::from(root)
             .join("T9EditorLIT")
@@ -173,6 +173,16 @@ pub struct TitlePayload {
     pub title: String,
 }
 
+/// A page entered or left the Fullscreen API (YouTube's ⛶ button). The
+/// webview is grown to the whole window so "fullscreen" means the screen,
+/// not the content rectangle.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FullscreenPayload {
+    pub id: String,
+    pub on: bool,
+}
+
 /// A key combo the page webview sent through the document-start shim. The
 /// action names are the same ones `src/lib/browser-keys.ts` resolves, so one
 /// dep table in App.svelte serves both the DOM and the native path.
@@ -234,6 +244,14 @@ pub struct BrowserState {
     /// tab, which is what "listen to YouTube for hours" actually needs).
     /// Session-only: a restart starts with no pins.
     pinned: Mutex<HashSet<String>>,
+    /// Tab labels whose page is in the Fullscreen API right now. While one is
+    /// set, its webview covers the whole window, so a later "show the page"
+    /// (an overlay closing) has to restore *that* box, not the content rect.
+    fullscreen: Mutex<HashSet<String>>,
+    /// An overlay is covering the content rect and the active page is parked.
+    /// Rect updates still arrive (the window can be resized behind a modal);
+    /// none of them may un-park the page or the overlay loses its lower half.
+    parked: AtomicBool,
 }
 
 impl Default for BrowserState {
@@ -242,6 +260,8 @@ impl Default for BrowserState {
             rect: Mutex::new(ContentRect::default()),
             active: Mutex::new(String::new()),
             pinned: Mutex::new(HashSet::new()),
+            fullscreen: Mutex::new(HashSet::new()),
+            parked: AtomicBool::new(false),
         }
     }
 }
@@ -264,7 +284,7 @@ fn set_active<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) {
 
 /// The webview label for a tab id. The `tab-` prefix keeps child labels
 /// from ever colliding with the main window's own name.
-fn label_for(id: &str) -> String {
+pub(crate) fn label_for(id: &str) -> String {
     format!("tab-{id}")
 }
 
@@ -272,6 +292,20 @@ fn label_for(id: &str) -> String {
 /// later tab is then built without extensions instead of paying the exact
 /// same failure again; the UI is told the truth through `browser:extensions`.
 static EXTENSIONS_OFF: AtomicBool = AtomicBool::new(false);
+
+/// Per-tab WebView2 switches. `additional_browser_args` replaces wry's
+/// defaults, so the three protective switches are repeated verbatim and the
+/// autoplay switch keeps wry's default (`autoplay: true`) intact.
+///
+/// `MediaSessionService` is the important addition: it is Chromium's own
+/// media-session service. While it runs, every tab owns a session belonging
+/// to `msedgewebview2.exe` — "Unknown app" in the Windows flyout — and the
+/// earbud's next/previous keys go to that session instead of ours. With it
+/// off, `smtc.rs` is the only session this app has, and every button has one
+/// owner. `HardwareMediaKeyHandling` is the sibling flag: it is the browser
+/// process itself grabbing the media keys, which would survive a disabled
+/// session service and swallow the earbud press before Windows routes it.
+const TAB_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MediaSessionService,HardwareMediaKeyHandling --autoplay-policy=no-user-gesture-required";
 
 /// The dedicated WebView2 profile for page webviews.
 ///
@@ -581,6 +615,76 @@ fn handle_shim_message<R: Runtime>(app: &tauri::AppHandle<R>, id: &str, raw: &st
                     url,
                 },
             );
+        }
+        // Fullscreen (YouTube's ⛶, a video element going fullscreen). The
+        // page's own fullscreen only fills the webview; the webview is a child
+        // of this window, so it must be grown to the window for the result to
+        // be a real fullscreen. On exit the content rect comes back.
+        "fullscreen" => {
+            let on = msg.value.unwrap_or(0) != 0;
+            let Some(window) = app.get_window("main") else {
+                return;
+            };
+            let Some(webview) = find_tab(&window, &label_for(id)) else {
+                return;
+            };
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let size = window.inner_size().unwrap_or_default();
+            let rect = app
+                .state::<BrowserState>()
+                .rect
+                .lock()
+                .map(|r| *r)
+                .unwrap_or_default();
+            let id_owned = id.to_string();
+            // Remember which tabs are fullscreen: "show the page" (an overlay
+            // closing) must restore the window-sized box, not the content rect.
+            {
+                let state = app.state::<BrowserState>();
+                if let Ok(mut set) = state.fullscreen.lock() {
+                    if on {
+                        set.insert(label_for(id));
+                    } else {
+                        set.remove(&label_for(id));
+                    }
+                }
+            }
+            // Tell the UI first: it hides the chrome rows without re-laying
+            // them out (a layout change would feed a new content rect back to
+            // Rust in the middle of fullscreen).
+            let _ = app.emit(
+                "browser:fullscreen",
+                FullscreenPayload {
+                    id: id_owned.clone(),
+                    on,
+                },
+            );
+            // The webview handle must not be resized inside the WebMessage
+            // handler: that handler already runs on the UI thread, and the
+            // resize marshals back onto it. One short-lived worker keeps the
+            // page and the window responsive.
+            std::thread::spawn(move || {
+                if on {
+                    let _ = webview.set_position(LogicalPosition::new(0.0, 0.0));
+                    let _ = webview.set_size(LogicalSize::new(
+                        f64::from(size.width) / scale,
+                        f64::from(size.height) / scale,
+                    ));
+                } else if rect.width >= 2.0 && rect.height >= 2.0 {
+                    let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
+                    let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
+                }
+                diag(&format!("event fullscreen {id_owned} -> {on}"));
+            });
+        }
+        // Media state for the Windows flyout. Chromium's own media session is
+        // switched off per tab (see `TAB_BROWSER_ARGS`), so this report is
+        // what gives the session a title, an icon and working next/prev.
+        "media" => {
+            let Ok(report) = serde_json::from_str::<crate::smtc::MediaReport>(raw) else {
+                return;
+            };
+            crate::smtc::update(app, id, report);
         }
         _ => {}
     }
@@ -999,9 +1103,13 @@ pub async fn browser_hide(app: tauri::AppHandle, id: String) -> Result<(), Strin
         set.remove(&id);
     }
     let label = label_for(&id);
+    if let Ok(mut set) = app.state::<BrowserState>().fullscreen.lock() {
+        set.remove(&label);
+    }
     if let Some(webview) = find_tab(&window, &label) {
         let _ = webview.close();
     }
+    crate::smtc::tab_closed(&app, &id);
     if let Ok(mut a) = app.state::<BrowserState>().active.lock() {
         if *a == label {
             *a = String::new();
@@ -1028,8 +1136,16 @@ pub async fn browser_view_closed(app: tauri::AppHandle) -> Result<(), String> {
     // trim; every unpinned webview is destroyed as before.
     let pinned = pinned_ids(&app);
     destroy_others(&window, &[], &pinned);
+    // A pinned page keeps playing (that is what pinning is for), so its
+    // session survives the unmount. Any other owner was just destroyed.
+    crate::smtc::tabs_swept(&app, &pinned);
     if let Ok(mut a) = app.state::<BrowserState>().active.lock() {
         *a = String::new();
+    }
+    // Nothing is fullscreen once the view is gone; a stale entry would make
+    // the next "show the page" restore a window-sized box over the editor.
+    if let Ok(mut set) = app.state::<BrowserState>().fullscreen.lock() {
+        set.clear();
     }
     diag(&format!(
         "view closed -> swept all, {} pinned kept",
@@ -1074,6 +1190,7 @@ pub async fn browser_set_pinned(
         Some(webview) if active != label && pinned => park_webview(&webview, true),
         Some(webview) if active != label => {
             let _ = webview.close();
+            crate::smtc::tab_closed(&app, &id);
         }
         _ => {}
     }
@@ -1082,11 +1199,6 @@ pub async fn browser_set_pinned(
     Ok(())
 }
 
-/// Move the live webview onto the content rectangle the frontend measured.
-///
-/// Called from an effect watching the container's bounding box, so tab
-/// strip changes, the downloads panel opening, and window resizes all keep
-/// the page painted in exactly the right hole.
 /// Record where the browser content area sits in window coordinates.
 ///
 /// Async for the same reason as [`browser_show`] — this state is the
@@ -1117,6 +1229,13 @@ pub async fn browser_set_rect(
         return Ok(());
     }
 
+    // Parked for an overlay: the rect is remembered (above) but the page must
+    // stay at 1×1 until `browser_set_visible(true)` restores it.
+    let state = app.state::<BrowserState>();
+    if state.parked.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+
     // Only the ACTIVE webview fills the rect. Kept (collapsed) webviews
     // must stay 1×1 — resizing them back would float a stale page over
     // the active one.
@@ -1133,8 +1252,85 @@ pub async fn browser_set_rect(
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
     if let Some(webview) = find_tab(&window, &active) {
-        let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
-        let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
+        // A fullscreen page covers the window, not the content box: a resize
+        // now has to follow the window or the video would keep the old size.
+        let fullscreen = state
+            .fullscreen
+            .lock()
+            .map(|set| set.contains(&active))
+            .unwrap_or(false);
+        if fullscreen {
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let size = window.inner_size().unwrap_or_default();
+            let _ = webview.set_position(LogicalPosition::new(0.0, 0.0));
+            let _ = webview.set_size(LogicalSize::new(
+                f64::from(size.width) / scale,
+                f64::from(size.height) / scale,
+            ));
+        } else {
+            let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
+            let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
+        }
+    }
+    Ok(())
+}
+
+/// Hide the active page while a DOM overlay sits on top of it.
+///
+/// A child WebView2 always paints **above** the main webview, so the 9-dots
+/// tools panel — a DOM popover that crosses the content rect — used to have
+/// its lower half covered by the page. While such an overlay is open the
+/// active webview is parked at 1×1; when it closes the page is put back on
+/// the stored rect. Audio keeps running (the page is never closed).
+///
+/// Async for the same reason as [`browser_show`]: it drives webview handles
+/// that marshal onto the main thread, and a sync command would deadlock it.
+#[tauri::command]
+pub async fn browser_set_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "main window missing".to_string())?;
+    let state = app.state::<BrowserState>();
+    let rect = *state
+        .rect
+        .lock()
+        .map_err(|_| "browser rect lock poisoned".to_string())?;
+    let active = state
+        .active
+        .lock()
+        .map_err(|_| "browser active lock poisoned".to_string())?
+        .clone();
+    if active.is_empty() {
+        return Ok(());
+    }
+    let Some(webview) = find_tab(&window, &active) else {
+        return Ok(());
+    };
+    if visible {
+        // A fullscreen page was grown to the window; putting it back on the
+        // content rect would throw the user out of the video. Same box, then.
+        let fullscreen = state
+            .fullscreen
+            .lock()
+            .map(|set| set.contains(&active))
+            .unwrap_or(false);
+        if fullscreen {
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let size = window.inner_size().unwrap_or_default();
+            let _ = webview.set_position(LogicalPosition::new(0.0, 0.0));
+            let _ = webview.set_size(LogicalSize::new(
+                f64::from(size.width) / scale,
+                f64::from(size.height) / scale,
+            ));
+        } else if rect.width >= 2.0 && rect.height >= 2.0 {
+            let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
+            let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
+        }
+        set_memory_target(&webview, false);
+        diag("overlay -> page restored");
+    } else {
+        park_webview(&webview, true);
+        diag("overlay -> page parked");
     }
     Ok(())
 }
@@ -1183,6 +1379,8 @@ fn build_tab_webview<R: Runtime>(
         // New-window links + the Firefox key map, compiled into the binary.
         // Tauri runs this before any page script, in the main frame only.
         .initialization_script(SHIM)
+        // Chromium's media session is off; ours (smtc.rs) is the only one.
+        .additional_browser_args(TAB_BROWSER_ARGS)
         .on_navigation(move |target: &Url| {
             // The tab is created at about:blank so the shim is installed
             // before the first real document; that blank commit is not a

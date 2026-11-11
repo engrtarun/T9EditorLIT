@@ -70,6 +70,8 @@ mod background_video;
 /// The in-built browser's native half: one WebView2 child per live tab.
 mod browser;
 
+mod smtc;
+
 /// Downloader settings (SQLite is the durable copy; the daemon is told).
 mod dl_settings;
 
@@ -1561,8 +1563,42 @@ fn unregister_context_menu(app: tauri::AppHandle) -> Result<(), String> {
     shell_menu::unregister(&cache)
 }
 
+/// Declare the process AUMID before any window or webview exists.
+///
+/// Without this an unpackaged Win32 app has **no** shell identity at all:
+///
+/// - the taskbar groups the window under a generic icon instead of our
+///   pinned shortcut, and
+/// - Windows' media flyout says **"Unknown app"** while a video plays in the
+///   in-built browser. The media session belongs to the page, but the session
+///   is attributed to the host process's AUMID — and an empty AUMID is exactly
+///   what "Unknown app" means.
+///
+/// `SetCurrentProcessExplicitAppUserModelID` has no Rust binding in the crates
+/// we already link, so it is called directly: shell32's ABI is stable and the
+/// call is two arguments wide.
+#[cfg(target_os = "windows")]
+fn set_process_aumid(app_id: &str) {
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SetCurrentProcessExplicitAppUserModelID(app_id: *const u16) -> i32;
+    }
+    let wide: Vec<u16> = app_id.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: `wide` is NUL-terminated and outlives the call. A failure only
+    // means the shell keeps its generic identity — never a reason to crash.
+    let _ = unsafe { SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()) };
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_process_aumid(_app_id: &str) {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // One source of truth: the identifier in tauri.conf.json is the same string
+    // the Start-menu shortcut carries and the toast platform resolves, so the
+    // process, the shortcut and the notifications can never disagree.
+    let context = tauri::generate_context!();
+    set_process_aumid(&context.config().identifier);
     tauri::Builder::default()
         // A second launch (the Explorer verb while the app is already open)
         // must not start a second 8 GB-hostile webview: the plugin hands the
@@ -1666,10 +1702,11 @@ pub fn run() {
             browser::browser_set_pinned,
             browser::browser_focus_shell,
             browser::browser_set_rect,
+            browser::browser_set_visible,
             browser::browser_stop,
             dl_settings::dl_settings_get,
             dl_settings::dl_settings_save,
-            notify::app_notify
+            notify::app_notify,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
@@ -1682,6 +1719,11 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 window_chrome::apply(&window);
             }
+            // One media session for the whole app, owned by this window. The
+            // page webviews report what they are playing into it (Chromium's
+            // own session is off), so the flyout shows this app's name/icon
+            // and every earbud button has exactly one owner to talk to.
+            smtc::install(app.handle());
             // `T9_BROWSER_SMOKE=1`: prove tab webview creation + the real
             // extension list on this machine, then exit. It runs the same
             // builder the UI uses, so a green result is evidence, not a proxy.
@@ -1787,7 +1829,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building T9 Editor LIT")
         .run(|_app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {

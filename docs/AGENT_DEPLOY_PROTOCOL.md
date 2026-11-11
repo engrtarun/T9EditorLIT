@@ -287,6 +287,31 @@ Only after all checks does the ledger close as **`shipped`** (or `staged` mode
 inside that shipped row). A custom `-InstallDir` closes as **`cancelled`** with
 mode `test`; it never claims the desktop app changed.
 
+### 4.4.1 The shortcut is the notification identity
+
+`pin-taskbar.ps1` writes the Start-menu shortcut and attaches
+`System.AppUserModel.ID` **= `tauri.conf.json`'s `identifier`** to it. That is
+not cosmetic: an unpackaged Win32 app has no toast identity of its own, so
+Windows looks up the AUMID through the shortcut. No AUMID, and every
+`app_notify` is dropped silently — the exact shape of "notification nahi aa
+raha".
+
+Two things keep this honest:
+
+- the property key is `{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, 5`. A previous
+  version of the script carried a wrong GUID (`…D936`), wrote nothing, and
+  swallowed the failure — the shortcut had no AUMID for months;
+- `sarkariKaam.ps1` now prints any `[!]` line the script emits instead of
+  sending stderr to `$null`.
+
+Verification is a one-liner:
+
+```powershell
+$lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\T9 Editor LIT.lnk'
+$item = (New-Object -ComObject Shell.Application).Namespace((Split-Path $lnk)).ParseName((Split-Path $lnk -Leaf))
+$item.ExtendedProperty('System.AppUserModel.ID')   # must print com.engrtarun.t9editorlit
+```
+
 ### 4.5 Update button
 
 The button appears **only** when `t9-editor-lit.new.exe` exists. It is not

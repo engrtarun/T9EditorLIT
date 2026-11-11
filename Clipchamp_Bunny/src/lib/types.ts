@@ -349,6 +349,10 @@ export interface DownloadItem {
   phase?: string;
   /** Cumulative bytes re-read from the prefix on a resume (honest waste). */
   rereadBytes?: number;
+  /** Unix ms the daemon started the transfer (0 when unknown). */
+  startedAt?: number;
+  /** Unix ms the row reached a terminal status (0 while it is still live). */
+  finishedAt?: number;
 }
 
 /**
