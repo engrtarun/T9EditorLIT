@@ -27,9 +27,11 @@
 //!
 //! Windows' flyout has no room for `02:22 / 18:11` and its seek bar is not
 //! draggable on every build, so every accepted report is also emitted to the
-//! frontend as `browser:media`. That is what the in-app now-playing bar
-//! draws and what its slider drives through `browser_media_action`. The bar
-//! keeps working even if the SMTC session itself failed to create.
+//! frontend as `browser:media`. That is what the OSD flyout
+//! (`media_flyout.rs` / `MediaFlyout.svelte`) draws — thumbnail, clock,
+//! draggable seek — and what its slider drives through
+//! `browser_media_action`. It keeps working even if the SMTC session itself
+//! failed to create.
 
 use std::collections::HashSet;
 
@@ -78,10 +80,10 @@ pub struct MediaButtonPayload {
     pub action: String,
 }
 
-/// What the frontend's now-playing bar needs: the owning tab, the page's
-/// metadata, and the position/duration pair that makes the timeline. Sent as
-/// `browser:media`; `state: "none"` is the explicit "nothing is playing, take
-/// the bar away" signal.
+/// What the OSD flyout needs: the owning tab, the page's metadata, and the
+/// position/duration pair that makes the timeline. Sent as `browser:media`;
+/// `state: "none"` is the explicit "nothing is playing, take the card away"
+/// signal.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaSnapshot {
@@ -160,10 +162,9 @@ pub fn tabs_swept<R: Runtime>(app: &tauri::AppHandle<R>, pinned: &HashSet<String
     let _ = (app, pinned);
 }
 
-/// What the now-playing bar should show right now. `None` when nothing owns
+/// What the OSD flyout should show right now. `None` when nothing owns
 /// the session. The frontend calls this once on mount so a paused video that
-/// stopped heartbeating still paints the bar after leaving and re-entering the
-/// browser.
+/// stopped heartbeating still paints the card after the window re-opens.
 pub fn snapshot<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<MediaSnapshot> {
     #[cfg(target_os = "windows")]
     {
@@ -176,8 +177,9 @@ pub fn snapshot<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<MediaSnapshot> 
     }
 }
 
-/// Forward one transport action from the in-app bar. Same target as the
-/// flyout and the earbud: `window.__t9MediaAction(...)` in the owning page.
+/// Forward one transport action from the OSD flyout. Same target as the
+/// Win+A card and the earbud: `window.__t9MediaAction(...)` in the owning
+/// page.
 pub fn action<R: Runtime>(app: &tauri::AppHandle<R>, action: &str, value: Option<f64>) {
     #[cfg(target_os = "windows")]
     win::act(app, action, value);
@@ -236,7 +238,7 @@ mod win {
         /// itself the first time the flyout asks for it; recreating the
         /// reference on every heartbeat would flash the old thumbnail.
         art: Mutex<Option<(String, RandomAccessStreamReference)>>,
-        /// Whether the flyout / the in-app bar currently show a live item.
+        /// Whether the Win+A card / the OSD flyout currently show a live item.
         /// A repeated `state: "none"` from a page that never owned anything
         /// must not emit endless clear events.
         shown: Mutex<bool>,
@@ -317,9 +319,9 @@ mod win {
             diag(&format!("smtc -> button handler failed: {error}"));
         }
 
-        // The flyout's seek bar. Windows raises this when the user drags it;
-        // forwarding it as a `seek` action keeps the bar honest instead of
-        // letting Windows paint a position the page never adopted.
+        // The Win+A card's seek bar. Windows raises this when the user drags
+        // it; forwarding it as a `seek` action keeps the timeline honest
+        // instead of letting Windows paint a position the page never adopted.
         let seek_handle = app.clone();
         let seek = TypedEventHandler::<
             SystemMediaTransportControls,
@@ -341,12 +343,27 @@ mod win {
         if let Ok(mut slot) = state.controls.lock() {
             *slot = Some(controls);
         }
-        if let Ok(mut slot) = state.thumb.lock()
-            && let Some(thumb) = thumbnail()
-        {
-            *slot = Some(thumb);
-        }
-        diag("smtc -> enabled");
+        // The brand thumb is the guaranteed fallback: without it a page with
+        // no artwork (or a Windows that cannot fetch one) leaves the flyout
+        // with no image at all, which is what "no artwork" looked like.
+        let brand_ready = state
+            .thumb
+            .lock()
+            .ok()
+            .map(|mut slot| {
+                if slot.is_none()
+                    && let Some(thumb) = thumbnail()
+                {
+                    *slot = Some(thumb);
+                }
+                slot.is_some()
+            })
+            .unwrap_or(false);
+        diag(if brand_ready {
+            "smtc -> enabled (brand thumb ok)"
+        } else {
+            "smtc -> enabled (brand thumb FAILED)"
+        });
     }
 
     pub(super) fn update<R: Runtime>(app: &tauri::AppHandle<R>, id: &str, report: MediaReport) {
@@ -359,21 +376,24 @@ mod win {
         let kind = report.state.as_str();
         let live = kind == "playing" || kind == "paused";
 
-        // Remember this tab's report (and whether it *started* playing).
-        // Only a fresh play takes the flyout over; heartbeats from the tab
-        // that already owns it change nothing.
-        let started = state
+        // Remember this tab's report — and whether this report is a
+        // *transition*: a fresh play (`started`, which is also what takes
+        // the Win+A card over) or play→pause (`paused_fresh`). Transitions
+        // are what may re-show the OSD flyout; position heartbeats must
+        // never do that, or the card would sit on screen for the whole
+        // video instead of five seconds per interaction.
+        let (started, paused_fresh) = state
             .reports
             .lock()
             .map(|mut reports| {
-                let was_playing = reports
-                    .get(id)
-                    .map(|last| last.state == "playing")
-                    .unwrap_or(false);
+                let previous = reports.get(id).map(|last| last.state.clone());
                 reports.insert(id.to_string(), report.clone());
-                kind == "playing" && !was_playing
+                (
+                    kind == "playing" && previous.as_deref() != Some("playing"),
+                    kind == "paused" && previous.as_deref() == Some("playing"),
+                )
             })
-            .unwrap_or(false);
+            .unwrap_or((false, false));
 
         // One owner. Rules, in order:
         //   1. the current owner keeps it while it is live (paused included:
@@ -402,8 +422,8 @@ mod win {
             (slot.clone(), !was_owner && slot.as_deref() == Some(id))
         };
 
-        // Nothing owns the session any more: clear the flyout and the bar so
-        // neither keeps showing the last video after it stopped.
+        // Nothing owns the session any more: clear the Win+A card and the
+        // OSD flyout so neither keeps showing the last video after it stopped.
         if owner.is_none() {
             clear(app, &state);
             return;
@@ -425,12 +445,17 @@ mod win {
             return;
         }
 
-        // A live owner is what the bar draws. Emitted on every heartbeat
-        // because the position is what makes the timeline move; the payload
-        // is small and the frontend only re-renders the bar.
+        // A live owner is what the OSD flyout draws. Emitted on every
+        // heartbeat because the position is what makes the timeline move;
+        // the payload is small and the card only re-renders its clock.
         let _ = app.emit("browser:media", snapshot_of(id, &report));
         if let Ok(mut shown) = state.shown.lock() {
             *shown = true;
+        }
+        // Play / pause / a fresh owner put the OSD flyout on screen.
+        // Position-only heartbeats deliberately stay out of here.
+        if started || paused_fresh || took_over {
+            crate::media_flyout::ping(app);
         }
 
         let Some(controls) = controls else {
@@ -456,6 +481,13 @@ mod win {
         };
 
         if changed {
+            // Which artwork the Win+A card is being given, and the URL the
+            // page actually published — logged before the display update so
+            // `browser-diag.log` alone answers "why is there no thumbnail":
+            // `[thumb brand: ]` means the page never sent any (and the
+            // og:image fallback in browser_shim.js had nothing either).
+            let page_art = artwork(&state, &report.artwork);
+            let source = if page_art.is_some() { "page" } else { "brand" };
             if let Ok(updater) = controls.DisplayUpdater() {
                 // Music, not Video: the flyout's compact card shows
                 // title/artist on one line pair, which is what a YouTube
@@ -469,8 +501,7 @@ mod win {
                 // The page's own artwork (a YouTube thumbnail) is what Edge
                 // shows; the brand mark stays the fallback so a page with no
                 // art cannot leave the flyout blank.
-                let thumb = artwork(&state, &report.artwork)
-                    .or_else(|| state.thumb.lock().ok().and_then(|slot| slot.clone()));
+                let thumb = page_art.or_else(|| state.thumb.lock().ok().and_then(|slot| slot.clone()));
                 if let Some(thumb) = thumb {
                     let _ = updater.SetThumbnail(&thumb);
                 }
@@ -479,8 +510,8 @@ mod win {
             let _ = controls.SetIsNextEnabled(report.next);
             let _ = controls.SetIsPreviousEnabled(report.prev);
             diag(&format!(
-                "media {id} -> {kind} {:?} by {:?}",
-                report.title, report.artist
+                "media {id} -> {kind} {:?} by {:?} [thumb {source}: {}]",
+                report.title, report.artist, report.artwork
             ));
         }
 
@@ -509,10 +540,13 @@ mod win {
         }
     }
 
-    /// Take the flyout **and** the in-app bar down. Called when the last live
+    /// Take the Win+A card **and** the OSD flyout down. Called when the last live
     /// page stopped or its tab closed; idempotent, so repeated `none` reports
     /// do not spam the frontend with clear events.
     fn clear<R: Runtime>(app: &tauri::AppHandle<R>, state: &SmtcState) {
+        // The OSD flyout leaves the moment the session does — waiting out
+        // its idle timer over an empty card would look like a hang.
+        crate::media_flyout::hide(app);
         let was = state
             .shown
             .lock()
@@ -642,6 +676,10 @@ mod win {
             _ => format!("window.__t9MediaAction&&window.__t9MediaAction({action:?});"),
         };
         let _ = webview.eval(&script);
+        // Every transport press re-raises the OSD: media keys, the earbud,
+        // the Win+A card and the OSD's own buttons all want the timeline
+        // visible right after they act.
+        crate::media_flyout::ping(app);
         diag(&format!("media button {action} -> {id}"));
     }
 

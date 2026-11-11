@@ -19,7 +19,6 @@
   import DownloadsPanel from './DownloadsPanel.svelte';
   import HistoryPanel from './HistoryPanel.svelte';
   import BrowserMenu from './BrowserMenu.svelte';
-  import NowPlaying from './NowPlaying.svelte';
   import { browser } from '../../stores/browser.svelte';
   import { downloads } from '../../stores/downloads.svelte';
   import { ublock } from '../../stores/ublock.svelte';
@@ -362,12 +361,6 @@
       <div class="t9-loadbar text-nc-brand"></div>
     {/if}
   </div>
-
-  <!-- Now playing: the controllable timeline Windows' flyout cannot show.
-       Rendered *outside* the measured content rect, so the native page starts
-       below it instead of painting over it. Hidden (not unmounted) while a
-       page is fullscreen, keeping the rect stable there. -->
-  <NowPlaying hidden={fullscreen} />
 
   <!-- ── content: the exact rect the native webview covers ───────────── -->
   <div bind:this={contentEl} class="relative min-h-0 flex-1" data-focus="browser-content">

@@ -1,33 +1,35 @@
 <script lang="ts">
   /**
-   * The now-playing bar — Edge's media hub, inside T9.
+   * The media OSD flyout — `02:22 ─── 18:11`, the timeline Windows cannot show.
    *
-   * Windows' own flyout (`smtc.rs`) cannot show `02:22 / 18:11`, and its seek
-   * bar is not draggable on every build, so the controllable timeline lives
-   * here: a thin strip between the address bar and the page. It sits
-   * **outside** `[data-focus="browser-content"]` on purpose — the child
-   * webview is positioned over that rect only, so the bar takes layout space
-   * and the page starts below it instead of painting over it.
+   * Windows' own media card (Win + A / Win + N) renders neither time labels
+   * nor a draggable seek bar — its SMTC timeline is a hint the panel chooses
+   * to draw, and this machine's panel draws none. So the controllable
+   * timeline lives in this second, tiny window by the taskbar corner, shown
+   * and hidden by Rust (`media_flyout.rs`): it appears on play / pause /
+   * media key / seek, and leaves after five quiet seconds unless the pointer
+   * rests on it.
    *
-   * The bar is a view of the same report the flyout paints: Rust emits
-   * `browser:media` for the owning tab, and every button or drag goes back
-   * through `browser_media_action`, the exact path the flyout and the earbud
-   * already use. The position between heartbeats is interpolated locally, so
-   * the clock moves smoothly without an IPC call every frame.
+   * Everything here is a view of the same report the SMTC session paints:
+   * Rust emits `browser:media` for the owning tab, and every button or drag
+   * goes back through `browser_media_action` — the exact path the Win + N
+   * card and the earbud already use. The position between heartbeats is
+   * interpolated locally (4 Hz), so the clock moves without an IPC call per
+   * frame.
+   *
+   * This page is its own webview: it shares no store with the main window,
+   * which is why there is no "go to the playing tab" button here — the tab
+   * state lives in the other window's JS context.
    */
   import { onMount } from 'svelte';
   import BrandMark from '../dashboard/BrandMark.svelte';
-  import { browser } from '../../stores/browser.svelte';
   import {
     browserMediaAction,
     browserMediaState,
+    isTauri,
     onBrowserMedia,
     type BrowserMediaSnapshot
   } from '../../ipc';
-
-  /** Fullscreen hides the bar but keeps its box: a layout change there would
-   *  feed a new rect back to Rust while its grown webview covers the window. */
-  let { hidden = false }: { hidden?: boolean } = $props();
 
   let snap = $state<BrowserMediaSnapshot | null>(null);
   /** Drawn position, seconds. Interpolated between reports while playing. */
@@ -40,7 +42,6 @@
   let basePos = 0;
   let baseAt = 0;
 
-  const visible = $derived(snap !== null && snap.state !== 'none');
   const playing = $derived(snap?.state === 'playing');
   const duration = $derived(
     snap && Number.isFinite(snap.duration) ? Math.max(0, snap.duration) : 0
@@ -74,20 +75,39 @@
     let dead = false;
     let off: (() => void) | null = null;
 
-    void onBrowserMedia(apply)
-      .then((unlisten) => {
-        if (dead) unlisten();
-        else off = unlisten;
-      })
-      .catch(() => {
-        /* dev preview: no native event bus */
+    if (!isTauri()) {
+      // localhost preview (`/flyout.html` in the shared dev browser): there
+      // is no native event bus, so paint a stand-in card — this is the only
+      // way to check the layout before the window exists on a desktop.
+      apply({
+        tab: 'dev',
+        state: 'playing',
+        title: 'Dev preview — media flyout',
+        artist: 'flyout.html',
+        album: '',
+        artwork: '',
+        position: 142,
+        duration: 1091,
+        rate: 1,
+        next: true,
+        prev: true
       });
+    } else {
+      void onBrowserMedia(apply)
+        .then((unlisten) => {
+          if (dead) unlisten();
+          else off = unlisten;
+        })
+        .catch(() => {
+          /* no native event bus */
+        });
 
-    // A paused video sends no heartbeats; without this, leaving the browser
-    // and coming back would show no bar until the page reports again.
-    void browserMediaState().then((initial) => {
-      if (!dead && initial) apply(initial);
-    });
+      // A paused video sends no heartbeats; without this, the card would
+      // open empty until the page reports again.
+      void browserMediaState().then((initial) => {
+        if (!dead && initial) apply(initial);
+      });
+    }
 
     // Reports arrive every ~1.6 s; the clock and thumb need to move in
     // between. 4 Hz is enough to look continuous and cheap enough to leave
@@ -106,13 +126,16 @@
     };
   });
 
-  function toggle(): void {
-    if (!snap) return;
-    void browserMediaAction(snap.state === 'playing' ? 'pause' : 'play');
+  function send(
+    action: 'play' | 'pause' | 'stop' | 'next' | 'prev' | 'seek',
+    value?: number
+  ): void {
+    void browserMediaAction(action, value);
   }
 
-  function step(action: 'prev' | 'next'): void {
-    void browserMediaAction(action);
+  function toggle(): void {
+    if (!snap) return;
+    send(snap.state === 'playing' ? 'pause' : 'play');
   }
 
   function beginSeek(event: Event): void {
@@ -126,83 +149,47 @@
     basePos = value;
     baseAt = Date.now();
     position = value;
-    void browserMediaAction('seek', value);
-  }
-
-  /** Bring the page that owns the session back on screen. */
-  function focusTab(): void {
-    if (!snap || browser.activeId === snap.tab) return;
-    if (browser.tabs.some((tab) => tab.id === snap?.tab)) browser.select(snap.tab);
+    send('seek', value);
   }
 </script>
 
-<div class="shrink-0" class:invisible={hidden}>
-  {#if visible && snap}
-    <div
-      class="flex h-11 items-center gap-2.5 border-b border-nc-line bg-nc-panel px-2.5"
-      role="region"
-      aria-label="Now playing"
-    >
-      <!-- Artwork + title: one button, because clicking either should feel
-           like going to the video that is playing. -->
-      <button
-        type="button"
-        onclick={focusTab}
-        class="flex min-w-0 max-w-[300px] shrink items-center gap-2 rounded-md py-0.5 pr-1 text-left transition-colors hover:bg-nc-panel-2"
-        title="Go to the playing tab"
+{#if snap}
+  <div
+    class="flex h-full flex-col justify-center gap-2 px-3"
+    role="region"
+    aria-label="Media controls"
+  >
+    <!-- Row 1: artwork, title/channel, transport. The card is only a
+         window wide, so the title truncates and the buttons never move. -->
+    <div class="flex items-center gap-2.5">
+      <span
+        class="grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-md bg-nc-panel-2"
       >
-        <span
-          class="grid h-[30px] w-[30px] shrink-0 place-items-center overflow-hidden rounded bg-nc-panel-2"
-        >
-          {#if snap.artwork && artFailed !== snap.artwork}
-            <img
-              src={snap.artwork}
-              alt=""
-              class="h-full w-full object-cover"
-              onerror={() => (artFailed = snap?.artwork ?? '')}
-            />
-          {:else}
-            <BrandMark size={17} />
-          {/if}
-        </span>
-        <span class="min-w-0">
-          <span class="block truncate text-[11.5px] leading-tight font-semibold text-nc-txt">
-            {snap.title || 'Media'}
-          </span>
-          <span class="block truncate text-[10px] leading-tight text-nc-mut">
-            {snap.artist || snap.album}
-          </span>
-        </span>
-      </button>
+        {#if snap.artwork && artFailed !== snap.artwork}
+          <img
+            src={snap.artwork}
+            alt=""
+            class="h-full w-full object-cover"
+            onerror={() => (artFailed = snap?.artwork ?? '')}
+          />
+        {:else}
+          <BrandMark size={20} />
+        {/if}
+      </span>
 
-      <!-- 02:22 ─────────●──────── 18:11 -->
-      <div class="flex min-w-[140px] flex-1 items-center gap-2">
-        <span class="w-9 shrink-0 text-right text-[10px] tabular-nums text-nc-mut">
-          {clock(position)}
+      <span class="min-w-0 flex-1">
+        <span class="block truncate text-[11.5px] leading-tight font-semibold text-nc-txt">
+          {snap.title || 'Media'}
         </span>
-        <input
-          type="range"
-          class="t9-seek min-w-[70px] flex-1"
-          min="0"
-          max={duration || 0}
-          step="0.1"
-          value={position}
-          disabled={duration <= 0}
-          style="--t9-pct: {percent}%"
-          aria-label="Seek"
-          aria-valuetext="{clock(position)} of {clock(duration)}"
-          oninput={beginSeek}
-          onchange={commitSeek}
-        />
-        <span class="w-9 shrink-0 text-[10px] tabular-nums text-nc-mut">
-          {duration > 0 ? clock(duration) : '--:--'}
+        <span class="block truncate text-[10px] leading-tight text-nc-mut">
+          {snap.artist || snap.album}
         </span>
-      </div>
+      </span>
 
       <div class="flex shrink-0 items-center gap-0.5">
         <button
           type="button"
-          onclick={() => step('prev')}
+          onclick={() => send('prev')}
           disabled={!snap.prev}
           class="grid h-7 w-7 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt disabled:opacity-30 disabled:hover:bg-transparent"
           title="Previous"
@@ -250,7 +237,7 @@
 
         <button
           type="button"
-          onclick={() => step('next')}
+          onclick={() => send('next')}
           disabled={!snap.next}
           class="grid h-7 w-7 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt disabled:opacity-30 disabled:hover:bg-transparent"
           title="Next"
@@ -271,8 +258,34 @@
         </button>
       </div>
     </div>
-  {/if}
-</div>
+
+    <!-- Row 2: 02:22 ─────────●──────── 18:11 — the whole reason this
+         window exists. Dragging updates local state only; the seek goes to
+         the page on release, through the same action path as the earbud. -->
+    <div class="flex items-center gap-2">
+      <span class="w-9 shrink-0 text-right text-[10px] tabular-nums text-nc-mut">
+        {clock(position)}
+      </span>
+      <input
+        type="range"
+        class="t9-seek min-w-[70px] flex-1"
+        min="0"
+        max={duration || 0}
+        step="0.1"
+        value={position}
+        disabled={duration <= 0}
+        style="--t9-pct: {percent}%"
+        aria-label="Seek"
+        aria-valuetext="{clock(position)} of {clock(duration)}"
+        oninput={beginSeek}
+        onchange={commitSeek}
+      />
+      <span class="w-9 shrink-0 text-[10px] tabular-nums text-nc-mut">
+        {duration > 0 ? clock(duration) : '--:--'}
+      </span>
+    </div>
+  </div>
+{/if}
 
 <style>
   /* A native range with `accent-color` is Chromium's default look: a thick

@@ -47,7 +47,11 @@ unsafe extern "system" {
 }
 
 /// Apply the polish. Harmless to call on any Windows version.
-pub fn apply(window: &tauri::WebviewWindow) {
+///
+/// Generic over the runtime on purpose: the media OSD flyout
+/// (`media_flyout.rs`) is built the same way as the main window and polishes
+/// itself with this same call.
+pub fn apply<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     let Ok(hwnd) = window.hwnd() else {
         return;
     };

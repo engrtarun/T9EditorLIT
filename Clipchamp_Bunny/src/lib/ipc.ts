@@ -1254,11 +1254,11 @@ export function onBrowserTitle(
   return listen<{ id: string; title: string }>('browser:title', (e) => cb(e.payload));
 }
 
-/** What the owning page reports about its media — the now-playing bar's input. */
+/** What the owning page reports about its media — the OSD flyout's input. */
 export interface BrowserMediaSnapshot {
   /** The tab whose page owns the Windows media session. */
   tab: string;
-  /** `none` is the explicit "nothing is playing, take the bar away". */
+  /** `none` is the explicit "nothing is playing, take the card away". */
   state: 'none' | 'paused' | 'playing';
   title: string;
   artist: string;
@@ -1273,12 +1273,12 @@ export interface BrowserMediaSnapshot {
   prev: boolean;
 }
 
-/** A media report from the owning page; the bar redraws on each heartbeat. */
+/** A media report from the owning page; the OSD flyout redraws on each heartbeat. */
 export function onBrowserMedia(cb: (p: BrowserMediaSnapshot) => void): Promise<() => void> {
   return listen<BrowserMediaSnapshot>('browser:media', (e) => cb(e.payload));
 }
 
-/** Current snapshot, so a bar that mounts after playback started still paints. */
+/** Current snapshot, so a card that mounts after playback started still paints. */
 export function browserMediaState(): Promise<BrowserMediaSnapshot | null> {
   if (!isTauri()) return Promise.resolve(null);
   return invoke<BrowserMediaSnapshot | null>('browser_media_state').catch(() => null);

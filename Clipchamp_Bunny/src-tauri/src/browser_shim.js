@@ -153,7 +153,17 @@
     // The largest entry is last in every player seen so far (YouTube, Spotify).
     // Rust hands the URL to Windows, which downloads it out-of-process, so it
     // has to be absolute: resolve it here where `location` is still available.
-    const artworkSrc = artworkList.length ? artworkList[artworkList.length - 1].src || '' : '';
+    let artworkSrc = artworkList.length ? artworkList[artworkList.length - 1].src || '' : '';
+    if (!artworkSrc) {
+      // Not every page fills `metadata.artwork` (YouTube often ships only
+      // `og:image`), and the flyout with no image at all looks broken.
+      try {
+        const og = document.querySelector('meta[property="og:image"]');
+        artworkSrc = (og && og.content) || '';
+      } catch (e) {
+        artworkSrc = '';
+      }
+    }
     let artwork = '';
     try {
       artwork = artworkSrc ? new URL(artworkSrc, location.href).href : '';

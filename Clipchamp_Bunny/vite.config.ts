@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
@@ -6,6 +7,18 @@ import { textScale } from './tools/text-scale-plugin';
 
 export default defineConfig({
   plugins: [tailwindcss(), svelte(), mp3DevApi(), textScale()],
+  // Two pages, one app: `index.html` is the editor, `flyout.html` is the
+  // media OSD window (`media_flyout.rs` opens it on demand). Without an
+  // explicit input Vite only emits `index.html`, and the packaged flyout
+  // window would come up blank.
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        flyout: fileURLToPath(new URL('./flyout.html', import.meta.url))
+      }
+    }
+  },
   server: {
     port: 5174,
     // One dev server only. The predev guard reuses an existing 5174 server;

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#15171b" />
+    <title>T9 Editor LIT</title>
+  </head>
+  <!-- The media OSD window (`media-flyout`, created on demand by
+       `media_flyout.rs`). The window is undecorated and painted by DWM with
+       rounded corners, so the page itself is the card: the panel colour as
+       its background, one hairline border, no scroll, nothing else. The
+       inline `background` attribute wins over `app.css`'s `body` rule on
+       purpose — this body must never be the app's page background. -->
+  <body style="background: var(--color-nc-panel); border: 1px solid var(--color-nc-line)">
+    <div id="flyout-app"></div>
+    <script type="module" src="/src/flyout.ts"></script>
+  </body>
+</html>

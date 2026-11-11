@@ -72,6 +72,11 @@ mod browser;
 
 mod smtc;
 
+/// The media OSD flyout (`flyout.html`) — shown on play/seek/media key,
+/// auto-hidden after five quiet seconds. Windows-only, like `smtc`.
+#[cfg(target_os = "windows")]
+mod media_flyout;
+
 /// Downloader settings (SQLite is the durable copy; the daemon is told).
 mod dl_settings;
 
