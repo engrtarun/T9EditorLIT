@@ -288,6 +288,44 @@ func TestTranscribeProducesTranscript(t *testing.T) {
 	}
 }
 
+// TestTranscribeReportsFailedChunkIndices pins the contract the retry button
+// depends on: a partial job names the exact chunks it could not read, so the
+// app can re-send those and only those. Without the indices the only possible
+// retry is the whole video, which pays Whisper a second time for words that
+// were already transcribed.
+func TestTranscribeReportsFailedChunkIndices(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 2 {
+			// The second chunk is rejected by the provider.
+			http.Error(w, `{"error":"rate limited"}`, http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"language":"English","segments":[
+			{"id":0,"start":0,"end":1,"text":"hello"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	s, _ := newTestServer(t, baseConfig(), srv)
+	rec := do(t, s, http.MethodPost, "/v1/transcribe",
+		transcribeBody(t, writeChunk(t), writeChunk(t)))
+
+	var job model.Job
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := waitForJob(t, s, job.ID)
+	if got.State != model.StatePartial {
+		t.Fatalf("state = %q (error %q), want partial", got.State, got.Error)
+	}
+	if len(got.Transcript) == 0 {
+		t.Fatal("the chunk that worked must still be in the transcript")
+	}
+	if len(got.FailedChunks) != 1 || got.FailedChunks[0] != 1 {
+		t.Errorf("FailedChunks = %v, want [1]", got.FailedChunks)
+	}
+}
+
 // TestTranscribeProgressCountsChunks is the regression test for a progress bar
 // that showed "400/24": the worker counted transcript lines into a total that
 // was measured in audio chunks, so the bar passed 100% and kept going.
@@ -419,8 +457,9 @@ func TestTranscribePinsLanguageAndCarriesContext(t *testing.T) {
 	if calls[0].language != "" {
 		t.Errorf("first chunk language = %q, want auto-detect (empty)", calls[0].language)
 	}
-	if calls[1].language != "hindi" {
-		t.Errorf("second chunk language = %q, want the first chunk's answer pinned",
+	if calls[1].language != "hi" {
+		t.Errorf("second chunk language = %q, want \"hi\" (Whisper's display name "+
+			"\"hindi\" must never be forwarded - Groq rejects it with a 400)",
 			calls[1].language)
 	}
 	if !strings.Contains(calls[1].prompt, "pehla vakya") {

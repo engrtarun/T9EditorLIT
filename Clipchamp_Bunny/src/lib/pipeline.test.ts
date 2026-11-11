@@ -104,6 +104,43 @@ test('a done job with no_speech throws NoSpeechError, not a generic failure', as
   }
 });
 
+test('a partial job returns its words plus the failed chunk indices', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+    const url = String(input);
+    if (url.endsWith('/v1/transcribe')) {
+      return respond({ id: 'j3', kind: 'transcribe', state: 'queued', total: 2 });
+    }
+    if (url.includes('/v1/jobs/j3')) {
+      // The daemon read chunk 0, could not read chunk 1, and said so.
+      return respond({
+        id: 'j3',
+        kind: 'transcribe',
+        state: 'partial',
+        total: 2,
+        error: 'chunk_001.wav: groq returned 400: unsupported language',
+        failed_chunks: [1],
+        transcript: [
+          { id: '0-0', start_secs: 0, end_secs: 1, text: 'pehla hissa', flag: 'none', keep: true }
+        ]
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const res = await runTranscription('D:\\videos\\long.mp4', [oneChunk(), oneChunk()]);
+    // The words that worked are a result, not an error.
+    assert.equal(res.segments.length, 1);
+    // The hole is named, so the panel can offer a cheap retry of just this.
+    assert.deepEqual(res.failedChunks, [1]);
+    assert.match(res.error ?? '', /unsupported language/);
+    assert.equal(res.noSpeech, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test('a genuinely failed job stays a plain Error', async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {

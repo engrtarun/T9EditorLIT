@@ -1,4 +1,5 @@
 import type {
+  AudioChunk,
   KeepState,
   LineFlag,
   MediaAsset,
@@ -53,6 +54,7 @@ import {
   loadTranscript,
   logAppEvent,
   logEditAction,
+  onTranscriptProgress,
   probeMedia,
   resumeProject,
   saveProject,
@@ -186,6 +188,19 @@ export function clipKind(name: string, url = ''): ProjectClip['kind'] {
 export function isAudioOnly(name: string, url = ''): boolean {
   const ext = (name || url).split(/[?#]/)[0].split('.').pop()?.toLowerCase() ?? '';
   return ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'wma'].includes(ext);
+}
+
+/**
+ * Holes in a stored transcript: which audio chunks failed, where they sit in
+ * the source, and why. Persisted per source so the warning survives a restart.
+ */
+export interface TranscriptGaps {
+  /** Positions in the extraction order that failed. */
+  failedChunks: number[];
+  /** Those chunks' spans in source seconds — what a retry has to fill. */
+  missing: Array<{ startSec: number; endSec: number }>;
+  /** The provider's reason, shown in the details line. */
+  error: string;
 }
 
 class ProjectStore {
@@ -572,6 +587,23 @@ class ProjectStore {
     this.frame = this.pendingFrame ?? storedFrame ?? '16:9';
     this.pendingFrame = null;
     this.writeFrame(this.frame);
+
+    // Write the project row **now**, before the slow work starts.
+    //
+    // This used to be fire-and-forget at the very end of the load, so a 49-minute
+    // import that hit a failed transcription, a closed window or a killed app
+    // never wrote a `projects` row at all — the dashboard then had no idea the
+    // file had ever been opened. The row is what makes a project exist; the
+    // transcript, waveform and cuts are things it acquires later. Awaiting it
+    // here costs one small upsert and makes "I made a project and it vanished"
+    // impossible.
+    await this.rememberProject(
+      canonical,
+      info.durationSecs,
+      // A resume keeps the old edit clock instead of faking a fresh edit.
+      touch ? undefined : stored?.row?.lastOpened
+    );
+
     if (touch && stored?.row) {
       try {
         await updateProjectOpened(stored.db, canonical, Math.floor(Date.now() / 1000));
@@ -632,6 +664,10 @@ class ProjectStore {
       this.lines = await this.ensureTranscript(canonical, info.durationSecs);
       this.loadError = null;
       this.noSpeech = false;
+      // A transcript with holes must say so on every open, not only in the
+      // session that produced it. The gaps live in localStorage next to the
+      // project's other per-machine state.
+      this.partialTranscript = this.readGaps(canonical);
     } catch (e) {
       // No mock lines here. On the desktop the user gets the real reason the
       // transcript could not be produced, and a retry.
@@ -644,14 +680,6 @@ class ProjectStore {
     this.restoreClips();
     this.restoreUiState();
     this.restorePlayhead();
-
-    // Remember the project, so the next launch opens this very file. The clock
-    // stays honest: a resume keeps the old stamp, an open/import gets "now".
-    void this.rememberProject(
-      canonical,
-      info.durationSecs,
-      touch ? undefined : stored?.row?.lastOpened
-    );
 
     this.ready = true;
   }
@@ -739,6 +767,84 @@ class ProjectStore {
     /** Tail of the newest line — real words, not a percentage. */
     lastLine?: string;
   } | null>(null);
+
+  /**
+   * Holes in the stored transcript.
+   *
+   * The daemon is deliberately tolerant: one unreadable chunk must not throw
+   * away the other 48 minutes. But tolerance without honesty is how the old
+   * bug felt — five minutes of text, no warning, no way to continue. This
+   * state is that warning: which chunks failed, where they sit in the source,
+   * and the provider's reason.
+   *
+   * It is mirrored in localStorage (`gapsKey`) because a gap outlives the
+   * session that discovered it: reopening the project must still say "yeh
+   * hissa adhoora hai" instead of presenting a partial transcript as whole.
+   */
+  partialTranscript = $state<TranscriptGaps | null>(null);
+
+  /** localStorage key for one source's transcript gaps. */
+  private gapsKey(path: string): string {
+    return `t9-editor-lit.transcript-gaps.${path}`;
+  }
+
+  private readGaps(path: string): TranscriptGaps | null {
+    try {
+      const raw = localStorage.getItem(this.gapsKey(path));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as {
+        failedChunks?: unknown;
+        missing?: unknown;
+        error?: unknown;
+      };
+      if (!Array.isArray(parsed.failedChunks) || !Array.isArray(parsed.missing)) return null;
+      const failedChunks = parsed.failedChunks.filter(
+        (n): n is number => typeof n === 'number' && Number.isFinite(n)
+      );
+      const missing = parsed.missing.filter(
+        (r): r is { startSec: number; endSec: number } =>
+          !!r &&
+          typeof r === 'object' &&
+          Number.isFinite((r as { startSec?: number }).startSec) &&
+          Number.isFinite((r as { endSec?: number }).endSec)
+      );
+      if (!failedChunks.length || !missing.length) return null;
+      return { failedChunks, missing, error: typeof parsed.error === 'string' ? parsed.error : '' };
+    } catch {
+      return null;
+    }
+  }
+
+  private writeGaps(path: string, gaps: TranscriptGaps | null): void {
+    try {
+      if (gaps) localStorage.setItem(this.gapsKey(path), JSON.stringify(gaps));
+      else localStorage.removeItem(this.gapsKey(path));
+    } catch {
+      /* private mode — the banner still shows for this session */
+    }
+  }
+
+  /**
+   * Remember a partial run: sets the banner state and persists it for the next
+   * open. `null` clears both, which is what a complete run does.
+   */
+  private noteGaps(
+    path: string,
+    failedChunks: number[],
+    chunks: Array<{ offsetSecs: number; durationSecs: number }>,
+    error: string
+  ): void {
+    const missing = failedChunks
+      .map((i) => chunks[i])
+      .filter((c): c is { offsetSecs: number; durationSecs: number } => !!c)
+      .map((c) => ({ startSec: c.offsetSecs, endSec: c.offsetSecs + c.durationSecs }));
+    const gaps =
+      failedChunks.length && missing.length
+        ? { failedChunks: [...failedChunks], missing, error }
+        : null;
+    this.partialTranscript = gaps;
+    this.writeGaps(path, gaps);
+  }
 
   /**
    * The transcript for a source — **SQLite first, cloud only on a miss**.
@@ -838,6 +944,116 @@ class ProjectStore {
   }
 
   /**
+   * Retry only the chunks that failed, then fold their lines into the existing
+   * transcript.
+   *
+   * Why not just call `generateTranscript` again: Whisper is paid per call, and
+   * a 49-minute video that lost one chunk would re-pay for the other nine. The
+   * words are already on disk; only the hole needs filling. The chunks have to
+   * be re-extracted locally (they are deleted after every run), which is free.
+   */
+  async retryMissingTranscript(): Promise<void> {
+    const source = this.sourcePath;
+    const gaps = this.partialTranscript;
+    if (this.pipeline || !source || !gaps?.failedChunks.length) return;
+    const db = await defaultDbPath();
+    const chunkKey = chunkSourceKey(source);
+    this.loadError = null;
+    try {
+      this.pipeline = {
+        stage: 'Adhoore audio chunks bana rahe hain…',
+        fraction: 0.04,
+        completed: 0,
+        total: 0
+      };
+      let unlisten: (() => void) | null = null;
+      let chunks: AudioChunk[] = [];
+      try {
+        if (isTauri()) {
+          unlisten = await onTranscriptProgress((p) => {
+            if (p.stage !== 'extract' || p.sourceKey !== chunkKey) return;
+            this.pipeline = {
+              stage: 'Adhoore audio chunks bana rahe hain…',
+              fraction: 0.04 + (p.total > 0 ? Math.min(1, p.completed / p.total) * 0.06 : 0),
+              completed: p.completed,
+              total: p.total || undefined
+            };
+          }).catch(() => null);
+        }
+        chunks = await extractAudioChunks(source, undefined, undefined, chunkKey);
+      } finally {
+        unlisten?.();
+      }
+      // The daemon's indices are positions in the ordered chunk list, which is
+      // exactly the order `extractAudioChunks` returns.
+      const wanted = chunks.filter((_, i) => gaps.failedChunks.includes(i));
+      if (!wanted.length) {
+        throw new Error(
+          'Pichle run ke chunk numbers is file se match nahi ho rahe — poori transcript dobara generate karo.'
+        );
+      }
+
+      this.pipeline = {
+        stage: `Whisper ${wanted.length} adhoore chunk${wanted.length > 1 ? 's' : ''}…`,
+        fraction: 0.1,
+        completed: 0,
+        total: wanted.length
+      };
+      let fresh: CloudSegment[] = [];
+      try {
+        const res = await runTranscription(source, wanted, (p) => {
+          this.pipeline = {
+            stage: p.message,
+            fraction: 0.1 + p.fraction * 0.6,
+            lines: p.lines,
+            completed: p.completed,
+            total: p.total,
+            lastLine: p.lastLine
+          };
+        });
+        fresh = res.segments;
+        // A chunk that failed again stays in the banner: mapping the retry's
+        // positions back to the full run keeps the hole honest.
+        const stillMissing = res.failedChunks
+          .map((i) => gaps.failedChunks[i])
+          .filter((n): n is number => typeof n === 'number');
+        this.noteGaps(source, stillMissing, chunks, res.error ?? '');
+      } catch (e) {
+        // The chunk that failed before turns out to be silent. That is a
+        // legitimate answer, not a reason to keep warning about it.
+        if (!(e instanceof NoSpeechError)) throw e;
+        this.noteGaps(source, [], chunks, '');
+      }
+
+      // Fold the new lines into the old ones by time. Sorting is what makes
+      // the transcript read in source order even when the retried chunk sat in
+      // the middle of the video.
+      const merged = [...this.toCloudSegments(this.lines), ...fresh].sort(
+        (a, b) => a.start_secs - b.start_secs
+      );
+      await this.saveSegments(db, source, merged);
+      this.lines = this.toTranscriptLines(merged);
+      this.syncCutsIntoLines();
+
+      // The new lines have raw Whisper spelling and no AI flags; run the cheap
+      // stages over the merged transcript so the whole thing is uniform.
+      this.pipeline = { stage: 'Autocorrect + AI flags…', fraction: 0.72, lines: merged.length };
+      const refined = await this.refine(source, merged, [0.72, 0.96]);
+      await this.saveSegments(db, source, refined);
+      this.lines = this.toTranscriptLines(refined);
+      this.syncCutsIntoLines();
+      this.noSpeech = false;
+    } catch (e) {
+      this.loadError = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (isTauri()) {
+        await cleanChunkDir(chunkKey).catch(() => {});
+      }
+      this.pipeline = null;
+    }
+  }
+
+  /**
    * Our rows → the daemon's snake_case segments.
    *
    * One spelling for the wire format, used by every stage that sends the
@@ -931,26 +1147,75 @@ class ProjectStore {
     // so the key is computed once here and carried through the whole run.
     const chunkKey = chunkSourceKey(sourcePath);
     try {
-      // 1. Split the audio. One Rust call; until it returns there is nothing
-      //    to count, so the bar holds with the honest reason.
-      this.pipeline = { stage: 'Audio chunks bana rahe hain…', fraction: 0.04 };
-      const chunks = await extractAudioChunks(sourcePath, undefined, undefined, chunkKey);
+      // 1. Split the audio. This is local work with real, countable output:
+      //    the Rust side emits `transcript-progress` as each chunk file is
+      //    closed, so the bar moves through the split instead of sitting at
+      //    one invented percentage for a minute and then jumping.
+      this.pipeline = {
+        stage: 'Audio chunks bana rahe hain…',
+        fraction: 0.02,
+        completed: 0,
+        total: 0
+      };
+      let unlisten: (() => void) | null = null;
+      let chunks: AudioChunk[] = [];
+      try {
+        if (isTauri()) {
+          unlisten = await onTranscriptProgress((p) => {
+            if (p.stage !== 'extract' || p.sourceKey !== chunkKey) return;
+            this.pipeline = {
+              stage: 'Audio chunks bana rahe hain…',
+              fraction: 0.02 + (p.total > 0 ? Math.min(1, p.completed / p.total) * 0.2 : 0),
+              completed: p.completed,
+              total: p.total || undefined
+            };
+          }).catch(() => null);
+        }
+        chunks = await extractAudioChunks(sourcePath, undefined, undefined, chunkKey);
+      } finally {
+        unlisten?.();
+      }
       if (!chunks.length) {
         throw new Error('Audio chunks nahi bane — is video me audio track hai?');
       }
 
       // 2. Whisper. The daemon reports chunks finished AND lines written, so
       //    the bar moves in the unit it is actually working in.
-      let segs = await runTranscription(sourcePath, chunks, (p) => {
+      this.pipeline = {
+        stage: 'Whisper shuru…',
+        fraction: 0.22,
+        completed: 0,
+        total: chunks.length
+      };
+      const whisper = await runTranscription(sourcePath, chunks, (p) => {
         this.pipeline = {
           stage: p.message,
-          fraction: 0.04 + p.fraction * 0.66,
+          fraction: 0.22 + p.fraction * 0.63,
           lines: p.lines,
           completed: p.completed,
           total: p.total,
           lastLine: p.lastLine
         };
       });
+      let segs = whisper.segments;
+
+      // The run can come back with a hole: one chunk failed, the rest were
+      // paid for and transcribed. Record exactly where the hole is, both for
+      // the banner in this session and for the next open.
+      this.noteGaps(sourcePath, whisper.failedChunks, chunks, whisper.error ?? '');
+
+      // "No speech" is a final answer only when every chunk was actually read.
+      // If chunks failed, the honest state is a partial transcript with a
+      // retry, not a shrug that hides the unread audio.
+      if (whisper.noSpeech) {
+        if (whisper.failedChunks.length) {
+          throw new Error(
+            `Whisper ne jo audio padha usme speech nahi mili, lekin ${whisper.failedChunks.length} chunk ` +
+              'padha nahi ja saka — adhoore hisse dobara try karo.'
+          );
+        }
+        throw new NoSpeechError();
+      }
 
       // 3. Save the raw transcript **before** anything else runs. Autocorrect
       //    and flagging are improvements on top; losing the Whisper output
@@ -960,7 +1225,7 @@ class ProjectStore {
       this.lines = this.toTranscriptLines(segs);
 
       // 4. Autocorrect + Gemini flags.
-      segs = await this.refine(sourcePath, segs, [0.72, 0.96]);
+      segs = await this.refine(sourcePath, segs, [0.85, 0.97]);
 
       // 5. Final save — the flags are what changed.
       this.pipeline = {
@@ -1049,8 +1314,40 @@ class ProjectStore {
     }
     if (cut.size) {
       this.lines = this.lines.map((l) => (cut.has(l.id) ? { ...l, keep: 'cut' as KeepState } : l));
+      // Remember what the AUTO pass cut. A manual `setLine` must stay manual;
+      // this list is only what the bulk "restore" button may undo.
+      this.aiCutIds = [...new Set([...this.aiCutIds, ...cut])];
     }
     return cut.size;
+  }
+
+  /**
+   * Lines the automatic silence pass cut, newest run included.
+   *
+   * The per-line keep buttons already let the user rescue one silence, but a
+   * 20-minute recording can produce hundreds of cuts and the user may simply
+   * disagree with the whole pass. This is the bulk undo that makes the
+   * auto-cut safe to try.
+   */
+  aiCutIds = $state<string[]>([]);
+
+  /** How many auto-cut lines are still cut (some may have been restored). */
+  aiCutCount = $derived.by(() => {
+    if (!this.aiCutIds.length) return 0;
+    const ids = new Set(this.aiCutIds);
+    return this.lines.reduce((n, l) => n + (l.keep === 'cut' && ids.has(l.id) ? 1 : 0), 0);
+  });
+
+  /** Rescue every silence the AI cut, in one undoable step. */
+  restoreAiCuts(): number {
+    const n = this.aiCutCount;
+    if (!n) return 0;
+    const ids = new Set(this.aiCutIds);
+    this.commit();
+    this.lines = this.lines.map((l) =>
+      l.keep === 'cut' && ids.has(l.id) ? { ...l, keep: 'keep' as KeepState } : l
+    );
+    return n;
   }
 
   /** AI silence suggestions staged as a timeline preview. WaveTimeline paints
@@ -1319,6 +1616,8 @@ class ProjectStore {
   private resetEditState() {
     this.lines = [];
     this.noSpeech = false;
+    this.partialTranscript = null;
+    this.aiCutIds = [];
     this.clips = [];
     this.activeClipId = null;
     this.waveform = null;

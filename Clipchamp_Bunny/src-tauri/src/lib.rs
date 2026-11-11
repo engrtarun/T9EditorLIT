@@ -347,8 +347,13 @@ fn check_ffmpeg() -> Result<String, String> {
 }
 
 /// Extract mono 16 kHz audio from a source video into ~segment_secs WAV chunks.
+///
+/// Emits `transcript-progress` while FFmpeg writes the chunk files, so the UI
+/// can show the split advancing instead of holding one fake percentage until
+/// the whole call returns.
 #[tauri::command]
 async fn extract_audio_chunks(
+    app: tauri::AppHandle,
     path: String,
     out_dir: Option<String>,
     segment_secs: Option<f64>,
@@ -364,8 +369,20 @@ async fn extract_audio_chunks(
         None => std::env::temp_dir().join("nanamicut").join("chunks"),
     };
     let seg = segment_secs.unwrap_or(300.0);
+    let key_for_event = source_hash.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        audio::extract_chunks(&source, &out, seg, &source_hash)
+        let mut emit = |done: usize, total: usize| {
+            let _ = app.emit(
+                "transcript-progress",
+                serde_json::json!({
+                    "stage": "extract",
+                    "sourceKey": key_for_event,
+                    "completed": done,
+                    "total": total
+                }),
+            );
+        };
+        audio::extract_chunks(&source, &out, seg, &source_hash, &mut emit)
     })
     .await
     .map_err(|e| e.to_string())?

@@ -342,6 +342,22 @@ export function checkFfmpeg(): Promise<string> {
   return invoke<string>('check_ffmpeg');
 }
 
+/**
+ * Live progress from the Rust chunk splitter: how many `chunk_*.wav` files
+ * FFmpeg has closed so far. The UI maps it into the transcript bar, so the
+ * minute a 49-minute source spends being split is not a frozen 4%.
+ */
+export interface TranscriptProgress {
+  stage: 'extract';
+  sourceKey: string;
+  completed: number;
+  total: number;
+}
+
+export function onTranscriptProgress(cb: (p: TranscriptProgress) => void): Promise<() => void> {
+  return listen<TranscriptProgress>('transcript-progress', (e) => cb(e.payload));
+}
+
 /** Extract mono 16 kHz audio into ~segmentSecs WAV chunks. */
 export function extractAudioChunks(
   path: string,

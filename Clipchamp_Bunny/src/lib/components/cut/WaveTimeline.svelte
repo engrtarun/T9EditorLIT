@@ -288,6 +288,15 @@
   /** Playhead on the whole project timeline (main cut + extras). */
   const editPlayhead = $derived(project.globalTimeAt(project.activeClipId, player.currentTime));
   const contentW = $derived(Math.max(600, viewW, (editDur + 4) * zoom));
+  /* Canvas backing width: the viewport, never the whole timeline.
+   *
+   * A 50-minute source at the default 35 px/s is a 104,000-px lane. Chrome
+   * refuses a canvas wider than 65,535 px and a bitmap that size costs tens of
+   * megabytes per lane — on this 8 GB box that is both a broken filmstrip and a
+   * RAM spike. Both lanes therefore paint only the visible window and slide
+   * with the scroller; every x is shifted by `paintLeft`. */
+  const paintW = $derived(Math.max(320, Math.min(contentW, viewW + 2)));
+  const paintLeft = $derived(Math.max(0, Math.min(scrollLeft, contentW - paintW)));
   const step = $derived(niceStep(zoom));
   /** Four intervals per label gap = three dots between labels, like Clipchamp. */
   const minor = $derived(step / 4);
@@ -434,12 +443,17 @@
   function drawVideoLane() {
     const c = filmCanvas;
     if (!c) return;
-    const w = contentW;
+    const w = paintW;
+    // Slide the viewport-sized bitmap with the scroller instead of building a
+    // timeline-wide canvas (see `paintW`).
+    c.style.left = `${paintLeft}px`;
+    c.style.width = `${w}px`;
     c.width = w;
     c.height = VIDEO_H;
     const ctx = c.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, w, VIDEO_H);
+    const left = paintLeft;
 
     const strip = project.thumbnails;
     // Nothing to draw yet: say why, so a black lane never reads as "broken".
@@ -454,8 +468,8 @@
     for (const s of segments) {
       const off = offsets.get(s.id);
       if (!off) continue;
-      const x0 = off.start * zoom;
-      const x1 = off.end * zoom;
+      const x0 = off.start * zoom - left;
+      const x1 = off.end * zoom - left;
       if (x1 < 0 || x0 > w) continue;
 
       ctx.save();
@@ -463,8 +477,12 @@
       ctx.rect(x0, 0, x1 - x0, VIDEO_H);
       ctx.clip();
       if (strip) {
-        const i0 = Math.max(0, Math.floor(s.startSec / thumbStep));
-        const i1 = Math.min(strip.count - 1, Math.floor(s.endSec / thumbStep));
+        // Only the frames under the visible window, not all 3,000 of a
+        // 50-minute keyframe strip on every repaint.
+        const visFrom = s.startSec + Math.max(0, -x0) / zoom;
+        const visTo = s.startSec + Math.min(w - x0, x1 - x0) / zoom;
+        const i0 = Math.max(0, Math.floor(visFrom / thumbStep));
+        const i1 = Math.min(strip.count - 1, Math.floor(visTo / thumbStep));
         for (let i = i0; i <= i1; i++) {
           const img = thumbImgs.get(i);
           if (!img || !img.complete || !img.naturalWidth) continue;
@@ -482,7 +500,7 @@
     // halves are kept (otherwise a split looks like it did nothing).
     ctx.fillStyle = 'rgba(212,175,55,0.95)';
     for (const x of project.splitMarkPositions) {
-      const px = x * zoom;
+      const px = x * zoom - left;
       if (px < 0 || px > w) continue;
       ctx.fillRect(px - 0.5, 0, 1.5, VIDEO_H);
     }
@@ -492,16 +510,22 @@
     const c = waveCanvas;
     const peaks = project.waveform?.peaks;
     if (!c) return;
-    const w = contentW;
+    const w = paintW;
+    c.style.left = `${paintLeft}px`;
+    c.style.width = `${w}px`;
     c.width = w;
     c.height = AUDIO_H;
     const ctx = c.getContext('2d');
     if (!ctx) return;
+    const left = paintLeft;
 
     ctx.fillStyle = '#14151d';
     ctx.fillRect(0, 0, w, AUDIO_H);
     const mid = AUDIO_H / 2;
     const dur = project.durationSec || 1;
+    // How much of the file the peaks actually cover. A short scan must read as
+    // "no data" on the tail, not as dead silence.
+    const covered = project.waveform?.coveredSecs ?? dur;
 
     // A picture has no audio, so its lane stays flat. A video that is still
     // being decoded says so — and if it failed, it says why.
@@ -517,14 +541,20 @@
     for (const s of segments) {
       const off = offsets.get(s.id);
       if (!off || !peaks?.length) continue;
-      const x0 = off.start * zoom;
-      const x1 = off.end * zoom;
+      const x0 = off.start * zoom - left;
+      const x1 = off.end * zoom - left;
+      if (x1 < 0 || x0 > w) continue;
       const wpx = Math.max(1, Math.ceil(x1 - x0));
+      // Only the columns on screen; at 220 px/s a long segment is otherwise
+      // hundreds of thousands of iterations per repaint.
+      const startPx = Math.max(0, Math.ceil(-x0 / 2) * 2);
+      const endPx = Math.min(wpx, Math.ceil(w - x0));
       // A muted clip still shows its shape, just ghosted — Clipchamp keeps the
       // waveform visible so the user can see what is muted.
       ctx.globalAlpha = project.isSegmentMuted(s.id) ? 0.28 : 1;
-      for (let px = 0; px < wpx; px += 2) {
+      for (let px = startPx; px < endPx; px += 2) {
         const sourceSec = s.startSec + px / zoom;
+        if (sourceSec > covered) break;
         const pi = Math.min(peaks.length - 1, Math.floor((sourceSec / dur) * peaks.length));
         const p = peaks[Math.max(0, pi)] ?? 0;
         const hgt = Math.max(1, p * (AUDIO_H - 10));
@@ -545,11 +575,15 @@
         // The browser demo's "second asset" is the same baked file.
         (project.media?.url && project.media.url === r.clip.url ? project.waveform?.peaks : null);
       if (!peaks?.length) continue;
-      const x0 = r.start * zoom;
-      const wpx = Math.max(1, Math.ceil((r.end - r.start) * zoom));
+      const x0 = r.start * zoom - left;
+      const x1 = r.end * zoom - left;
+      if (x1 < 0 || x0 > w) continue;
+      const wpx = Math.max(1, Math.ceil(x1 - x0));
+      const startPx = Math.max(0, Math.ceil(-x0 / 2) * 2);
+      const endPx = Math.min(wpx, Math.ceil(w - x0));
       const dur = r.clip.durationSecs || 1;
       ctx.fillStyle = '#4d8dff';
-      for (let px = 0; px < wpx; px += 2) {
+      for (let px = startPx; px < endPx; px += 2) {
         // `inSec` shifts the window: a trimmed clip must show the audio it
         // actually plays, not the top of the file.
         const sourceSec = r.clip.inSec + px / zoom;
@@ -574,7 +608,10 @@
   function drawMinimap() {
     const c = miniCanvas;
     if (!c) return;
-    const w = contentW;
+    // An overview never needs more resolution than this, and a timeline-wide
+    // backing store is what broke long sources. CSS stretches the 4096-px
+    // bitmap across `contentW`, so the whole file stays visible.
+    const w = Math.min(contentW, 4096);
     c.width = w;
     c.height = MINIMAP_H;
     const ctx = c.getContext('2d');
@@ -649,6 +686,7 @@
     }
     if (Number.isFinite(from)) ensureThumbs(from, to);
     drawVideoLane();
+    drawWave();
     const obs = new ResizeObserver(() => (viewW = w.clientWidth));
     obs.observe(w);
     return () => obs.disconnect();
@@ -1976,7 +2014,7 @@
         >
           <canvas
             bind:this={waveCanvas}
-            class="block {project.isTrackHidden('audio') ? 'opacity-40' : ''}"
+            class="absolute inset-y-0 block {project.isTrackHidden('audio') ? 'opacity-40' : ''}"
             style="height:{AUDIO_H}px"
           ></canvas>
           <span

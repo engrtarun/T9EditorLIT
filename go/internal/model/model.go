@@ -178,6 +178,15 @@ type Job struct {
 	// Error carries the human-readable failure reason when State is failed.
 	Error string `json:"error,omitempty"`
 
+	// FailedChunks lists the chunk indices a partial transcribe job could not
+	// read. The app uses it to retry exactly those chunks: a 49-minute import
+	// that lost chunk 3 must not pay Whisper for chunks 0-2 and 4-9 again.
+	//
+	// Indices, not ranges or file names: the caller already has the ordered
+	// chunk list with its offsets, so an index is the one value that survives
+	// a different temp directory and a re-extraction.
+	FailedChunks []int `json:"failed_chunks,omitempty"`
+
 	// NoSpeech means the audio contained no actual speech: Whisper's output was
 	// filtered as non-speech or was nothing but its stock sign-off phrases.
 	// Transcript is empty and the job still succeeded - "no words here" is a

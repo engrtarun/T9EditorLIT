@@ -76,6 +76,20 @@ func (s *jobStore) start(id string) {
 	})
 }
 
+// setFailedChunks records which chunks a transcribe run could not read.
+//
+// It is written before the job settles so the terminal payload carries it; the
+// retry path needs the indices, and parsing them back out of the human-readable
+// error string would couple the client to the daemon's log formatting.
+func (s *jobStore) setFailedChunks(id string, indices []int) {
+	if len(indices) == 0 {
+		return
+	}
+	s.mutate(id, func(j *model.Job) {
+		j.FailedChunks = indices
+	})
+}
+
 // advance records progress within a running job.
 func (s *jobStore) advance(id string, n int) {
 	s.mutate(id, func(j *model.Job) {

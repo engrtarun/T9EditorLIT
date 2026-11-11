@@ -17,9 +17,6 @@ use crate::cache;
 
 /// Bytes of raw PCM (s16le, mono) read per chunk from ffmpeg's stdout.
 const READ_CHUNK: usize = 32 * 1024;
-/// Hard ceiling on extraction wall time. Beyond this ffmpeg is killed and the
-/// partial peak set (built from the head of the file) is returned.
-const EXTRACT_DEADLINE: Duration = Duration::from_secs(15);
 /// Safety net: refuse absurd bar counts so peak state stays bounded.
 const MAX_BARS: usize = 8_192;
 
@@ -32,6 +29,14 @@ pub struct WaveformData {
     pub bars: usize,
     /// Absolute peak per bucket in the range 0.0..=1.0 (i16 full scale).
     pub peaks: Vec<f32>,
+    /// How much of the file the peaks actually cover, in seconds.
+    ///
+    /// Equals `duration_secs` on a complete scan. It is shorter only when the
+    /// scan was cut short (read error, killed child); the UI then draws the
+    /// covered head and leaves the rest blank instead of painting a flat tail
+    /// that looks like silence.
+    #[serde(default)]
+    pub covered_secs: f64,
     #[serde(default)]
     pub cache_path: Option<PathBuf>,
 }
@@ -169,27 +174,45 @@ pub fn extract(source: &Path, root: &Path, bars: usize) -> Result<WaveformData, 
         .map_err(|e| format!("waveform: cannot stat {}: {e}", source.display()))?;
     let dur = probe_duration(source).unwrap_or(0.0);
     let key = cache::source_key(source, &meta)?;
-    let cache_path = cache::dir(root, "waveform")?.join(format!("{key}.json"));
+    // The `v2` suffix retires caches written by the old 15-second/48 kHz scan:
+    // those files hold a truncated head that the UI would draw as a full-length
+    // waveform. Bumping the name is the whole migration.
+    let cache_path = cache::dir(root, "waveform")?.join(format!("{key}-v2.json"));
 
     if let Some(data) = read_cache(&cache_path, bars)? {
         return Ok(data);
     }
 
     let samples_per_bar = samples_per_bar(dur, bars);
-    let peaks = stream_peaks(source, bars, samples_per_bar)?;
+    let (peaks, covered) = stream_peaks(source, bars, samples_per_bar, dur)?;
 
     let data = WaveformData {
         duration_secs: dur,
         bars: peaks.len(),
         peaks,
+        covered_secs: covered,
         cache_path: Some(cache_path.clone()),
     };
-    let _ = write_cache(&cache_path, &data);
+    // Cache only a complete scan. A deadline/read-error scan covers the head
+    // and leaves the tail blank; writing that to disk would make a temporary
+    // problem permanent - every later open would read the truncated file.
+    // The rule is coverage ≥ 99.5% of the probed duration (a few ms of encoder
+    // padding are not a truncated scan).
+    let complete = dur <= 0.0 || covered >= dur * 0.995;
+    if complete {
+        let _ = write_cache(&cache_path, &data);
+    }
     Ok(data)
 }
 
-/// ffmpeg emits 48 000 mono samples/s by default; keep that assumption local.
-const SAMPLE_RATE: u64 = 48_000;
+/// Peak extraction runs at 4 kHz.
+///
+/// A bar is at least a third of a second wide even for 4096 bars on a
+/// 20-minute file, so 4 kHz resolves every bar's peak as well as 48 kHz did —
+/// with twelve times less PCM to decode and pipe. That is what makes a
+/// complete waveform for a 49-minute source finish on this machine instead of
+/// being cut off by a wall-clock deadline.
+const SAMPLE_RATE: u64 = 4_000;
 
 fn samples_per_bar(duration_secs: f64, bars: usize) -> u64 {
     if duration_secs <= 0.0 {
@@ -199,8 +222,26 @@ fn samples_per_bar(duration_secs: f64, bars: usize) -> u64 {
     (total / bars.max(1) as u64).max(1)
 }
 
+/// Time ceiling for one scan.
+///
+/// It is a guard against a wedged child, not a normal exit: 45 seconds plus 2%
+/// of the file's length (≈100 s for a 49-minute video, where the real work now
+/// takes a few seconds). The old fixed 15 s was a normal exit for anything long,
+/// which is exactly how the waveform lost its back half.
+fn deadline_for(duration_secs: f64) -> Duration {
+    Duration::from_secs_f64(45.0 + duration_secs.max(0.0) * 0.02)
+}
+
 /// Spawn ffmpeg, fold its PCM stdout into peaks, kill it at the deadline.
-fn stream_peaks(source: &Path, bars: usize, samples_per_bar: u64) -> Result<Vec<f32>, String> {
+///
+/// Returns the peaks and how many seconds of audio they cover, so a short read
+/// can never be mistaken for silence.
+fn stream_peaks(
+    source: &Path,
+    bars: usize,
+    samples_per_bar: u64,
+    duration_secs: f64,
+) -> Result<(Vec<f32>, f64), String> {
     let mut child = crate::ffmpeg::silent("ffmpeg")
         .args(["-v", "error"])
         // Same reasoning as thumbnail.rs: the decode threads own their own
@@ -224,9 +265,11 @@ fn stream_peaks(source: &Path, bars: usize, samples_per_bar: u64) -> Result<Vec<
     let mut folder = PeakFolder::new(bars, samples_per_bar);
     let mut buf = vec![0u8; READ_CHUNK];
     let started = Instant::now();
+    let deadline = deadline_for(duration_secs);
+    let mut bytes = 0u64;
 
     loop {
-        if started.elapsed() > EXTRACT_DEADLINE || folder.emitted() >= bars {
+        if started.elapsed() > deadline || folder.emitted() >= bars {
             break;
         }
         let n = match stdout.read(&mut buf) {
@@ -235,6 +278,7 @@ fn stream_peaks(source: &Path, bars: usize, samples_per_bar: u64) -> Result<Vec<
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         };
+        bytes += n as u64;
         folder.push_bytes(&buf[..n]);
     }
 
@@ -242,7 +286,14 @@ fn stream_peaks(source: &Path, bars: usize, samples_per_bar: u64) -> Result<Vec<
     let _ = child.kill();
     let _ = child.wait();
 
-    Ok(folder.finish())
+    // PCM is mono i16, so two bytes per sample.
+    let covered = (bytes / 2) as f64 / SAMPLE_RATE as f64;
+    let covered = if duration_secs > 0.0 {
+        covered.min(duration_secs)
+    } else {
+        covered
+    };
+    Ok((folder.finish(), covered))
 }
 
 fn probe_duration(source: &Path) -> Option<f64> {
@@ -352,6 +403,7 @@ mod tests {
             duration_secs: 1.5,
             bars: 2,
             peaks: vec![0.5, 1.0],
+            covered_secs: 1.5,
             cache_path: Some(path.clone()),
         };
         write_cache(&path, &data).unwrap();

@@ -623,13 +623,21 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 
 	merged := make([]model.Segment, 0, len(req.Chunks)*8)
 	var failures []string
+	// Positions of chunks that errored, in the order the request listed them.
+	// The client retries exactly these on a partial transcript - see
+	// model.Job.FailedChunks.
+	failedIdx := make([]int, 0, 4)
 	// Chunks that came back without an error - even if they contained no
 	// words. The difference matters at the end of the loop: zero successful
 	// chunks is a real failure, zero words from successful chunks is a
 	// music-only video.
 	okChunks := 0
 
-	language := strings.TrimSpace(req.Language)
+	// Only an ISO-639-1 code may reach the provider. Whisper reports a display
+	// name in its own response ("Hindi"), and pinning that is what turned one
+	// successful chunk into nine 400s and a five-minute transcript of a
+	// 49-minute video. An unmappable value is dropped, never forwarded.
+	language := cloud.NormalizeLanguage(req.Language)
 	hint := strings.TrimSpace(req.Prompt)
 
 	for i, chunk := range req.Chunks {
@@ -658,6 +666,7 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 			ctx, chunk.Path, chunk.OffsetSecs, language, prompt)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", filepath.Base(chunk.Path), err))
+			failedIdx = append(failedIdx, i)
 			s.deps.Log.Warn("chunk failed",
 				"job", jobID, "chunk", filepath.Base(chunk.Path), "err", err)
 			// A failed chunk is still a finished chunk: progress must move, or
@@ -669,8 +678,16 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 		okChunks++
 
 		if language == "" && res.Language != "" {
-			language = res.Language
-			s.deps.Log.Info("whisper language pinned", "job", jobID, "language", language)
+			if code := cloud.NormalizeLanguage(res.Language); code != "" {
+				language = code
+				s.deps.Log.Info("whisper language pinned",
+					"job", jobID, "reported", res.Language, "code", code)
+			} else {
+				// Unknown display name: keep auto-detecting per chunk. No pin
+				// is a small inconsistency; a bad pin is nine lost chunks.
+				s.deps.Log.Warn("whisper language could not be mapped to a code - not pinning",
+					"job", jobID, "reported", res.Language)
+			}
 		}
 
 		// Hallucination guard: Whisper invents words over silence — a duck
@@ -704,6 +721,7 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 		// Whisper ran, read the audio, and heard no words. That is a result.
 		s.deps.Log.Info("no speech detected",
 			"job", jobID, "chunks", okChunks, "failures", len(failures))
+		s.store.setFailedChunks(jobID, failedIdx)
 		s.store.succeedNoSpeech(jobID, failures)
 		return nil
 	}
@@ -715,10 +733,12 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 	if cloud.OnlyStockOutros(merged) {
 		s.deps.Log.Info("only stock whisper phrases - treating as no speech",
 			"job", jobID, "lines", len(merged))
+		s.store.setFailedChunks(jobID, failedIdx)
 		s.store.succeedNoSpeech(jobID, failures)
 		return nil
 	}
 
+	s.store.setFailedChunks(jobID, failedIdx)
 	s.store.succeed(jobID, merged, nil, failures)
 	return nil
 }

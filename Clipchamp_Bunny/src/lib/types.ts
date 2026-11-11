@@ -41,6 +41,14 @@ export interface WaveformData {
   bars: number;
   /** Absolute peak per bucket, 0..1. */
   peaks: number[];
+  /**
+   * How many seconds of the source the peaks actually cover.
+   *
+   * Absent (older cache or the browser fixture) means "the whole duration".
+   * A short value means the scan was cut off, and the timeline leaves the
+   * uncovered tail blank instead of drawing it as silence.
+   */
+  coveredSecs?: number;
   cachePath: string | null;
 }
 

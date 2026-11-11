@@ -168,6 +168,83 @@ func TestAudibleWindowCountsOnlyFramesInsideIt(t *testing.T) {
 	}
 }
 
+// The bug behind the missing middle of a 49-minute import: a 5-minute chunk
+// carried 51.8 s of speech (17.3%) and the old fraction-only rule skipped the
+// whole chunk as "no audible speech". Fifty-two seconds is not silence.
+func TestSparseSpeechInLongChunkIsWorthTranscribing(t *testing.T) {
+	const totalSecs = 300
+	samples := make([]int16, totalSecs*testRate)
+	// One spoken second every five, 60 bursts => ~60 s audible, 20%... but the
+	// real file measured 17%, so use 52 bursts to sit under the old bar.
+	for burst := 0; burst < 52; burst++ {
+		from := burst * 5 * testRate
+		for i := from; i < from+testRate; i++ {
+			samples[i] = 6000
+		}
+	}
+
+	s, err := Scan(writeWAV(t, samples))
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if frac := s.AudibleSecs() / s.DurationSecs(); frac >= minAudibleFraction {
+		t.Fatalf("test setup: audible fraction %.3f should be under %.2f", frac, minAudibleFraction)
+	}
+	if !s.WorthTranscribing() {
+		t.Errorf("%.1f s of speech in a %.0f s chunk must be worth transcribing",
+			s.AudibleSecs(), s.DurationSecs())
+	}
+}
+
+// A mostly-silent long chunk is still not worth a call: 2 s of sound in 5
+// minutes is a door slam, not a sentence.
+func TestLongChunkWithAlmostNoSoundIsStillSkipped(t *testing.T) {
+	samples := make([]int16, 300*testRate)
+	for i := 10 * testRate; i < 12*testRate; i++ {
+		samples[i] = 6000
+	}
+
+	s, err := Scan(writeWAV(t, samples))
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if s.WorthTranscribing() {
+		t.Errorf("%.1f s of sound in 300 s must not be sent to the API", s.AudibleSecs())
+	}
+}
+
+// The other half of the same bug: Whisper stretched a real line from 0 s to
+// 14.02 s while the words were spoken at the end, so only ~2 s of the span was
+// audible (14%) and the gate dropped it. `dropping word with no audio behind
+// it` on a line that clearly had audio is how transcript rows disappeared.
+func TestLongLineWithTrailingPauseIsBackedByAudio(t *testing.T) {
+	samples := make([]int16, 20*testRate)
+	// Speech only in the last two seconds of a line Whisper claims starts at 0.
+	for i := 16 * testRate; i < 18*testRate; i++ {
+		samples[i] = 8000
+	}
+
+	s, err := Scan(writeWAV(t, samples))
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if frac := s.AudibleIn(0, 18.5) / 18.5; frac >= segmentAudibleFraction {
+		t.Fatalf("test setup: %.3f of the span is audible, want under %.2f",
+			frac, segmentAudibleFraction)
+	}
+	if !s.BacksSegment(0, 18.5) {
+		t.Error("a 2 s real sentence inside an 18.5 s span must survive the gate")
+	}
+	silent := make([]int16, 20*testRate)
+	silentScan, err := Scan(writeWAV(t, silent))
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if silentScan.BacksSegment(0, 18.5) {
+		t.Error("a long span over digital silence must still be dropped")
+	}
+}
+
 // Fail open: anything this scanner cannot read is handed to the provider
 // unchanged. A local scan must never be the reason a transcript is missing.
 func TestUnreadableFileIsAnErrorNotASkip(t *testing.T) {

@@ -29,27 +29,42 @@ const (
 
 	// absFloorDB is the quietest a frame can be and still count as sound,
 	// in dBFS. Below this is hiss the microphone made, not content.
-	absFloorDB = -54.0
+	absFloorDB = -56.0
 
-	// peakRatio caps the threshold at 1/40th of the file's own peak, so
-	// one loud clap cannot make the quiet speech around it vanish.
-	peakRatio = 40.0
+	// peakRatio caps the threshold at 1/64th of the file's own peak, so one
+	// loud clap cannot make the quiet speech around it vanish. 40 was too
+	// tight: a phone recording with a single loud transient buried ordinary
+	// speech under it, and that speech then read as silence.
+	peakRatio = 64.0
 
-	// minAudibleSecs / minAudibleFraction are the "worth uploading" bar.
-	// A chunk with under 300 ms of sound — or under 20% sound — carries
-	// nothing Whisper could turn into words. The duck meme measures
-	// 0.19 s of sound in 1.16 s and fails both.
+	// minAudibleSecs / minContentSecs / minAudibleFraction are the "worth
+	// uploading" bar. A duck meme measures 0.19 s of sound in 1.16 s and fails
+	// the absolute floor.
+	//
+	// minContentSecs is the long-chunk answer. A 5-minute chunk from a screen
+	// recording is routinely ~17% audible - 52 seconds of talking between
+	// silent stretches - and the old fraction-only rule skipped it, taking the
+	// middle of a 49-minute import with it. Missing real words is expensive; a
+	// false positive costs one API call, so any chunk with a few seconds of
+	// sound is transcribed regardless of how long the chunk is.
 	minAudibleSecs     = 0.3
+	minContentSecs     = 3.0
 	minAudibleFraction = 0.2
 
 	// segmentMinAudibleSecs / segmentAudibleFraction decide whether real
 	// audio backs a claimed word. Whisper's phantom "What?" spanned
-	// 0 → 0.9 s over a mostly silent file: 0.15 s of sound cannot back a
-	// 0.9 s word (17%, under the bar). The bar sits low on purpose — a
-	// real line with a long trailing pause must survive; dropping a true
-	// word would be worse than keeping a doubtful one.
+	// 0 → 0.9 s over a mostly silent file: 0.16 s of sound cannot back a
+	// 0.9 s word (18%, under the bar).
+	//
+	// segmentLongSecs / segmentLongMinAudibleSecs cover the opposite bug.
+	// Whisper stretches a segment from the chunk start to the first word it
+	// heard, so a real sentence at 12-14 s of a 14 s span measured ~14% and
+	// was dropped as "no audio behind it". A long line needs an absolute
+	// amount of sound, not a share of a span the provider invented.
 	segmentMinAudibleSecs  = 0.05
 	segmentAudibleFraction = 0.25
+	segmentLongSecs        = 3.0
+	segmentLongMinAudible  = 1.0
 )
 
 // Result is the outcome of reading one chunk file. It is immutable after
@@ -227,6 +242,10 @@ func (s *Result) WorthTranscribing() bool {
 	if s.audibleSecs < minAudibleSecs {
 		return false
 	}
+	// A few seconds of sound is content no matter how long the chunk is.
+	if s.audibleSecs >= minContentSecs {
+		return true
+	}
 	return s.audibleSecs >= minAudibleFraction*s.durationSec
 }
 
@@ -261,6 +280,14 @@ func (s *Result) BacksSegment(start, end float64) bool {
 	audible := s.AudibleIn(start, end)
 	if audible < segmentMinAudibleSecs {
 		return false
+	}
+	// Long spans get the absolute test. Whisper routinely begins a segment at
+	// 0 s and ends it at the last word, so a real line at 12-14 s of a 14 s
+	// span is 14% audible and used to be thrown away. One second of real sound
+	// inside a long line is proof enough; the phantom case (a 4 s claim over
+	// 0.9 s of noise) still fails.
+	if segDur > segmentLongSecs {
+		return audible >= segmentLongMinAudible
 	}
 	return audible >= segmentAudibleFraction*segDur
 }

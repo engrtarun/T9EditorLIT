@@ -93,6 +93,17 @@
   });
   const elapsed = $derived(runStart ? fmtShort((now - runStart) / 1000) : '');
 
+  /** "00:12–00:57, 03:20–03:45 +2 aur" — where the transcript has holes. */
+  const missingLabel = $derived.by(() => {
+    const spans = project.partialTranscript?.missing ?? [];
+    if (!spans.length) return '';
+    const shown = spans
+      .slice(0, 3)
+      .map((r) => `${fmtShort(r.startSec)}–${fmtShort(r.endSec)}`)
+      .join(', ');
+    return spans.length > 3 ? `${shown} +${spans.length - 3} aur` : shown;
+  });
+
   function jump(line: TranscriptLine) {
     // A transcript line belongs to the main source: previewing an extra clip
     // would seek the wrong video, so jump back to the main cut first.
@@ -166,6 +177,63 @@
     <div class="flex-1"></div>
     <span class="text-[9px] tracking-widest text-nc-mut-2">X CUT · V KEEP · ↑↓</span>
   </div>
+
+  <!--
+    A transcript with holes must say so at the top of the panel, not only in
+    the session that discovered them. The daemon deliberately keeps the chunks
+    that worked (throwing away 48 good minutes over one bad chunk would be
+    worse), but a silent gap in the text is indistinguishable from "nothing was
+    said here" unless it is named.
+  -->
+  {#if project.partialTranscript && !project.pipeline}
+    <div class="shrink-0 border-b border-amber-400/30 bg-amber-400/10 px-3 py-2">
+      <p class="text-[11px] font-semibold leading-snug text-amber-300">
+        Transcript adhoora hai — {project.partialTranscript.failedChunks.length} audio chunk padhe nahi
+        ja sake
+      </p>
+      <p class="mt-0.5 text-[10px] leading-relaxed text-nc-mut">
+        Missing: <span class="font-mono text-nc-txt">{missingLabel}</span>
+      </p>
+      <button
+        onclick={() => void project.retryMissingTranscript()}
+        class="mt-1.5 rounded border border-amber-400/50 bg-amber-400/10 px-2 py-1 text-[10.5px]
+               font-semibold text-amber-200 transition-colors hover:bg-amber-400/20"
+      >
+        Adhoore hisse dobara try karo
+      </button>
+      <span class="ml-2 text-[9.5px] text-nc-mut-2">
+        Sirf yeh chunks — baaki words dobara nahi bheje jaayenge.
+      </span>
+      {#if project.partialTranscript.error}
+        <p class="mt-1 truncate text-[9.5px] text-nc-mut-2" title={project.partialTranscript.error}>
+          {project.partialTranscript.error}
+        </p>
+      {/if}
+    </div>
+  {/if}
+
+  <!--
+    The bulk undo for the automatic silence pass. One mistaken cut is fixed by
+    the per-line ✓ button; a whole pass the user disagrees with is not, and an
+    auto-cut that cannot be taken back is not safe to offer.
+  -->
+  {#if !project.pipeline && project.aiCutCount > 0}
+    <div
+      class="flex shrink-0 items-center gap-2 border-b border-nc-line bg-nc-panel-2/80 px-3 py-1.5"
+    >
+      <span class="min-w-0 flex-1 text-[10.5px] leading-snug text-nc-mut">
+        AI ne <span class="font-semibold text-nc-txt">{project.aiCutCount}</span> lines silence ki wajah
+        se cut ki.
+      </span>
+      <button
+        onclick={() => project.restoreAiCuts()}
+        class="shrink-0 rounded border border-nc-green/50 px-2 py-0.5 text-[10px] font-semibold
+               text-nc-green transition-colors hover:bg-nc-green/10"
+      >
+        Sab wapas lao
+      </button>
+    </div>
+  {/if}
 
   <!-- virtualised window -->
   <div

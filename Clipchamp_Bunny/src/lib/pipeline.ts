@@ -70,6 +70,14 @@ export interface CloudJob {
   transcript?: CloudSegment[];
   corrected?: CloudSegment[];
   analysis?: CloudSegment[];
+  /**
+   * Positions (in the request's `chunks` array) that could not be read.
+   *
+   * Present only on a `partial` transcribe job. The app retries exactly these
+   * instead of re-transcribing the whole video — the words from the successful
+   * chunks are already paid for and already on disk.
+   */
+  failed_chunks?: number[];
 }
 
 /**
@@ -220,12 +228,36 @@ export class NoSpeechError extends Error {
   }
 }
 
+/**
+ * What a transcribed run actually produced.
+ *
+ * The old function returned a bare array, which made "complete" and "half the
+ * video failed" the same value. A 49-minute import came back with five minutes
+ * of text and nothing said so. `failedChunks` is what lets the panel be honest
+ * and the retry be cheap.
+ */
+export interface TranscriptionResult {
+  segments: CloudSegment[];
+  /** Request positions whose chunk errored. Empty means the run is complete. */
+  failedChunks: number[];
+  /** The daemon's reason for the gap, when it reported one. */
+  error?: string;
+  /**
+   * The daemon heard no words in the chunks it *could* read.
+   *
+   * Usually that is a final answer (music, ambience). When `failedChunks` is
+   * non-empty it is not: the unread chunks might contain speech, so the caller
+   * must offer a retry instead of declaring the video wordless.
+   */
+  noSpeech: boolean;
+}
+
 export async function runTranscription(
   sourcePath: string,
   chunks: AudioChunk[],
   onProgress?: Progress,
   opts: { language?: string; prompt?: string } = {}
-): Promise<CloudSegment[]> {
+): Promise<TranscriptionResult> {
   // Telemetry: one `transcription_jobs` row when the run settles — the
   // engine writes it fire-and-forget, nothing here waits on SQLite.
   const audioSecs = chunks.reduce((sum, c) => sum + (c.durationSecs || 0), 0);
@@ -257,7 +289,16 @@ export async function runTranscription(
         'no speech detected',
         (Date.now() - t0) / 1000
       );
-      throw new NoSpeechError();
+      // Chunks that could not be read are a different story: the audio that
+      // never reached Whisper may well contain the speech. Hand the gaps back
+      // so the caller can retry them instead of saying "no words here".
+      if (!done.failed_chunks?.length) throw new NoSpeechError();
+      return {
+        segments: [],
+        failedChunks: done.failed_chunks,
+        error: done.error,
+        noSpeech: true
+      };
     }
     // `partial` is a real result: some chunks failed, but the ones that
     // worked are paid-for words. Keeping them beats throwing them away.
@@ -272,7 +313,12 @@ export async function runTranscription(
       done.error ?? '',
       (Date.now() - t0) / 1000
     );
-    return done.transcript;
+    return {
+      segments: done.transcript,
+      failedChunks: done.failed_chunks ?? [],
+      error: done.state === 'partial' ? done.error : undefined,
+      noSpeech: false
+    };
   } catch (e) {
     // NoSpeechError was already logged above as `done` — logging it again as
     // `failed` would make the telemetry blame the video that did nothing wrong.

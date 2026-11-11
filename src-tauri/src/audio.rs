@@ -45,17 +45,41 @@ pub fn probe_duration(path: &Path) -> Result<f64, String> {
         .map_err(|e| format!("could not parse duration {:?}: {e}", s.trim()))
 }
 
+/// True for the `chunk_000.wav` files this module produces (and no others).
+fn is_chunk_wav(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("wav")
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("chunk_"))
+            .unwrap_or(false)
+}
+
+/// How many chunks exist in `dir` right now.
+fn count_chunks(dir: &Path) -> usize {
+    fs::read_dir(dir)
+        .map(|entries| entries.flatten().filter(|e| is_chunk_wav(&e.path())).count())
+        .unwrap_or(0)
+}
+
 /// Extract mono 16 kHz audio and split it into chunks of at most `segment_secs`
 /// seconds. Returns the ordered list of chunk files with their offsets into the
 /// original video.
 ///
 /// `source_hash` is a short hash of the source path used to create a per-source
 /// chunk directory so runs for different videos never collide on disk.
+///
+/// `on_progress(done, expected)` is called while FFmpeg runs: the segment muxer
+/// closes one file per chunk, so counting files on disk is a real measure of
+/// how far the split has got. A 49-minute source spends a minute or two in this
+/// stage, and a bar parked at its start value for that long is the difference
+/// between "working" and "hung".
 pub fn extract_chunks(
     source: &Path,
     out_dir: &Path,
     segment_secs: f64,
     source_hash: &str,
+    on_progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Vec<AudioChunk>, String> {
     if !source.exists() {
         return Err(format!("source file not found: {}", source.display()));
@@ -76,20 +100,22 @@ pub fn extract_chunks(
     if let Ok(entries) = fs::read_dir(&chunk_dir) {
         for entry in entries.flatten() {
             let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("wav")
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| n.starts_with("chunk_"))
-                    .unwrap_or(false)
-            {
+            if is_chunk_wav(&p) {
                 let _ = fs::remove_file(p);
             }
         }
     }
 
+    // Expected chunk count, so progress has a denominator from the first tick.
+    // A probe failure is not fatal: the split still runs, only without a total.
+    let expected = probe_duration(source)
+        .ok()
+        .map(|d| (d / segment_secs).ceil().max(1.0) as usize)
+        .unwrap_or(0);
+
     let pattern = chunk_dir.join("chunk_%03d.wav");
     let seg_arg = format!("{segment_secs}");
-    let status = crate::ffmpeg::silent("ffmpeg")
+    let mut child = crate::ffmpeg::silent("ffmpeg")
         .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
         .arg(source)
         .args([
@@ -107,8 +133,32 @@ pub fn extract_chunks(
         .arg(&seg_arg)
         .args(["-reset_timestamps", "1"])
         .arg(&pattern)
-        .status()
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
+
+    // Poll the directory while the child runs. 150 ms is far cheaper than the
+    // decode itself and makes the chunk counter move at the speed the files
+    // actually appear.
+    on_progress(0, expected);
+    let mut last_done = 0usize;
+    let status = loop {
+        match child
+            .try_wait()
+            .map_err(|e| format!("waiting for ffmpeg: {e}"))?
+        {
+            Some(status) => break status,
+            None => {
+                let done = count_chunks(&chunk_dir);
+                if done != last_done {
+                    last_done = done;
+                    on_progress(done, expected.max(done));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+        }
+    };
 
     if !status.success() {
         return Err(format!("ffmpeg audio extraction failed: {status}"));
@@ -120,13 +170,7 @@ pub fn extract_chunks(
         .map_err(|e| format!("could not read chunk dir: {e}"))?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| {
-            p.extension().and_then(|e| e.to_str()) == Some("wav")
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| n.starts_with("chunk_"))
-                    .unwrap_or(false)
-        })
+        .filter(|p| is_chunk_wav(p))
         .collect();
     files.sort();
 
