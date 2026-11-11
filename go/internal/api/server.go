@@ -29,6 +29,7 @@ import (
 	"github.com/engrtarun/T9EditorLIT/go/internal/netspeed"
 	"github.com/engrtarun/T9EditorLIT/go/internal/queue"
 	"github.com/engrtarun/T9EditorLIT/go/internal/ublock"
+	"github.com/engrtarun/T9EditorLIT/go/internal/vad"
 	"github.com/engrtarun/T9EditorLIT/go/internal/vault"
 )
 
@@ -589,6 +590,13 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 
 // runTranscribe sends each chunk and merges the results.
 //
+// Before any chunk is uploaded it is scanned locally (internal/vad): audio
+// with no audible speech never reaches the API at all — that is how a silent
+// 1.16 s meme stopped costing a Whisper call and returning a fabricated word.
+// The scan fails open: an unreadable or non-WAV chunk goes to the provider
+// exactly as before. Words Whisper places over silence are dropped after the
+// response, for the same reason.
+//
 // A single bad chunk does not abort the whole job: the transcript comes back
 // with StatePartial so the user still gets usable text for 99% of the video and
 // can decide what to do about the gap. Losing a 30-minute transcription to one
@@ -625,6 +633,22 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 	hint := strings.TrimSpace(req.Prompt)
 
 	for i, chunk := range req.Chunks {
+		// Local gate first: the chunk is measured on this machine before it
+		// is paid for. A clip with no audible speech — a silent meme, a
+		// paused mic — never reaches the API, and the job still ends as
+		// "no speech", which is a result, not a failure. A scan error fails
+		// open: the chunk goes to the provider exactly as before, because a
+		// local scanner must never be the reason a transcript is missing.
+		scan, scanErr := vad.Scan(chunk.Path)
+		if scanErr == nil && !scan.WorthTranscribing() {
+			okChunks++
+			s.deps.Log.Info("chunk has no audible speech - skipping upload",
+				"job", jobID, "chunk", filepath.Base(chunk.Path),
+				"audible_secs", scan.AudibleSecs(), "duration_secs", scan.DurationSecs())
+			s.store.progressTranscribe(jobID, i+1, len(merged), tailLine(merged))
+			continue
+		}
+
 		prompt := transcriptTail(merged, 300)
 		if prompt == "" {
 			prompt = hint
@@ -647,6 +671,26 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 		if language == "" && res.Language != "" {
 			language = res.Language
 			s.deps.Log.Info("whisper language pinned", "job", jobID, "language", language)
+		}
+
+		// Hallucination guard: Whisper invents words over silence — a duck
+		// quack came back as "What?" spanning 0 → 0.9 s of a mostly silent
+		// clip. A word that sits where there is no sound did not happen, so
+		// it is dropped here rather than shown to the user as transcript.
+		if scanErr == nil {
+			kept := make([]model.Segment, 0, len(res.Segments))
+			for _, seg := range res.Segments {
+				localStart := seg.StartSecs - chunk.OffsetSecs
+				localEnd := seg.EndSecs - chunk.OffsetSecs
+				if scan.BacksSegment(localStart, localEnd) {
+					kept = append(kept, seg)
+					continue
+				}
+				s.deps.Log.Info("dropping word with no audio behind it",
+					"job", jobID, "chunk", filepath.Base(chunk.Path),
+					"text", seg.Text, "start", seg.StartSecs, "end", seg.EndSecs)
+			}
+			res.Segments = kept
 		}
 
 		merged = append(merged, res.Segments...)
