@@ -915,6 +915,40 @@ pub async fn browser_focus_shell(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// The in-app now-playing bar's transport buttons. One typed path — the same
+/// `smtc::action` target the flyout and the earbud use — so a drag on the bar
+/// and a press on the flyout can never disagree about what "seek" means.
+#[tauri::command]
+pub fn browser_media_action(
+    app: tauri::AppHandle,
+    action: String,
+    value: Option<f64>,
+) -> Result<(), String> {
+    if !matches!(
+        action.as_str(),
+        "play" | "pause" | "stop" | "next" | "prev" | "forward" | "rewind" | "seek"
+    ) {
+        return Err(format!("unknown media action: {action}"));
+    }
+    if action == "seek" {
+        let seconds = value
+            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+            .ok_or_else(|| "seek needs a valid position".to_string())?;
+        crate::smtc::action(&app, &action, Some(seconds));
+    } else {
+        crate::smtc::action(&app, &action, None);
+    }
+    Ok(())
+}
+
+/// The now-playing bar's initial state: the owning tab's latest report, or
+/// `null` when nothing is playing. The bar calls this on mount so a paused
+/// video that is no longer heartbeating still shows up.
+#[tauri::command]
+pub fn browser_media_state(app: tauri::AppHandle) -> Option<crate::smtc::MediaSnapshot> {
+    crate::smtc::snapshot(&app)
+}
+
 /// Show one tab: destroy/collapse every other tab's webview, then create,
 /// navigate, or simply uncover this one.
 ///

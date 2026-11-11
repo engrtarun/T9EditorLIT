@@ -1704,6 +1704,8 @@ pub fn run() {
             browser::browser_set_rect,
             browser::browser_set_visible,
             browser::browser_stop,
+            browser::browser_media_action,
+            browser::browser_media_state,
             dl_settings::dl_settings_get,
             dl_settings::dl_settings_save,
             notify::app_notify,

@@ -19,6 +19,17 @@
 //! switched off per tab webview with `--disable-features=MediaSessionService`
 //! in `browser.rs`; this is the only session left, which is also why the
 //! earbud buttons are fast: there is no second owner to arbitrate with.
+//!
+//! The flyout also takes the page's own artwork (`mediaSession.metadata`
+//! artwork) as its thumbnail, so a YouTube video shows its thumbnail instead
+//! of a generic icon; the brand mark stays the fallback and the app identity
+//! never changes.
+//!
+//! Windows' flyout has no room for `02:22 / 18:11` and its seek bar is not
+//! draggable on every build, so every accepted report is also emitted to the
+//! frontend as `browser:media`. That is what the in-app now-playing bar
+//! draws and what its slider drives through `browser_media_action`. The bar
+//! keeps working even if the SMTC session itself failed to create.
 
 use std::collections::HashSet;
 
@@ -67,6 +78,51 @@ pub struct MediaButtonPayload {
     pub action: String,
 }
 
+/// What the frontend's now-playing bar needs: the owning tab, the page's
+/// metadata, and the position/duration pair that makes the timeline. Sent as
+/// `browser:media`; `state: "none"` is the explicit "nothing is playing, take
+/// the bar away" signal.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaSnapshot {
+    pub tab: String,
+    pub state: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub artwork: String,
+    pub position: f64,
+    pub duration: f64,
+    pub rate: f64,
+    pub next: bool,
+    pub prev: bool,
+}
+
+impl MediaSnapshot {
+    fn cleared() -> Self {
+        Self {
+            state: "none".to_string(),
+            ..Self::default()
+        }
+    }
+}
+
+fn snapshot_of(id: &str, report: &MediaReport) -> MediaSnapshot {
+    MediaSnapshot {
+        tab: id.to_string(),
+        state: report.state.clone(),
+        title: report.title.clone(),
+        artist: report.artist.clone(),
+        album: report.album.clone(),
+        artwork: report.artwork.clone(),
+        position: report.position,
+        duration: report.duration,
+        rate: report.rate,
+        next: report.next,
+        prev: report.prev,
+    }
+}
+
 /// Create the session for the main window. Called once from `setup`; a
 /// failure degrades to "no flyout session", never to a broken launch.
 pub fn install<R: Runtime>(app: &tauri::AppHandle<R>) {
@@ -104,9 +160,34 @@ pub fn tabs_swept<R: Runtime>(app: &tauri::AppHandle<R>, pinned: &HashSet<String
     let _ = (app, pinned);
 }
 
+/// What the now-playing bar should show right now. `None` when nothing owns
+/// the session. The frontend calls this once on mount so a paused video that
+/// stopped heartbeating still paints the bar after leaving and re-entering the
+/// browser.
+pub fn snapshot<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<MediaSnapshot> {
+    #[cfg(target_os = "windows")]
+    {
+        win::snapshot(app)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        None
+    }
+}
+
+/// Forward one transport action from the in-app bar. Same target as the
+/// flyout and the earbud: `window.__t9MediaAction(...)` in the owning page.
+pub fn action<R: Runtime>(app: &tauri::AppHandle<R>, action: &str, value: Option<f64>) {
+    #[cfg(target_os = "windows")]
+    win::act(app, action, value);
+    #[cfg(not(target_os = "windows"))]
+    let _ = (app, action, value);
+}
+
 #[cfg(target_os = "windows")]
 mod win {
-    use super::{MediaButtonPayload, MediaReport};
+    use super::{MediaButtonPayload, MediaReport, MediaSnapshot, snapshot_of};
     use crate::browser::diag;
 
     use std::collections::{HashMap, HashSet};
@@ -114,7 +195,7 @@ mod win {
 
     use tauri::{Emitter, Manager, Runtime};
 
-    use windows::Foundation::{TimeSpan, TypedEventHandler};
+    use windows::Foundation::{TimeSpan, TypedEventHandler, Uri};
     use windows::Media::{
         MediaPlaybackStatus, MediaPlaybackType, PlaybackPositionChangeRequestedEventArgs,
         SystemMediaTransportControls, SystemMediaTransportControlsButton,
@@ -151,6 +232,14 @@ mod win {
         /// The brand icon as a WinRT stream reference. Created once; a
         /// `RandomAccessStreamReference` is immutable and cheap to clone.
         thumb: Mutex<Option<RandomAccessStreamReference>>,
+        /// The page's artwork, cached by URL. Windows downloads the URI
+        /// itself the first time the flyout asks for it; recreating the
+        /// reference on every heartbeat would flash the old thumbnail.
+        art: Mutex<Option<(String, RandomAccessStreamReference)>>,
+        /// Whether the flyout / the in-app bar currently show a live item.
+        /// A repeated `state: "none"` from a page that never owned anything
+        /// must not emit endless clear events.
+        shown: Mutex<bool>,
     }
 
     pub(super) fn install<R: Runtime>(app: &tauri::AppHandle<R>) {
@@ -262,9 +351,10 @@ mod win {
 
     pub(super) fn update<R: Runtime>(app: &tauri::AppHandle<R>, id: &str, report: MediaReport) {
         let state = app.state::<SmtcState>();
-        let Some(controls) = state.controls.lock().ok().and_then(|slot| slot.clone()) else {
-            return;
-        };
+        // The bar is independent of the SMTC session: if `install` failed to
+        // get the interop factory, the page can still own media and the
+        // timeline must still appear. Only the flyout calls below are skipped.
+        let controls = state.controls.lock().ok().and_then(|slot| slot.clone());
 
         let kind = report.state.as_str();
         let live = kind == "playing" || kind == "paused";
@@ -293,11 +383,12 @@ mod win {
         //      when nothing else has media (a just-loaded YouTube page).
         // A tab that is not the owner returns here, so a background pinned
         // video can never overwrite the active page's title or timeline.
-        let owner = {
+        let (owner, took_over) = {
             let mut slot = match state.owner.lock() {
                 Ok(slot) => slot,
                 Err(_) => return,
             };
+            let was_owner = slot.as_deref() == Some(id);
             let current = slot.clone();
             if current.as_deref() == Some(id) {
                 if kind == "none" {
@@ -308,28 +399,18 @@ mod win {
             } else if kind != "none" && current.is_none() {
                 *slot = Some(id.to_string());
             }
-            slot.clone()
+            (slot.clone(), !was_owner && slot.as_deref() == Some(id))
         };
+
+        // Nothing owns the session any more: clear the flyout and the bar so
+        // neither keeps showing the last video after it stopped.
+        if owner.is_none() {
+            clear(app, &state);
+            return;
+        }
         if owner.as_deref() != Some(id) {
             return;
         }
-
-        // Metadata only when something visible changed. Position arrives
-        // every ~1.5 s while playing and must not repaint the flyout.
-        let changed = match state.last.lock() {
-            Ok(mut last) => {
-                let changed = last.state != report.state
-                    || last.title != report.title
-                    || last.artist != report.artist
-                    || last.artwork != report.artwork
-                    || last.next != report.next
-                    || last.prev != report.prev
-                    || (last.duration - report.duration).abs() > 1.0;
-                *last = report.clone();
-                changed
-            }
-            Err(_) => false,
-        };
 
         if !live {
             // The owner stopped. Hand the flyout to another live page
@@ -339,12 +420,40 @@ mod win {
                 diag(&format!("media {id} -> none, handed over"));
                 return;
             }
-            if changed {
-                close(&controls);
-                diag(&format!("media {id} -> none"));
-            }
+            clear(app, &state);
+            diag(&format!("media {id} -> none"));
             return;
         }
+
+        // A live owner is what the bar draws. Emitted on every heartbeat
+        // because the position is what makes the timeline move; the payload
+        // is small and the frontend only re-renders the bar.
+        let _ = app.emit("browser:media", snapshot_of(id, &report));
+        if let Ok(mut shown) = state.shown.lock() {
+            *shown = true;
+        }
+
+        let Some(controls) = controls else {
+            return;
+        };
+
+        // Metadata only when something visible changed. Position arrives
+        // every ~1.5 s while playing and must not repaint the flyout.
+        let changed = match state.last.lock() {
+            Ok(mut last) => {
+                let changed = took_over
+                    || last.state != report.state
+                    || last.title != report.title
+                    || last.artist != report.artist
+                    || last.artwork != report.artwork
+                    || last.next != report.next
+                    || last.prev != report.prev
+                    || (last.duration - report.duration).abs() > 1.0;
+                *last = report.clone();
+                changed
+            }
+            Err(_) => took_over,
+        };
 
         if changed {
             if let Ok(updater) = controls.DisplayUpdater() {
@@ -357,7 +466,12 @@ mod win {
                     let _ = props.SetArtist(&HSTRING::from(report.artist.as_str()));
                     let _ = props.SetAlbumTitle(&HSTRING::from(report.album.as_str()));
                 }
-                if let Some(thumb) = state.thumb.lock().ok().and_then(|slot| slot.clone()) {
+                // The page's own artwork (a YouTube thumbnail) is what Edge
+                // shows; the brand mark stays the fallback so a page with no
+                // art cannot leave the flyout blank.
+                let thumb = artwork(&state, &report.artwork)
+                    .or_else(|| state.thumb.lock().ok().and_then(|slot| slot.clone()));
+                if let Some(thumb) = thumb {
                     let _ = updater.SetThumbnail(&thumb);
                 }
                 let _ = updater.Update();
@@ -393,6 +507,44 @@ mod win {
                 let _ = controls.UpdateTimelineProperties(&timeline);
             }
         }
+    }
+
+    /// Take the flyout **and** the in-app bar down. Called when the last live
+    /// page stopped or its tab closed; idempotent, so repeated `none` reports
+    /// do not spam the frontend with clear events.
+    fn clear<R: Runtime>(app: &tauri::AppHandle<R>, state: &SmtcState) {
+        let was = state
+            .shown
+            .lock()
+            .map(|mut shown| {
+                let was = *shown;
+                *shown = false;
+                was
+            })
+            .unwrap_or(false);
+        if let Ok(mut last) = state.last.lock() {
+            *last = MediaReport::default();
+        }
+        if !was {
+            return;
+        }
+        if let Some(controls) = state.controls.lock().ok().and_then(|slot| slot.clone()) {
+            close(&controls);
+        }
+        let _ = app.emit("browser:media", MediaSnapshot::cleared());
+    }
+
+    /// The bar's initial state: the owner's latest report, if any. A `none`
+    /// report is filtered so a dead session never paints an empty bar.
+    pub(super) fn snapshot<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<MediaSnapshot> {
+        let state = app.state::<SmtcState>();
+        let owner = state.owner.lock().ok().and_then(|owner| owner.clone())?;
+        let reports = state.reports.lock().ok()?;
+        let report = reports.get(&owner)?;
+        if report.state == "none" {
+            return None;
+        }
+        Some(super::snapshot_of(&owner, report))
     }
 
     /// Give the session to the best surviving page (a playing one first).
@@ -442,13 +594,8 @@ mod win {
             diag(&format!("media {id} -> closed tab, handed over"));
             return;
         }
-        if let Some(controls) = state.controls.lock().ok().and_then(|slot| slot.clone()) {
-            close(&controls);
-            if let Ok(mut last) = state.last.lock() {
-                *last = MediaReport::default();
-            }
-            diag(&format!("media {id} -> closed tab"));
-        }
+        clear(app, &state);
+        diag(&format!("media {id} -> closed tab"));
     }
 
     pub(super) fn tabs_swept<R: Runtime>(app: &tauri::AppHandle<R>, pinned: &HashSet<String>) {
@@ -469,7 +616,7 @@ mod win {
     /// Forward one transport action into the owning page. The page's own
     /// `navigator.mediaSession` handlers are the target: they know about ads,
     /// playlists and the SPA player, which a bare `<video>` does not.
-    fn act<R: Runtime>(app: &tauri::AppHandle<R>, action: &str, value: Option<f64>) {
+    pub(super) fn act<R: Runtime>(app: &tauri::AppHandle<R>, action: &str, value: Option<f64>) {
         let Some(id) = app
             .state::<SmtcState>()
             .owner
@@ -496,6 +643,41 @@ mod win {
         };
         let _ = webview.eval(&script);
         diag(&format!("media button {action} -> {id}"));
+    }
+
+    /// The page's artwork as a WinRT reference. Only absolute http(s) URIs
+    /// work: Windows fetches the image itself, and a `blob:` URL belongs to
+    /// the page's renderer, which Windows cannot reach. Cached by URL —
+    /// YouTube keeps the same thumbnail across heartbeats, and a fresh
+    /// reference per report makes the flyout flash while it downloads.
+    fn artwork(state: &SmtcState, url: &str) -> Option<RandomAccessStreamReference> {
+        let url = url.trim();
+        if !url.starts_with("https://") && !url.starts_with("http://") {
+            return None;
+        }
+        let mut cache = state.art.lock().ok()?;
+        if let Some((cached, thumb)) = cache.as_ref()
+            && cached == url
+        {
+            return Some(thumb.clone());
+        }
+        let uri = match Uri::CreateUri(&HSTRING::from(url)) {
+            Ok(uri) => uri,
+            Err(error) => {
+                diag(&format!("smtc -> artwork uri failed: {error}"));
+                return None;
+            }
+        };
+        match RandomAccessStreamReference::CreateFromUri(&uri) {
+            Ok(thumb) => {
+                *cache = Some((url.to_string(), thumb.clone()));
+                Some(thumb)
+            }
+            Err(error) => {
+                diag(&format!("smtc -> artwork failed: {error}"));
+                None
+            }
+        }
     }
 
     fn close(controls: &SystemMediaTransportControls) {

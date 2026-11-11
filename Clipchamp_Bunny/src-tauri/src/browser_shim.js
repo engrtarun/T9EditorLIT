@@ -146,10 +146,20 @@
     const duration = el && isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
     const position = el && isFinite(el.currentTime) ? el.currentTime : 0;
     const playing = !!el && !el.paused && !el.ended;
-    const state = !el || (!playing && !position && !duration) ? 'none' : playing ? 'playing' : 'paused';
+    const state =
+      !el || (!playing && !position && !duration) ? 'none' : playing ? 'playing' : 'paused';
     const title = (metadata && metadata.title) || document.title || '';
     const artworkList = metadata && metadata.artwork ? metadata.artwork : [];
-    const artwork = artworkList.length ? artworkList[artworkList.length - 1].src || '' : '';
+    // The largest entry is last in every player seen so far (YouTube, Spotify).
+    // Rust hands the URL to Windows, which downloads it out-of-process, so it
+    // has to be absolute: resolve it here where `location` is still available.
+    const artworkSrc = artworkList.length ? artworkList[artworkList.length - 1].src || '' : '';
+    let artwork = '';
+    try {
+      artwork = artworkSrc ? new URL(artworkSrc, location.href).href : '';
+    } catch (e) {
+      artwork = '';
+    }
     const host = location.hostname.replace(/^www\./, '');
     const artist = (metadata && metadata.artist) || host;
     // The page's handlers are the real thing; YouTube's own next/previous
@@ -232,7 +242,11 @@
     const el = mediaElement();
     switch (action) {
       case 'play':
-        return runMediaAction('play', { action: 'play' }, () => el && el.play && el.play().catch(() => {}));
+        return runMediaAction(
+          'play',
+          { action: 'play' },
+          () => el && el.play && el.play().catch(() => {})
+        );
       case 'pause':
         return runMediaAction('pause', { action: 'pause' }, () => el && el.pause());
       case 'next':

@@ -1254,6 +1254,45 @@ export function onBrowserTitle(
   return listen<{ id: string; title: string }>('browser:title', (e) => cb(e.payload));
 }
 
+/** What the owning page reports about its media — the now-playing bar's input. */
+export interface BrowserMediaSnapshot {
+  /** The tab whose page owns the Windows media session. */
+  tab: string;
+  /** `none` is the explicit "nothing is playing, take the bar away". */
+  state: 'none' | 'paused' | 'playing';
+  title: string;
+  artist: string;
+  album: string;
+  /** Absolute artwork URL the page published, if any. */
+  artwork: string;
+  /** Seconds. */
+  position: number;
+  duration: number;
+  rate: number;
+  next: boolean;
+  prev: boolean;
+}
+
+/** A media report from the owning page; the bar redraws on each heartbeat. */
+export function onBrowserMedia(cb: (p: BrowserMediaSnapshot) => void): Promise<() => void> {
+  return listen<BrowserMediaSnapshot>('browser:media', (e) => cb(e.payload));
+}
+
+/** Current snapshot, so a bar that mounts after playback started still paints. */
+export function browserMediaState(): Promise<BrowserMediaSnapshot | null> {
+  if (!isTauri()) return Promise.resolve(null);
+  return invoke<BrowserMediaSnapshot | null>('browser_media_state').catch(() => null);
+}
+
+/** One transport action, forwarded into the owning page by Rust. */
+export function browserMediaAction(
+  action: 'play' | 'pause' | 'stop' | 'next' | 'prev' | 'seek',
+  value?: number
+): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_media_action', { action, value: value ?? null }).catch(() => {});
+}
+
 /**
  * Move the live webview onto the content rectangle the frontend measured
  * (`[data-focus="browser-content"]`). Keep this in an effect on the
