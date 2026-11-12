@@ -2195,3 +2195,63 @@ ek **suggestion** hai jo user ke haath me hai.
 sirf append hai.*
 
 ---
+---
+
+## M9. Deployment record — ye change desktop par hai
+
+> Ye hissa sirf record hai: kaunsa commit, kaunsa build, aur "live" hone ka
+> proof. Iske liye MD me kuch bhi badla nahi gaya — upar ka sara analysis
+> waise hi hai.
+
+| Fact | Value |
+| --- | --- |
+| Commit | `9145bf0b35797f0d133fa8c3551b86b1ba45cb5e` (branch `main`) |
+| Build id | `ci-9145bf0` |
+| CI run | https://github.com/engrtarun/T9EditorLIT/actions/runs/43165171369 |
+| App SHA-256 | `9ba23a931bd133c4ca657cfda424fd7042427bcbf9732f99511905087284d516` |
+| Daemon build | `go-166ca7871c23d13c` (SHA-256 `f966a43267f59f553cd916cdca6c85b1d9afe3d132366987e2e3102ef1569719`) |
+| Work order | `SARKARI-20261112-113142-8A8B` |
+| Scope | `both` (app + daemon) |
+| Install dir | `%LOCALAPPDATA%\Programs\T9EditorLIT\` |
+| Marker | `build.json` → `mode: installed`, `buildId: ci-9145bf0` |
+
+**Deploy ke do steps hue.** Pehle app chal raha tha, isliye naya binary
+`t9-editor-lit.new.exe` ke naam se **stage** hua aur user ke "Update" dabane
+ka wait hua. Update dabane par helper ne app **aur** daemon dono swap kiye
+(naye binary ka startup panic karta to 2 second me `.prev.exe` se rollback
+ho jaata) — marker ab `mode: installed` hai aur koi staged file pending nahi.
+
+**"Live" hone ke sabit (doctor + live calls):**
+
+```
+[ok] Live App Executable: PRESENT     SHA-256 9ba23a93…
+[ok] build.json Marker: PRESENT        mode: installed, buildId: ci-9145bf0
+[ok] Marker hash matches the installed executable.
+[ok] Rollback Shield (.prev.exe): READY for instant restore
+[ok] Staged Update: No pending staged file
+[ok] t9cloud Daemon: RUNNING on localhost:7878 (Version: go-166ca7871c23d13c)
+```
+
+Aur naye routes **chalu daemon par** jawab de rahe hain (ye 404 nahi, 502
+de rahe hain — matlab route maujood hai, bas test ka chunk path galat tha):
+
+```
+GET  /healthz              → ok=True  version=go-166ca7871c23d13c
+POST /v1/audio-profile     → HTTP 502 (route ne jawab diya)
+POST /v1/translate         → job id d9df5ca5…  kind=translate  state=queued
+```
+
+**Ek baat jo isse bhi important hai:** ye commit kisi aur agent ke
+ElevenLabs ensemble commit (`6171eb6`) ke **upar** rebase hua tha — dono ne
+`server.go`, `model.go`, `pipeline.ts` aur `app.css` chhede the. Do
+conflicts the, dono merge kiye: `model.go` me dono ke naye fields (`Engine`
++ `Music`/`Language`/`AudioProfile`) saath rahe, aur `server.go` me **meri
+pin state machine** rahi (unka "pehla chunk pin kare" wala rule uske jagah
+gaya — wahi baat thi jo M2 me B15 me likhi thi). Rebase ke baad poora Go
+suite aur poora frontend suite **dono** green.
+
+---
+
+**— deepseek** (opencode / minimax-m3.1-flash-free) · 2026-11-12
+*Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) — dono untouched. Ye part
+sirf append hai. Deployment record: commit `9145bf0`, build `ci-9145bf0`.*
