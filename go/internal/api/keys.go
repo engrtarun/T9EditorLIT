@@ -34,16 +34,19 @@ type keyState struct {
 	// ChatModel is Groq's autocorrect model — a separate switch, because
 	// transcription must keep working when only autocorrect is disabled.
 	ChatModel string `json:"chatModel,omitempty"`
+	// Count is how many accounts the ElevenLabs pool holds. The panel uses
+	// the richer /v1/keys/elevenlabs view; this keeps the flat key list honest.
+	Count int `json:"count,omitempty"`
 }
 
-// keyStates reports both providers under keysMu, so the list cannot disagree
+// keyStates reports the providers under keysMu, so the list cannot disagree
 // with what the pipeline handlers will actually use.
 func (s *Server) keyStates() []keyState {
 	s.keysMu.RLock()
 	defer s.keysMu.RUnlock()
 
 	cfg := s.deps.Config
-	out := make([]keyState, 0, 2)
+	out := make([]keyState, 0, 3)
 
 	groq := keyState{Service: "groq", Configured: cfg.GroqAPIKey != ""}
 	if groq.Configured {
@@ -58,7 +61,20 @@ func (s *Server) keyStates() []keyState {
 		gemini.Masked = maskKey(cfg.GeminiAPIKey)
 		gemini.Model = cfg.GeminiModel
 	}
-	return append(out, gemini)
+	out = append(out, gemini)
+
+	eleven := keyState{
+		Service:    "elevenlabs",
+		Configured: len(cfg.ElevenAPIKeys) > 0,
+		Model:      cfg.ElevenModel,
+		Count:      len(cfg.ElevenAPIKeys),
+	}
+	if eleven.Configured {
+		// The pool masks each key the same way; the flat list shows the first
+		// and a count, which is enough to recognise "which accounts exist".
+		eleven.Masked = maskKey(cfg.ElevenAPIKeys[0])
+	}
+	return append(out, eleven)
 }
 
 // handleKeysList answers GET /v1/keys.
@@ -76,7 +92,7 @@ func (s *Server) handleKeysSave(w http.ResponseWriter, r *http.Request) {
 	service := strings.ToLower(strings.TrimSpace(r.PathValue("service")))
 	if _, ok := config.ValidKeyService(service); !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "unknown service: use \"groq\" or \"gemini\"",
+			"error": "unknown service: use \"groq\", \"gemini\" or \"elevenlabs\"",
 		})
 		return
 	}
@@ -122,7 +138,7 @@ func (s *Server) handleKeysDelete(w http.ResponseWriter, r *http.Request) {
 	service := strings.ToLower(strings.TrimSpace(r.PathValue("service")))
 	if _, ok := config.ValidKeyService(service); !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "unknown service: use \"groq\" or \"gemini\"",
+			"error": "unknown service: use \"groq\", \"gemini\" or \"elevenlabs\"",
 		})
 		return
 	}
@@ -172,7 +188,43 @@ func (s *Server) applyKey(service, key string) {
 		client := cloud.NewGemini(key, cfg.GeminiModel, cloud.GeminiBaseURL)
 		cloud.WithUsage(client.HTTP, "gemini", usage)
 		s.deps.Gemini = client
+	case "elevenlabs":
+		// The value is the pool as one comma-joined list; "" clears it. The
+		// client rebuild reads the pool file back, so usage counts, cooldowns
+		// and disabled flags survive every swap (NewKeyPool → restore).
+		keys := parseKeyListValue(key)
+		cfg.ElevenAPIKeys = keys
+		if len(keys) == 0 {
+			s.deps.Eleven = nil
+			return
+		}
+		client := cloud.NewEleven(keys, cfg.ElevenModel, cloud.ElevenTranscribeURL, config.PoolPath(s.deps.EnvPath))
+		cloud.WithUsage(client.HTTP, "elevenlabs", usage)
+		s.deps.Eleven = client
 	}
+}
+
+// parseKeyListValue splits the overlay's comma-joined pool back into keys.
+// It tolerates newlines and stray semicolons for hand-edited values; empty
+// and duplicate entries are dropped, exactly like config-time parsing.
+func parseKeyListValue(joined string) []string {
+	fields := strings.FieldsFunc(joined, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	})
+	seen := make(map[string]struct{}, len(fields))
+	out := make([]string, 0, len(fields))
+	for _, k := range fields {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+	}
+	return out
 }
 
 // maskKey shows enough to recognise a credential and not enough to use it.

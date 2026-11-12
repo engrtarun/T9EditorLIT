@@ -76,11 +76,17 @@ class CloudStore {
     this.providers = this.providers.map((p) => {
       if (p.id === 'local') return p;
       if (p.id === 'groq') {
+        // Groq now has its OWN capability. `transcribe` means "some engine can
+        // transcribe" — which ElevenLabs being ready would make true even with
+        // no Groq key at all, lighting this card up for the wrong reason.
+        const ok = ready('transcribe_groq');
         return {
           ...p,
-          status: (ready('transcribe') ? 'connected' : 'disconnected') as ProviderStatus,
-          badge: ready('transcribe') ? 'Whisper Large v3' : undefined,
-          detail: ready('transcribe') ? p.detail : (caps.transcribe ?? 'transcription is not ready')
+          status: (ok ? 'connected' : 'disconnected') as ProviderStatus,
+          badge: ok ? 'Whisper Large v3' : undefined,
+          detail: ok
+            ? p.detail
+            : (caps.transcribe_groq ?? caps.transcribe ?? 'transcription is not ready')
         };
       }
       if (p.id === 'gemini') {

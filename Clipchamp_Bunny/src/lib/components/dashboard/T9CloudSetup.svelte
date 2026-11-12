@@ -2,14 +2,15 @@
   /**
    * THE T9 CLOUD PAGE — "Connect your workspace".
    *
-   * A central setup surface for the four services the rest of the app leans
-   * on: T9 Cloud (the local daemon), Gemini, Groq and Telegram. It sits over
+   * A central setup surface for the five services the rest of the app leans
+   * on: T9 Cloud (the local daemon), Gemini, Groq, ElevenLabs and Telegram. It
+   * sits over
    * the same background video as Home, with one restrained dark gradient
    * behind the content column so the forms stay readable — the footage is
    * never blurred, tinted or filtered, and stays visible toward the right.
    *
    * Rules this page keeps, straight from the spec and AGENTS.md:
-   *   · **Nothing here is fake.** The status pills and the "n of 4" progress
+   *   · **Nothing here is fake.** The status pills and the "n of 5" progress
    *     come from the daemon's real `/healthz` capabilities and the vault's
    *     real `/v1/vault/status`. A service reads "connected" only when the
    *     daemon says it can actually run it — never because a box is non-empty.
@@ -17,6 +18,11 @@
    *     (`ApiKeyCard`), so a dead key is reported as dead.
    *   · Telegram login is QR-only, matching the Go backend's design, and the
    *     modal never draws a decorative code.
+   *
+   * ElevenLabs counts in that progress like every other service, even though
+   * Groq alone can still transcribe: this page is the place the PRIMARY engine
+   * gets configured, and a progress bar that quietly omits it would let
+   * someone declare the workspace set up without ever meeting the pool.
    *
    * (The slowly-rotating phrase lives on the dashboard's "T9 Cloud" nav label
    * in `DashboardTopBar.svelte`, not here — so this page's own layout never
@@ -32,6 +38,7 @@
   import { fetchHealth, fetchVaultStatus, type CloudHealth, type VaultStatus } from '../../cloud';
   import ApiKeyCard from './ApiKeyCard.svelte';
   import ApiUsageGauge from './ApiUsageGauge.svelte';
+  import ElevenKeysPanel from './ElevenKeysPanel.svelte';
   import TelegramConnectModal from './TelegramConnectModal.svelte';
 
   /* -------------------------------------------------------- live daemon state */
@@ -54,11 +61,19 @@
     loading = false;
   }
 
-  /** Which of the four services the daemon reports as genuinely usable. */
+  /** Which of the five services the daemon reports as genuinely usable. */
   const ready = $derived({
     // A pipeline is usable when its capability string is exactly "ready".
+    //
+    // Per-engine capabilities, since ElevenLabs became the primary engine:
+    // `transcribe` now means "ANY engine can run" (a pool alone lights it),
+    // so the Groq card must ask for `transcribe_groq` or it would show
+    // "connected" from the pool's key alone.
     gemini: health?.cloud?.analyze === 'ready',
-    groq: health?.cloud?.transcribe === 'ready',
+    groq: health?.cloud?.transcribe_groq === 'ready',
+    eleven: health?.cloud?.transcribe_elevenlabs === 'ready',
+    // The ensemble line: both engines plus the Gemini reconciler are live.
+    ensemble: health?.cloud?.ensemble === 'ready',
     // Telegram is only "connected" when the stored session is authorised.
     telegram: vault?.authorised === true,
     // T9 Cloud itself is up when the daemon answered at all.
@@ -66,8 +81,15 @@
   });
 
   const configuredCount = $derived(
-    Number(ready.gemini) + Number(ready.groq) + Number(ready.telegram) + Number(ready.t9)
+    Number(ready.gemini) +
+      Number(ready.groq) +
+      Number(ready.eleven) +
+      Number(ready.telegram) +
+      Number(ready.t9)
   );
+
+  /** Fixed denominator — the count and the bar must never drift apart. */
+  const totalServices = 5;
 
   const daemonDown = $derived(health === null && !loading);
 
@@ -84,9 +106,9 @@
   /* ------------------------------------------------------------- completion */
 
   function completeSetup(): void {
-    // Honest: the button is enabled only when all four are ready, so this is
+    // Honest: the button is enabled only when all five are ready, so this is
     // a confirmation, not a claim that fixes anything.
-    if (configuredCount === 4) {
+    if (configuredCount === totalServices) {
       // Placeholder for the real "proceed" once the backend defines it.
     }
   }
@@ -130,11 +152,11 @@
         <div class="h-1.5 w-32 overflow-hidden rounded-full bg-nc-panel-2">
           <div
             class="h-full rounded-full bg-nc-brand transition-[width] duration-300 ease-out"
-            style="width:{(configuredCount / 4) * 100}%"
+            style="width:{(configuredCount / totalServices) * 100}%"
           ></div>
         </div>
         <span class="text-[12.5px] whitespace-nowrap text-nc-mut">
-          {i18n.t('cloud.progress', { done: configuredCount, total: 4 })}
+          {i18n.t('cloud.progress', { done: configuredCount, total: totalServices })}
           · {i18n.t('cloud.progressLabel')}
         </span>
       </div>
@@ -142,7 +164,7 @@
       <button
         type="button"
         onclick={completeSetup}
-        disabled={configuredCount !== 4}
+        disabled={configuredCount !== totalServices}
         class="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-nc-brand/50 bg-nc-brand/10
                px-3 py-1.5 text-[12.5px] font-medium text-nc-brand transition-[filter,background-color]
                duration-150 hover:bg-nc-brand/20 disabled:cursor-not-allowed disabled:opacity-50"
@@ -162,7 +184,7 @@
     </div>
 
     {#if daemonDown}
-      <!-- The daemon is not running: say so once, up top, instead of four
+      <!-- The daemon is not running: say so once, up top, instead of five
            confusing "not connected" cards with no explanation. -->
       <div
         class="mt-5 flex items-center gap-2.5 rounded-lg border border-nc-line bg-nc-panel/70 px-3.5 py-2.5
@@ -184,16 +206,24 @@
       </div>
     {/if}
 
-    <!-- the four service cards: two columns wide, one when narrow -->
+    <!-- the five service cards: two columns wide, one when narrow -->
     <div class="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
       <ApiKeyCard service="gemini" configured={ready.gemini} index={0} />
       <ApiKeyCard service="groq" configured={ready.groq} index={1} />
+
+      <!-- ElevenLabs account pool: full width, because the primary engine
+           carries a list of accounts (masked rows, quota, cooldowns), not one
+           field — and it is the surface where unlimited keys are added or
+           imported from an .env. -->
+      <div class="lg:col-span-2">
+        <ElevenKeysPanel configured={ready.eleven} ensemble={ready.ensemble} index={2} />
+      </div>
 
       <!-- Telegram MTProto -->
       <div
         class="t9-card-in flex flex-col rounded-xl border border-nc-line bg-nc-panel/70 p-4 backdrop-blur-md
                transition-[border-color,transform] duration-150 ease-out hover:-translate-y-0.5 hover:border-nc-line-2"
-        style="--i:2"
+        style="--i:3"
       >
         <div class="flex items-center gap-2.5">
           <span
@@ -264,7 +294,7 @@
       <div
         class="t9-card-in flex flex-col rounded-xl border border-nc-line bg-nc-panel/70 p-4 backdrop-blur-md
                transition-[border-color,transform] duration-150 ease-out hover:-translate-y-0.5 hover:border-nc-line-2"
-        style="--i:3"
+        style="--i:4"
       >
         <div class="flex items-center gap-2.5">
           <span

@@ -333,6 +333,37 @@ const en: Dict = {
   'cloud.configure': 'Configure',
   'cloud.setUp': 'Set up',
 
+  /* the ElevenLabs account pool — the primary transcriber */
+  'cloud.eleven.name': 'ElevenLabs Scribe',
+  'cloud.eleven.desc':
+    'The primary transcription engine — this pool of accounts carries every chunk. Keys rotate on their own and each free quota is spent evenly.',
+  'cloud.eleven.ensemble':
+    'Accuracy mode is live: ElevenLabs and Groq both read each chunk, Gemini reconciles them.',
+  'cloud.eleven.listLabel': 'ElevenLabs accounts',
+  'cloud.eleven.summary': '{total} accounts · {ready} ready · {cooling} cooling',
+  'cloud.eleven.loading': 'Reading the pool…',
+  'cloud.eleven.empty': 'No accounts yet — paste a key below, or import an .env that lists them.',
+  'cloud.eleven.state.ready': 'ready',
+  'cloud.eleven.state.cooldown': 'cooling',
+  'cloud.eleven.state.disabled': 'disabled',
+  'cloud.eleven.cooldown': 'cooling {wait}',
+  'cloud.eleven.quotaUsed': 'used',
+  'cloud.eleven.removeOne': 'Remove {key}',
+  'cloud.eleven.clearAll': 'Remove all accounts',
+  'cloud.eleven.keyLabel': 'Add an account',
+  'cloud.eleven.keyPlaceholder': 'Paste an ElevenLabs API key',
+  'cloud.eleven.add': 'Add key',
+  'cloud.eleven.needKey': 'Paste a key first.',
+  'cloud.eleven.added': 'Key works — the account joined the pool.',
+  'cloud.eleven.importLabel': 'Import from .env',
+  'cloud.eleven.importPlaceholder':
+    'Paste .env contents — ELEVENLABS_API_KEYS, GROQ_API_KEY and GEMINI_API_KEY are read.',
+  'cloud.eleven.import': 'Import',
+  'cloud.eleven.pickFile': 'Choose .env',
+  'cloud.eleven.needEnv': 'Paste the .env contents or choose a file first.',
+  'cloud.eleven.imported': '{added} added · {rejected} rejected · {duplicate} already in the pool',
+  'cloud.eleven.network': "Couldn't reach the daemon — the request failed.",
+
   'cloud.footer': 'Keys are used only to test each connection and are never uploaded.',
 
   /* -------------------------------------------------- api usage & limits */
@@ -669,6 +700,37 @@ const hinglish: Dict = {
   'cloud.scanQR': 'QR code scan karo',
   'cloud.configure': 'Configure karo',
   'cloud.setUp': 'Setup karo',
+
+  /* the ElevenLabs account pool — the primary transcriber */
+  'cloud.eleven.name': 'ElevenLabs Scribe',
+  'cloud.eleven.desc':
+    'Primary transcription engine — pool ke accounts har chunk uthate hain. Keys apni aap rotate hoti hain, free quota barabar kharch hota hai.',
+  'cloud.eleven.ensemble':
+    'Accuracy mode chalu: ElevenLabs aur Groq dono har chunk padhte hain, Gemini dono ko milata hai.',
+  'cloud.eleven.listLabel': 'ElevenLabs accounts',
+  'cloud.eleven.summary': '{total} accounts · {ready} ready · {cooling} cooling',
+  'cloud.eleven.loading': 'Pool padha ja raha hai…',
+  'cloud.eleven.empty': 'Abhi koi account nahi — neeche key paste karo, ya .env import kar lo.',
+  'cloud.eleven.state.ready': 'ready',
+  'cloud.eleven.state.cooldown': 'thoda ruka',
+  'cloud.eleven.state.disabled': 'band',
+  'cloud.eleven.cooldown': '{wait} baad',
+  'cloud.eleven.quotaUsed': 'used',
+  'cloud.eleven.removeOne': '{key} hatao',
+  'cloud.eleven.clearAll': 'Sab accounts hatao',
+  'cloud.eleven.keyLabel': 'Account add karo',
+  'cloud.eleven.keyPlaceholder': 'ElevenLabs API key paste karo',
+  'cloud.eleven.add': 'Key add karo',
+  'cloud.eleven.needKey': 'Pehle key paste karo.',
+  'cloud.eleven.added': 'Key kaam kar rahi — account pool me aa gaya.',
+  'cloud.eleven.importLabel': '.env se import',
+  'cloud.eleven.importPlaceholder':
+    '.env paste karo — ELEVENLABS_API_KEYS, GROQ_API_KEY aur GEMINI_API_KEY padhe jayenge.',
+  'cloud.eleven.import': 'Import karo',
+  'cloud.eleven.pickFile': '.env chuno',
+  'cloud.eleven.needEnv': 'Pehle .env paste karo ya file chuno.',
+  'cloud.eleven.imported': '{added} add · {rejected} reject · {duplicate} pehle se',
+  'cloud.eleven.network': 'Daemon tak nahi pahuncha — request fail ho gayi.',
 
   'cloud.footer': 'Keys sirf har connection test ke liye use hoti hain, kahin upload nahi hoti.',
 
@@ -1025,6 +1087,37 @@ const hi: Dict = {
   'cloud.scanQR': 'QR कोड स्कैन करें',
   'cloud.configure': 'कॉन्फ़िगर करें',
   'cloud.setUp': 'सेट करें',
+
+  /* the ElevenLabs account pool — the primary transcriber */
+  'cloud.eleven.name': 'ElevenLabs Scribe',
+  'cloud.eleven.desc':
+    'प्राथमिक ट्रांसक्रिप्शन इंजन — पूल के ये खाते हर चंक उठाते हैं. कुंजियाँ अपने आप घूमती हैं और फ्री कोटा बराबर खर्च होता है.',
+  'cloud.eleven.ensemble':
+    'एक्यूरेसी मोड चालू: ElevenLabs और Groq दोनों हर चंक पढ़ते हैं, Gemini दोनों को मिलाता है.',
+  'cloud.eleven.listLabel': 'ElevenLabs खाते',
+  'cloud.eleven.summary': '{total} खाते · {ready} तैयार · {cooling} ठंडे',
+  'cloud.eleven.loading': 'पूल पढ़ा जा रहा है…',
+  'cloud.eleven.empty': 'अभी कोई खाता नहीं — नीचे कुंजी पेस्ट करें या .env आयात करें.',
+  'cloud.eleven.state.ready': 'तैयार',
+  'cloud.eleven.state.cooldown': 'ठंडा',
+  'cloud.eleven.state.disabled': 'बंद',
+  'cloud.eleven.cooldown': '{wait} में फिर से',
+  'cloud.eleven.quotaUsed': 'इस्तेमाल',
+  'cloud.eleven.removeOne': '{key} हटाएँ',
+  'cloud.eleven.clearAll': 'सारे खाते हटाएँ',
+  'cloud.eleven.keyLabel': 'खाता जोड़ें',
+  'cloud.eleven.keyPlaceholder': 'ElevenLabs API कुंजी पेस्ट करें',
+  'cloud.eleven.add': 'कुंजी जोड़ें',
+  'cloud.eleven.needKey': 'पहले कुंजी पेस्ट करें.',
+  'cloud.eleven.added': 'कुंजी चालू — खाता पूल में जुड़ गया.',
+  'cloud.eleven.importLabel': '.env से आयात',
+  'cloud.eleven.importPlaceholder':
+    '.env पेस्ट करें — ELEVENLABS_API_KEYS, GROQ_API_KEY और GEMINI_API_KEY पढ़े जाते हैं.',
+  'cloud.eleven.import': 'आयात करें',
+  'cloud.eleven.pickFile': '.env चुनें',
+  'cloud.eleven.needEnv': 'पहले .env पेस्ट करें या फ़ाइल चुनें.',
+  'cloud.eleven.imported': '{added} जोड़े · {rejected} नकारे · {duplicate} पहले से',
+  'cloud.eleven.network': 'डेमन तक नहीं पहुँच सका — अनुरोध विफल रहा.',
 
   'cloud.footer':
     'कुंजियाँ केवल प्रत्येक कनेक्शन जाँचने के लिए उपयोग होती हैं, कहीं अपलोड नहीं होतीं.',

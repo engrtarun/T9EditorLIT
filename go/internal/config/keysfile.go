@@ -30,9 +30,13 @@ const KeysLocalName = "keys.local.env"
 
 // keyVars maps a service name the HTTP layer understands to the variable it
 // must set. Anything else is refused by SetKey rather than written.
+//
+// "elevenlabs" is a POOL: its variable holds a comma-joined list of keys, one
+// per account. The HTTP layer joins and splits it; this file only sees text.
 var keyVars = map[string]string{
-	"groq":   "GROQ_API_KEY",
-	"gemini": "GEMINI_API_KEY",
+	"groq":       "GROQ_API_KEY",
+	"gemini":     "GEMINI_API_KEY",
+	"elevenlabs": "ELEVENLABS_API_KEYS",
 }
 
 // ValidKeyService is the one place the HTTP layer's service names are
@@ -51,13 +55,24 @@ func KeysPath(envPath string) string {
 	return filepath.Join(filepath.Dir(envPath), KeysLocalName)
 }
 
+// PoolPath returns the key pool's stats file, beside the overlay. It is
+// "eleven.pool.json" by the same rule as KeysLocalName: the app has to find
+// it without asking anyone. The pool writes usage counts, cooldowns and key
+// health there, so rotating accounts keeps its memory across daemon restarts.
+func PoolPath(envPath string) string {
+	if envPath == "" {
+		return "eleven.pool.json"
+	}
+	return filepath.Join(filepath.Dir(envPath), "eleven.pool.json")
+}
+
 // SetKey saves a key for one service into the overlay and returns the file it
 // wrote. An empty key is refused here — clearing is ClearKey's job, so a
 // blank form field can never erase a working credential.
 func SetKey(envPath, service, key string) (string, error) {
 	name, ok := ValidKeyService(service)
 	if !ok {
-		return "", fmt.Errorf("unknown service %q (want groq or gemini)", service)
+		return "", fmt.Errorf("unknown service %q (want groq, gemini or elevenlabs)", service)
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -79,7 +94,7 @@ func SetKey(envPath, service, key string) (string, error) {
 func ClearKey(envPath, service string) (string, error) {
 	name, ok := ValidKeyService(service)
 	if !ok {
-		return "", fmt.Errorf("unknown service %q (want groq or gemini)", service)
+		return "", fmt.Errorf("unknown service %q (want groq, gemini or elevenlabs)", service)
 	}
 	path := KeysPath(envPath)
 	if err := writeOverlay(path, name, ""); err != nil {

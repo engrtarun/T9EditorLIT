@@ -22,6 +22,10 @@
   --color-nc-brand-dim: #2f5fc0;
   --color-nc-red: #e5484d;
   --color-nc-green: #3dd68c;
+  /* Semantic only: "waiting" states (a cooling key, a queue in backoff).
+     Not a brand colour — the brand board owns blue, green and red stay
+     pass/fail, and a muted amber is the one thing between them. */
+  --color-nc-amber: #e0a94f;
 
   --color-nc-txt: #f5f7fa;
   --color-nc-mut: #9aa3b5;

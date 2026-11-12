@@ -42,6 +42,10 @@ type Deps struct {
 	Queue  *queue.Queue
 	Groq   *cloud.GroqClient
 	Gemini *cloud.GeminiClient
+	// Eleven is the PRIMARY transcriber (a pool of ElevenLabs accounts).
+	// Nil means "no accounts configured", which is legal: transcription then
+	// runs on Groq alone.
+	Eleven *cloud.ElevenClient
 	Vault  *vault.Vault
 	DL     *dl.Manager
 	// UBlock keeps the browser's ad blocker unpacked and auto-updated.
@@ -139,6 +143,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/keys", s.handleKeysList)
 	s.mux.HandleFunc("PUT /v1/keys/{service}", s.handleKeysSave)
 	s.mux.HandleFunc("DELETE /v1/keys/{service}", s.handleKeysDelete)
+
+	// The ElevenLabs pool: multi-account CRUD with per-account health, an
+	// add flow that probes before it saves, and a .env importer. Exact paths
+	// win over the {service} wildcard above, so DELETE /v1/keys/elevenlabs
+	// clears the pool instead of running the single-key path (api/elevenkeys.go).
+	s.mux.HandleFunc("GET /v1/keys/elevenlabs", s.handleElevenKeysList)
+	s.mux.HandleFunc("POST /v1/keys/elevenlabs/add", s.handleElevenKeysAdd)
+	s.mux.HandleFunc("POST /v1/keys/elevenlabs/remove", s.handleElevenKeysRemove)
+	s.mux.HandleFunc("POST /v1/keys/elevenlabs/import", s.handleElevenKeysImport)
+	s.mux.HandleFunc("DELETE /v1/keys/elevenlabs", s.handleElevenKeysClear)
 
 	// Everything the rate-limit gauge draws: calls, tokens, latency and
 	// Groq's x-ratelimit-* headers, as observed (api/usage.go).
@@ -266,12 +280,13 @@ func (s *Server) handleNetSpeed(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
-	// Guard on the dependency that will actually be dereferenced, not on the
-	// config flag. Checking config alone leaves two sources of truth that can
-	// disagree, and the worker would panic on a nil client.
-	if s.groqClient() == nil {
+	// Guard on the dependencies that will actually be dereferenced, not on
+	// the config flags. Checking config alone leaves two sources of truth
+	// that can disagree, and the worker would panic on a nil client.
+	// ElevenLabs is primary, Groq the fallback: either one alone is enough.
+	if s.groqClient() == nil && s.elevenClient() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "transcription unavailable: GROQ_API_KEY is not set",
+			"error": "transcription unavailable: set ELEVENLABS_API_KEYS or GROQ_API_KEY",
 		})
 		return
 	}
@@ -613,11 +628,33 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 //     it, so names, jargon and spelling carry over the boundary instead of
 //     being re-guessed from silence.
 func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.TranscribeRequest) error {
-	// Read once: every chunk of this job goes to the same client, even if the
-	// user swaps the key while the transcription is running.
-	groq := s.groqClient()
-	if groq == nil {
-		return errors.New("groq client is not configured")
+	// Read once: every chunk of this job goes to the same clients, even if
+	// the user swaps a key while the transcription is running.
+	engines := transcribeEngines{
+		eleven: s.elevenClient(),
+		groq:   s.groqClient(),
+		gemini: s.geminiClient(),
+		mode:   s.transcribeMode(),
+	}
+	if engines.groq == nil && engines.eleven == nil {
+		return errors.New("no transcriber is configured")
+	}
+	if engines.mode == "accuracy" {
+		if engines.eleven != nil && engines.groq != nil && engines.gemini != nil {
+			s.deps.Log.Info("ensemble transcription",
+				"job", jobID, "mode", "accuracy",
+				"primary", "elevenlabs", "secondary", "groq", "reconciler", engines.gemini.Model)
+		} else {
+			// Accuracy mode with one engine or no reconciler degrades
+			// silently per chunk; the log line keeps the run explainable.
+			s.deps.Log.Info("transcription running",
+				"job", jobID, "mode", "accuracy",
+				"elevenlabs", engines.eleven != nil,
+				"groq", engines.groq != nil,
+				"gemini", engines.gemini != nil)
+		}
+	} else {
+		s.deps.Log.Info("transcription running", "job", jobID, "mode", "fast")
 	}
 	s.store.start(jobID)
 
@@ -662,8 +699,7 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 			prompt = hint
 		}
 
-		res, err := groq.TranscribeChunkResult(
-			ctx, chunk.Path, chunk.OffsetSecs, language, prompt)
+		res, engine, err := s.transcribeChunk(ctx, engines, chunk.Path, chunk.OffsetSecs, language, prompt)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", filepath.Base(chunk.Path), err))
 			failedIdx = append(failedIdx, i)
@@ -674,18 +710,21 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 			s.store.progressTranscribe(jobID, i+1, len(merged), tailLine(merged))
 			continue
 		}
+		if engine != "" {
+			s.store.noteEngine(jobID, engine)
+		}
 
 		okChunks++
 
 		if language == "" && res.Language != "" {
 			if code := cloud.NormalizeLanguage(res.Language); code != "" {
 				language = code
-				s.deps.Log.Info("whisper language pinned",
-					"job", jobID, "reported", res.Language, "code", code)
+				s.deps.Log.Info("language pinned",
+					"job", jobID, "engine", engine, "reported", res.Language, "code", code)
 			} else {
-				// Unknown display name: keep auto-detecting per chunk. No pin
+				// Unknown language value: keep auto-detecting per chunk. No pin
 				// is a small inconsistency; a bad pin is nine lost chunks.
-				s.deps.Log.Warn("whisper language could not be mapped to a code - not pinning",
+				s.deps.Log.Warn("language could not be mapped to a code - not pinning",
 					"job", jobID, "reported", res.Language)
 			}
 		}
@@ -741,6 +780,112 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 	s.store.setFailedChunks(jobID, failedIdx)
 	s.store.succeed(jobID, merged, nil, failures)
 	return nil
+}
+
+// transcribeEngines is the per-job set of clients plus the mode that decides
+// how they cooperate. Resolved once before the chunk loop, so a key swap
+// mid-job can never split one video across two policies.
+type transcribeEngines struct {
+	eleven *cloud.ElevenClient
+	groq   *cloud.GroqClient
+	gemini *cloud.GeminiClient
+	mode   string // "accuracy" | "fast"
+}
+
+// transcribeChunk produces one chunk's transcript from whatever engines are
+// alive, under the job's mode:
+//
+//	accuracy (default): ElevenLabs (primary) and Groq (secondary) transcribe
+//	  the chunk CONCURRENTLY and Gemini reconciles the two readings; any
+//	  missing piece degrades to the next-best output (merge fail → primary
+//	  text, ElevenLabs fail → Groq, both fail → error).
+//	fast: one engine — ElevenLabs when a pool key is usable, Groq otherwise.
+//
+// The returned engine string is telemetry: it names what actually produced
+// this chunk, so a "why is my transcript like this" question has an answer.
+func (s *Server) transcribeChunk(
+	ctx context.Context,
+	e transcribeEngines,
+	chunkPath string,
+	offsetSecs float64,
+	language string,
+	prompt string,
+) (cloud.ChunkTranscript, string, error) {
+
+	// Single-engine path: fast mode, or accuracy degraded because one of the
+	// ensemble pieces (secondary reading, reconciler) is not configured.
+	// ElevenLabs is tried first — primary — and Groq takes the chunk only if
+	// the pool could not produce a reading.
+	if e.eleven != nil && (e.mode != "accuracy" || e.groq == nil || e.gemini == nil) {
+		res, err := e.eleven.TranscribeChunkResult(ctx, chunkPath, offsetSecs, language, prompt)
+		if err == nil {
+			return res, "elevenlabs", nil
+		}
+		if e.groq == nil {
+			// No secondary exists; the pool error is the honest answer.
+			return cloud.ChunkTranscript{}, "", err
+		}
+		res2, err2 := e.groq.TranscribeChunkResult(ctx, chunkPath, offsetSecs, language, prompt)
+		if err2 != nil {
+			return cloud.ChunkTranscript{}, "", fmt.Errorf("elevenlabs: %v; groq: %v", err, err2)
+		}
+		return res2, "groq (fallback)", nil
+	}
+
+	// Groq-only: the behaviour this pipeline had before the pool existed.
+	if e.eleven == nil {
+		if e.groq == nil {
+			return cloud.ChunkTranscript{}, "", errors.New("no transcriber is configured")
+		}
+		res, err := e.groq.TranscribeChunkResult(ctx, chunkPath, offsetSecs, language, prompt)
+		return res, "groq", err
+	}
+
+	// accuracy with both engines: run them at once. The two uploads are
+	// independent, so the wall-clock cost of the second reading is nearly
+	// free on a home connection that is upload-bound anyway.
+	type reading struct {
+		ct  cloud.ChunkTranscript
+		err error
+	}
+	var elevenR, groqR reading
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		elevenR.ct, elevenR.err = e.eleven.TranscribeChunkResult(ctx, chunkPath, offsetSecs, language, prompt)
+	}()
+	go func() {
+		defer wg.Done()
+		groqR.ct, groqR.err = e.groq.TranscribeChunkResult(ctx, chunkPath, offsetSecs, language, prompt)
+	}()
+	wg.Wait()
+
+	// The pool came back empty or fully cooled: Groq's reading IS the answer.
+	if elevenR.err != nil {
+		if groqR.err != nil {
+			return cloud.ChunkTranscript{}, "", fmt.Errorf("elevenlabs: %v; groq: %v", elevenR.err, groqR.err)
+		}
+		return groqR.ct, "groq (fallback)", nil
+	}
+	// Primary succeeded but the secondary failed: the primary alone is still
+	// a valid transcript — the merge was the upgrade, not the requirement.
+	if groqR.err != nil {
+		return elevenR.ct, "elevenlabs", nil
+	}
+
+	// Both readings exist. Gemini reconciles; a merge failure degrades to the
+	// primary text so a Gemini outage can never cost a chunk.
+	if e.gemini == nil {
+		return elevenR.ct, "elevenlabs", nil
+	}
+	merged, err := e.gemini.MergeChunkTranscripts(ctx, offsetSecs, elevenR.ct, groqR.ct)
+	if err != nil || len(merged) == 0 {
+		s.deps.Log.Debug("gemini merge degraded to primary",
+			"chunk", filepath.Base(chunkPath), "err", err)
+		return elevenR.ct, "elevenlabs", nil
+	}
+	return cloud.ChunkTranscript{Segments: merged, Language: elevenR.ct.Language}, "elevenlabs+groq+gemini", nil
 }
 
 // transcriptTail returns the last `max` characters of the transcript so far.
@@ -866,10 +1011,11 @@ func (s *Server) runAnalyze(ctx context.Context, jobID string, req model.Analyze
 
 // ── Client access ───────────────────────────────────────────────────────
 
-// groqClient, geminiClient and capabilities are the only sanctioned reads of
-// deps.Groq / deps.Gemini / the config flags behind them. A key saved from the
-// UI replaces the client pointer and the config field under keysMu, so any
-// handler that read the field directly would race with a save.
+// groqClient, geminiClient, elevenClient and capabilities are the only
+// sanctioned reads of deps.Groq / deps.Gemini / deps.Eleven / the config
+// flags behind them. A key saved from the UI replaces the client pointer and
+// the config field under keysMu, so any handler that read the field directly
+// would race with a save.
 func (s *Server) groqClient() *cloud.GroqClient {
 	s.keysMu.RLock()
 	defer s.keysMu.RUnlock()
@@ -880,6 +1026,24 @@ func (s *Server) geminiClient() *cloud.GeminiClient {
 	s.keysMu.RLock()
 	defer s.keysMu.RUnlock()
 	return s.deps.Gemini
+}
+
+func (s *Server) elevenClient() *cloud.ElevenClient {
+	s.keysMu.RLock()
+	defer s.keysMu.RUnlock()
+	return s.deps.Eleven
+}
+
+// transcribeMode reads the engine policy once per job: "accuracy" runs both
+// transcribers and lets Gemini reconcile them; "fast" runs one. Any other
+// value degrades to accuracy, the default.
+func (s *Server) transcribeMode() string {
+	s.keysMu.RLock()
+	defer s.keysMu.RUnlock()
+	if s.deps.Config.TranscribeMode == "fast" {
+		return "fast"
+	}
+	return "accuracy"
 }
 
 func (s *Server) capabilities() map[string]string {

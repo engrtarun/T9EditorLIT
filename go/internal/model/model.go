@@ -193,6 +193,12 @@ type Job struct {
 	// result, not a failure, and the UI must not offer a pointless retry loop.
 	NoSpeech bool `json:"no_speech,omitempty"`
 
+	// Engine names what actually produced this transcript — "elevenlabs",
+	// "groq", or "elevenlabs+groq+gemini" for a reconciled ensemble chunk.
+	// Telemetry, not control: the UI records it with the job's outcome so a
+	// quality question has something to point at.
+	Engine string `json:"engine,omitempty"`
+
 	// Transcript is populated for transcribe jobs.
 	Transcript []Segment `json:"transcript,omitempty"`
 	// Corrected is populated for correct jobs — the same lines with their

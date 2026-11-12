@@ -230,6 +230,137 @@ async function verdict(res: Response): Promise<ProbeResult> {
   }
 }
 
+/* ------------------------------------------- ElevenLabs account pool */
+
+/**
+ * `cloud.KeyStatus` from the pool endpoints, camelCased.
+ *
+ * The daemon never returns a key — `id` is a stable hash the remove call
+ * takes back, `masked` is enough to recognise the account, and `state` is
+ * what the scheduler decided: `ready` · `cooldown` · `disabled`.
+ */
+export interface ElevenKeyStatus {
+  id: string;
+  masked: string;
+  state: 'ready' | 'cooldown' | 'disabled';
+  uses: number;
+  cooldownSecs?: number;
+  lastError?: string;
+  /** Quota snapshot from the last probe: "62% of this month used". */
+  tier?: string;
+  quotaUsed?: number;
+  quotaLimit?: number;
+}
+
+export interface ElevenKeysResult {
+  keys: ElevenKeyStatus[];
+  /** The daemon's one-line note on the last action ("key was already..."). */
+  note?: string;
+}
+
+export type ElevenAction = ({ ok: true } & ElevenKeysResult) | { ok: false; detail: string };
+
+/** Read the whole pool. `null` when the daemon is down or predates the routes. */
+export async function fetchElevenKeys(): Promise<ElevenKeysResult | null> {
+  const res = await withTimeout(`${DAEMON}/v1/keys/elevenlabs`);
+  if (!res || !res.ok) return null;
+  try {
+    const raw = (await res.json()) as Record<string, unknown>;
+    return snakeToCamel<ElevenKeysResult>(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Probe a key and add it to the pool for real in one call.
+ *
+ * A key the provider rejects gets a 400 with the probe's sentence and changes
+ * nothing on disk — a typo can never enter the pool. A good key lands in the
+ * overlay and hot-swaps the live client, so the next chunk uses it.
+ */
+export async function addElevenKey(key: string): Promise<ElevenAction> {
+  const res = await withTimeout(`${DAEMON}/v1/keys/elevenlabs/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key })
+  });
+  return elevenVerdict(res);
+}
+
+/** Drop one account by its public id (the hash the list gave the UI). */
+export async function removeElevenKey(id: string): Promise<ElevenAction> {
+  const res = await withTimeout(`${DAEMON}/v1/keys/elevenlabs/remove`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  });
+  return elevenVerdict(res);
+}
+
+/** Clear the pool entirely. The overlay records the explicit empty value. */
+export async function clearElevenKeys(): Promise<ElevenAction> {
+  const res = await withTimeout(`${DAEMON}/v1/keys/elevenlabs`, { method: 'DELETE' });
+  return elevenVerdict(res);
+}
+
+export interface ElevenImportResult {
+  /** Masked keys that joined the pool. */
+  added: string[];
+  /** Masked keys the provider rejected — partial success is normal. */
+  rejected: string[];
+  /** How many were already in the pool (their quota snapshot was refreshed). */
+  duplicate: number;
+  /** The same file's Groq/Gemini keys were saved to their overlays too. */
+  groqUpdated: boolean;
+  geminiUpdated: boolean;
+}
+
+/**
+ * Import keys from an .env the user pastes (or points at).
+ *
+ * Only three variables are read — ELEVENLABS_API_KEYS, GROQ_API_KEY and
+ * GEMINI_API_KEY — because a secrets import must never become a general
+ * config import. Every candidate ElevenLabs key is probed first; the ones the
+ * provider rejects are reported per key and never fail the batch.
+ */
+export async function importElevenEnv(req: {
+  content?: string;
+  path?: string;
+}): Promise<{ ok: true; result: ElevenImportResult } | { ok: false; detail: string }> {
+  const res = await withTimeout(`${DAEMON}/v1/keys/elevenlabs/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    // The daemon requires at least one of the two; send only what was given.
+    body: JSON.stringify({
+      ...(req.content ? { content: req.content } : {}),
+      ...(req.path ? { path: req.path } : {})
+    })
+  });
+  if (!res) return { ok: false, detail: 'unavailable' };
+  if (res.status === 404) return { ok: false, detail: 'unavailable' };
+  try {
+    const body = (await res.json()) as Record<string, unknown>;
+    if (!res.ok) return { ok: false, detail: (body.error as string) ?? 'unavailable' };
+    return { ok: true, result: snakeToCamel<ElevenImportResult>(body) };
+  } catch {
+    return { ok: false, detail: 'network' };
+  }
+}
+
+/** Turn a pool mutation's answer into the panel's two outcomes. */
+async function elevenVerdict(res: Response | null): Promise<ElevenAction> {
+  if (!res) return { ok: false, detail: 'unavailable' };
+  if (res.status === 404) return { ok: false, detail: 'unavailable' };
+  try {
+    const raw = (await res.json()) as Record<string, unknown>;
+    if (!res.ok) return { ok: false, detail: (raw.error as string) ?? 'unavailable' };
+    return { ok: true, ...snakeToCamel<ElevenKeysResult>(raw) };
+  } catch {
+    return { ok: false, detail: 'network' };
+  }
+}
+
 /* --------------------------------------------------------------- usage */
 
 /** Groq's rate-limit headers, verbatim. Absent fields mean "did not say". */
@@ -289,11 +420,13 @@ export interface CallSummary {
 
 /** What is configured, as far as the UI may ever know: never the key itself. */
 export interface KeyState {
-  service: 'gemini' | 'groq';
+  service: 'gemini' | 'groq' | 'elevenlabs';
   configured: boolean;
   masked?: string;
   model?: string;
   chatModel?: string;
+  /** ElevenLabs only: how many accounts the pool holds. */
+  count?: number;
 }
 
 export interface UsageResponse {

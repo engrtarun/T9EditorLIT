@@ -78,6 +78,15 @@ export interface CloudJob {
    * chunks are already paid for and already on disk.
    */
   failed_chunks?: number[];
+  /**
+   * Which engine actually produced the transcript — "elevenlabs",
+   * "elevenlabs+groq+gemini", "groq", "groq (fallback)".
+   *
+   * Stamped by the daemon (`noteEngine`), never guessed here: the telemetry
+   * must report what ran, not what the config asked for. Absent on old jobs,
+   * so every read has a fallback.
+   */
+  engine?: string;
 }
 
 /**
@@ -262,6 +271,10 @@ export async function runTranscription(
   // engine writes it fire-and-forget, nothing here waits on SQLite.
   const audioSecs = chunks.reduce((sum, c) => sum + (c.durationSecs || 0), 0);
   const t0 = Date.now();
+  // The engine the daemon reports for THIS run. Hoisted so the `catch` path can
+  // still name it — a failed ElevenLabs run blamed on "groq" would poison the
+  // telemetry that tells us which engine is actually hurting.
+  let engine = 'groq';
   try {
     const created = await post<CloudJob>('/v1/transcribe', {
       source_path: sourcePath,
@@ -276,6 +289,7 @@ export async function runTranscription(
       ...(opts.prompt ? { prompt: opts.prompt } : {})
     });
     const done = await waitJob(created.id, onProgress);
+    engine = done.engine ?? engine;
     // A music-only video reaches here `done` with an empty transcript: every
     // chunk was read and none held words. A generic error would send the user
     // into a retry loop that can never converge, so it gets its own class and
@@ -284,7 +298,7 @@ export async function runTranscription(
       logTranscriptionJob(
         sourcePath,
         'done',
-        'groq',
+        engine,
         audioSecs,
         'no speech detected',
         (Date.now() - t0) / 1000
@@ -308,7 +322,7 @@ export async function runTranscription(
     logTranscriptionJob(
       sourcePath,
       done.state === 'partial' ? 'partial' : 'done',
-      'groq',
+      engine,
       audioSecs,
       done.error ?? '',
       (Date.now() - t0) / 1000
@@ -326,7 +340,7 @@ export async function runTranscription(
       logTranscriptionJob(
         sourcePath,
         'failed',
-        'groq',
+        engine,
         audioSecs,
         String(e),
         (Date.now() - t0) / 1000

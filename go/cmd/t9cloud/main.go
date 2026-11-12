@@ -129,7 +129,7 @@ func run() error {
 		// Every call after this goes through the recorder: latency, tokens and
 		// Groq's x-ratelimit-* headers are what GET /v1/usage reports.
 		cloud.WithUsage(deps.Groq.HTTP, "groq", usage)
-		log.Info("transcription ready", "model", cfg.GroqTranscribe)
+		log.Info("groq transcriber ready", "model", cfg.GroqTranscribe)
 		if cfg.GroqChat != "" {
 			log.Info("autocorrect ready", "model", cfg.GroqChat)
 		} else {
@@ -137,7 +137,22 @@ func run() error {
 				"reason", "GROQ_CHAT_MODEL not set; transcript keeps Whisper's spelling")
 		}
 	} else {
-		log.Warn("transcription disabled", "reason", "GROQ_API_KEY not set")
+		log.Warn("groq transcriber disabled", "reason", "GROQ_API_KEY not set")
+	}
+
+	// ElevenLabs is the PRIMARY transcriber; Groq above is the secondary. The
+	// pool file lives beside the keys overlay, so cooldowns and usage counts
+	// survive a restart — that is the whole memory the quota rotation needs.
+	if cfg.HasEleven() {
+		deps.Eleven = cloud.NewEleven(cfg.ElevenAPIKeys, cfg.ElevenModel, cloud.ElevenTranscribeURL, config.PoolPath(*envPath))
+		cloud.WithUsage(deps.Eleven.HTTP, "elevenlabs", usage)
+		log.Info("elevenlabs transcriber ready (primary)",
+			"model", cfg.ElevenModel,
+			"accounts", len(cfg.ElevenAPIKeys),
+			"mode", cfg.TranscribeMode)
+	} else {
+		log.Warn("elevenlabs transcriber disabled",
+			"reason", "ELEVENLABS_API_KEYS not set; transcription runs on Groq alone")
 	}
 
 	if cfg.HasGemini() {

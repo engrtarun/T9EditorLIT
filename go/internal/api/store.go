@@ -90,6 +90,15 @@ func (s *jobStore) setFailedChunks(id string, indices []int) {
 	})
 }
 
+// noteEngine records which engine produced a chunk. The last writer wins:
+// mixed jobs carry the most specific name ("elevenlabs+groq+gemini" beats a
+// plain fallback), which is the answer a quality question actually needs.
+func (s *jobStore) noteEngine(id, engine string) {
+	s.mutate(id, func(j *model.Job) {
+		j.Engine = engine
+	})
+}
+
 // advance records progress within a running job.
 func (s *jobStore) advance(id string, n int) {
 	s.mutate(id, func(j *model.Job) {

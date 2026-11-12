@@ -8,6 +8,7 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -38,9 +39,25 @@ type Config struct {
 	// GroqChat is the text model behind transcript autocorrect. Empty disables
 	// the pass; the transcript still arrives, just with Whisper's spelling.
 	GroqChat string
+	// ElevenAPIKeys are the ElevenLabs accounts behind the primary transcriber.
+	//
+	// There is deliberately a LIST: free accounts carry a monthly quota, so the
+	// pool rotates across as many accounts as the user pastes (the UI keeps
+	// them in the keys.local.env overlay, comma-joined into one variable).
+	// Empty means ElevenLabs is out and transcription runs Groq-only.
+	ElevenAPIKeys []string
+	// ElevenModel is the ElevenLabs STT model id (scribe_v1, scribe_v2, ...).
+	ElevenModel string
 	// GeminiAPIKey and friends enable the analysis pipeline.
 	GeminiAPIKey string
 	GeminiModel  string
+	// TranscribeMode selects how the two transcribers cooperate:
+	//
+	//   "accuracy" (default) — both ElevenLabs AND Groq transcribe every chunk
+	//     and Gemini reconciles the two readings into one best transcript.
+	//   "fast" — a single engine per chunk: ElevenLabs when its pool has a
+	//     usable key, Groq otherwise.
+	TranscribeMode string
 	// Telegram credentials enable the Chunk 5 vault.
 	TelegramAPIID   int
 	TelegramAPIHash string
@@ -123,8 +140,11 @@ func Load(envPath string) (*Config, error) {
 		GroqTranscribe:      pick(get("GROQ_TRANSCRIBE_MODEL"), "whisper-large-v3"),
 		GroqMaxChunkMB:      pickInt(get("GROQ_MAX_CHUNK_MB"), 15),
 		GroqChat:            get("GROQ_CHAT_MODEL"),
+		ElevenAPIKeys:       parseKeyList(key("ELEVENLABS_API_KEYS")),
+		ElevenModel:         pick(get("ELEVENLABS_STT_MODEL"), "scribe_v1"),
 		GeminiAPIKey:        key("GEMINI_API_KEY"),
 		GeminiModel:         pick(get("GEMINI_MODEL"), "gemini-2.5-flash"),
+		TranscribeMode:      normalizeMode(get("TRANSCRIBE_MODE")),
 		TelegramAPIID:       pickInt(get("TELEGRAM_API_ID"), 0),
 		TelegramAPIHash:     get("TELEGRAM_API_HASH"),
 		TelegramChat:        get("TELEGRAM_TARGET_CHAT"),
@@ -155,8 +175,15 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// HasGroq reports whether transcription is usable.
+// HasGroq reports whether the Groq transcriber is usable.
 func (c *Config) HasGroq() bool { return c.GroqAPIKey != "" }
+
+// HasEleven reports whether the ElevenLabs pool has at least one account.
+func (c *Config) HasEleven() bool { return len(c.ElevenAPIKeys) > 0 }
+
+// HasAnyTranscriber reports whether transcription can run at all. ElevenLabs
+// is the primary engine and Groq the secondary; either one alone is enough.
+func (c *Config) HasAnyTranscriber() bool { return c.HasGroq() || c.HasEleven() }
 
 // HasAutocorrect reports whether the spelling pass can run.
 //
@@ -180,9 +207,19 @@ func (c *Config) HasTelegram() bool {
 func (c *Config) HasTelegramChat() bool { return c.TelegramChat != "" }
 
 // Capabilities describes which pipelines are live, for GET /healthz.
+//
+// "transcribe" keeps its whole-pipeline meaning — "a transcript can be
+// produced at all" — because the app's transcribe button depends on it. The
+// per-engine entries let the UI show each card's own truth instead of one
+// merged answer.
 func (c *Config) Capabilities() map[string]string {
 	out := map[string]string{}
-	out["transcribe"] = status(c.HasGroq(), "ready", "GROQ_API_KEY not set")
+	out["transcribe"] = status(c.HasAnyTranscriber(), "ready",
+		"GROQ_API_KEY / ELEVENLABS_API_KEYS not set")
+	out["transcribe_groq"] = status(c.HasGroq(), "ready", "GROQ_API_KEY not set")
+	out["transcribe_elevenlabs"] = status(c.HasEleven(), "ready", "ELEVENLABS_API_KEYS not set")
+	out["ensemble"] = status(c.HasEleven() && c.HasGroq() && c.HasGemini(), "ready",
+		"needs ELEVENLABS_API_KEYS + GROQ_API_KEY + GEMINI_API_KEY")
 	out["autocorrect"] = status(c.HasAutocorrect(), "ready", "GROQ_CHAT_MODEL not set")
 	out["analyze"] = status(c.HasGemini(), "ready", "GEMINI_API_KEY not set")
 	out["vault"] = status(c.HasTelegram(), "ready", "TELEGRAM_API_ID / API_HASH not set")
@@ -221,12 +258,21 @@ func readEnvFile(path string) (map[string]string, error) {
 	}
 	defer f.Close()
 
+	raw, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return ParseEnvText(string(raw)), nil
+}
+
+// ParseEnvText parses dotenv text (an in-memory .env). It understands the same
+// format as a file on disk: blank lines, # comments, `export KEY=v`, and
+// matching single or double quotes around the value.
+func ParseEnvText(content string) map[string]string {
 	vars := map[string]string{}
-	sc := bufio.NewScanner(f)
-	line := 0
+	sc := bufio.NewScanner(strings.NewReader(content))
 
 	for sc.Scan() {
-		line++
 		raw := strings.TrimSpace(sc.Text())
 		if raw == "" || strings.HasPrefix(raw, "#") {
 			continue
@@ -250,10 +296,7 @@ func readEnvFile(path string) (map[string]string, error) {
 		vars[key] = val
 	}
 
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("read %s (line %d): %w", path, line, err)
-	}
-	return vars, nil
+	return vars
 }
 
 func isLoopback(addr string) bool {
@@ -268,6 +311,55 @@ func isLoopback(addr string) bool {
 		return true
 	default:
 		return strings.HasPrefix(host, "127.")
+	}
+}
+
+// parseKeyList splits one env value into a pool of API keys.
+//
+// Ten accounts pasted as a single comma-joined variable is the format the UI
+// writes and the format a hand-edited .env naturally produces. Separators are
+// commas, semicolons and newlines; whitespace around each key is trimmed;
+// duplicates are dropped (order preserved) because a repeated key would just
+// double-spend one account's quota. The cap exists so a pasted blob can never
+// balloon the pool beyond what the heap and the pool file expect.
+func parseKeyList(raw string) []string {
+	const maxKeys = 64
+
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	})
+
+	out := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, k := range fields {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+		if len(out) >= maxKeys {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// normalizeMode accepts the TRANSCRIBE_MODE value case-insensitively and
+// defaults to "accuracy": both engines per chunk with a Gemini reconciliation,
+// which is the point of carrying two transcribers at all.
+func normalizeMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "fast":
+		return "fast"
+	default:
+		return "accuracy"
 	}
 }
 

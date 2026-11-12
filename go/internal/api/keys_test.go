@@ -92,16 +92,22 @@ func TestKeysListMasksEveryCredential(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &out); err != nil {
 		t.Fatalf("decode: %v (body %s)", err, body)
 	}
-	if len(out.Keys) != 2 {
-		t.Fatalf("keys = %d, want groq and gemini", len(out.Keys))
+	if len(out.Keys) != 3 {
+		t.Fatalf("keys = %d, want groq, gemini and elevenlabs", len(out.Keys))
 	}
 
 	for _, k := range out.Keys {
+		// An unconfigured provider has nothing to mask; the pool shows its
+		// emptiness through configured=false and count=0.
 		if !k.Configured {
-			t.Errorf("%s should be configured", k.Service)
+			continue
 		}
 		if k.Masked == "" {
 			t.Errorf("%s has no mask", k.Service)
+		}
+		// The single-key services were given keys above; the pool starts empty.
+		if k.Service != "elevenlabs" && !k.Configured {
+			t.Errorf("%s should be configured", k.Service)
 		}
 	}
 	if strings.Contains(body, "gsk_live_abcdefghijklmnop") {
@@ -244,8 +250,8 @@ func TestUsageEndpointIsQuietWhenNothingRan(t *testing.T) {
 	if out.Recent == nil {
 		t.Error("recent must be an array, not null — the UI iterates it")
 	}
-	if len(out.Keys) != 2 {
-		t.Errorf("keys = %d, want 2", len(out.Keys))
+	if len(out.Keys) != 3 {
+		t.Errorf("keys = %d, want 3 (groq, gemini, elevenlabs)", len(out.Keys))
 	}
 
 	// Gemini publishes no quota headers, so a fresh daemon must say

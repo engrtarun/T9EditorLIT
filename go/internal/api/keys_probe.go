@@ -12,6 +12,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -61,14 +62,31 @@ func (s *Server) handleKeysProbe(w http.ResponseWriter, r *http.Request) {
 		} else {
 			res = s.geminiClient().Probe(r.Context(), req.Key)
 		}
+	case "elevenlabs":
+		// A probe proves the key under test, not the pool — so a bare client
+		// works even when no account is configured yet. This is the exact
+		// call the add-flow runs first.
+		eleven := s.elevenClient()
+		if eleven == nil {
+			eleven = cloud.NewEleven(nil, "", "", "")
+		}
+		probe := eleven.Probe(r.Context(), req.Key)
+		res = probe.ProbeResult
+		if probe.OK && probe.Tier != "" {
+			quota := fmt.Sprintf(" (%s account, quota %d/%d)", probe.Tier, probe.QuotaUsed, probe.QuotaLimit)
+			if probe.QuotaLimit <= 0 {
+				quota = " (" + probe.Tier + " account)"
+			}
+			res.Detail = strings.TrimSuffix(res.Detail, " account") + quota
+		}
 	case "":
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "service is required: \"groq\" or \"gemini\"",
+			"error": "service is required: \"groq\", \"gemini\" or \"elevenlabs\"",
 		})
 		return
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "unknown service " + req.Service + ", use \"groq\" or \"gemini\"",
+			"error": "unknown service " + req.Service + ", use \"groq\", \"gemini\" or \"elevenlabs\"",
 		})
 		return
 	}
