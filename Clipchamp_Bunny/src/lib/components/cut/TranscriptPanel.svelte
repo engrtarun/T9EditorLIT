@@ -620,10 +620,16 @@
             {#if isTauri()}
               <button
                 onclick={() => void project.generateTranscript()}
+                disabled={project.planRunning}
                 class="mt-3 rounded-lg bg-nc-brand px-3 py-1.5 text-[12.5px] font-semibold
-                       text-white transition-[filter] duration-150 hover:brightness-110"
+                       text-white transition-[filter] duration-150 hover:brightness-110
+                       disabled:cursor-progress disabled:opacity-70"
               >
-                Phir bhi try karo
+                {#if project.planRunning}
+                  … shuru ho raha hai
+                {:else}
+                  Phir bhi try karo
+                {/if}
               </button>
             {/if}
           </div>
@@ -640,10 +646,16 @@
             {#if isTauri()}
               <button
                 onclick={() => void project.generateTranscript()}
+                disabled={project.planRunning}
                 class="mt-3 rounded-lg bg-nc-brand px-3 py-1.5 text-[12.5px] font-semibold
-                       text-white transition-[filter] duration-150 hover:brightness-110"
+                       text-white transition-[filter] duration-150 hover:brightness-110
+                       disabled:cursor-progress disabled:opacity-70"
               >
-                {project.loadError ? 'Dobara try karo' : 'Transcript generate karo'}
+                {#if project.planRunning}
+                  … shuru ho raha hai
+                {:else}
+                  {project.loadError ? 'Dobara try karo' : 'Transcript generate karo'}
+                {/if}
               </button>
               {#if preClickEstimate.calls}
                 <p class="mt-2 font-mono text-[10px] leading-relaxed text-nc-mut">

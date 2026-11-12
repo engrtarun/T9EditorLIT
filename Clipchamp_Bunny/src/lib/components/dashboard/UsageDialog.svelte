@@ -14,7 +14,7 @@
    *   · Keys are ever shown masked — the daemon never returns a full one.
    */
   import { i18n } from '../../stores/i18n.svelte';
-  import { saveApiKey, deleteApiKey } from '../../cloud';
+  import { saveApiKey, deleteApiKey, fetchElevenKeys, type ElevenKeyStatus } from '../../cloud';
   import { usageStore, type UsageTab } from '../../usage-store.svelte';
   import { num, pct, timeAgo } from '../../usage-format';
 
@@ -27,12 +27,33 @@
   const keys = $derived(usageStore.keys);
   const tab = $derived(usageStore.tab);
   const open = $derived(usageStore.open);
+  /* Every engine the recorder has actually seen, primary first — a new
+     service shows up here without anyone editing this file again. */
+  const serviceList = $derived(
+    ['elevenlabs', 'groq', 'gemini'].filter((s) => usage?.services?.[s] != null)
+  );
 
   /* --------------------------------------------------------------- keys */
 
   let draft = $state<Record<string, string>>({});
   let keyMsg = $state<{ ok: boolean; text: string } | null>(null);
   let busy = $state<string | null>(null);
+
+  /* ------------------------------------------------------- eleven pool */
+  /* The primary engine's real monthly quota lives in the pool, not in
+     `usage.services` — the recorder only sees headers, and Scribe sends
+     none. Read it once per open so the Limits tab can answer "11labs ka
+     hissab" with the probe's numbers, per account. */
+  let eleven = $state<ElevenKeyStatus[]>([]);
+  let elevenSeen = $state(false);
+
+  $effect(() => {
+    if (!open || elevenSeen) return;
+    elevenSeen = true;
+    void fetchElevenKeys().then((r) => {
+      if (r) eleven = r.keys;
+    });
+  });
 
   async function save(service: 'groq' | 'gemini'): Promise<void> {
     const key = (draft[service] ?? '').trim();
@@ -155,6 +176,85 @@
           <!-- ─────────────────────────── limits ─────────────────────────── -->
         {:else if tab === 'limits'}
           <div class="space-y-4">
+            <!-- ElevenLabs: the primary engine — one bar per account, because
+                 the pool's quota is per free account, not one global number. -->
+            <div class="rounded-xl border border-nc-line bg-nc-panel-2/60 p-4">
+              <div class="flex items-center gap-2">
+                <span class="text-[13px] font-semibold text-nc-txt">ElevenLabs</span>
+                <span class="text-[11px] text-nc-green">{i18n.t('usage.primary')}</span>
+                <span class="ml-auto text-[11px] text-nc-mut-2 tabular-nums">
+                  {i18n.t('usage.accounts', { n: String(eleven.length) })}
+                </span>
+              </div>
+
+              {#if eleven.length === 0}
+                <p class="mt-2 text-[12px] leading-relaxed text-nc-mut">
+                  {i18n.t('usage.elevenEmpty')}
+                </p>
+              {:else}
+                <ul class="mt-3 space-y-3">
+                  {#each eleven as k (k.id)}
+                    {@const used =
+                      k.quotaLimit != null && k.quotaLimit > 0
+                        ? Math.min(100, Math.round(((k.quotaUsed ?? 0) / k.quotaLimit) * 100))
+                        : -1}
+                    <li>
+                      <div class="flex items-baseline gap-2">
+                        <span class="font-mono text-[11.5px] text-nc-txt">{k.masked}</span>
+                        {#if k.tier}
+                          <span class="text-[10.5px] text-nc-mut-2">{k.tier}</span>
+                        {/if}
+                        <span
+                          class="ml-auto text-[10.5px]
+                                 {k.state === 'ready'
+                            ? 'text-nc-green'
+                            : k.state === 'cooldown'
+                              ? 'text-nc-gold'
+                              : 'text-nc-mut-2'}"
+                        >
+                          {i18n.t(`cloud.eleven.state.${k.state}`)}
+                          {#if k.state === 'cooldown' && k.cooldownSecs}
+                            · {Math.ceil(k.cooldownSecs / 60)}m
+                          {/if}
+                        </span>
+                        <span class="w-10 text-right text-[11px] text-nc-mut tabular-nums">
+                          {used < 0 ? '—' : `${used}%`}
+                        </span>
+                      </div>
+                      <div
+                        class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-nc-panel"
+                        role="meter"
+                        aria-valuemin="0"
+                        aria-valuemax="100"
+                        aria-valuenow={used < 0 ? undefined : used}
+                        aria-label={`${k.masked} quota`}
+                      >
+                        {#if used >= 0}
+                          <div
+                            class="h-full rounded-full transition-[width] duration-300 {used >= 85
+                              ? 'bg-nc-red'
+                              : used >= 60
+                                ? 'bg-nc-gold'
+                                : 'bg-nc-brand'}"
+                            style="width:{used}%"
+                          ></div>
+                        {/if}
+                      </div>
+                      {#if k.quotaLimit}
+                        <div class="mt-0.5 text-[10.5px] text-nc-mut-2 tabular-nums">
+                          {num(k.quotaUsed)} / {num(k.quotaLimit)}
+                          {i18n.t('usage.elevenChars')}
+                        </div>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+                <p class="mt-3 text-[11.5px] leading-relaxed text-nc-mut-2">
+                  {i18n.t('usage.elevenNote')}
+                </p>
+              {/if}
+            </div>
+
             <!-- Groq: measured, not published -->
             <div class="rounded-xl border border-nc-line bg-nc-panel-2/60 p-4">
               <div class="flex items-center gap-2">
@@ -256,7 +356,7 @@
           <!-- ─────────────────────────── usage ─────────────────────────── -->
         {:else if tab === 'usage'}
           <div class="space-y-4">
-            {#each ['groq', 'gemini'] as svc (svc)}
+            {#each serviceList as svc (svc)}
               {@const u = usage.services[svc] ?? null}
               <div class="rounded-xl border border-nc-line bg-nc-panel-2/60 p-4">
                 <div class="flex items-center gap-2">

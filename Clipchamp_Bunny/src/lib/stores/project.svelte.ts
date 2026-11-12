@@ -1138,6 +1138,11 @@ class ProjectStore {
     this.planAll = all;
     this.planStop = false;
     this.loadError = null;
+    // The click must be visible before anything awaits — plan restore and WAV
+    // extraction are disk reads, and a 3-second attention span reads "nothing
+    // happened" as "press again". Same tick as the click, so the panel flips
+    // to the pipeline block instantly instead of bouncing back to empty.
+    this.pipeline = { stage: 'Shuru ho raha hai…', fraction: 0.02 };
     try {
       const known = this.transcriptPlan ?? (await this.readPlan(source));
       if (known && isPlanComplete(known)) {
@@ -1461,7 +1466,13 @@ class ProjectStore {
     this.writePlan(sourcePath, null);
     this.chunkCache = null;
     if (isTauri()) await cleanChunkDir(chunkSourceKey(sourcePath)).catch(() => {});
-    this.noSpeech = false;
+    // A finished plan with zero lines IS the no-speech answer — every chunk
+    // was consumed as silence. Clearing this unconditionally made the panel
+    // fall back to the exact pre-click empty state, which read as "my click
+    // was undone" and invited the same click again (the log once held eight
+    // jobs from one finger). Lines exist → the answer is a transcript, not
+    // a silence notice.
+    this.noSpeech = this.lines.length === 0;
   }
 
   /**
