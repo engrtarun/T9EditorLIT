@@ -171,6 +171,53 @@ func (s *jobStore) succeedNoSpeech(id string, failures []string) {
 	})
 }
 
+// succeedMusic closes a transcribe job whose audio turned out to be music.
+//
+// It is a different answer from "no speech", and the app needs to tell them
+// apart. "No speech" on a silent clip means nothing happened. "Music" on a
+// track means the waveform is the right instrument for this project and a
+// transcript is not - so the app switches to waveform-first editing instead
+// of showing an empty transcript panel and a retry button.
+func (s *jobStore) succeedMusic(id string, failures []string) {
+	s.mutate(id, func(j *model.Job) {
+		j.Transcript = nil
+		j.NoSpeech = true
+		j.Music = true
+		j.Completed = j.Total
+		j.Lines = 0
+		j.Updated = time.Now().Unix()
+
+		if len(failures) > 0 {
+			j.State = model.StatePartial
+			j.Error = joinErrors(failures)
+		} else {
+			j.State = model.StateDone
+		}
+	})
+}
+
+// setAudioProfile records the local measurement of the source's audio.
+func (s *jobStore) setAudioProfile(id string, profile *model.AudioProfile) {
+	if profile == nil {
+		return
+	}
+	s.mutate(id, func(j *model.Job) {
+		j.AudioProfile = profile
+	})
+}
+
+// setLanguage records the language the job settled on, and why it might not
+// be right.
+func (s *jobStore) setLanguage(id, language, warning string) {
+	if language == "" && warning == "" {
+		return
+	}
+	s.mutate(id, func(j *model.Job) {
+		j.Language = language
+		j.LanguageWarning = warning
+	})
+}
+
 // succeedCorrect attaches an autocorrected transcript.
 //
 // Like succeed, a non-empty failures slice downgrades to StatePartial: most
@@ -180,6 +227,27 @@ func (s *jobStore) succeedCorrect(id string, corrected []model.Segment, failures
 	s.mutate(id, func(j *model.Job) {
 		j.Corrected = corrected
 		j.Completed = j.Total
+		j.Updated = time.Now().Unix()
+
+		if len(failures) > 0 {
+			j.State = model.StatePartial
+			j.Error = joinErrors(failures)
+		} else {
+			j.State = model.StateDone
+		}
+	})
+}
+
+// succeedTranslate attaches a translated transcript.
+//
+// The lines are the same lines: only TranslatedText was added, and the
+// source text is untouched. A batch that failed keeps its source text, so a
+// partial translation is still a usable transcript.
+func (s *jobStore) succeedTranslate(id string, translated []model.Segment, failures []string) {
+	s.mutate(id, func(j *model.Job) {
+		j.Translated = translated
+		j.Completed = j.Total
+		j.Lines = len(translated)
 		j.Updated = time.Now().Unix()
 
 		if len(failures) > 0 {

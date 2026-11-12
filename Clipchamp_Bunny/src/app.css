@@ -31,7 +31,19 @@
   --color-nc-mut: #9aa3b5;
   --color-nc-mut-2: #6f7787;
 
-  --font-sans: 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif;
+  /* The interface face, with the transcript's writing systems behind it.
+     The fallback chain is what keeps Devanagari, Arabic, CJK and Tamil out of
+     the tofu boxes: a font that has no glyph for the character is skipped,
+     and the next one in the list is tried. Windows 11 ships Nirmala UI for
+     Indic scripts and Segoe UI for Arabic/CJK, so the list below costs
+     nothing to download and nothing in RAM.
+     Noto is named after them because a machine without the Windows scripts
+     (a stripped container, a Linux preview) still gets a real glyph. */
+  --font-sans:
+    'Segoe UI', 'Nirmala UI', 'Noto Sans Devanagari', 'Noto Sans', 'Noto Sans Arabic',
+    'Noto Sans Tamil', 'Noto Sans Bengali', 'Noto Sans Telugu', 'Noto Sans Kannada',
+    'Noto Sans Malayalam', 'Noto Sans Gujarati', 'Noto Sans Gurmukhi', 'Noto Sans', system-ui,
+    -apple-system, Roboto, Arial, sans-serif;
   --font-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
 
   /* The wordmark face. The brand board sets "T9 Editor" in a wide, squarish

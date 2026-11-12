@@ -411,6 +411,11 @@ func TestTranscribeProgressCountsChunks(t *testing.T) {
 // Hinglish transcript used to change personality at every chunk boundary:
 // Whisper auto-detected the language per request, and every chunk was prompted
 // with the same fixed sentence instead of the words that came before it.
+//
+// The pin now needs two chunks that agree. The first chunk is still sent
+// without a language, and the second is sent with the language the first two
+// chunks agreed on - so a title card or a music intro cannot decide the
+// language of a fifty-minute recording.
 func TestTranscribePinsLanguageAndCarriesContext(t *testing.T) {
 	type call struct{ language, prompt string }
 
@@ -430,17 +435,17 @@ func TestTranscribePinsLanguageAndCarriesContext(t *testing.T) {
 		n := len(calls)
 		mu.Unlock()
 
-		if n == 1 {
-			_, _ = w.Write([]byte(`{"language":"hindi","segments":[{"id":0,"start":0,"end":2,"text":"pehla vakya"}]}`))
+		if n == 3 {
+			_, _ = w.Write([]byte(`{"language":"english","segments":[{"id":0,"start":0,"end":2,"text":"teesra vakya"}]}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"language":"english","segments":[{"id":0,"start":0,"end":2,"text":"dusra vakya"}]}`))
+		_, _ = w.Write([]byte(`{"language":"hindi","segments":[{"id":0,"start":0,"end":2,"text":"pehla vakya"}]}`))
 	}))
 	t.Cleanup(srv.Close)
 
 	s, _ := newTestServer(t, baseConfig(), srv)
 	rec := do(t, s, http.MethodPost, "/v1/transcribe",
-		transcribeBody(t, writeChunk(t), writeChunk(t)))
+		transcribeBody(t, writeChunk(t), writeChunk(t), writeChunk(t)))
 	var job model.Job
 	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -451,20 +456,71 @@ func TestTranscribePinsLanguageAndCarriesContext(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(calls) != 2 {
-		t.Fatalf("got %d upstream calls, want 2", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("got %d upstream calls, want 3", len(calls))
 	}
 	if calls[0].language != "" {
 		t.Errorf("first chunk language = %q, want auto-detect (empty)", calls[0].language)
 	}
-	if calls[1].language != "hi" {
-		t.Errorf("second chunk language = %q, want \"hi\" (Whisper's display name "+
-			"\"hindi\" must never be forwarded - Groq rejects it with a 400)",
+	if calls[1].language != "" {
+		t.Errorf("second chunk language = %q, want auto-detect (one chunk is not agreement)",
 			calls[1].language)
+	}
+	if calls[2].language != "hi" {
+		t.Errorf("third chunk language = %q, want \"hi\" (two chunks agreed, and Whisper's"+
+			" display name \"hindi\" must never be forwarded - Groq rejects it with a 400)",
+			calls[2].language)
 	}
 	if !strings.Contains(calls[1].prompt, "pehla vakya") {
 		t.Errorf("second chunk prompt = %q, want the previous line for continuity",
 			calls[1].prompt)
+	}
+}
+
+// A single disagreeing chunk must not pin the language for the rest of the
+// job: that was the bootstrap bug the playbook calls out. One chunk that
+// says "english" after a chunk that said "hindi" is a wobble, not a
+// decision - so nothing is pinned and the next chunk is detected again.
+func TestTranscribeDoesNotPinOnOneDisagreeingChunk(t *testing.T) {
+	type call struct{ language string }
+
+	var mu sync.Mutex
+	var calls []call
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			t.Errorf("parse multipart: %v", err)
+		}
+		mu.Lock()
+		calls = append(calls, call{language: r.FormValue("language")})
+		n := len(calls)
+		mu.Unlock()
+
+		if n == 1 {
+			_, _ = w.Write([]byte(`{"language":"hindi","segments":[{"id":0,"start":0,"end":2,"text":"pehla vakya"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"language":"english","segments":[{"id":0,"start":0,"end":2,"text":"dusra vakya"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	s, _ := newTestServer(t, baseConfig(), srv)
+	rec := do(t, s, http.MethodPost, "/v1/transcribe",
+		transcribeBody(t, writeChunk(t), writeChunk(t), writeChunk(t)))
+	var job model.Job
+	if err := json.Unmarshal(rec.Body.Bytes(), &job); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := waitForJob(t, s, job.ID); got.State != model.StateDone {
+		t.Fatalf("state = %q (error %q)", got.State, got.Error)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i, c := range calls {
+		if c.language != "" {
+			t.Errorf("call %d language = %q, want no pin: the chunks disagree", i, c.language)
+		}
 	}
 }
 

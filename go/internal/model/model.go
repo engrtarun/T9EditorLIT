@@ -15,6 +15,13 @@ const (
 	JobAnalyze    JobKind = "analyze"
 	JobVault      JobKind = "vault"
 
+	// JobTranslate renders an existing transcript in a second language.
+	//
+	// It is a separate pass because it is optional and because it must not
+	// touch the source text: the translation travels beside the original, in
+	// its own field, and the user cuts on what was said.
+	JobTranslate JobKind = "translate"
+
 	// JobRestore is the read half of the vault: the daemon streams a backed-up
 	// file back out of Telegram, verifies part by part against the digests
 	// the upload recorded, and joins the parts into one file on disk. It
@@ -98,6 +105,29 @@ type Segment struct {
 	// Absent means "no word alignment" - the editor then splits the line's
 	// time but not its text. Present, the split cuts the text too.
 	Words []Word `json:"words,omitempty"`
+	// Language is the ISO-639-1 code of the language this line was decoded
+	// as, when the provider reported one.
+	//
+	// It is a *badge*, not a decision: a travel vlog that switches between
+	// twelve languages gets twelve badges, and the user can see the switch
+	// instead of wondering why the script changed mid-sentence. Empty means
+	// the provider did not say.
+	Language string `json:"language,omitempty"`
+	// TranslatedText is the line rendered in another language.
+	//
+	// The source text stays in Text — always. A translation is a second
+	// view of the same line, never a replacement: the user cuts on what was
+	// said, not on what it was translated into.
+	TranslatedText string `json:"translated_text,omitempty"`
+	// TranslationSource names the provider that produced TranslatedText
+	// ("gemini", "groq"), so the UI can label the badge honestly.
+	TranslationSource string `json:"translation_source,omitempty"`
+	// Protected marks a line the user has pinned as "never cut this".
+	//
+	// It is the escape hatch for every detector that cannot be trusted: an
+	// ASMR whisper, a crosstalk overlap, a hook the detector reads as
+	// silence. Auto-cut skips protected lines; nothing else does.
+	Protected bool `json:"protected,omitempty"`
 }
 
 // Duration returns the segment length in seconds, never negative.
@@ -131,6 +161,67 @@ type TranscribeRequest struct {
 	Language string `json:"language,omitempty"`
 	// Prompt biases Whisper toward Hinglish tech vocabulary.
 	Prompt string `json:"prompt,omitempty"`
+	// Sensitivity is how eager the local gate is to call a pause silence:
+	// "conservative", "balanced" or "aggressive". Empty means balanced.
+	//
+	// It travels with the job so the daemon measures the file with the same
+	// dial the user picked in the UI - one measurement, one threshold, and
+	// the cut map and the upload gate agree about what "silence" means.
+	Sensitivity string `json:"sensitivity,omitempty"`
+}
+
+// AudioProfile is what one local measurement pass says about a source's
+// audio.
+//
+// Every number here comes from the same scan of the same 16 kHz mono chunks
+// the transcription uses (see internal/vad). Nothing is decoded twice and
+// nothing is uploaded to measure it: the noise floor, the speech level, the
+// ratio between them and the share of the file that is not dead air are all
+// free, local facts.
+//
+// The UI shows them and the cut map uses them, which is what keeps the
+// editor and the transcriber from disagreeing about the same file.
+type AudioProfile struct {
+	// DurationSecs is the length of the audio that was measured.
+	DurationSecs float64 `json:"duration_secs"`
+	// AudibleSecs is how much of it is louder than the threshold.
+	AudibleSecs float64 `json:"audible_secs"`
+	// SpeechRatio is AudibleSecs / DurationSecs, 0..1.
+	SpeechRatio float64 `json:"speech_ratio"`
+	// NoiseFloorDB is the measured room tone, in dBFS.
+	NoiseFloorDB float64 `json:"noise_floor_db"`
+	// SpeechDB is the measured speech level, in dBFS.
+	SpeechDB float64 `json:"speech_db"`
+	// SNRDB is SpeechDB - NoiseFloorDB: how far the voice sits above the
+	// background. Under about 8 dB the voice is fighting the music bed.
+	SNRDB float64 `json:"snr_db"`
+	// PeakDB is the loudest moment in the file, in dBFS.
+	PeakDB float64 `json:"peak_db"`
+	// ThresholdDB is the level a frame has to clear to count as sound.
+	ThresholdDB float64 `json:"threshold_db"`
+	// MarginDB is how far above the noise floor that threshold sits.
+	MarginDB float64 `json:"margin_db"`
+	// Sensitivity is the dial that produced these numbers.
+	Sensitivity string `json:"sensitivity"`
+	// SilenceThresholdDB is what the cut map should use instead of a fixed
+	// -30 dB: the same bar, measured for this file.
+	SilenceThresholdDB float64 `json:"silence_threshold_db"`
+	// Chunks is how many chunks the profile covers, and Measured is how many
+	// of them could actually be read. A profile built from three of ten
+	// chunks is a sample, and the UI says so.
+	Chunks   int `json:"chunks"`
+	Measured int `json:"measured"`
+}
+
+// TranslateRequest asks for a second-language rendering of a transcript.
+//
+// The source text is never replaced: the reply carries a translation per
+// line, and the app shows it under the original.
+type TranslateRequest struct {
+	SourcePath string    `json:"source_path"`
+	Segments   []Segment `json:"segments"`
+	// Target is the language to translate into ("en" by default).
+	Target string `json:"target,omitempty"`
 }
 
 // CorrectRequest asks for Whisper's spelling to be cleaned up.
@@ -199,11 +290,39 @@ type Job struct {
 	// quality question has something to point at.
 	Engine string `json:"engine,omitempty"`
 
+	// Music means the audio is music, not speech: the file carries sound but
+	// no words.
+	//
+	// The distinction matters because the two have different answers. "No
+	// speech" on a silent clip means nothing happened. "Music" on a track
+	// means the waveform is the right tool for this project and a transcript
+	// is not - the app says so instead of showing an empty transcript panel.
+	Music bool `json:"music,omitempty"`
+
+	// Language is the ISO-639-1 code the job settled on, and
+	// LanguageWarning explains why it might not be right.
+	//
+	// The daemon pins the language once two chunks agree on it, then
+	// cross-checks the script the text came back in. When those disagree -
+	// an accented English speaker detected as Hindi, a Hinglish line in
+	// Devanagari pinned to English - the job still finishes, but it says so.
+	Language        string `json:"language,omitempty"`
+	LanguageWarning string `json:"language_warning,omitempty"`
+
+	// AudioProfile is the local measurement of the source's audio.
+	//
+	// It is filled in for a transcribe job and can be fetched on its own,
+	// because the cut map wants it *before* the transcription starts.
+	AudioProfile *AudioProfile `json:"audio_profile,omitempty"`
+
 	// Transcript is populated for transcribe jobs.
 	Transcript []Segment `json:"transcript,omitempty"`
 	// Corrected is populated for correct jobs — the same lines with their
 	// spelling fixed and OriginalText filled in where the text changed.
 	Corrected []Segment `json:"corrected,omitempty"`
+	// Translated is populated for translate jobs — the same lines with a
+	// TranslatedText beside each one. The source text is untouched.
+	Translated []Segment `json:"translated,omitempty"`
 	// Analysis is populated for analyze jobs.
 	Analysis []Segment `json:"analysis,omitempty"`
 	// VaultResult describes the upload outcome for vault jobs.

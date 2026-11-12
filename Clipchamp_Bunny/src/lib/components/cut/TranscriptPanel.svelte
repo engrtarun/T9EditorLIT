@@ -5,6 +5,9 @@
   import { isTauri } from '../../ipc';
   import { estimateForDuration } from '../../transcript-plan';
   import { fmtShort } from '../../utils';
+  import { LANGUAGES, isLanguageSwitch, languageLabel } from '../../languages';
+  import { SENSITIVITIES, SENSITIVITY_LABEL, describeProfile } from '../../audio-profile';
+  import type { Sensitivity } from '../../audio-profile';
   import type { LineFlag, TranscriptLine } from '../../types';
 
   /* Virtual scroll constants — a 2-hour transcript can be 20k lines.
@@ -187,6 +190,83 @@
   </div>
 
   <!--
+    The language chip, the override, and what the local measurement said
+    about this recording.
+
+    The detector guesses and the user knows: the chip shows what the daemon
+    settled on, and the dropdown is the one click that says "no, it is
+    English". A pinned language is never second-guessed by the daemon - it is
+    only reported back when the text came back in a different script, which
+    is the one case worth interrupting the user for.
+  -->
+  {#if !project.pipeline && (project.language || project.languageOverride || project.audioProfile)}
+    <div
+      class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-nc-line bg-nc-panel-2/60 px-2.5 py-1.5"
+    >
+      <label class="flex items-center gap-1.5 text-[10px] text-nc-mut">
+        <span class="font-semibold tracking-wider text-nc-mut-2">LANG</span>
+        <select
+          value={project.languageOverride ?? ''}
+          onchange={(e) => project.setLanguageOverride(e.currentTarget.value || null)}
+          class="max-w-[140px] rounded border border-nc-line-2 bg-nc-panel px-1 py-0.5 text-[10.5px] text-nc-txt"
+          title="Language pin — a pinned language is never second-guessed"
+        >
+          <option value="">
+            Auto{project.language ? ` (${languageLabel(project.language)})` : ''}
+          </option>
+          {#each LANGUAGES as l (l.code)}
+            <option value={l.code}>{l.label}</option>
+          {/each}
+        </select>
+      </label>
+
+      <label class="flex items-center gap-1.5 text-[10px] text-nc-mut">
+        <span class="font-semibold tracking-wider text-nc-mut-2">SILENCE</span>
+        <select
+          value={project.sensitivity}
+          onchange={(e) => project.setSensitivity(e.currentTarget.value as Sensitivity)}
+          class="rounded border border-nc-line-2 bg-nc-panel px-1 py-0.5 text-[10.5px] text-nc-txt"
+          title="Kitna zyada dead air cut ho — threshold is measured per file"
+        >
+          {#each SENSITIVITIES as s (s)}
+            <option value={s}>{SENSITIVITY_LABEL[s]}</option>
+          {/each}
+        </select>
+      </label>
+
+      {#if project.audioProfile}
+        <span
+          class="font-mono text-[9.5px] text-nc-mut-2"
+          title="Is file ka apna noise floor, voice level aur silence threshold"
+        >
+          {describeProfile(project.audioProfile)}
+        </span>
+      {/if}
+
+      <div class="flex-1"></div>
+
+      {#if project.lines.length && isTauri()}
+        <button
+          onclick={() => void project.translateTranscript('en')}
+          class="rounded border border-nc-line-2 px-1.5 py-0.5 text-[10px] font-medium text-nc-mut
+                 transition-colors hover:border-nc-brand hover:text-nc-brand"
+          title="Source text ke neeche English translation — source text kabhi badalta nahi"
+        >
+          Translate
+        </button>
+      {/if}
+    </div>
+  {/if}
+
+  {#if project.languageWarning}
+    <div class="shrink-0 border-b border-amber-400/30 bg-amber-400/10 px-3 py-1.5">
+      <p class="text-[10.5px] leading-snug text-amber-300">
+        {project.languageWarning}
+      </p>
+    </div>
+  {/if}
+
+  <!--
     A transcript with holes must say so at the top of the panel, not only in
     the session that discovered them. The daemon deliberately keeps the chunks
     that worked (throwing away 48 good minutes over one bad chunk would be
@@ -326,13 +406,35 @@
             <span class="block text-nc-mut-2/70">– {fmtShort(line.endSec)}</span>
           </span>
           <span class="min-w-0 flex-1">
+            <!--
+              `dir="auto"` decides the reading direction from the text itself,
+              so an Urdu or Arabic line reads right-to-left inside a
+              left-to-right panel — and a mixed line does not flip the whole
+              row. The font stack (app.css) carries the fallbacks, so
+              Devanagari, Arabic and CJK never render as tofu boxes.
+            -->
             <span
               class="line-clamp-2 text-xs leading-4 {cut
                 ? 'nc-slash text-nc-mut line-through decoration-nc-red/70'
                 : 'text-nc-txt'}"
+              dir="auto"
             >
               {line.text}
             </span>
+            {#if line.translatedText}
+              <!--
+                The translation is always secondary. The source text is what
+                was said and what the cut decisions are made on; the
+                translation is a second reading of the same line.
+              -->
+              <span
+                class="mt-0.5 block truncate text-[10.5px] leading-4 italic text-nc-mut"
+                dir="auto"
+                title="Translation — source text neeche, original upar"
+              >
+                {line.translatedText}
+              </span>
+            {/if}
             {#if line.flag !== 'none'}
               <span
                 use:flagFlash
@@ -343,10 +445,49 @@
                 {line.confidence < 0.6 ? ` · ${(line.confidence * 100) | 0}%` : ''}
               </span>
             {/if}
+            {#if isLanguageSwitch(line.language, project.language)}
+              <!--
+                The badge appears only on the odd line out: a chip on every
+                line of a Hindi video is noise, a chip on the one English
+                line is information.
+              -->
+              <span
+                class="mt-0.5 ml-1 inline-block rounded border border-nc-line-2 bg-nc-panel-2 px-1
+                       py-[1px] text-[8px] font-bold tracking-wider text-nc-mut"
+                title="Ye line is language me hai jo baaki transcript se alag hai"
+              >
+                {languageLabel(line.language)}
+              </span>
+            {/if}
           </span>
         </button>
 
         <div class="flex shrink-0 items-center gap-1">
+          <!--
+            The escape hatch for every detector that cannot be trusted: a
+            whisper, a crosstalk overlap, a hook that reads as silence. The
+            automatic silence pass skips a pinned line; the user can still cut
+            it by hand.
+          -->
+          <button
+            onclick={() => project.toggleProtected(line.id)}
+            class="grid h-6 w-6 place-items-center rounded border transition-colors
+                   {line.protected
+              ? 'border-nc-brand bg-nc-brand/15 text-nc-brand'
+              : 'border-nc-line-2 text-nc-mut-2 hover:border-nc-brand hover:text-nc-brand'}"
+            title="Is line ko kabhi auto-cut mat karo"
+          >
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+            >
+              <path d="M12 17v5M9 3h6l-1 6 3 3H7l3-3-1-6z" />
+            </svg>
+          </button>
           <button
             onclick={() => project.setLine(line.id, 'keep')}
             class="grid h-6 w-6 place-items-center rounded border transition-colors
@@ -446,20 +587,35 @@
             The daemon read every chunk and heard no words: the audio is music,
             ambience or a silent recording. A result, not an error — amber,
             calm, and with the one honest way forward.
+
+            "Music" is its own answer, though, and it gets its own card: for a
+            music track the waveform *is* the tool, so the panel says what to
+            do instead of offering a retry that can never find words.
           -->
           <div class="p-6 text-center">
             <div
               class="mx-auto w-fit rounded-lg border border-amber-400/40 bg-amber-400/10 px-3
                      py-1.5 text-[11.5px] font-semibold text-amber-300"
             >
-              🎵 Koi speech nahi mili
+              {#if project.music}🎵 Ye ek music project hai{:else}🎵 Koi speech nahi mili{/if}
             </div>
             <p class="mt-3 text-[11.5px] leading-relaxed text-nc-mut">
-              Is audio me sirf music/ambience hai — Whisper ne koi words nahi suna, isliye
-              transcript nahi bana. Fake "Thank you." jaisi lines ab drop ho jaati hain.
+              {#if project.music}
+                Is audio me bolne wala koi nahi hai — sirf music/ambience. Transcript isliye nahi
+                bana, aur banane ka koi faayda bhi nahi.
+              {:else}
+                Is audio me sirf music/ambience hai — Whisper ne koi words nahi suna, isliye
+                transcript nahi bana. Fake "Thank you." jaisi lines ab drop ho jaati hain.
+              {/if}
             </p>
+            {#if project.audioProfile}
+              <p class="mt-2 font-mono text-[10px] text-nc-mut-2">
+                {describeProfile(project.audioProfile)}
+              </p>
+            {/if}
             <p class="mt-2 text-[10.5px] text-nc-mut-2">
-              Silence scanning aur cut tools bina transcript ke bhi kaam karte hain.
+              Silence scanning aur cut tools bina transcript ke bhi kaam karte hain — waveform
+              timeline se kaam chal jayega.
             </p>
             {#if isTauri()}
               <button

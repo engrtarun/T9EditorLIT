@@ -2,6 +2,7 @@ package vad
 
 import (
 	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -255,5 +256,214 @@ func TestUnreadableFileIsAnErrorNotASkip(t *testing.T) {
 
 	if _, err := Scan(path); err == nil {
 		t.Error("scanning a non-WAV file must return an error so callers fail open")
+	}
+}
+
+// ── Adaptive threshold (edge cases 18, 19, 20) ────────────────────────────
+
+// ampForDB is the sample value that reads as dB dBFS.
+//
+// The scan measures the *mean absolute* amplitude of a frame, so a constant
+// sample of this value produces exactly this level in every frame — which is
+// what makes a level-controlled test possible at all.
+func ampForDB(db float64) int16 {
+	return int16(32767 * math.Pow(10, db/20))
+}
+
+// roomToneWithSpeech builds a recording with a constant room tone and one
+// loud stretch of speech on top of it.
+func roomToneWithSpeech(t *testing.T, secs int, toneDB, speechDB float64, speechFrom, speechTo float64) string {
+	t.Helper()
+
+	samples := make([]int16, secs*testRate)
+	tone := ampForDB(toneDB)
+	speech := ampForDB(speechDB)
+	for i := range samples {
+		samples[i] = tone
+	}
+	from := int(speechFrom * testRate)
+	to := int(speechTo * testRate)
+	for i := from; i < to && i < len(samples); i++ {
+		samples[i] = speech
+	}
+	return writeWAV(t, samples)
+}
+
+// Case 19, first half: a phone recording next to a fan. The room tone sits
+// at -28 dBFS, which is *above* the old fixed -30 dB threshold, so a fixed
+// threshold found no silence anywhere in the file and nothing was ever cut.
+//
+// The adaptive threshold measures the floor of this recording and puts the
+// bar above it, so the dead air between the sentences is found.
+func TestAdaptiveThresholdFindsSilenceUnderRoomTone(t *testing.T) {
+	// 10 s of fan noise with 3 s of speech in the middle.
+	path := roomToneWithSpeech(t, 10, -28, -6, 3.5, 6.5)
+
+	s, err := Scan(path)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	if floor := s.NoiseFloorDB(); floor < -31 || floor > -25 {
+		t.Errorf("noise floor = %.1f dBFS, want about -28", floor)
+	}
+	if thr := s.ThresholdDB(); thr <= -28 {
+		t.Errorf("threshold = %.1f dBFS, want above the -28 dBFS room tone", thr)
+	}
+	// The dead air is now silence: roughly 7 s of the 10 s file.
+	ratio := s.SpeechRatio()
+	if ratio > 0.45 || ratio < 0.25 {
+		t.Errorf("speech ratio = %.2f, want ~0.3 (3 s of speech in 10 s)", ratio)
+	}
+	if !s.WorthTranscribing() {
+		t.Error("3 s of speech must still be worth an API call")
+	}
+}
+
+// Case 19, second half: a studio recording. The room tone is at -60 dBFS and
+// the speech is quiet (-18 dBFS). A fixed -30 dB threshold called the quiet
+// speech silence, and the video got chopped between every word.
+//
+// The adaptive threshold sits between the two measured levels, so the quiet
+// speech survives and the dead air around it does not.
+func TestAdaptiveThresholdKeepsQuietSpeechInAStudio(t *testing.T) {
+	path := roomToneWithSpeech(t, 10, -60, -18, 3.5, 6.5)
+
+	s, err := Scan(path)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	if floor := s.NoiseFloorDB(); floor > -55 {
+		t.Errorf("noise floor = %.1f dBFS, want about -60", floor)
+	}
+	if thr := s.ThresholdDB(); thr > -20 {
+		t.Errorf("threshold = %.1f dBFS, want below the -18 dBFS speech", thr)
+	}
+	if !s.BacksSegment(3.5, 6.5) {
+		t.Error("quiet studio speech must be backed by audio")
+	}
+	// The 3.5 s of dead air before the sentence is silence.
+	if got := s.AudibleIn(0, 3.5); got > 0.05 {
+		t.Errorf("audible in the leading silence = %.2f s, want ~0", got)
+	}
+}
+
+// Case 20: a whispered recording. The whisper sits barely above the room
+// tone, and both are below the absolute floor (-56 dBFS), so the old rule
+// called the whole file silence and the clip was skipped.
+//
+// A whisper is real speech: it has to be measured, not guessed. The
+// conservative sensitivity plus a lowered absolute floor is what the ASMR
+// mode does.
+func TestWhisperedSpeechSurvivesWithTheASMRFloor(t *testing.T) {
+	// Room tone at -65 dBFS, whisper at -58 dBFS: both under the default
+	// absolute floor of -56.
+	path := roomToneWithSpeech(t, 10, -65, -58, 2.0, 8.0)
+
+	// The default floor is above the whisper, so the default scan misses it.
+	def, err := Scan(path)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if def.BacksSegment(2.0, 8.0) {
+		t.Errorf("the default absolute floor (%.1f dBFS) must not be able to see a -58 dBFS whisper",
+			def.ThresholdDB())
+	}
+
+	// ASMR mode: conservative margin, absolute floor lowered to -70 dBFS.
+	floor := -70.0
+	asmr, err := ScanWith(path, Options{
+		Sensitivity:      SensitivityConservative,
+		AbsFloorOverride: &floor,
+	})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if !asmr.BacksSegment(2.0, 8.0) {
+		t.Errorf("a whisper must survive the ASMR mode (threshold %.1f dBFS)",
+			asmr.ThresholdDB())
+	}
+}
+
+// The sensitivity slider has to move the threshold, and it has to move it in
+// the direction the names promise: conservative keeps more, aggressive cuts
+// more.
+func TestSensitivityMovesTheThresholdInTheRightOrder(t *testing.T) {
+	path := roomToneWithSpeech(t, 10, -40, -14, 2.0, 8.0)
+
+	conservative, err := ScanWith(path, Options{Sensitivity: SensitivityConservative})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	balanced, err := ScanWith(path, Options{Sensitivity: SensitivityBalanced})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	aggressive, err := ScanWith(path, Options{Sensitivity: SensitivityAggressive})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	if !(conservative.ThresholdDB() < balanced.ThresholdDB()) {
+		t.Errorf("conservative threshold %.1f must sit below balanced %.1f",
+			conservative.ThresholdDB(), balanced.ThresholdDB())
+	}
+	if !(balanced.ThresholdDB() < aggressive.ThresholdDB()) {
+		t.Errorf("balanced threshold %.1f must sit below aggressive %.1f",
+			balanced.ThresholdDB(), aggressive.ThresholdDB())
+	}
+	// More of the file counts as sound when the bar is lower.
+	if !(conservative.SpeechRatio() >= balanced.SpeechRatio()) {
+		t.Errorf("conservative ratio %.2f must be at least balanced %.2f",
+			conservative.SpeechRatio(), balanced.SpeechRatio())
+	}
+	if !(balanced.SpeechRatio() >= aggressive.SpeechRatio()) {
+		t.Errorf("balanced ratio %.2f must be at least aggressive %.2f",
+			balanced.SpeechRatio(), aggressive.SpeechRatio())
+	}
+}
+
+// Case 18: the voice-to-background ratio is what decides whether the file
+// needs a cleanup pass, and it has to come out of the same measurement.
+func TestTheProfileCarriesTheLevelsTheUINeeds(t *testing.T) {
+	path := roomToneWithSpeech(t, 10, -28, -6, 3.5, 6.5)
+
+	s, err := Scan(path)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	if snr := s.SNRDB(); snr < 18 || snr > 26 {
+		t.Errorf("SNR = %.1f dB, want about 22 (-6 dBFS speech over a -28 dBFS floor)", snr)
+	}
+	if peak := s.PeakDB(); peak < -8 || peak > -4 {
+		t.Errorf("peak = %.1f dBFS, want about -6", peak)
+	}
+	if speech := s.SpeechDB(); speech < -8 || speech > -4 {
+		t.Errorf("speech level = %.1f dBFS, want about -6", speech)
+	}
+}
+
+// The threshold may never sit above the speech it is supposed to detect.
+// That was the bug the absolute floor was introduced for, and the adaptive
+// rule must not reintroduce it.
+func TestTheThresholdNeverSitsAboveTheSpeech(t *testing.T) {
+	// A uniformly quiet recording: floor and speech are the same level.
+	samples := make([]int16, 3*testRate)
+	for i := range samples {
+		samples[i] = ampForDB(-47)
+	}
+
+	s, err := Scan(writeWAV(t, samples))
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if s.ThresholdDB() >= s.SpeechDB() {
+		t.Errorf("threshold %.1f must stay below the speech level %.1f",
+			s.ThresholdDB(), s.SpeechDB())
+	}
+	if !s.WorthTranscribing() {
+		t.Error("a quiet recording must never be mistaken for silence")
 	}
 }

@@ -1,6 +1,7 @@
 import type { AudioChunk } from './types.ts';
 import { logTranscriptionJob } from './ipc.ts';
 import { JOB_CAP_MS, jobWatchdog } from './cloud-contract.ts';
+import type { AudioProfile, Sensitivity } from './audio-profile.ts';
 
 // The flag vocabulary lives with the other pure contract rules, and is
 // re-exported here because every caller already imports it from this module.
@@ -38,6 +39,30 @@ export interface CloudSegment {
   original_text?: string;
   /** Word-level timings — this is what makes a split cut the text too. */
   words?: CloudWord[];
+  /**
+   * The ISO-639-1 code the model decoded this line as.
+   *
+   * A badge, not a decision: a travel vlog that switches between twelve
+   * languages gets twelve badges, and the user can see where the switch
+   * happened instead of wondering why the script changed mid-sentence.
+   */
+  language?: string;
+  /**
+   * The line rendered in another language.
+   *
+   * Always *beside* the source text, never over it. The user cuts on what
+   * was said; a translation is a second reading of the same line.
+   */
+  translated_text?: string;
+  /** Which provider produced the translation ("gemini"). */
+  translation_source?: string;
+  /**
+   * The user pinned this line as "never cut this".
+   *
+   * The escape hatch for every detector that cannot be trusted: a whisper, a
+   * crosstalk overlap, a hook that reads as silence.
+   */
+  protected?: boolean;
 }
 
 export interface CloudJob {
@@ -67,8 +92,30 @@ export interface CloudJob {
    * is a result, not a failure.
    */
   no_speech?: boolean;
+  /**
+   * The audio turned out to be music, not speech.
+   *
+   * Different from `no_speech` on purpose. "No speech" on a silent clip
+   * means nothing happened. "Music" on a track means the waveform is the
+   * right instrument for this project and a transcript is not - so the app
+   * says that instead of showing an empty panel and a retry button.
+   */
+  music?: boolean;
+  /**
+   * The language the job settled on, and why it might not be right.
+   *
+   * The daemon pins a language only after two chunks agree on it, and
+   * cross-checks the script the text came back in. When the two disagree
+   * the job still finishes, but it says so.
+   */
+  language?: string;
+  language_warning?: string;
+  /** The local measurement of the source's audio. */
+  audio_profile?: AudioProfile;
   transcript?: CloudSegment[];
   corrected?: CloudSegment[];
+  /** The translated lines - the same lines with `translated_text` beside them. */
+  translated?: CloudSegment[];
   analysis?: CloudSegment[];
   /**
    * Positions (in the request's `chunks` array) that could not be read.
@@ -231,9 +278,20 @@ async function waitJob(id: string, onProgress?: Progress): Promise<CloudJob> {
  * that already catch `Error` keep working unchanged.
  */
 export class NoSpeechError extends Error {
-  constructor() {
-    super('Koi speech nahi mili — is audio me sirf music/ambience hai. Transcript nahi banaya.');
+  /**
+   * True when the daemon was sure enough to call the file music rather than
+   * just quiet.
+   */
+  readonly music: boolean;
+
+  constructor(music = false) {
+    super(
+      music
+        ? 'Ye music/ambience hai — isme bolne wala koi nahi hai. Transcript nahi banaya.'
+        : 'Koi speech nahi mili — is audio me sirf music/ambience hai. Transcript nahi banaya.'
+    );
     this.name = 'NoSpeechError';
+    this.music = music;
   }
 }
 
@@ -259,13 +317,27 @@ export interface TranscriptionResult {
    * must offer a retry instead of declaring the video wordless.
    */
   noSpeech: boolean;
+  /**
+   * The audio is a music bed, not a talking person.
+   *
+   * A different answer from `noSpeech`, and the app treats it differently:
+   * the waveform is the right tool for this project, so the panel says so
+   * instead of inviting a retry that can never find words.
+   */
+  music: boolean;
+  /** The language the job settled on, when it settled on one. */
+  language?: string;
+  /** Why that language might not be right. */
+  languageWarning?: string;
+  /** The local measurement of the source's audio. */
+  profile?: AudioProfile;
 }
 
 export async function runTranscription(
   sourcePath: string,
   chunks: AudioChunk[],
   onProgress?: Progress,
-  opts: { language?: string; prompt?: string } = {}
+  opts: { language?: string; prompt?: string; sensitivity?: Sensitivity } = {}
 ): Promise<TranscriptionResult> {
   // Telemetry: one `transcription_jobs` row when the run settles — the
   // engine writes it fire-and-forget, nothing here waits on SQLite.
@@ -286,7 +358,11 @@ export async function runTranscription(
       // Only sent when the caller actually knows something. An absent field is
       // "let Whisper detect it", which is the honest default.
       ...(opts.language ? { language: opts.language } : {}),
-      ...(opts.prompt ? { prompt: opts.prompt } : {})
+      ...(opts.prompt ? { prompt: opts.prompt } : {}),
+      // The silence sensitivity travels with the job so the daemon measures
+      // the file with the same dial the user picked. The cut map and the
+      // upload gate then agree about what "silence" means in this file.
+      ...(opts.sensitivity ? { sensitivity: opts.sensitivity } : {})
     });
     const done = await waitJob(created.id, onProgress);
     engine = done.engine ?? engine;
@@ -300,18 +376,19 @@ export async function runTranscription(
         'done',
         engine,
         audioSecs,
-        'no speech detected',
+        done.music ? 'music detected' : 'no speech detected',
         (Date.now() - t0) / 1000
       );
       // Chunks that could not be read are a different story: the audio that
       // never reached Whisper may well contain the speech. Hand the gaps back
       // so the caller can retry them instead of saying "no words here".
-      if (!done.failed_chunks?.length) throw new NoSpeechError();
+      if (!done.failed_chunks?.length) throw new NoSpeechError(done.music === true);
       return {
         segments: [],
         failedChunks: done.failed_chunks,
         error: done.error,
-        noSpeech: true
+        noSpeech: true,
+        music: done.music === true
       };
     }
     // `partial` is a real result: some chunks failed, but the ones that
@@ -331,7 +408,11 @@ export async function runTranscription(
       segments: done.transcript,
       failedChunks: done.failed_chunks ?? [],
       error: done.state === 'partial' ? done.error : undefined,
-      noSpeech: false
+      noSpeech: false,
+      music: false,
+      language: done.language,
+      languageWarning: done.language_warning,
+      profile: done.audio_profile
     };
   } catch (e) {
     // NoSpeechError was already logged above as `done` — logging it again as
@@ -348,6 +429,30 @@ export async function runTranscription(
     }
     throw e;
   }
+}
+
+/**
+ * The translation view (edge case 15): the same lines rendered in another
+ * language.
+ *
+ * The source text is never replaced. The reply carries a translation per
+ * line, the app shows it underneath the original with a badge, and a line the
+ * model could not translate simply keeps its own text. That is the only
+ * honest shape for this feature: the user cuts on what was said.
+ */
+export async function runTranslation(
+  sourcePath: string,
+  segments: CloudSegment[],
+  onProgress?: Progress,
+  target = 'en'
+): Promise<CloudSegment[]> {
+  const created = await post<CloudJob>('/v1/translate', {
+    source_path: sourcePath,
+    segments,
+    target
+  });
+  const done = await waitJob(created.id, onProgress);
+  return done.translated?.length ? done.translated : segments;
 }
 
 /** Autocorrect: clean up Whisper's spelling before the analyser judges it. */

@@ -156,6 +156,19 @@ type groqWord struct {
 type ChunkTranscript struct {
 	Segments []model.Segment
 	Language string
+	// RawSegments is how many segments the provider returned before the
+	// confidence filter dropped any of them.
+	//
+	// It matters because "no segments" and "no *believed* segments" are
+	// different answers: a chunk the model returned nothing for is a chunk
+	// with no speech in it, and a chunk the model returned twelve
+	// hallucinations for is a music bed. The caller needs to tell them
+	// apart to decide whether the rest of the file is worth paying for.
+	RawSegments int
+	// NoSpeechRatio is the share of RawSegments the model itself did not
+	// believe - the ones dropped because `no_speech_prob` was high and
+	// `avg_logprob` was poor.
+	NoSpeechRatio float64
 }
 
 // TranscribeChunk uploads one audio chunk and returns its segments with times
@@ -284,6 +297,7 @@ func (c *GroqClient) TranscribeChunkResult(
 	}
 
 	segments := make([]model.Segment, 0, len(parsed.Segments))
+	dropped := 0
 	for i, s := range parsed.Segments {
 		text := strings.TrimSpace(s.Text)
 		if text == "" {
@@ -293,6 +307,7 @@ func (c *GroqClient) TranscribeChunkResult(
 		// or dead air it still emits a stock phrase now and then; the
 		// confidence fields are what tell that apart from real speech.
 		if isNonSpeech(s) {
+			dropped++
 			continue
 		}
 		segments = append(segments, model.Segment{
@@ -325,7 +340,25 @@ func (c *GroqClient) TranscribeChunkResult(
 		segments = segmentsFromWords(parsed.Words, offsetSecs)
 	}
 
-	return ChunkTranscript{Segments: segments, Language: strings.TrimSpace(parsed.Language)}, nil
+	return ChunkTranscript{
+		Segments:      segments,
+		Language:      strings.TrimSpace(parsed.Language),
+		RawSegments:   len(parsed.Segments),
+		NoSpeechRatio: noSpeechShare(len(parsed.Segments), dropped),
+	}, nil
+}
+
+// noSpeechShare is the fraction of the provider's segments that were dropped
+// as non-speech.
+//
+// Zero when the provider said nothing at all: a chunk with no segments is
+// not a chunk full of music, it is a chunk with nothing to report, and the
+// two must not look the same.
+func noSpeechShare(total, dropped int) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(dropped) / float64(total)
 }
 
 // Whisper's own skip thresholds (whisper/transcribe.py). A segment is treated

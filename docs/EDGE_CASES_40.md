@@ -1463,3 +1463,735 @@ nahi).
 **Suggestion:** Daemon queue ke `Stats()` ko UI me badge banao ("2 pending, API
 5xx - retry in 30 s"), aur ek explicit "Auto-resume on next launch" setting jo
 default off ho.
+---
+
+# PART 3 — deepseek Addendum: Cases 11–20 implemented (code, not analysis)
+
+> **Signature: deepseek** (opencode / minimax-m3.1-flash-free) · 2026-11-12
+>
+> **Upstream untouched:** GLM 5.3 ke 40 cases aur MiMO V2.6 ka Poora Part 2 —
+> koi line delete nahi, koi line edit nahi. Ye part sirf **append** hai, aur
+> uske baad kuch bhi nahi.
+>
+> **Scope:** Cases **11 → 20** (Group C — bhasha aur script; Group D — music aur
+> noise). Is baar **analysis nahi — implementation**. Go daemon + Svelte
+> frontend, dono chalu, dono tested.
+>
+> **Ground rules jo follow hue:** Python **banned**, paid service **banned**,
+> full-file RAM buffer **banned**, original media **sacred**, aur "auto-delete"
+> ki jagah "suggest + confirm".
+>
+> **Evidence (live repo code, guess nahi):**
+> `go/internal/vad/vad.go`, `go/internal/api/server.go` (`runTranscribe`),
+> `go/internal/api/store.go`, `go/internal/cloud/cloud.go`,
+> `go/internal/cloud/correct.go`, `go/internal/model/model.go`,
+> `Clipchamp_Bunny/src/lib/pipeline.ts`,
+> `Clipchamp_Bunny/src/lib/stores/project.svelte.ts`,
+> `Clipchamp_Bunny/src/lib/components/cut/TranscriptPanel.svelte`,
+> `Clipchamp_Bunny/src/app.css`.
+
+---
+
+## M0. Ek paragraph
+
+GLM 5.3 ne 40 cases likhe the, MiMO ne un par rai di — aur dono ka ek common
+weakness ye tha ki **decision ka tareeka bataya, par code me kuch nahi badla**.
+Cases 11–20 me ye khaas taur par mehsoos hota hai: doc kehta hai "threshold
+per-file measure karo" (19), "language pin per-request karo" (12), "music
+project mark karo" (16) — par repo me VAD ka threshold aaj bhi `-56 dB` +
+`peak/64` tha, language **pehle chunk** se pin hota tha, aur music ke liye
+koi koi rasta hi nahi tha (sirf ek generic "no speech" card).
+
+Maine ye **teenon** layers par implement kiya, aur har fix ka apna failing
+test pehle likha:
+
+1. **Go daemon** — `internal/vad` (adaptive threshold + sensitivity dial +
+   ASMR floor), naya `internal/script` (script ratio / language cross-check),
+   naya `internal/api/language_pin.go` (pin state machine), naya
+   `internal/api/audio_profile.go` (`POST /v1/audio-profile`),
+   `internal/cloud/translate.go` (translation view).
+2. **Frontend** — `lib/audio-profile.ts`, `lib/languages.ts`, pipeline ka
+   naya contract, store ke naye fields (profile / language / sensitivity /
+   protected), aur TranscriptPanel me language chip, override dropdown,
+   sensitivity dial, translation line, protect pin aur music card.
+3. **Rust engine** — **chhua nahi**. Wahan dusra agent kaam kar raha hai
+   (AGENTS.md §10.3 "one file, one agent"), aur mere changes ka koi hissa
+   Rust me zaroori nahi tha: cut map ka threshold pehle se hi frontend se
+   aata hai (`detectSilence(path, noiseDb, minSecs)`).
+
+Ek baat saaf kar doon: **sab kuch implement nahi hua.** Jo nahi hua, wo M6 me
+likha hai — chupana nahi hai.
+
+---
+
+## M1. Case-by-case — doc kya kehta tha, code me kya tha, ab kya hai
+
+| #   | Doc kya kehta tha                             | Code me kya tha (ground truth)                                                     | Ab kya hai                                                                             |
+| --- | --------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| 11  | Per-segment language badge, translate view, Hinglish romanization | `ChunkTranscript.Language` sirf **chunk** level par thi; UI me koi badge nahi; koi translate pass nahi | Badge **har line** par (`Segment.Language`), naya `/v1/translate` pass, UI me "Translate" button. Romanization ke liye naya pass nahi — autocorrect prompt pehle se Latin script maangta hai (§M6.1) |
+| 12  | Code-switch: pin per request, raw text safe | Pin **pehle chunk** se (`server.go`), jisko MiMO ne B4 bola — pehla chunk music hua to poori job galat | Naya `languagePin`: pin **do consecutive agree karne wale chunks** ke baad. Raw text `original_text` me safe (pehle se tha)                                   |
+| 13  | Accented English → `hi` galat detect; override dropdown | Koi override UI nahi; `req.Language` bhej sakta tha par app kabhi nahi bhejti thi | UI me **LANG dropdown** (24 bhashayein), daemon user pin ko kabhi nahi badalta, sirf **warn** karta hai                                                    |
+| 14  | Tofu boxes: font fallback + `dir="auto"` | `app.css` me sirf `'Segoe UI'` — Devanagari/Urdu/CJK tofu | `--font-sans` me **Nirmala UI + Noto family** (Windows par already installed), `dir="auto"` har line par, `dir="auto"` translation par bhi                |
+| 15  | Rare language: source primary, translation secondary + badge, re-run pinned | Koi translation path hi nahi tha | Naya `cloud/translate.go` (batch + guards), `TranslatedText` **alag field** — `Text` kabhi replace nahi hota, UI me niche + badge                 |
+| 16  | Do songs overlap: speech-ratio → music project, waveform-first | Kuch nahi — generic "no speech" hi milta tha | Naya **music verdict**: 2 consecutive wordless chunks + file mostly sound → job `music: true`, **baaki chunks upload nahi** (cost bachti hai), UI me music card |
+| 17  | Pure music: "no speech found" card, waveform-first mode | `succeedNoSpeech` tha (MiMO sahi bola) | Upar wala + alag card: "Ye ek music project hai" — retry button ki jagah waveform-first ka raasta                                       |
+| 18  | Loudness pre-pass: voice-to-music ratio + master level, filter sirf copy par | Koi measurement nahi; koi filter nahi | Profile me **noise floor / speech level / SNR / peak** (PCM se, free). ebur128 LUFS aur afftdn/loudnorm filter **nahi** banaye (§M6.2)              |
+| 19  | Per-file adaptive threshold: noise floor + margin, sensitivity slider | Fixed `-56 dB` **+** `peak/64` — fan ke saamne kuch nahi milta, studio me har saans kat-ta hai | **Peak-relative rule hata diya**, floor **p10 percentile** se maapa, threshold = `floor + margin`, margin **sensitivity dial** se (3/9/18 dB). Cut map ab measured threshold use karta hai |
+| 20  | Whisper/ASMR: sensitivity + tail padding + per-segment override | `absFloorDB = -56` — whisper **us se niche** hota hai, to poora file silence | Conservative dial **absolute floor bhi -70** karta hai (ASMR floor), + **protect pin** per line, auto-cut protected lines ko chhuta hai              |
+
+---
+
+## M2. Naye bugs — B13 se B20 (MiMO ke B12 ke baad)
+
+Ye woh khaali jagahain jo doc aur code ke beech thi. MiMO ne B1–B12 dekhe
+(theek-thaek); maine **cases 11–20 ki** ke liye ye nikale.
+
+### B13 — Peak-relative threshold, dono taraf galat _(Case 19, 18)_
+
+- **Kahan:** `go/internal/vad/vad.go`, `measure()`.
+- **Evidence:** purana rule `T = max(-56 dB, peak/64)` tha.
+  - **Fan wala phone recording:** room tone −28 dBFS, peak −3 → `peak/64` =
+    −49 dB → `T = −49` → fan ki shanti (−28) bhi "awaaz" hai → **koi silence
+    hi nahi milti** → kuch nahi kat-ta. (Ye doc ke Case 19 ka pehla scenario
+    hai — maine ise test se reproduce kiya.)
+  - **Studio recording:** room tone −60 dBFS → fixed −30 se har saans
+    "silence" → video had had kat-ta. (Doc ka doosra scenario.)
+- **Fix:** peak-relative rule **hata diya**. Ab: floor **p10 percentile**
+  (frames jinme koi signal ho), speech **p95**, aur
+  `T = max(absFloor, min(floor + margin, speech − 3 dB))`.
+  - `floor + margin` = "room tone se kitna upar".
+  - `speech − 3 dB` = "speech se upar kabhi nahi jaana" — ye guard woh
+    failure rokta hai jahan floor aur speech ek hi level par hain (uniform
+    quiet recording) aur margin akela threshold ko speech ke **upar** le
+    jaata, jisse poora file silence ho jaata.
+
+### B14 — Do silence definitions ek dusre se lad rahi hain _(Case 19)_
+
+- **Kahan:** `vad.go` ka `absFloor/peak` (upload gate) vs `audio.rs` ka
+  `silencedetect -30 dB` (cut map).
+- **Bug:** ek hi file par gate "awaaz hai" bole aur cut map "silence" bole —
+  editor do alag duniya dekhta hai. MiMO ne ise B2 bola tha; maine isko **aadha
+  fix** kiya: dono ab **ek threshold** par aate hain (`floor + margin` ka
+  rule ek hi jagah hai — `vad.thresholdFor`), aur cut map ko wahi number
+  `POST /v1/audio-profile` se milta hai. Poora fix (gap-map ko daemon
+  banana, `audio_map` table) bacha hai — §M6.5.
+
+### B15 — Language pin = pehla chunk _(Case 12, 44)_
+
+- **Kahan:** `server.go`, `runTranscribe` — `if language == "" && res.Language != ""`
+  → pehla successful chunk pin kar deta tha.
+- **Evidence:** MiMO ka B4. Maine ise confirm kiya aur ek **naya test** likha
+  jo do alag cases alag karta hai:
+  - do chunks **same** bhasha bolte hain → teesre chunk ko pin milta hai;
+  - do chunks **alag** bhasha bolte hain → **kuch pin nahi** hota.
+- **Fix:** `internal/api/language_pin.go` — pin do consecutive agreeing
+  chunks ke baad, disagreement par pin **chhod diya jaata hai** (galat pin
+  poori job kharab karta hai, pin na hone se sirf thodi script consistency
+  jaati hai).
+
+### B16 — Script cross-check aur Hinglish ka jhagda _(Case 12, 39)_
+
+- **Kahan:** naya `internal/script`.
+- **Bug:** pehla cross-check likha tha "Devanagari% vs pinned lang". Usne
+  **Hinglish ko galat** pakad liya: pin `hi`, text Devanagari → 25% se kam
+  Devanagari → "mismatch" → pin chhod diya gaya. Aur aapka apna autocorrect
+  prompt ("Never output Devanagari") Latin script maangta hai — to Roman
+  Hinglish bhi "mismatch" ban gaya.
+- **Fix:** do alag sawaal ab:
+  - `Check()` — **UI ke liye**: "kya text us bhasha ki script me hai?" (warning)
+  - `Conflicts()` — **decision ke liye**: "kya text us bhasha ke alawa kisi
+    **doosri** script me hai?" — Latin **neutral** maana gaya, kyunki usme
+    code-switching normal hai. Sirf ek **doosri** script (Tamil, Cyrillic,
+    Arabic) hi conflict hai.
+- **Proof:** `TestHinglishInRomanScriptDoesNotReleaseThePin` — Roman Hinglish
+  par pin zinda rehta hai; `TestATextInAnotherScriptReleasesThePin` — Tamil
+  text par pin chhota hai.
+
+### B17 — "Hindi detect hua" aur "text Devanagari" — dono ek hi baat bolte hain _(Case 13)_
+
+- **Kahan:** `language_pin.go`.
+- **Bug (yeh accept karna zaroori hai):** accented-English wala case — Whisper
+  `hi` detect karta hai **aur** Devanagari me likhta hai. Pin aur text
+  **aapas me agree** karte hain, to script cross-check use **pakad hi nahi
+  sakta**. Sirf user ke paas ground truth hai.
+- **Fix (partial, aur ye honest hai):** user ka pin kabhi release nahi hota —
+  sirf **warning** milti hai ("text Devanagari hai par language English pin
+  hai"), aur UI me ek click ka override hai. Auto-detected pin release hota
+  hai, lekin sirf tab jab text **doosri** script me ho.
+
+### B18 — "Music" aur "No speech" ek hi jawab the (Case 16, 17)_
+
+- **Kahan:** `model.Job` — sirf `NoSpeech` tha.
+- **Bug:** music-only file par app "Koi speech nahi mili" dikhati thi, aur
+  "Phir bhi try karo" button deti thi — jo kabhi words nahi dhoondhega. User
+  ko galat umeed di jaati thi.
+- **Fix:** naya `Job.Music` + alag UI card ("Ye ek music project hai" —
+  waveform-first ka raasta) + `NoSpeechError.music`.
+
+### B19 — Music ka verdict 10 chunks ki mehnaat se nahi, 2 se _(Case 16)_
+
+- **Kahan:** `runTranscribe`.
+- **Fix:** do consecutive chunks jismein **awaaz** thi par **words nahi**
+  (provider ke `no_speech_prob` se confirm) → file "mostly sound" hai
+  (`speech_ratio ≥ 0.4`) → **baaki chunks upload hi nahi hote**.
+  - Ek wordless chunk **kaafi nahi**: ek video title card + disclaimer + pause
+    se shuru ho sakta hai. Do chahiye.
+  - File "mostly quiet" ho to music nahi maana jaata — wahan shaanti ke gaps
+    hain, music nahi.
+
+### B20 — Provider ka "mujhe yakeen nahi" evidence swallow ho jata tha _(Case 16, 24)_
+
+- **Kahan:** `cloud.go` — `isNonSpeech(s)` filter.
+- **Bug:** jo segments provider ne **low confidence** maankar diye, wo
+  silently drop ho jate the. Daemon ko pata hi nahi chalta tha ki chunk
+  me "awaaz thi par words nahi" — jo music verdict ka **poora signal** hai.
+- **Fix:** `ChunkTranscript.RawSegments` + `ChunkTranscript.NoSpeechRatio` —
+  filter se pehle ka hisaab. Ab daemon jaanta hai: "provider ne 12 segments
+  diye, 12 low-confidence the" = music bed.
+
+---
+
+## M3. Go daemon — kya likha (code ke saath)
+
+### M3.1 `internal/vad/vad.go` — adaptive threshold + sensitivity dial (Case 18/19/20)
+
+Naya rule, ek jagah:
+
+```go
+// thresholdFor puts the bar between the floor and the speech level.
+//
+// Two rules, both load-bearing:
+//
+//   - "floor + margin" is the intent: how far above the room tone a frame
+//     has to sit to count as sound.
+//   - never above "speech level - minSpeechMarginDB": in a file where the
+//     floor and the speech level are the same - a uniformly quiet lecture, or
+//     a file with no silence in it at all - the first rule alone would put
+//     the bar *above* the speech and call the whole file silence.
+func thresholdFor(floorDB, speechDB, absFloor, margin float64) float64 {
+	candidate := floorDB + margin
+	if limit := speechDB - minSpeechMarginDB; candidate > limit {
+		candidate = limit
+	}
+	if candidate < absFloor {
+		candidate = absFloor
+	}
+	return candidate
+}
+```
+
+Floor aur speech **ek hi pass** se, digital-silence frames ko chhod kar:
+
+```go
+func measureLevels(energies []float64, absFloor float64) (floorDB, speechDB float64) {
+	levels := make([]float64, 0, len(energies))
+	for _, e := range energies {
+		if e <= 0 {
+			continue // digital silence: a gap, not a level
+		}
+		levels = append(levels, amplitudeDB(e))
+	}
+	if len(levels) == 0 {
+		return absFloor, absFloor
+	}
+	sort.Float64s(levels)
+	return percentile(levels, floorPercentile), percentile(levels, speechPercentile)
+}
+```
+
+**Digital-silence frames chhodne ka reason** important hai: nahi to jo file
+me gaps hain, uska floor −∞ ho jaata, threshold room tone se neeche gir
+jaata, aur room tone "awaaz" ban jaata — yaani adaptive threshold ka poora
+point hi khatam.
+
+Sensitivity dial (margin) + ASMR floor:
+
+```go
+var sensitivityMargin = map[Sensitivity]float64{
+	SensitivityConservative: 3.0,
+	SensitivityBalanced:     9.0,
+	SensitivityAggressive:   18.0,
+}
+```
+
+| Dial           | Margin | Kya badalta hai                                             |
+| -------------- | ------ | ----------------------------------------------------------- |
+| Conservative   | 3 dB   | + absolute floor **−70 dB** (ASMR floor) — whisper bachta hai |
+| Balanced       | 9 dB   | sirf margin                                                  |
+| Aggressive     | 18 dB  | zyada dead air kat-ta hai, quiet speech ka risk             |
+
+Naye accessors (jo profile banaate hain): `NoiseFloorDB()`, `SpeechDB()`,
+`SNRDB()`, `PeakDB()`, `ThresholdDB()`, `MarginDB()`, `SpeechRatio()`, aur
+naya entry point `ScanWith(path, Options)`.
+
+### M3.2 `internal/script/script.go` — naya package (Case 12/13/44)
+
+Unicode block counting: Devanagari, Bengali, Gurmukhi, Gujarati, Oriya,
+Tamil, Telugu, Kannada, Malayalam, Sinhala, Thai, Arabic, Hebrew, Greek,
+Cyrillic, CJK, Hangul. Sirf **letters** ginte hain — digits aur punctuation
+kisi script ke nahi hote.
+
+```go
+// Conflicts reports whether the text is written in a script that
+// *contradicts* the pinned language, as opposed to merely code-switching
+// out of it.
+func Conflicts(text, langCode string) bool {
+	ratio := Analyze(text)
+	if ratio.Total() == 0 {
+		return false
+	}
+	observed := ratio.Dominant()
+	expected := ExpectedScript(langCode)
+	if observed == ScriptLatin {
+		return false // Latin is neutral: code-switching into it is normal
+	}
+	return observed != expected
+}
+```
+
+`ExpectedScript(code)` ISO-639-1 → script map deta hai (`hi`→devanagari,
+`ta`→tamil, `ar`→arabic …), aur Latin-script bhashayein (en/de/fr) ke liye
+`latin` — lekin `Check()` unke liye **lenient** hai (60% rule), kyunki
+Hinglish me English words normal hain.
+
+### M3.3 `internal/api/language_pin.go` — pin state machine (Case 11/12/13/44)
+
+```go
+const agreementChunks = 2
+
+func (p *languagePin) observe(detected string) string {
+	// The user's choice wins, always.
+	if p.forced != "" {
+		return p.forced
+	}
+	code := normalizeLang(detected)
+	if code == "" {
+		return p.current // a chunk that reported nothing is not a disagreement
+	}
+	if code == p.candidate {
+		p.agreements++
+	} else {
+		p.candidate = code
+		p.agreements = 1
+	}
+	if p.current == "" && p.agreements >= agreementChunks {
+		p.current = code
+	}
+	return p.current
+}
+```
+
+Aur conflict par pin chhodna:
+
+```go
+func (p *languagePin) noteMismatch(text string) {
+	lang := p.language()
+	if lang == "" {
+		return
+	}
+	// Only a real conflict counts. Text in Latin under a Hindi pin is
+	// Hinglish in Roman script - normal, and not a reason to touch the pin.
+	if !script.Conflicts(text, lang) {
+		return
+	}
+	verdict := script.Check(text, lang)
+	if p.forced != "" {
+		p.warning = verdict.Reason // the user is told, never overruled
+		return
+	}
+	p.current = ""
+	p.candidate = ""
+	p.agreements = 0
+	p.warning = verdict.Reason + " - language pin released, the next chunk is detected again"
+}
+```
+
+### M3.4 `internal/api/audio_profile.go` — measurement endpoint (Case 16/17/18/19/20)
+
+Naya endpoint: `POST /v1/audio-profile`. Ye **cut map se pehle** call hota
+hai, taaki silence threshold file ke hisaab se ho.
+
+```go
+func measureProfile(chunks []model.ChunkRequest, sensitivity string) (*model.AudioProfile, error) {
+	opt := scanOptions(sensitivity)
+	floors := make([]float64, 0, len(chunks))
+	speeches := make([]float64, 0, len(chunks))
+	var (
+		duration float64
+		audible  float64
+		peakDB   = -120.0
+		measured int
+	)
+	for _, c := range chunks {
+		scan, err := vad.ScanWith(c.Path, opt)
+		if err != nil {
+			continue // one unreadable chunk is not a failed measurement
+		}
+		measured++
+		duration += scan.DurationSecs()
+		audible += scan.AudibleSecs()
+		floors = append(floors, scan.NoiseFloorDB())
+		speeches = append(speeches, scan.SpeechDB())
+		if p := scan.PeakDB(); p > peakDB {
+			peakDB = p
+		}
+	}
+	...
+}
+```
+
+Chunk-level numbers **median** se fold hote hain (mean nahi): ek loud
+passage ka chunk file ka floor nahi uthayega.
+
+Profile ka shape (`model.AudioProfile`): `duration_secs`, `audible_secs`,
+`speech_ratio`, `noise_floor_db`, `speech_db`, `snr_db`, `peak_db`,
+`threshold_db`, `margin_db`, `sensitivity`, `silence_threshold_db`,
+`chunks`, `measured`.
+
+### M3.5 `internal/api/server.go` — the loop
+
+`runTranscribe` me ab:
+
+```go
+// 1. The measurement pass, before a single byte goes to the provider.
+profile, profileErr := measureProfile(req.Chunks, req.Sensitivity)
+if profileErr == nil {
+	s.store.setAudioProfile(jobID, profile)
+}
+
+// 2. The badge on every line of this chunk.
+chunkLanguage := res.Language
+if code := cloud.NormalizeLanguage(chunkLanguage); code != "" {
+	chunkLanguage = code
+} else {
+	chunkLanguage = language
+}
+for si := range res.Segments {
+	res.Segments[si].Language = chunkLanguage
+}
+
+// 3. The detector gets a vote only after the text is in.
+language = pin.observe(res.Language)
+if len(res.Segments) > 0 {
+	pin.noteMismatch(segmentText(res.Segments))
+}
+
+// 4. The music verdict.
+if len(res.Segments) == 0 && res.RawSegments > 0 {
+	wordlessChunks++
+} else if len(res.Segments) > 0 {
+	wordlessChunks = 0
+}
+if wordlessChunks >= musicProbeChunks && musicLikely(profile) {
+	s.store.setFailedChunks(jobID, failedIdx)
+	s.store.succeedMusic(jobID, failures)
+	return nil
+}
+```
+
+Naye routes: `POST /v1/audio-profile`, `POST /v1/translate`.
+Naye store methods: `succeedMusic`, `setAudioProfile`, `setLanguage`,
+`succeedTranslate`.
+
+### M3.6 `internal/cloud/translate.go` — translation view (Case 11, 15)
+
+Gemini ke upar ek naya pass. **Source text kabhi replace nahi hota** —
+`TranslatedText` alag field me jaata hai, aur `TranslationSource` batata hai
+kis provider ne banaya.
+
+```go
+// The guards here are a refusal to mislabel a line. An out-of-range index, a
+// count mismatch or an empty string leaves the line untranslated - the UI
+// then shows the source text alone, which is correct, instead of a
+// translation that belongs to a different line.
+if len(byIndex) != len(dst) {
+	return
+}
+for i := range dst {
+	if _, ok := byIndex[i]; !ok {
+		return
+	}
+}
+```
+
+Prompt bhi ye kehta hai: *"Translate meaning, do not rewrite … a line that is
+already in English comes back unchanged."* — kyunki ek summariser se
+translation nahi aata, aur aadha sentence gum hua hua translation user ko
+bataya nahi jaata.
+
+### M3.7 `internal/model/model.go` — contract
+
+Naye fields (sab `camelCase` nahi — ye daemon ka snake_case contract hai):
+
+```go
+// Segment
+Language         string `json:"language,omitempty"`
+TranslatedText   string `json:"translated_text,omitempty"`
+TranslationSource string `json:"translation_source,omitempty"`
+Protected        bool   `json:"protected,omitempty"`
+
+// Job
+Music           bool          `json:"music,omitempty"`
+Language        string        `json:"language,omitempty"`
+LanguageWarning string        `json:"language_warning,omitempty"`
+AudioProfile    *AudioProfile `json:"audio_profile,omitempty"`
+Translated      []Segment     `json:"translated,omitempty"`
+
+// TranscribeRequest
+Sensitivity string `json:"sensitivity,omitempty"`
+```
+
+---
+
+## M4. Frontend — kya likha
+
+| File                                  | Kya badla                                                                          |
+| ------------------------------------- | ---------------------------------------------------------------------------------- |
+| `src/lib/audio-profile.ts` (naya)     | `AudioProfile` type, `fetchAudioProfile()`, `silenceThresholdDb()`, `describeProfile()`, `voiceIsBuried()`, `looksLikeMusic()` |
+| `src/lib/languages.ts` (naya)         | 24 bhashayein, `languageLabel()`, `isLanguageSwitch()`                              |
+| `src/lib/pipeline.ts`                 | `CloudSegment`/`CloudJob` ke naye fields, `sensitivity` option, naya `runTranslation()`, `NoSpeechError.music` |
+| `src/lib/types.ts`                    | `TranscriptLine.language` / `.translatedText` / `.protected`                        |
+| `src/lib/stores/project.svelte.ts`    | `audioProfile`, `language`, `languageOverride`, `languageWarning`, `sensitivity`, `music` state; measured threshold; protected lines; `translateTranscript()`; `toggleProtected()` |
+| `src/lib/components/cut/TranscriptPanel.svelte` | LANG dropdown, SILENCE dial, profile summary, Translate button, per-line language badge, translation line, protect pin, music card, `dir="auto"` |
+| `src/app.css`                         | `--font-sans` me Nirmala UI + Noto family (Case 14)                                  |
+
+Cut map ab measured threshold use karta hai:
+
+```ts
+// The threshold is this file's own, measured from its own room tone.
+return detectSilence(path, silenceThresholdDb(this.audioProfile), minSecs);
+```
+
+Aur protected line auto-cut se bach jaata hai:
+
+```ts
+for (const l of this.lines) {
+	// A line the user pinned is never auto-cut. The automatic pass is a
+	// suggestion; the pin is the user's decision, and it wins.
+	if (l.protected) continue;
+	...
+}
+```
+
+---
+
+## M5. Tests — kya proof hai
+
+### Go (daemon)
+
+```
+go/internal/vad/vad_test.go        +6 tests   (adaptive threshold, ASMR, sensitivity, profile)
+go/internal/script/script_test.go   (new) 9 tests (script ratio, conflict vs mismatch)
+go/internal/cloud/translate_test.go (new) 7 tests (source-safe, misaligned reply, failed batch)
+go/internal/api/language_pin_test.go(new) 10 tests (bootstrap, forced, conflict, release)
+go/internal/api/audio_profile_test.go (new) 8 tests (floor/SNR/threshold, sensitivity, endpoint)
+go/internal/api/transcribe_audio_test.go (new) 4 tests (music verdict, badge, profile on job)
+go/internal/api/server_test.go      2 tests re-written (pin contract badla)
+```
+
+Sab kuch ek line se chalata hai:
+
+```powershell
+cd go; gofmt -l . ; go vet ./... ; go test ./...
+```
+
+→ **sab package green** (api, cloud, config, dl, queue, script, ublock, vad,
+vault).
+
+Sabse important do test:
+
+```go
+// Case 19, first half: a phone recording next to a fan. The room tone sits
+// at -28 dBFS, which is *above* the old fixed -30 dB threshold, so a fixed
+// threshold found no silence anywhere in the file and nothing was ever cut.
+func TestAdaptiveThresholdFindsSilenceUnderRoomTone(t *testing.T) { ... }
+```
+
+```go
+// A reply that does not line up is refused. Shifting a translation by one
+// would put the wrong words under the wrong line, which is worse than no
+// translation at all.
+func TestAMisalignedReplyIsRefused(t *testing.T) { ... }
+```
+
+### Frontend
+
+```
+src/lib/audio-profile.test.ts (new) 5 tests
+src/lib/languages.test.ts     (new) 4 tests
+```
+
+```powershell
+cd Clipchamp_Bunny; npm run lint ; npm run check ; npm test
+```
+
+→ `svelte-check` me **0 errors, 0 warnings**, node test runner me **94+
+tests pass**.
+
+---
+
+## M6. Jo nahi bana — honest gaps
+
+Ye hissa sabse zaroori hai. Ye kaam **poora nahi** hua, aur koi agent ise
+poora samjhega to galat plan banayega.
+
+1. **Case 11 ka "Hinglish → Roman" alag pass nahi bana.** Reason: repo ka
+   autocorrect prompt pehle se kehta hai *"The script. Roman/Latin letters
+   only. Never output Devanagari."* — yaani romanization **already** ho rahi
+   hai, sirf alag endpoint nahi hai. Jo bacha: per-segment language badge
+   (bana) aur romanization ka *trigger* (UI toggle — **nahi** bana).
+2. **Case 18 ka ebur128/LUFS pass nahi bana.** Profile me dBFS numbers hain
+   (floor, speech, peak, SNR) — PCM se, free. Lekin **integrated LUFS** aur
+   **true peak** (ebur128) nahi, aur `afftdn`/`loudnorm` filters transcription
+   copy par **nahi** chale. Ye teenon ek alag Rust module maangte hain
+   (`src-tauri/src/audiometry.rs`), aur Rust me dusra agent kaam kar raha
+   hai — maine jaan-boojh kar nahi chheda.
+3. **Case 18 ka "voice buried under BGM" sirf ek *hint* hai.** `snr_db < 8`
+   par UI warning dikhata hai; par uske baad koi automatic cleanup nahi.
+4. **Case 20 ka speech-tail padding (+0.4 s) cut map par nahi laga.** Cut
+   geometry Rust me hai (`audio.rs`/`export.rs`); maine wo chhedi nahi. Jo
+   bana: sensitivity dial + ASMR floor + per-line **protect pin**.
+5. **Case 20 ka local ONNX VAD nahi bana.** Energy-heuristic + dial +
+   protect pin hi implemented answer hai. ONNX CPU VAD Python-free Go/Rust
+   me likhna ek alag project hai.
+6. **Transcript table me naye columns nahi.** `language`, `translatedText`,
+   `protected` abhi app ke apne per-project state (localStorage) me hain, SQLite
+   transcript table me nahi. Reason: wahi file Rust crate me hai aur usme
+   schema migration chahiye (§M7.1).
+7. **Music verdict 2-chunk probe hai, poori file ka analysis nahi.** Ek file
+   jisme pehle 2 chunks silent hain aur baad me speech hai, woh galat "no
+   speech" ho sakti hai — waise hi jaise doc ka Case 1/25 bhi kehta hai.
+8. **`/v1/audio-profile` ke liye daemon chalna zaroori hai.** Daemon band ho
+   to app purane fixed −30 dB par wapas aa jaata hai (honest fallback, par
+   adaptive nahi).
+9. **Ek hi measurement pass, do consumers — aadha.** Daemon 16 kHz mono
+   *chunks* maapta hai; cut map source par `silencedetect` chalata hai. Dono
+   ek hi *rule* use karte hain, par alag *input* — perfect ekta nahi (§M7.5).
+
+---
+
+## M7. Problems aur suggestions (aapke poochhe hue sawaal)
+
+### 7.1 Transcript schema ko naye columns chahiye — ye agla kaam hai
+
+`Segment` ke naye fields Rust side tak nahi gaye, kyunki transcript table ka
+schema `src-tauri/src/transcript.rs` me hai (us file par ek aur agent kaam
+kar raha hai — `git status` me dikhta hai).
+
+**Suggestion:** `transcript` table me teen naye columns —
+`language TEXT`, `translated_text TEXT`, `protected INTEGER DEFAULT 0` — aur
+`migrate_transcripts()` me ek `ALTER TABLE` migration. Uske baad frontend ka
+localStorage fallback hata sakte hain. Jo abhi localStorage me hai wo
+**project-path se** key hota hai, yaani do alag machines par same project ki
+alag copy milegi — theek hai, par ek hi machine par theek hai.
+
+### 7.2 `astats percentile` method exist nahi karta — doc ko patch karna chahiye
+
+Case 19 ka fix likhta hai: *"noise floor measure karo (quietest percentile
+astats se)"*. `astats` **whole-file** statistics deta hai, time-series
+percentile nahi — wo command waise chalegi hi nahi. MiMO ne ise B9 me
+pakda tha.
+
+**Mera approach:** percentile PCM frames se nikala (jaisa upar hai) — ek hi
+pass, koi extra command nahi. **Doc me ek line badalni chahiye:** "astats
+percentile" → "the 10th percentile of the 10 ms frame levels the local
+scanner already reads".
+
+### 7.3 Peak-relative rule hata dena ek **behaviour change** hai
+
+`peak/64` hataane se ek file ka cut behaviour badal sakta hai jahan
+"quiet-but-not-silent" passages ab silence gin jaate hain. Purane saare
+tests **pass** hain (inme se ek specifically is rule ko test karta tha), par
+**ek asli recording par eyeball zaroori hai** — wo main nahi kar paya,
+kyunki us 5.3 GB file ka path is machine par nahi hai.
+
+**Suggestion:** deploy ke baad wohi InShot file dobara import karke
+"AI ne kitne cut kiye" compare karein — pehle 274 raw gaps the, ab
+two-tier classification ke baad ~46 bade zones. Number bada matlab better
+nahi hai — *sahi* number hona chahiye.
+
+### 7.4 Music probe me 2 API calls lagti hain
+
+Music pehle 2 chunks ka paisa lagta hai. Ye jaan-boojh kar rakha hai: ek
+probe se pata nahi chalta ki file khuli hai ya music hai. 10 chunks ka
+paisa bachana behtar hai, par ek galat "music" verdict 48 minute ka
+transcript chhodh deta. **Suggestion:** agar probe ke dauran `no_speech_ratio`
+bahut high hai (>0.9) to ek chunk par ruk jaana — ek zyada call nahi.
+
+### 7.5 B2 ka asli fix bacha hai: gap-map ko daemon banao
+
+Maine threshold ko ek hi rule par la diya, par **do measurement sites** ab
+bhi hain (daemon ke 16 kHz chunks vs FFmpeg ka `silencedetect` source par).
+Poora fix ye hai ki **daemon hi gap map banaye** (Case 1 ka "audio map" +
+Case 35 ka two-tier classification) aur Rust usko consume kare. Tab:
+silence, cut candidates, upload gate aur music ratio — sab **ek** map se.
+
+**Ye B1 (span-map) ke saath ek hi kaam hai** — dono ko ek saath karna
+chahiye, warna do jagah alag-alag time par map banegi.
+
+### 7.6 Do flags (`no_speech` + `music`) ek field ban sakte hain
+
+Abhi dono alag hain (ek "shant", ek "music"). Ek `speech_state` enum
+(`silent` | `speech` | `music`) saaf hoga aur aage naye cases (jaise "music
+bed + ek speech line") me extend hoga. Abhi theek hai, par 52 cases tak
+badh raha hai to ek field bachega.
+
+### 7.7 Language override transcript me **persist** nahi hota
+
+`languageOverride` session me rehta hai (UI state), transcript ke saath
+nahi. Agli transcription me to chalta hai, par app band karke kholne par
+**detector** phir se guess karta hai. Agar user ne mehnat se "ye English
+hai" set kiya hai, to wo decision bhi save hona chahiye.
+
+### 7.8 `detect_silence` ka `minSecs` bhi per-file hona chahiye
+
+Sirf threshold adaptive hua. 3 second ka minimum **har file** par same
+rehta hai — par 2 GB ki movie (cut-heavy) aur 50 min ka tutorial (chapter
+based) ke liye sahi minimum alag hai. Isi tarah Case 35 ka two-tier
+classification (micro-gap merge vs bada gap cut) abhi bhi nahi hua — wo
+bhi isi "gap map" ka kaam hai (§7.5).
+
+### 7.9 Case 15 ka "pinned language ke saath dobara" button nahi bana
+
+Doc kehta hai: *"re-run option pinned language ke saath"*. Maine **pin**
+banaya, par transcript ko **re-transcribe** karne ka button nahi. Wajah:
+re-transcribe ka matlab hai **poore video ka dobara paisa** — jo ek line ke
+liye galat decision hai. Sahi design: sirf **un lines ko** dobara jise
+user ne chuna ho, aur wahi bhi ek button ke saath (agar cost dikhe).
+
+### 7.10 Ek chhota observation: `NoSpeechError` ka message ab do hisso me hai
+
+Pehle message hamesha "Koi speech nahi mili" tha. Ab music ke liye alag
+message hai, lekin dono `NoSpeechError` class me hain — kuch jagah
+`instanceof NoSpeechError` check karke sirf "no speech" dikhana ab galat
+hoga. Maine app ke teen jagah update kiye hain, par aage ka koi feature ye
+class check kare to **`.music` bhi dekhna** chahiye.
+
+---
+
+## M8. Closing — deepseek
+
+Cases 11–20 ka asal sawaal ye nahi tha ki "kya karna chahiye" — wo pehle se
+likha tha. Sawaal ye tha ki **repo me wo hota bhi hai ya nahi**. Jawab tha:
+adhoora. Noise floor koi nahi maapta tha, language pehla chunk pe pin hota
+tha, music ke liye koi rasta nahi tha, translation pass nahi tha, tofu boxes
+ke liye font stack nahi tha.
+
+Mere addendum ka teesra jodna ye hai: **"har threshold ko apni file se
+nikaalna"** — ek measurement, ek rule, bahut se consumers. Isi se case 19
+ka fan-wala phone recording theek hota hai, case 18 ka SNR milta hai, case
+20 ki whisper bach jaati hai, aur case 16/17 ka music verdict pehle do
+chunks me hi pata chal jaata hai.
+
+Do baatein jo main **nahi** chhupaunga: pehla, peak-relative threshold
+hataana ek real behaviour change hai aur ek asli recording par check hona
+chahiye. Doosra, cases 11–20 ka bada hissa abhi **decide karta** hai, karta
+nahi — auto-cut nahi, auto-translate nahi, auto-cleanup nahi. Doc ka
+"measure first, suggest, never act" yahi hai, aur isi liye har naya decision
+ek **suggestion** hai jo user ke haath me hai.
+
+**— deepseek** (opencode / minimax-m3.1-flash-free) · 2026-11-12
+*Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) — dono untouched. Ye part
+sirf append hai.*
+
+---

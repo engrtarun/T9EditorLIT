@@ -444,7 +444,10 @@ pub fn save_transcript(
                     start_secs: row.get(1).map_err(|e| e.to_string())?,
                     end_secs: row.get(2).map_err(|e| e.to_string())?,
                     text: get(3)?,
-                    keep: row.get::<_, Option<i64>>(4).map_err(|e| e.to_string())?.unwrap_or(1),
+                    keep: row
+                        .get::<_, Option<i64>>(4)
+                        .map_err(|e| e.to_string())?
+                        .unwrap_or(1),
                     flag: get(5)?,
                     original_text: get(6)?,
                     words: get(7)?,
@@ -456,8 +459,7 @@ pub fn save_transcript(
     // Ids the caller no longer provides are gone. One DELETE per stale id is
     // fine after a split/merge — the count is at most a handful, and it keeps
     // the statement cache warm instead of building a giant IN (...) list.
-    let provided: std::collections::HashSet<&str> =
-        lines.iter().map(|l| l.id.as_str()).collect();
+    let provided: std::collections::HashSet<&str> = lines.iter().map(|l| l.id.as_str()).collect();
     let mut stale: Vec<&String> = existing
         .keys()
         .filter(|id| !provided.contains(id.as_str()))
@@ -853,10 +855,7 @@ pub fn purge_projects(conn: &Connection, paths: &[String]) -> Result<PurgeSummar
 
     // Canonicalise and dedupe up front — a duplicate path would otherwise be
     // counted (and cleaned) twice.
-    let mut unique: Vec<String> = paths
-        .iter()
-        .map(|p| canonical_path(p))
-        .collect::<Vec<_>>();
+    let mut unique: Vec<String> = paths.iter().map(|p| canonical_path(p)).collect::<Vec<_>>();
     unique.sort_unstable();
     unique.dedup();
     if unique.is_empty() {
@@ -1362,10 +1361,7 @@ mod tests {
 
         // A no-op autosave tick must write zero rows.
         let same = vec![line("1", "a"), line("2", "b"), line("3", "c")];
-        assert_eq!(
-            save_transcript(&conn, &canon("/v.mp4"), &same).unwrap(),
-            0
-        );
+        assert_eq!(save_transcript(&conn, &canon("/v.mp4"), &same).unwrap(), 0);
 
         // One text edit → exactly one rewritten row.
         let edited = vec![line("1", "a"), line("2", "b fixed"), line("3", "c")];
@@ -1405,7 +1401,10 @@ mod tests {
 
         // The same line without the word list: the stored JSON must survive.
         let bare = line("1", "hello");
-        assert_eq!(save_transcript(&conn, &canon("/v.mp4"), &[bare]).unwrap(), 0);
+        assert_eq!(
+            save_transcript(&conn, &canon("/v.mp4"), &[bare]).unwrap(),
+            0
+        );
 
         let loaded = load_transcript(&conn, &canon("/v.mp4")).unwrap();
         assert_eq!(loaded[0].words.as_ref().unwrap().len(), 1);

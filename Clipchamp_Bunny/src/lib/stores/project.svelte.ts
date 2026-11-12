@@ -40,14 +40,35 @@ import {
 } from '../transcript-plan';
 import { media } from './media.svelte';
 import { player } from './player.svelte';
+
+/**
+ * The per-line extras the editor keeps beside the words: the language badge,
+ * the translation, and the "never cut this" pin.
+ *
+ * They live in the app's own per-project state rather than in the transcript
+ * table, because they are annotations *on* the words rather than part of
+ * them, and the transcript schema stays as it is.
+ */
+interface LineMeta {
+  language?: string;
+  translatedText?: string;
+  protected?: boolean;
+}
 import {
   NoSpeechError,
   runAnalysis,
   runCorrection,
   runTranscription,
+  runTranslation,
   toLineFlag
 } from '../pipeline';
 import type { CloudSegment } from '../pipeline';
+import {
+  fetchAudioProfile,
+  silenceThresholdDb,
+  type AudioProfile,
+  type Sensitivity
+} from '../audio-profile';
 import { settings } from './settings.svelte';
 import {
   assetUrl,
@@ -322,6 +343,56 @@ class ProjectStore {
    * the user which one they are looking at.
    */
   noSpeech = $state(false);
+
+  /**
+   * The audio is a music bed, not a talking person.
+   *
+   * A different answer from `noSpeech`, and the panel treats it differently:
+   * for a music track the waveform is the right instrument, so the panel says
+   * so instead of inviting a retry that can never find words.
+   */
+  music = $state(false);
+
+  /**
+   * The language the transcript was decoded as.
+   *
+   * Set from the daemon's own answer, and overridable by the user: the
+   * detector guesses, the user knows. The chip in the panel header shows
+   * both.
+   */
+  language = $state<string | null>(null);
+
+  /**
+   * The language the user pinned, if any.
+   *
+   * A pinned language is never second-guessed by the daemon - it is only
+   * reported back when the text comes back in a different script, which is
+   * the one case the user really wants to know about.
+   */
+  languageOverride = $state<string | null>(null);
+
+  /** Why the detected language might not be right. */
+  languageWarning = $state<string | null>(null);
+
+  /**
+   * The local measurement of this source's audio.
+   *
+   * Free, local and honest: the room tone of this recording, the level its
+   * voice sits at, how far apart they are, and the silence threshold the
+   * cut map uses. One measurement, so the editor and the transcriber cannot
+   * disagree about the same silence.
+   */
+  audioProfile = $state<AudioProfile | null>(null);
+
+  /**
+   * How eager the silence detector is to call a pause silence.
+   *
+   * Conservative keeps a whisper and cuts less; aggressive cuts more dead
+   * air and is the one that can clip a quiet line. It is a margin above the
+   * *measured* floor, so the same choice works on a studio recording and on
+   * a phone next to a fan.
+   */
+  sensitivity = $state<Sensitivity>('balanced');
 
   /** Filesystem path of the source, when running under Tauri. */
   sourcePath = $state<string | null>(null);
@@ -690,6 +761,7 @@ class ProjectStore {
       // No mock lines here. On the desktop the user gets the real reason the
       // transcript could not be produced, and a retry.
       this.noSpeech = e instanceof NoSpeechError;
+      this.music = e instanceof NoSpeechError && e.music;
       this.loadError = e instanceof Error ? e.message : String(e);
       // A run that failed after Whisper already saved rows must not lose them:
       // clearing here is how a long transcription vanished into an empty panel.
@@ -1078,6 +1150,17 @@ class ProjectStore {
 
       const { plan, chunks } = await this.ensurePlan(source);
       let current = plan;
+
+      // The measurement pass, before a single API call.
+      //
+      // It is free and local: the daemon reads the WAV chunks that already
+      // exist and reports this file's own room tone, voice level and silence
+      // threshold. The cut map uses that threshold instead of a fixed -30 dB,
+      // and the panel can show the numbers before anything is paid for.
+      if (!this.audioProfile) {
+        this.audioProfile = await fetchAudioProfile(chunks, this.sensitivity);
+      }
+
       while (true) {
         const span = nextSpan(current);
         if (!span) break;
@@ -1120,6 +1203,7 @@ class ProjectStore {
       // is in `this.lines`, in SQLite and in the plan — nothing is thrown away.
       this.loadError = e instanceof Error ? e.message : String(e);
       this.noSpeech = e instanceof NoSpeechError;
+      this.music = e instanceof NoSpeechError && e.music;
     } finally {
       this.planRunning = false;
       this.planAll = false;
@@ -1194,6 +1278,107 @@ class ProjectStore {
   }
 
   /**
+   * Record the daemon's answers about the language.
+   *
+   * The pin is the daemon's answer, the override is the user's, and the
+   * warning is what the daemon saw when the text came back in a different
+   * script than the language says it should have. All three are shown in the
+   * panel header, because the user is the only one who can settle it.
+   */
+  private noteLanguage(language?: string, warning?: string): void {
+    if (language) this.language = language;
+    if (warning) this.languageWarning = warning;
+  }
+
+  /**
+   * Pin the language for the next transcription.
+   *
+   * `null` clears the pin and lets the detector decide again. A pinned
+   * language is never second-guessed by the daemon - only reported back when
+   * the text disagrees with it.
+   */
+  setLanguageOverride(code: string | null): void {
+    this.languageOverride = code && code.length ? code : null;
+  }
+
+  /**
+   * Change how eager the silence detector is, and re-measure the file.
+   *
+   * The dial is a margin above the *measured* floor, so changing it changes
+   * the numbers: the threshold the cut map uses, and how much of the file
+   * counts as sound. Re-measuring is local and free (the chunks are already
+   * on disk), so there is no reason to leave a stale threshold in place.
+   */
+  async setSensitivity(next: Sensitivity): Promise<void> {
+    if (next === this.sensitivity) return;
+    this.sensitivity = next;
+    this.audioProfile = null;
+    const chunks = this.chunkCache?.chunks;
+    if (!chunks?.length) return;
+    this.audioProfile = await fetchAudioProfile(chunks, this.sensitivity);
+  }
+
+  /**
+   * The translation view: the same lines rendered in another language.
+   *
+   * The source text is never replaced. The translation is shown underneath
+   * the original with a badge, and a line the model could not translate keeps
+   * its own text - which is the only honest shape for this feature.
+   */
+  async translateTranscript(target = 'en'): Promise<void> {
+    const source = this.sourcePath;
+    if (this.pipeline || !source || !this.lines.length) return;
+    const db = await defaultDbPath();
+    this.loadError = null;
+    try {
+      this.pipeline = {
+        stage: 'Translation shuru…',
+        fraction: 0.5,
+        lines: this.lines.length
+      };
+      const translated = await runTranslation(
+        source,
+        this.toCloudSegments(this.lines),
+        (p) => {
+          this.pipeline = {
+            stage: p.message,
+            fraction: 0.5 + p.fraction * 0.45,
+            lines: p.lines,
+            completed: p.completed,
+            total: p.total
+          };
+        },
+        target
+      );
+      // Fold the translations onto the lines we already have: the text is
+      // never overwritten, only accompanied.
+      const byId = new Map(translated.map((s) => [s.id, s]));
+      this.lines = this.lines.map((l) => {
+        const t = byId.get(l.id);
+        return t?.translated_text ? { ...l, translatedText: t.translated_text } : l;
+      });
+      await this.saveSegments(db, source, this.toCloudSegments(this.lines));
+    } catch (e) {
+      this.loadError = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.pipeline = null;
+    }
+  }
+
+  /**
+   * Pin a line as "never cut this".
+   *
+   * The escape hatch for every detector that cannot be trusted: a whisper, a
+   * crosstalk overlap, a hook that reads as silence. The automatic silence
+   * pass skips protected lines; the user can still cut them by hand.
+   */
+  toggleProtected(lineId: string): void {
+    this.commit();
+    this.lines = this.lines.map((l) => (l.id === lineId ? { ...l, protected: !l.protected } : l));
+    this.scheduleAutosave();
+  }
+
+  /**
    * Buy exactly one chunk: send its WAV, merge the words into SQLite, mark it
    * in the plan. A silent chunk counts as done — the API ran, the answer was
    * "no words", and re-sending it would buy the same silence again.
@@ -1212,16 +1397,27 @@ class ProjectStore {
       total
     };
     try {
-      const res = await runTranscription(sourcePath, [chunk], (p) => {
-        this.pipeline = {
-          stage: `Whisper chunk ${position}/${total} — ${p.message}`,
-          fraction: 0.15 + ((position - 1 + p.fraction) / Math.max(1, total)) * 0.62,
-          lines: p.lines,
-          completed: position - 1,
-          total,
-          lastLine: p.lastLine
-        };
-      });
+      const res = await runTranscription(
+        sourcePath,
+        [chunk],
+        (p) => {
+          this.pipeline = {
+            stage: `Whisper chunk ${position}/${total} — ${p.message}`,
+            fraction: 0.15 + ((position - 1 + p.fraction) / Math.max(1, total)) * 0.62,
+            lines: p.lines,
+            completed: position - 1,
+            total,
+            lastLine: p.lastLine
+          };
+        },
+        {
+          sensitivity: this.sensitivity,
+          ...(this.languageOverride ? { language: this.languageOverride } : {})
+        }
+      );
+      // The daemon's own answers about the language and the file's audio.
+      this.noteLanguage(res.language, res.languageWarning);
+      if (res.profile) this.audioProfile = res.profile;
       // Fold by time: a resumed plan can transcribe chunk 7 after chunk 2,
       // and the transcript must still read in source order.
       const merged = [...this.toCloudSegments(this.lines), ...res.segments].sort(
@@ -1323,7 +1519,10 @@ class ProjectStore {
       text: l.text,
       flag: l.flag,
       keep: l.keep === 'keep',
-      words: l.words
+      words: l.words,
+      language: l.language,
+      translated_text: l.translatedText,
+      protected: l.protected
     }));
   }
 
@@ -1337,6 +1536,9 @@ class ProjectStore {
       flag: toLineFlag(s.flag),
       keep: s.keep ? 'keep' : 'cut',
       confidence: 1,
+      language: s.language,
+      translatedText: s.translated_text,
+      protected: s.protected,
       words: s.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
     }));
   }
@@ -1437,7 +1639,13 @@ class ProjectStore {
       }
       return spans;
     }
-    return detectSilence(path, -30, minSecs);
+    // The threshold is this file's own, measured from its own room tone.
+    //
+    // The old fixed -30 dB was wrong in both directions: a phone recording
+    // next to a fan has room tone at -28 dB, so nothing was ever found to be
+    // silence, and a studio recording at -60 dB had every breath cut. The
+    // daemon measured the floor; this is the number it measured.
+    return detectSilence(path, silenceThresholdDb(this.audioProfile), minSecs);
   }
 
   /** Mark every transcript line that overlaps one of the given spans as cut. */
@@ -1449,6 +1657,9 @@ class ProjectStore {
     this.suggestions = [];
     const cut = new Set<string>();
     for (const l of this.lines) {
+      // A line the user pinned is never auto-cut. The automatic pass is a
+      // suggestion; the pin is the user's decision, and it wins.
+      if (l.protected) continue;
       for (const r of ranges) {
         if (l.endSec > r.start && l.startSec < r.end) {
           cut.add(l.id);
@@ -1644,13 +1855,27 @@ class ProjectStore {
     const key = this.uiStateKey();
     if (!key) return;
     try {
+      // The per-line extras - the language badge, the translation and the
+      // "never cut this" pin - ride along here rather than in the transcript
+      // table. They are the editor's own annotations on the words, not part
+      // of the words, and the transcript schema stays as it is.
+      const lineMeta: Record<string, LineMeta> = {};
+      for (const l of this.lines) {
+        if (!l.language && !l.translatedText && !l.protected) continue;
+        lineMeta[l.id] = {
+          language: l.language,
+          translatedText: l.translatedText,
+          protected: l.protected
+        };
+      }
       const payload = {
         segmentOrder: this.segmentOrder,
         splitMarks: this.splitMarks,
         cutSpans: this.cutSpans,
         mutedSegments: this.mutedSegments,
         segmentVolume: this.segmentVolume,
-        hiddenTracks: this.hiddenTracks
+        hiddenTracks: this.hiddenTracks,
+        lineMeta
       };
       localStorage.setItem(key, JSON.stringify(payload));
     } catch {
@@ -1671,6 +1896,7 @@ class ProjectStore {
         mutedSegments?: string[];
         segmentVolume?: Record<string, number>;
         hiddenTracks?: TrackId[];
+        lineMeta?: Record<string, LineMeta>;
       };
       if (Array.isArray(data.segmentOrder)) {
         this.segmentOrder = data.segmentOrder.filter((x) => typeof x === 'string');
@@ -1696,6 +1922,19 @@ class ProjectStore {
         this.hiddenTracks = data.hiddenTracks.filter(
           (x): x is TrackId => x === 'video' || x === 'audio'
         );
+      }
+      // The per-line extras come back with the lines they belong to.
+      if (data.lineMeta && typeof data.lineMeta === 'object') {
+        this.lines = this.lines.map((l) => {
+          const meta = data.lineMeta?.[l.id];
+          if (!meta) return l;
+          return {
+            ...l,
+            language: meta.language ?? l.language,
+            translatedText: meta.translatedText ?? l.translatedText,
+            protected: meta.protected ?? l.protected
+          };
+        });
       }
     } catch {
       /* corrupt entry — start clean rather than block the project */

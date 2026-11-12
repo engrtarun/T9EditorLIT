@@ -479,16 +479,19 @@ mod tests {
     #[test]
     fn removal_deletes_every_home() {
         let cmds = removal_commands(&prog_id_list(&sample_pairs()));
-        assert!(cmds
-            .iter()
-            .filter(|c| c[1].contains(r"\shell\T9EditorLit"))
-            .all(|c| c[0] == "delete"));
-        assert!(cmds
-            .iter()
-            .any(|c| c[1].ends_with(r".mp4\shell\T9EditorLit")));
-        assert!(cmds
-            .iter()
-            .any(|c| c[1].ends_with(r"\PotPlayerMini64.MP4\shell\T9EditorLit")));
+        assert!(
+            cmds.iter()
+                .filter(|c| c[1].contains(r"\shell\T9EditorLit"))
+                .all(|c| c[0] == "delete")
+        );
+        assert!(
+            cmds.iter()
+                .any(|c| c[1].ends_with(r".mp4\shell\T9EditorLit"))
+        );
+        assert!(
+            cmds.iter()
+                .any(|c| c[1].ends_with(r"\PotPlayerMini64.MP4\shell\T9EditorLit"))
+        );
     }
 
     /// Every registry call goes through `reg()` — the helper that sets
@@ -557,9 +560,22 @@ mod tests {
     fn registration_skips_only_when_exe_and_prog_ids_match() {
         let sig = "PotPlayerMini64.MP4";
         assert!(marker_is_current(Some(EXE), Some(sig), EXE, sig));
-        assert!(!marker_is_current(Some(EXE), Some(sig), r"C:\new\path.exe", sig));
-        assert!(!marker_is_current(Some(EXE), Some(sig), EXE, "Other.ProgID"));
-        assert!(!marker_is_current(Some(EXE), None, EXE, sig), "old marker upgrades");
+        assert!(!marker_is_current(
+            Some(EXE),
+            Some(sig),
+            r"C:\new\path.exe",
+            sig
+        ));
+        assert!(!marker_is_current(
+            Some(EXE),
+            Some(sig),
+            EXE,
+            "Other.ProgID"
+        ));
+        assert!(
+            !marker_is_current(Some(EXE), None, EXE, sig),
+            "old marker upgrades"
+        );
         assert!(!marker_is_current(None, None, EXE, sig));
     }
 

@@ -109,6 +109,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/correct", s.handleCorrect)
 	s.mux.HandleFunc("POST /v1/analyze", s.handleAnalyze)
 
+	// The local measurement of a source's audio: the noise floor, the speech
+	// level, the ratio between them and the silence threshold the cut map
+	// should use. Free, local, and the reason the editor and the transcriber
+	// cannot disagree about the same silence.
+	s.mux.HandleFunc("POST /v1/audio-profile", s.handleAudioProfile)
+
+	// The translation view (edge case 15): a second rendering of an existing
+	// transcript, beside the original and never over it.
+	s.mux.HandleFunc("POST /v1/translate", s.handleTranslate)
+
 	// Dashboard greeting: one Groq line per language, cached on this side so
 	// twenty app launches cost a single call.
 	s.mux.HandleFunc("GET /v1/greeting", s.handleGreeting)
@@ -420,6 +430,76 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, job)
 }
 
+// handleTranslate runs the translation pass.
+//
+// It is a separate job because it is optional and because it must not touch
+// the source text: the reply carries a translation per line, and the app
+// shows it under the original.
+func (s *Server) handleTranslate(w http.ResponseWriter, r *http.Request) {
+	if s.geminiClient() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "translation unavailable: GEMINI_API_KEY is not set",
+		})
+		return
+	}
+
+	var req model.TranslateRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.Segments) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "at least one segment is required",
+		})
+		return
+	}
+
+	total := (len(req.Segments) + cloud.TranslationBatchSize - 1) / cloud.TranslationBatchSize
+	job := s.store.create(model.JobTranslate, total)
+
+	err := s.deps.Queue.Submit(r.Context(), queue.Task{
+		ID:        job.ID,
+		Retryable: true,
+		Run: func(ctx context.Context) error {
+			return s.runTranslate(ctx, job.ID, req)
+		},
+	})
+	if err != nil {
+		s.store.fail(job.ID, err)
+		writeQueueError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+// runTranslate renders a transcript in another language.
+//
+// The source text is never replaced. A batch that fails keeps its source
+// text, and the rest of the transcript is still translated - 90% translated
+// beats 0% translated when the alternative is re-running the whole
+// transcription.
+func (s *Server) runTranslate(ctx context.Context, jobID string, req model.TranslateRequest) error {
+	gemini := s.geminiClient()
+	if gemini == nil {
+		return errors.New("gemini client is not configured")
+	}
+	s.store.start(jobID)
+
+	translated, err := gemini.TranslateSegmentsProgress(
+		ctx, req.Segments, req.Target,
+		func(_, _ int) { s.store.advance(jobID, 1) })
+
+	if len(translated) > 0 {
+		s.store.succeedTranslate(jobID, translated, errBatchFailures(err))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return errors.New("translation produced no output")
+}
+
 func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path string `json:"path"`
@@ -617,16 +697,21 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 // can decide what to do about the gap. Losing a 30-minute transcription to one
 // corrupt chunk would be far worse than a visible hole.
 //
-// Two rules keep the text itself correct across chunk seams, and they are the
-// difference between a transcript that reads like one recording and one that
-// changes language and spelling every five minutes:
+// Three rules keep the text itself correct across chunk seams, and they are
+// the difference between a transcript that reads like one recording and one
+// that changes language and spelling every five minutes:
 //
-//  1. The first detected language is pinned for the rest of the job. Whisper
-//     auto-detects per request, and on Hinglish audio that means chunk 3 can
-//     come back English and chunk 4 Hindi.
-//  2. Each chunk after the first is prompted with the tail of what came before
-//     it, so names, jargon and spelling carry over the boundary instead of
-//     being re-guessed from silence.
+//  1. A language is pinned only after two chunks in a row report the same
+//     one. Whisper auto-detects per request, and on Hinglish audio that
+//     means chunk 3 can come back English and chunk 4 Hindi - but one chunk
+//     deciding the language of a fifty-minute recording is a coin toss
+//     (see language_pin.go).
+//  2. Each chunk after the first is prompted with the tail of what came
+//     before it, so names, jargon and spelling carry over the boundary
+//     instead of being re-guessed from silence.
+//  3. Whatever the model wrote is checked against the script it was written
+//     in. A pin the text contradicts is released - unless the user chose
+//     that pin, in which case the user is told and nothing else happens.
 func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.TranscribeRequest) error {
 	// Read once: every chunk of this job goes to the same clients, even if
 	// the user swaps a key while the transcription is running.
@@ -674,8 +759,43 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 	// name in its own response ("Hindi"), and pinning that is what turned one
 	// successful chunk into nine 400s and a five-minute transcript of a
 	// 49-minute video. An unmappable value is dropped, never forwarded.
-	language := cloud.NormalizeLanguage(req.Language)
+	//
+	// The pin itself is a small state machine (language_pin.go): a language
+	// the user chose is never second-guessed, an auto-detected one is pinned
+	// only after two chunks agree, and the script the text came back in is
+	// checked against the pin.
+	pin := newLanguagePin(req.Language)
+	language := pin.language()
 	hint := strings.TrimSpace(req.Prompt)
+
+	// The measurement pass, before a single byte goes to the provider.
+	//
+	// It answers three questions the rest of the job needs: how loud is the
+	// file against its own room tone (the voice may be buried under a music
+	// bed), how much of it is dead air (a music project looks different from
+	// a talking one), and what the cut map should use as its threshold
+	// instead of a fixed -30 dB.
+	//
+	// It is free - a local scan of WAV files that already exist - and it is
+	// the same measurement the upload gate uses, so the editor and the
+	// transcriber agree about what the silence in this file is.
+	opt := scanOptions(req.Sensitivity)
+	profile, profileErr := measureProfile(req.Chunks, req.Sensitivity)
+	if profileErr == nil {
+		s.store.setAudioProfile(jobID, profile)
+		s.deps.Log.Info("audio profile measured",
+			"job", jobID,
+			"noise_floor_db", profile.NoiseFloorDB,
+			"speech_db", profile.SpeechDB,
+			"snr_db", profile.SNRDB,
+			"speech_ratio", profile.SpeechRatio,
+			"silence_threshold_db", profile.SilenceThresholdDB)
+	}
+
+	// Chunks that came back with sound but no words. Two of them in a row,
+	// in a file that is mostly sound, is a music bed and not a speaking
+	// person - at which point the rest of the file is not worth paying for.
+	wordlessChunks := 0
 
 	for i, chunk := range req.Chunks {
 		// Local gate first: the chunk is measured on this machine before it
@@ -684,7 +804,7 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 		// "no speech", which is a result, not a failure. A scan error fails
 		// open: the chunk goes to the provider exactly as before, because a
 		// local scanner must never be the reason a transcript is missing.
-		scan, scanErr := vad.Scan(chunk.Path)
+		scan, scanErr := vad.ScanWith(chunk.Path, opt)
 		if scanErr == nil && !scan.WorthTranscribing() {
 			okChunks++
 			s.deps.Log.Info("chunk has no audible speech - skipping upload",
@@ -716,16 +836,28 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 
 		okChunks++
 
-		if language == "" && res.Language != "" {
-			if code := cloud.NormalizeLanguage(res.Language); code != "" {
-				language = code
-				s.deps.Log.Info("language pinned",
-					"job", jobID, "engine", engine, "reported", res.Language, "code", code)
-			} else {
-				// Unknown language value: keep auto-detecting per chunk. No pin
-				// is a small inconsistency; a bad pin is nine lost chunks.
-				s.deps.Log.Warn("language could not be mapped to a code - not pinning",
-					"job", jobID, "reported", res.Language)
+		// The badge on every line of this chunk: which language the model
+		// says it was decoding. It is a badge, not a decision - a travel vlog
+		// switches languages and the user should be able to see where.
+		chunkLanguage := res.Language
+		if code := cloud.NormalizeLanguage(chunkLanguage); code != "" {
+			chunkLanguage = code
+		} else {
+			chunkLanguage = language
+		}
+		for si := range res.Segments {
+			res.Segments[si].Language = chunkLanguage
+		}
+
+		// The detector gets a vote only after the text is in: the script the
+		// model wrote in is a free, local check on the language it claimed.
+		language = pin.observe(res.Language)
+		if len(res.Segments) > 0 {
+			pin.noteMismatch(segmentText(res.Segments))
+			if language != pin.language() {
+				language = pin.language()
+				s.deps.Log.Info("language pin released - the text disagrees with it",
+					"job", jobID, "engine", engine, "reason", pin.warningText())
 			}
 		}
 
@@ -751,7 +883,32 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 
 		merged = append(merged, res.Segments...)
 		s.store.progressTranscribe(jobID, i+1, len(merged), tailLine(merged))
+
+		// The music verdict (cases 16 and 17).
+		//
+		// A chunk that carried sound and produced no words is a music bed, not
+		// a silent gap - but one such chunk proves nothing: a video can open
+		// with a minute of silence and then talk for forty. Two in a row, in a
+		// file that is mostly sound, is a music project - and then the rest
+		// of the file is not worth paying for.
+		if len(res.Segments) == 0 && res.RawSegments > 0 {
+			wordlessChunks++
+		} else if len(res.Segments) > 0 {
+			wordlessChunks = 0
+		}
+		if wordlessChunks >= musicProbeChunks && musicLikely(profile) {
+			s.deps.Log.Info("no words in the first chunks of a file that is mostly sound - treating it as music",
+				"job", jobID, "chunk", filepath.Base(chunk.Path),
+				"raw_segments", res.RawSegments, "no_speech_ratio", res.NoSpeechRatio)
+			s.store.setFailedChunks(jobID, failedIdx)
+			s.store.succeedMusic(jobID, failures)
+			return nil
+		}
 	}
+
+	// The language the job settled on travels with the result, so the UI can
+	// show the badge and the warning without guessing.
+	s.store.setLanguage(jobID, pin.language(), pin.warningText())
 
 	if len(merged) == 0 {
 		if okChunks == 0 {
@@ -913,6 +1070,21 @@ func transcriptTail(segments []model.Segment, max int) string {
 		r = r[len(r)-max:]
 	}
 	return string(r)
+}
+
+// segmentText is the text of a batch of segments, joined.
+//
+// It is what the script cross-check reads: the language the model *claimed*
+// against the script it actually *wrote in*.
+func segmentText(segments []model.Segment) string {
+	var sb strings.Builder
+	for _, s := range segments {
+		if sb.Len() > 0 {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(s.Text)
+	}
+	return sb.String()
 }
 
 // tailLine is the newest transcript line, trimmed for the live job payload.

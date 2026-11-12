@@ -25,6 +25,29 @@ export interface TranscriptLine {
   /** Clipchamp-style group id. Lines sharing a group move and delete together. */
   group?: string;
   /**
+   * The ISO-639-1 code the model decoded this line as.
+   *
+   * Shown as a badge when it differs from the rest of the transcript: a
+   * travel vlog switches languages, and the switch should be visible instead
+   * of looking like a font bug.
+   */
+  language?: string;
+  /**
+   * The line rendered in another language, when the translation view is on.
+   *
+   * Always secondary. The source text stays the primary, because the cut
+   * decisions are made on what was said.
+   */
+  translatedText?: string;
+  /**
+   * The user pinned this line as "never cut this".
+   *
+   * The escape hatch for every detector that cannot be trusted - a whisper, a
+   * crosstalk overlap, a hook that reads as silence. The automatic silence
+   * pass skips protected lines; nothing else does.
+   */
+  protected?: boolean;
+  /**
    * Word-level timings, when the engine has them (Whisper returns a `words`
    * array). With these, splitting a line also splits its **text** — cutting
    * "I LOVE U" at 4 s yields "I" and "LOVE U" instead of two identical rows.
