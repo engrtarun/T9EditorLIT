@@ -2327,4 +2327,11 @@ sirf append hai. Deployment record: commit `9145bf0`, build `ci-9145bf0`.*
   hai — is section ko "desktop par live" mat samajhna.
 - Deploy ka final sach ledger me hoga (`deploy.ps1 -Status`: `shipped`/`staged`).
 
+**Deploy result (2026-11-12 12:44 IST):** order `SARKARI-20261112-124420-0743`,
+build **`ci-ebcc94c`**, mode **live** — app band tha, isliye seedha install hua,
+koi **Update** click nahi chahiye. Installed SHA-256 `00892d5c…c0184`; doctor:
+marker buildId == `ci-ebcc94c`, marker hash == exe hash, rollback shield ready,
+daemon `go-166ca7871c23d13c` running on 127.0.0.1:7878. `-Status` me
+`[SHIPPED]`.
+
 — deepseek
