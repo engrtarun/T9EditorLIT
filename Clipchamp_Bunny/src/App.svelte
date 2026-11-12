@@ -12,6 +12,7 @@
   import ExportMode from './lib/components/modes/ExportMode.svelte';
   import HomeDashboard from './lib/components/dashboard/HomeDashboard.svelte';
   import UsageDialog from './lib/components/dashboard/UsageDialog.svelte';
+  import BatchQueuePanel from './lib/components/dashboard/BatchQueuePanel.svelte';
   import BrowserView from './lib/components/browser/BrowserView.svelte';
   import BackgroundVideo from './lib/components/BackgroundVideo.svelte';
   import { mode } from './lib/stores/mode.svelte';
@@ -24,6 +25,7 @@
   import { toast } from './lib/stores/toast.svelte';
   import { menu } from './lib/stores/menu.svelte';
   import { downloads } from './lib/stores/downloads.svelte';
+  import { batch } from './lib/stores/batch.svelte';
   import { dispatchBrowserKey, runBrowserAction, type BrowserKeyDeps } from './lib/browser-keys';
   import {
     browserPrint,
@@ -179,6 +181,10 @@
    * `runBrowserAction`, so both paths stay one implementation.
    */
   onMount(() => {
+    // The batch queue outlives the screen it was started from, so it is read
+    // back once at the root. A list that vanished on restart was the whole
+    // complaint behind "30 files, kisi ka pata nahi chala".
+    void batch.hydrate();
     let off: (() => void) | null = null;
     let dead = false;
     void onBrowserKey(({ action, value }) => {
@@ -565,6 +571,7 @@
      quota chip). Mounted here because mode isolation unmounts every screen
      below it — a dialog living inside a screen could not outlive it. -->
 <UsageDialog />
+<BatchQueuePanel />
 
 <!-- The one menu, rendered at the app root so nothing can hide it. -->
 {#if menu.current}

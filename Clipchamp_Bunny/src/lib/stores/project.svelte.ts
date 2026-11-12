@@ -36,6 +36,9 @@ import {
   nextSpan,
   parsePlan,
   planFromChunks,
+  reconcileBoundary,
+  transcriptPlanKey,
+  isOfflineError,
   type TranscriptPlan
 } from '../transcript-plan';
 import { media } from './media.svelte';
@@ -87,16 +90,20 @@ import {
   logEditAction,
   onTranscriptProgress,
   probeMedia,
+  rememberSourceFingerprint,
+  removeAudioChunk,
   resumeProject,
   saveProject,
   saveTranscript,
   setSourcePath,
   setSourceUrl,
+  sourceFingerprint,
   statsGet,
   statsSet,
+  transcriptByHash,
   updateProjectOpened
 } from '../ipc';
-import type { RustProject } from '../ipc';
+import type { RustProject, RustTranscriptLine } from '../ipc';
 
 /**
  * Undo snapshot. Holds the whole line array, not just the keep flags —
@@ -743,6 +750,9 @@ class ProjectStore {
     if (wave) this.waveform = wave;
     if (thumbs) this.thumbnails = thumbs;
 
+    // Read inside the try (it is a `kv` lookup), used after `ready` to decide
+    // whether an interrupted plan should pick itself up (Case 10).
+    let resumePlan: TranscriptPlan | null = null;
     try {
       this.lines = await this.ensureTranscript(canonical, info.durationSecs);
       this.loadError = null;
@@ -757,6 +767,7 @@ class ProjectStore {
       const plan = await this.readPlan(canonical);
       this.transcriptPlan = plan;
       if (plan) this.planFailed = this.partialTranscript?.failedChunks ?? [];
+      resumePlan = plan;
     } catch (e) {
       // No mock lines here. On the desktop the user gets the real reason the
       // transcript could not be produced, and a retry.
@@ -772,6 +783,20 @@ class ProjectStore {
     this.restorePlayhead();
 
     this.ready = true;
+
+    // Case 10: a half-done transcript can pick itself up after a dead network
+    // or a power cut — but only when the user has switched that on, and only
+    // when the plan has already bought a chunk. A project the user never
+    // transcribed stays quiet, so opening a project can never spend money on
+    // its own. The resume runs unawaited: the editor is already usable.
+    if (
+      settings.autoResumeTranscript &&
+      resumePlan &&
+      resumePlan.done.length > 0 &&
+      !isPlanComplete(resumePlan)
+    ) {
+      void this.transcribeAllChunks().catch(() => {});
+    }
   }
 
   /**
@@ -903,6 +928,17 @@ class ProjectStore {
     return !this.transcriptPlan || isPlanComplete(this.transcriptPlan);
   }
 
+  /**
+   * Evidence that the plan is waiting on the network rather than on the user.
+   *
+   * Only the daemon's own failure text is trusted here: a chunk that failed
+   * because of silence, a bad file or a 429 must not wear an "offline" badge —
+   * that would send the user to check a router that is fine.
+   */
+  get transcriptOffline(): boolean {
+    return isOfflineError(this.partialTranscript?.error) || isOfflineError(this.loadError);
+  }
+
   /** What the next clicks cost, in the units the user thinks in. */
   get planEstimate(): { audioSecs: number; calls: number; etaSecs: number } {
     return this.transcriptPlan
@@ -916,7 +952,7 @@ class ProjectStore {
 
   /** SQLite `kv` key for one source's plan (localStorage is only a mirror). */
   private planKey(path: string): string {
-    return `t9-editor-lit.transcript-plan.${path}`;
+    return transcriptPlanKey(path);
   }
 
   /** Plan from SQLite first; localStorage covers a dev build without the bridge. */
@@ -1053,30 +1089,52 @@ class ProjectStore {
     const cached = await loadTranscript(db, sourcePath).catch(() => []);
     if (cached?.length) {
       this.pipeline = null;
-      return cached.map((l) => ({
-        id: l.id,
-        startSec: l.startSecs,
-        endSec: l.endSecs,
-        text: l.text,
-        flag: toLineFlag(l.flag),
-        keep: l.keep ? 'keep' : 'cut',
-        confidence: 1,
-        words: l.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
-      }));
+      // Teach the fingerprint table about a transcript that predates it, so
+      // this file's renamed copies hit the cache too (Case 3).
+      void this.noteFingerprint(db, sourcePath).catch(() => {});
+      return this.fromRustLines(cached);
     }
 
-    // 2. No cache, and the user has not asked for a transcript: stop here.
+    // 2. Same bytes, different name. The fingerprint is the proof: a copy
+    //    made with Explorer's "Copy" is the same video, and paying Whisper a
+    //    second time for it is exactly the bug Case 3 names.
+    if (isTauri()) {
+      const hash = await sourceFingerprint(sourcePath).catch(() => '');
+      if (hash) {
+        const hit = await transcriptByHash(db, hash).catch(() => null);
+        if (hit?.lines?.length) {
+          const lines = this.fromRustLines(hit.lines);
+          // Re-save under the new path so every later open is an ordinary
+          // path hit and the old project can be deleted independently.
+          await this.saveSegments(db, sourcePath, this.toCloudSegments(lines));
+          await rememberSourceFingerprint(db, sourcePath, hash, this.media?.sizeBytes ?? 0).catch(
+            () => {}
+          );
+          this.pipeline = null;
+          return lines;
+        }
+      }
+    }
+
+    // 3. No cache, and the user has not asked for a transcript: stop here.
     //    A plain cut project must never spend an API call on its own.
     if (!settings.autoTranscribe) {
       this.pipeline = null;
       return [];
     }
 
-    // 3. First time for this source, with permission: buy **one** chunk now
+    // 4. First time for this source, with permission: buy **one** chunk now
     //    and let the panel offer the rest. A 49-minute import must not post
     //    ten Whisper calls before the user has seen a single word.
     await this.startTranscript(false);
     return this.lines;
+  }
+
+  /** Remember the content hash of a path that already has a transcript. */
+  private async noteFingerprint(db: string, sourcePath: string): Promise<void> {
+    if (!isTauri()) return;
+    const hash = await sourceFingerprint(sourcePath);
+    await rememberSourceFingerprint(db, sourcePath, hash, this.media?.sizeBytes ?? 0);
   }
 
   /**
@@ -1423,19 +1481,25 @@ class ProjectStore {
       // The daemon's own answers about the language and the file's audio.
       this.noteLanguage(res.language, res.languageWarning);
       if (res.profile) this.audioProfile = res.profile;
-      // Fold by time: a resumed plan can transcribe chunk 7 after chunk 2,
-      // and the transcript must still read in source order.
-      const merged = [...this.toCloudSegments(this.lines), ...res.segments].sort(
-        (a, b) => a.start_secs - b.start_secs
-      );
+      // Fold by time and reconcile the overlap: adjacent chunks share one
+      // second of audio on each side of a cut, so Whisper hears the same
+      // sentence twice. `reconcileBoundary` keeps one copy (the longer one)
+      // and leaves everything else in source order — Case 9.
+      const reconciled = reconcileBoundary(this.lines, this.toTranscriptLines(res.segments));
+      const merged = this.toCloudSegments(reconciled).sort((a, b) => a.start_secs - b.start_secs);
       const db = await defaultDbPath();
       await this.saveSegments(db, sourcePath, merged);
       this.lines = this.toTranscriptLines(merged);
       // Cuts made before any transcript existed still own their stretch.
       this.syncCutsIntoLines();
+      // Case 6: the words are in SQLite now, so the WAV has done its job.
+      // Deleting it per chunk keeps a half-finished two-hour import from
+      // holding every chunk on disk at once.
+      if (isTauri()) void removeAudioChunk(chunk.path).catch(() => false);
       return { plan: markDone(plan, chunk.index), error: null };
     } catch (e) {
       if (e instanceof NoSpeechError) {
+        if (isTauri()) void removeAudioChunk(chunk.path).catch(() => false);
         return { plan: markDone(plan, chunk.index), error: null };
       }
       return { plan, error: e instanceof Error ? e.message : String(e) };
@@ -1466,6 +1530,12 @@ class ProjectStore {
     this.writePlan(sourcePath, null);
     this.chunkCache = null;
     if (isTauri()) await cleanChunkDir(chunkSourceKey(sourcePath)).catch(() => {});
+    // A finished transcript is what a renamed copy should find. Recording the
+    // fingerprint here (not at open time) means the row always describes
+    // content that really has a transcript behind it (Case 3). A run that
+    // produced zero lines was all silence: there is nothing to reuse, so it
+    // records nothing.
+    if (isTauri() && this.lines.length) void this.noteFingerprint(db, sourcePath).catch(() => {});
     // A finished plan with zero lines IS the no-speech answer — every chunk
     // was consumed as silence. Clearing this unconditionally made the panel
     // fall back to the exact pre-click empty state, which read as "my click
@@ -1551,6 +1621,20 @@ class ProjectStore {
       translatedText: s.translated_text,
       protected: s.protected,
       words: s.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
+    }));
+  }
+
+  /** SQLite rows → our rows. Same shape as `toTranscriptLines`, one hop less. */
+  private fromRustLines(rows: RustTranscriptLine[]): TranscriptLine[] {
+    return rows.map((l) => ({
+      id: l.id,
+      startSec: l.startSecs,
+      endSec: l.endSecs,
+      text: l.text,
+      flag: toLineFlag(l.flag),
+      keep: l.keep ? 'keep' : 'cut',
+      confidence: 1,
+      words: l.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
     }));
   }
 

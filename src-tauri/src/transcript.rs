@@ -170,6 +170,23 @@ CREATE TABLE IF NOT EXISTS transcripts (
 );
 ";
 
+/// Where a source path's content fingerprint lives.
+///
+/// A fingerprint belongs to the **file**, not to one transcript line, so it
+/// gets its own table instead of a column repeated on every row. Deleting a
+/// project leaves it in place: a renamed copy still hits the cache, and the
+/// row is a few dozen bytes.
+const FINGERPRINTS_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS source_fingerprints (
+    source_path   TEXT PRIMARY KEY,
+    content_hash  TEXT NOT NULL,
+    size_bytes    INTEGER NOT NULL,
+    updated_unix  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_fingerprints_hash
+    ON source_fingerprints (content_hash);
+";
+
 const PROJECTS_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS projects (
     id            TEXT PRIMARY KEY,
@@ -262,6 +279,8 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(SCHEMA)
         .map_err(|e| format!("could not init transcript schema: {e}"))?;
     migrate_transcripts(conn)?;
+    conn.execute_batch(FINGERPRINTS_SCHEMA)
+        .map_err(|e| format!("could not init fingerprint schema: {e}"))?;
     conn.execute_batch(PROJECTS_SCHEMA)
         .map_err(|e| format!("could not init projects schema: {e}"))?;
     conn.execute_batch(TRASH_SCHEMA)
@@ -613,6 +632,58 @@ pub fn delete_transcript(conn: &Connection, source_path: &str) -> Result<(), Str
     )
     .map_err(|e| format!("could not delete transcript: {e}"))?;
     Ok(())
+}
+
+/// Remember which file content produced this path's transcript.
+///
+/// Called after a transcript exists (or after an open with a cache hit). The
+/// row is what makes a **renamed copy** a free open instead of a second
+/// Whisper bill.
+pub fn remember_fingerprint(
+    conn: &Connection,
+    source_path: &str,
+    content_hash: &str,
+    size_bytes: u64,
+) -> Result<(), String> {
+    let source_path = canonical_path(source_path);
+    conn.execute(
+        "INSERT INTO source_fingerprints (source_path, content_hash, size_bytes, updated_unix)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(source_path) DO UPDATE SET
+           content_hash = excluded.content_hash,
+           size_bytes = excluded.size_bytes,
+           updated_unix = excluded.updated_unix",
+        params![source_path, content_hash, size_bytes as i64, now_unix()],
+    )
+    .map_err(|e| format!("could not save source fingerprint: {e}"))?;
+    Ok(())
+}
+
+/// The transcript that was bought for the same file content, if any.
+///
+/// The returned path is the **old** path; the caller re-saves the lines under
+/// the new path so every later open takes the ordinary cache path.
+pub fn transcript_by_hash(
+    conn: &Connection,
+    content_hash: &str,
+) -> Result<Option<(String, Vec<TranscriptLine>)>, String> {
+    let path: Option<String> = conn
+        .query_row(
+            "SELECT source_path FROM source_fingerprints
+             WHERE content_hash = ?1
+             ORDER BY updated_unix DESC LIMIT 1",
+            params![content_hash],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let lines = load_transcript(conn, &path)?;
+    if lines.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((path, lines)))
 }
 
 /// Upsert a project row. Called when a video is imported into the editor.
@@ -1067,6 +1138,27 @@ mod tests {
         assert_eq!(loaded[0].text, "hello");
         assert!(!loaded[1].keep);
         assert_eq!(loaded[1].flag, "fumble");
+    }
+
+    #[test]
+    fn a_renamed_copy_hits_the_cached_transcript_by_content_hash() {
+        let conn = mem_conn();
+        init_schema(&conn).unwrap();
+        save_transcript(&conn, "/old/name.mp4", &[line("1", "renamed copy")]).unwrap();
+        remember_fingerprint(&conn, "/old/name.mp4", "deadbeef", 9001).unwrap();
+
+        let hit = transcript_by_hash(&conn, "deadbeef")
+            .unwrap()
+            .expect("the same bytes must hit");
+        assert_eq!(hit.0, canonical_path("/old/name.mp4"));
+        assert_eq!(hit.1.len(), 1);
+        assert_eq!(hit.1[0].text, "renamed copy");
+
+        assert!(
+            transcript_by_hash(&conn, "not-this-file")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

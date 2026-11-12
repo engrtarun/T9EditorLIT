@@ -4,15 +4,17 @@ import { test } from 'node:test';
 import {
   estimateForDuration,
   estimatePlan,
+  isOfflineError,
   isPlanComplete,
   markDone,
   nextSpan,
   parsePlan,
   pendingSecs,
   planFromChunks,
+  reconcileBoundary,
   type TranscriptPlan
 } from './transcript-plan.ts';
-import type { AudioChunk } from './types.ts';
+import type { AudioChunk, TranscriptLine } from './types.ts';
 
 const chunk = (index: number, offsetSecs: number, durationSecs = 300): AudioChunk => ({
   index,
@@ -114,4 +116,78 @@ test('the pre-click estimate mirrors the 300 s splitter, before any audio is tou
   // A custom segment size is honoured, and a nonsense one falls back.
   assert.equal(estimateForDuration(900, 60).calls, 15);
   assert.equal(estimateForDuration(900, 0).calls, 3);
+});
+
+/* ── Case 9: chunk-boundary reconciliation ──────────────────────────────── */
+
+const line = (id: string, startSec: number, endSec: number, text: string): TranscriptLine => ({
+  id,
+  startSec,
+  endSec,
+  text,
+  flag: 'none',
+  keep: 'keep',
+  confidence: 1
+});
+
+test('the same sentence heard by both sides of a cut becomes one line', () => {
+  const previous = [line('a', 298, 301, 'we need to')];
+  const next = [line('b', 298.2, 302, 'we need to')];
+  const merged = reconcileBoundary(previous, next);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, 'a');
+});
+
+test('the side that heard the whole word wins', () => {
+  const previous = [line('a', 298, 301, 'we need to deci')];
+  const next = [line('b', 298.2, 302, 'we need to decide')];
+  const merged = reconcileBoundary(previous, next);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].text, 'we need to decide');
+  // The user's keep/cut decision survives the text upgrade.
+  assert.equal(merged[0].keep, 'keep');
+});
+
+test('two different sentences in the overlap are both kept', () => {
+  // A duplicate is cheap to cut; a missing word is not recoverable.
+  const previous = [line('a', 298, 301, 'subscribe kar lo')];
+  const next = [line('b', 298.2, 302, 'video achha laga')];
+  const merged = reconcileBoundary(previous, next);
+  assert.equal(merged.length, 2);
+});
+
+test('a line after the overlap is simply appended in order', () => {
+  const previous = [line('a', 298, 301, 'we need to')];
+  const next = [line('b', 298.2, 302, 'we need to decide'), line('c', 305, 308, 'next sentence')];
+  const merged = reconcileBoundary(previous, next);
+  assert.deepEqual(
+    merged.map((l) => l.id),
+    ['a', 'c']
+  );
+  assert.equal(merged[0].text, 'we need to decide');
+});
+
+test('a resumed plan that finishes a later chunk still reads in source order', () => {
+  // Chunk 1 was finished earlier and sits after chunk 0's boundary.
+  const previous = [line('a', 0, 5, 'pehla'), line('z', 600, 605, 'baad wala')];
+  const next = [line('b', 4.8, 9, 'doosra')];
+  const merged = reconcileBoundary(previous, next);
+  assert.deepEqual(
+    merged.map((l) => l.text),
+    ['pehla', 'doosra', 'baad wala']
+  );
+});
+
+test('"offline" needs connection evidence, not just any failure', () => {
+  assert.equal(isOfflineError('Failed to fetch'), true);
+  assert.equal(isOfflineError('connect ECONNREFUSED 127.0.0.1:7878'), true);
+  assert.equal(isOfflineError('network error while polling job'), true);
+  assert.equal(isOfflineError('getaddrinfo ENOTFOUND api.groq.com'), true);
+  // The daemon answered, so the network is fine: these keep their own words.
+  assert.equal(isOfflineError('/v1/transcribe → 429 rate limit'), false);
+  assert.equal(isOfflineError('job 3 → 503 daemon busy'), false);
+  assert.equal(isOfflineError('audio chunk 25 MB se bada hai'), false);
+  assert.equal(isOfflineError('koi speech nahi mili'), false);
+  assert.equal(isOfflineError(null), false);
+  assert.equal(isOfflineError(''), false);
 });

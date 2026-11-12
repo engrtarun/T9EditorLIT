@@ -86,6 +86,11 @@ pub fn hide<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
     if let Some(window) = app.get_webview_window(LABEL) {
         hide_now(app, &window);
+        // A hidden webview still holds a renderer process. Destroy it so the
+        // 8 GB machine gets the whole card back; `ping` recreates it the next
+        // time a page actually plays.
+        let _ = window.destroy();
+        diag("media flyout -> destroyed (session clear)");
     }
 }
 
@@ -249,6 +254,10 @@ fn watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             continue;
         }
         hide_now(&app, &window);
+        // Idle: free the webview instead of parking a hidden renderer for the
+        // rest of the session. The next play/pause recreates it in ~200 ms.
+        let _ = window.destroy();
+        diag("media flyout -> destroyed (idle)");
     }
 }
 

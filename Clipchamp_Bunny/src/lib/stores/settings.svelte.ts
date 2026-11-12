@@ -21,6 +21,9 @@ const SEEK_STEP_KEY = 't9-editor-lit.seekStep';
 /** LocalStorage key for "call the AI transcript API on import". */
 const AUTO_TRANSCRIBE_KEY = 't9-editor-lit.autoTranscribe';
 
+/** LocalStorage key for "resume an unfinished transcript when the project opens". */
+const AUTO_RESUME_KEY = 't9-editor-lit.autoResumePlan';
+
 /** LocalStorage key for how the playhead time is written. */
 const TIME_FORMAT_KEY = 't9-editor-lit.timeFormat';
 
@@ -69,6 +72,18 @@ class SettingsStore {
    * never spends an API call.
    */
   autoTranscribe = $state(false);
+
+  /**
+   * Whether opening a project with a **half-finished** transcript quietly
+   * continues it (Case 10: "network gir gaya / power chali gayi").
+   *
+   * Deliberately off by default: a paid API call must never start because a
+   * project was opened for a hairline trim. When it is on, only a plan that
+   * has already bought at least one chunk resumes — a project that never
+   * asked for a transcript stays quiet, so this can never look like
+   * `autoTranscribe` sneaking in through the back door.
+   */
+  autoResumeTranscript = $state(false);
 
   /**
    * How the playhead time is written under the transport. `auto` keeps the
@@ -138,6 +153,12 @@ class SettingsStore {
     this.persist();
   }
 
+  /** Turn resume-on-open for a half-finished transcript on or off. */
+  setAutoResumeTranscript(on: boolean): void {
+    this.autoResumeTranscript = on;
+    this.persist();
+  }
+
   /** Pick how the playhead time is written. Unknown ids are ignored. */
   setTimeFormat(fmt: TimeFormat): void {
     if (!isTimeFormat(fmt)) return;
@@ -156,6 +177,7 @@ class SettingsStore {
       localStorage.setItem(TRASH_DAYS_KEY, String(this.trashRetentionDays));
       localStorage.setItem(SEEK_STEP_KEY, String(this.seekStepSec));
       localStorage.setItem(AUTO_TRANSCRIBE_KEY, this.autoTranscribe ? '1' : '0');
+      localStorage.setItem(AUTO_RESUME_KEY, this.autoResumeTranscript ? '1' : '0');
       localStorage.setItem(TIME_FORMAT_KEY, this.timeFormat);
       localStorage.setItem(FOLLOW_PLAYHEAD_KEY, this.followPlayhead ? '1' : '0');
     } catch {
@@ -172,6 +194,8 @@ class SettingsStore {
       const auto = localStorage.getItem(AUTO_TRANSCRIBE_KEY);
       // Absent = off: asking before an API call is the safe default.
       this.autoTranscribe = auto === '1';
+      // Absent = off for the same reason: opening a project must not spend.
+      this.autoResumeTranscript = localStorage.getItem(AUTO_RESUME_KEY) === '1';
       const fmt = localStorage.getItem(TIME_FORMAT_KEY);
       if (isTimeFormat(fmt)) this.timeFormat = fmt;
       const follow = localStorage.getItem(FOLLOW_PLAYHEAD_KEY);

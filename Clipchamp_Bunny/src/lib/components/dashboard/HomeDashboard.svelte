@@ -25,6 +25,7 @@
   import { project } from '../../stores/project.svelte';
   import { toast } from '../../stores/toast.svelte';
   import { menu } from '../../stores/menu.svelte';
+  import { batch } from '../../stores/batch.svelte';
   import DashboardTopBar from './DashboardTopBar.svelte';
   import ProjectCard from './ProjectCard.svelte';
   import T9CloudSetup from './T9CloudSetup.svelte';
@@ -524,6 +525,31 @@
 
   /* --------------------------------------------------------------- menu */
 
+  /**
+   * Batch day: pick many files and queue them for transcription.
+   *
+   * Deliberately **not** an import: these files are work items, not media for
+   * the open project. They land in the batch queue with their own cost
+   * estimate and a tick box, and the worker handles one at a time (Case 4).
+   */
+  async function batchImport() {
+    // A queue already exists: the button is the panel's door, not a second
+    // picker. Adding more files is the panel's own "+ files".
+    if (batch.items.length) {
+      batch.open = true;
+      batch.minimized = false;
+      return;
+    }
+    const paths = await pickVideos();
+    if (!paths.length) return;
+    const added = batch.addPaths(paths);
+    if (!added) {
+      toast.push('info', 'Ye files pehle se queue me hain');
+      return;
+    }
+    toast.push('info', `${added} file batch queue me — chalao ya list se hatao`);
+  }
+
   function openCardMenu(c: Card, e: MouseEvent) {
     e.stopPropagation();
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -968,6 +994,22 @@
                              focus:border-white/25 focus:bg-white/[0.07] focus:outline-none"
                     />
                   </label>
+                  {#if isTauri()}
+                    <button
+                      onclick={() => void batchImport()}
+                      title={i18n.t('dash.batchHint')}
+                      class="ml-auto shrink-0 rounded-full border border-white/12 bg-white/[0.04]
+                             px-3 py-1 text-[11.5px] text-nc-mut transition-colors duration-150
+                             hover:border-white/25 hover:text-nc-txt"
+                    >
+                      {i18n.t('dash.batch')}
+                      {#if batch.items.length}
+                        <span class="ml-1 font-mono text-[10px] text-nc-brand">
+                          {batch.items.length}
+                        </span>
+                      {/if}
+                    </button>
+                  {/if}
                 </div>
 
                 {#if loading}
@@ -1063,6 +1105,14 @@
                                  transition-colors duration-150 hover:border-nc-line-2 hover:text-nc-txt"
                             >
                               {i18n.t('dash.openDemo')}
+                            </button>
+                            <button
+                              onclick={() => void batchImport()}
+                              title={i18n.t('dash.batchHint')}
+                              class="rounded-lg border border-nc-line px-4 py-2 text-[12.5px] text-nc-mut
+                                 transition-colors duration-150 hover:border-nc-line-2 hover:text-nc-txt"
+                            >
+                              {i18n.t('dash.batch')}
                             </button>
                           {/if}
                         </div>

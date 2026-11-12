@@ -277,10 +277,12 @@ mod win {
             }
         };
 
-        // Transport surface: play/pause/stop and ±10 s are always useful;
-        // next/previous turn on only when the page registered handlers (a
-        // YouTube playlist does, an article does not).
-        let _ = controls.SetIsEnabled(true);
+        // Start **disabled**. An SMTC session that is enabled with no media
+        // is exactly the ghost card the user saw in Win+A: "T9 Editor LIT"
+        // with no title, no thumbnail, nothing playing. A session appears
+        // only when a page reports real playback (`update` enables it) and
+        // disappears when the last page stops (`close` disables it).
+        let _ = controls.SetIsEnabled(false);
         let _ = controls.SetIsPlayEnabled(true);
         let _ = controls.SetIsPauseEnabled(true);
         let _ = controls.SetIsStopEnabled(true);
@@ -360,9 +362,9 @@ mod win {
             })
             .unwrap_or(false);
         diag(if brand_ready {
-            "smtc -> enabled (brand thumb ok)"
+            "smtc -> armed (disabled until a page plays, brand thumb ok)"
         } else {
-            "smtc -> enabled (brand thumb FAILED)"
+            "smtc -> armed (disabled until a page plays, brand thumb FAILED)"
         });
     }
 
@@ -374,7 +376,10 @@ mod win {
         let controls = state.controls.lock().ok().and_then(|slot| slot.clone());
 
         let kind = report.state.as_str();
-        let live = kind == "playing" || kind == "paused";
+        // A live item must have a title. A paused `<video>` that never played
+        // (preload, hover preview) reports no metadata at all; showing it is
+        // exactly the empty "T9 Editor LIT" card the user complained about.
+        let live = (kind == "playing" || kind == "paused") && !report.title.trim().is_empty();
 
         // Remember this tab's report — and whether this report is a
         // *transition*: a fresh play (`started`, which is also what takes
@@ -461,6 +466,8 @@ mod win {
         let Some(controls) = controls else {
             return;
         };
+        // First honest playback (or a resumed one): now the card may exist.
+        let _ = controls.SetIsEnabled(true);
 
         // Metadata only when something visible changed. Position arrives
         // every ~1.5 s while playing and must not repaint the flyout.
@@ -559,11 +566,14 @@ mod win {
         if let Ok(mut last) = state.last.lock() {
             *last = MediaReport::default();
         }
-        if !was {
-            return;
-        }
+        // Always close the session, not only when the OSD was on screen:
+        // `shown` can be false while Windows still holds an enabled session
+        // (the first report after launch), and that ghost card is the bug.
         if let Some(controls) = state.controls.lock().ok().and_then(|slot| slot.clone()) {
             close(&controls);
+        }
+        if !was {
+            return;
         }
         let _ = app.emit("browser:media", MediaSnapshot::cleared());
     }
@@ -575,7 +585,7 @@ mod win {
         let owner = state.owner.lock().ok().and_then(|owner| owner.clone())?;
         let reports = state.reports.lock().ok()?;
         let report = reports.get(&owner)?;
-        if report.state == "none" {
+        if report.state == "none" || report.title.trim().is_empty() {
             return None;
         }
         Some(super::snapshot_of(&owner, report))
@@ -719,7 +729,10 @@ mod win {
     }
 
     fn close(controls: &SystemMediaTransportControls) {
+        // Disable, not just "Closed": a Closed-but-enabled session still
+        // leaves the app listed in Win+A. Disable removes the card entirely.
         let _ = controls.SetPlaybackStatus(MediaPlaybackStatus::Closed);
+        let _ = controls.SetIsEnabled(false);
         let _ = controls.SetIsNextEnabled(false);
         let _ = controls.SetIsPreviousEnabled(false);
         if let Ok(updater) = controls.DisplayUpdater() {

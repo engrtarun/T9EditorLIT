@@ -34,6 +34,14 @@ import { toast } from './toast.svelte';
 /** The hard cap. Nine tabs, like the plan says — no more. */
 export const MAX_TABS = 9;
 
+/**
+ * Background pages kept alive beyond the active tab. Three live webviews
+ * (active + two most recent) is the speed/RAM compromise: switching back is
+ * a resume instead of a twelve-second YouTube reload, while tab four only
+ * costs a webview once it is actually used. Rust adds pinned tabs on top.
+ */
+const RECENT_KEEP = 2;
+
 /** A saved page pin (Ctrl+D). Bookmarks live on the speed dial. */
 export interface Bookmark {
   url: string;
@@ -551,8 +559,21 @@ class BrowserStore {
     tab.lastActive = Date.now();
     this.logVisit(url, tab.title);
     this.activeId = id;
-    this.nudge?.(id, url);
+    this.nudge?.(id, url, this.recent(id));
     if (!this.nudge) tab.loading = false;
+  }
+
+  /**
+   * The tab ids that should stay alive (parked at 1×1) while `exclude` is on
+   * screen: the most recently used real pages. This is what turns a tab
+   * switch into a resume instead of a fresh navigation.
+   */
+  private recent(exclude: string): string[] {
+    return this.tabs
+      .filter((t) => t.id !== exclude && t.url && t.url !== 'about:blank')
+      .sort((a, b) => b.lastActive - a.lastActive)
+      .slice(0, RECENT_KEEP)
+      .map((t) => t.id);
   }
 
   /** The active tab, or `null` when the browser has no tabs left. */
@@ -567,7 +588,6 @@ class BrowserStore {
   /** Open a new tab (or focus the existing new-tab page). Capped at nine. */
   open(url = ''): BrowserTab | null {
     if (this.atCap) return null;
-    const prev = this.active;
     const tab = makeTab(url || 'about:blank');
     this.tabs.push(tab);
     this.activeId = tab.id;
@@ -576,11 +596,10 @@ class BrowserStore {
     // painting over the speed dial: the strip said "New tab", the address bar
     // said about:blank, and the content still showed YouTube — every Ctrl+T /
     // Ctrl+N looked like it had done nothing ("still on the previous tab").
-    // The tab the user just left is kept parked (1×1), so switching back is
-    // still instant instead of a reload.
+    // The tab the user just left (plus the next most recent pages) is kept
+    // parked (1×1), so switching back is still instant instead of a reload.
     const blank = !url || url === 'about:blank';
-    const keep = blank && prev && prev.id !== tab.id && prev.url !== 'about:blank' ? [prev.id] : [];
-    this.nudge?.(tab.id, blank ? 'about:blank' : url, keep, false, true);
+    this.nudge?.(tab.id, blank ? 'about:blank' : url, this.recent(tab.id), false, true);
     return tab;
   }
 
@@ -596,16 +615,14 @@ class BrowserStore {
   select(id: string): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return;
-    const prev = this.active;
     this.activeId = id;
     tab.lastActive = Date.now();
-    // Selecting a tab brings its page on screen. The tab the user just
-    // left stays alive but collapsed, so switching back is instant (no
-    // reload) — the live set never exceeds two webviews. `resume`: a live
-    // page is shown where it actually is, never re-navigated from the
-    // store's (possibly one beat stale) URL.
-    const keep = prev && prev.id !== id && prev.url !== 'about:blank' ? [prev.id] : [];
-    this.nudge?.(tab.id, tab.url, keep, false, true);
+    // Selecting a tab brings its page on screen. The most recently used tabs
+    // (three live webviews total) stay alive but collapsed, so switching
+    // back is instant (no reload). `resume`: a live page is shown where it
+    // actually is, never re-navigated from the store's (possibly one beat
+    // stale) URL.
+    this.nudge?.(tab.id, tab.url, this.recent(id), false, true);
   }
 
   /** Close a tab. Closing the active one activates the neighbour (Firefox rule). */
@@ -630,7 +647,7 @@ class BrowserStore {
       // Show the neighbour immediately — without this the content hole
       // went blank until the user clicked something. It is resumed, not
       // re-navigated: its page may have moved with pushState while hidden.
-      if (next) this.nudge?.(next.id, next.url, undefined, false, true);
+      if (next) this.nudge?.(next.id, next.url, this.recent(next.id), false, true);
     }
   }
 
@@ -1067,7 +1084,7 @@ class BrowserStore {
     // and the tab's page may be further along than the store knows. This is
     // the pinned-YouTube case: leaving for the editor and coming back must
     // not reload the video.
-    this.nudge(tab.id, tab.url, undefined, false, true);
+    this.nudge(tab.id, tab.url, this.recent(tab.id), false, true);
   }
 }
 

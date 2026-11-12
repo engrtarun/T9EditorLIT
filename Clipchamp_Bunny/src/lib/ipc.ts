@@ -385,6 +385,18 @@ export function cleanChunkDir(sourceKey: string, outDir?: string): Promise<numbe
 }
 
 /**
+ * Delete **one** chunk WAV as soon as its transcript is saved (Case 6).
+ *
+ * The whole-plan cleanup only runs at the end, so an interrupted two-hour
+ * import used to keep every WAV on disk. Deleting per successful chunk keeps
+ * the temp footprint bounded even when the user stops halfway. Rust refuses
+ * anything that is not a `chunk_*.wav` inside the app's own folder.
+ */
+export function removeAudioChunk(path: string): Promise<boolean> {
+  return invoke<boolean>('remove_audio_chunk', { path });
+}
+
+/**
  * Detect silent spans (dead air) with FFmpeg's `silencedetect` filter.
  * `noiseDb` is the RMS threshold, `minSecs` the floor on what counts as
  * silence. Clipchamp's AI auto-cut uses ~3 s.
@@ -422,6 +434,40 @@ export interface RustTranscriptLine {
 
 export function loadTranscript(dbPath: string, sourcePath: string): Promise<RustTranscriptLine[]> {
   return invoke('load_transcript', { dbPath, sourcePath });
+}
+
+/**
+ * A stable fingerprint of the file's bytes: length plus the first and last
+ * 256 KiB. Same bytes under a new name produce the same string, so a renamed
+ * copy can reuse its old transcript instead of paying Whisper again (Case 3).
+ */
+export function sourceFingerprint(path: string): Promise<string> {
+  return invoke<string>('source_fingerprint', { path });
+}
+
+export function rememberSourceFingerprint(
+  dbPath: string,
+  sourcePath: string,
+  contentHash: string,
+  sizeBytes: number
+): Promise<void> {
+  return invoke<void>('remember_source_fingerprint', {
+    dbPath,
+    sourcePath,
+    contentHash,
+    sizeBytes
+  });
+}
+
+/** The transcript already bought for these exact bytes, if any. */
+export function transcriptByHash(
+  dbPath: string,
+  contentHash: string
+): Promise<{ sourcePath: string; lines: RustTranscriptLine[] } | null> {
+  return invoke<{ sourcePath: string; lines: RustTranscriptLine[] } | null>('transcript_by_hash', {
+    dbPath,
+    contentHash
+  });
 }
 
 /**

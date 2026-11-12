@@ -712,7 +712,7 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
         ICoreWebView2PermissionRequestedEventArgs2, ICoreWebView2Profile3, ICoreWebView2Settings3,
         ICoreWebView2_13, ICoreWebView2_2, ICoreWebView2_24,
         COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION,
-        COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_STRICT,
+        COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_BALANCED,
         COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
     };
     use webview2_com::{
@@ -751,16 +751,19 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
             }
         }
 
-        // Strict tracking prevention is the layer *under* the extension: even
-        // with uBOL in Basic mode (DNR rules, no host permission), WebView2
-        // still refuses the trackers Chromium already knows. It never touches
-        // first-party content, so a site's own pages keep working.
+        // Balanced tracking prevention is the layer *under* the extension:
+        // uBOL does the fine-grained blocking, and WebView2 still refuses the
+        // trackers Chromium already knows. STRICT was the bug behind "site
+        // load hi nahi hoti": it blocks third-party scripts and storage that
+        // real pages need for login, video, comments and checkout (YouTube's
+        // consent/player bootstrap was the one that reproduced). BALANCED is
+        // Chromium's default and still blocks known cross-site trackers.
         if let Ok(profile) = core.cast::<ICoreWebView2_13>().and_then(|c| c.Profile()) {
             if let Ok(profile3) = profile.cast::<ICoreWebView2Profile3>() {
                 match profile3.SetPreferredTrackingPreventionLevel(
-                    COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_STRICT,
+                    COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_BALANCED,
                 ) {
-                    Ok(()) => diag(&format!("tracking {label} -> strict")),
+                    Ok(()) => diag(&format!("tracking {label} -> balanced")),
                     Err(err) => diag(&format!("tracking {label} ERR {err}")),
                 }
             }

@@ -1,4 +1,4 @@
-import type { AudioChunk } from './types';
+import type { AudioChunk, TranscriptLine } from './types';
 
 /**
  * A transcript is bought one chunk at a time.
@@ -152,4 +152,154 @@ export function parsePlan(raw: unknown): TranscriptPlan | null {
   }
   done.sort((a, b) => a - b);
   return { spans, done };
+}
+
+/**
+ * The storage key for one source's plan.
+ *
+ * Shared by the editor's transcript panel and the batch queue: the two must
+ * look at the *same* plan, or a batch run would start from chunk 0 on a file
+ * the user had already half-transcribed. Kept here so neither side can drift
+ * from the other's spelling.
+ */
+export function transcriptPlanKey(sourcePath: string): string {
+  return `t9-editor-lit.transcript-plan.${sourcePath}`;
+}
+
+/**
+ * Did a chunk fail because the network/daemon was unreachable (Case 10)?
+ *
+ * The plan footer may only say "offline" when there is evidence: a fetch that
+ * never reached the daemon, a refused loopback connection, or a DNS failure.
+ * A bad audio file, a 25 MB rejection, a 429 rate limit or a 5xx from a
+ * running daemon keep their own honest wording — calling those "offline"
+ * would send the user to check the router for nothing.
+ */
+export function isOfflineError(message: string | null | undefined): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return (
+    m.includes('failed to fetch') ||
+    m.includes('fetch failed') ||
+    m.includes('networkerror') ||
+    m.includes('network error') ||
+    m.includes('could not connect') ||
+    m.includes('connection refused') ||
+    m.includes('connection reset') ||
+    m.includes('econnrefused') ||
+    m.includes('enotfound') ||
+    m.includes('err_internet') ||
+    m.includes('unreachable')
+  );
+}
+
+/* ── Case 9: the overlap between two chunks ─────────────────────────────── */
+
+/** Text for comparison: case, punctuation and spacing ignored. */
+function fingerprintOfText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Levenshtein distance, abandoned once it is clearly above `cap`. */
+function editDistance(a: string, b: string, cap: number): number {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > cap) return cap + 1;
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      row.push(Math.min(previous[j] + 1, row[j - 1] + 1, previous[j - 1] + cost));
+    }
+    previous = row;
+  }
+  return previous[b.length];
+}
+
+/**
+ * Did the two chunks hear the same words?
+ *
+ * Whisper segments the same second of audio differently depending on what
+ * else is in the chunk, so exact equality is too strict. A truncated word
+ * ("deci" vs "decision") shows up as one string containing the other; other
+ * drift is allowed two character edits.
+ */
+function similarText(a: string, b: string): boolean {
+  const left = fingerprintOfText(a);
+  const right = fingerprintOfText(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (left.includes(right) || right.includes(left)) return true;
+  return editDistance(left, right, 2) <= 2;
+}
+
+/**
+ * Merge the next chunk's lines into the transcript **without duplicating the
+ * overlap**.
+ *
+ * Rust now gives adjacent chunks `overlapSecs` of shared audio on both sides
+ * of a cut (see `audio::plan_spans`). Whisper transcribes that audio twice,
+ * so the same sentence arrives from both sides with slightly different
+ * timestamps and segmentation. This function is the arbiter:
+ *
+ * * a line that starts after the previous chunk's end is new, keep it,
+ * * a line in the overlap is a duplicate when a nearby previous line says
+ *   almost the same thing — keep the **longer** text (the side that heard the
+ *   whole word), preserve the previous line's id and keep/cut decision,
+ * * when nothing matches, keep both. A duplicated word costs one line the
+ *   user can cut; a missing word is unrecoverable.
+ *
+ * Pure and order-independent: the result is sorted by source time, so a
+ * resumed plan that transcribes chunk 7 before chunk 2 still reads correctly.
+ */
+export function reconcileBoundary(
+  previous: TranscriptLine[],
+  next: TranscriptLine[],
+  overlapSecs = 2.0
+): TranscriptLine[] {
+  if (!previous.length) return [...next].sort((a, b) => a.startSec - b.startSec);
+  if (!next.length) return [...previous];
+
+  const first = next.reduce((min, line) => Math.min(min, line.startSec), Infinity);
+  // The previous chunk that actually touches this one, not some later chunk
+  // that a resume already finished.
+  const prevEnd = previous
+    .filter((line) => line.startSec <= first + 0.75)
+    .reduce((end, line) => Math.max(end, line.endSec), 0);
+  // A duplicated line can start before the cut (the previous chunk's last
+  // segment may begin well before its end), so the window reaches back a few
+  // overlaps instead of starting exactly at `prevEnd - overlap`.
+  const windowStart = prevEnd - Math.max(overlapSecs * 6, 12);
+
+  const result = [...previous];
+  for (const line of next) {
+    if (line.startSec >= prevEnd + 0.75 || line.startSec < windowStart) {
+      result.push(line);
+      continue;
+    }
+    let match: TranscriptLine | undefined;
+    for (let i = result.length - 1; i >= 0; i--) {
+      const candidate = result[i];
+      if (candidate.startSec > line.endSec + 1.5) continue;
+      if (line.startSec > candidate.endSec + 1.5) break;
+      if (Math.abs(candidate.startSec - line.startSec) > 2.5) continue;
+      if (!similarText(candidate.text, line.text)) continue;
+      match = candidate;
+      break;
+    }
+    if (!match) {
+      result.push(line);
+      continue;
+    }
+    if (fingerprintOfText(line.text).length > fingerprintOfText(match.text).length) {
+      match.text = line.text;
+      match.endSec = Math.max(match.endSec, line.endSec);
+      if (line.words?.length) match.words = line.words;
+    }
+  }
+  return result.sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
 }

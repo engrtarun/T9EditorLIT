@@ -434,6 +434,45 @@
               <p class="mt-2 text-[10.5px] leading-snug text-nc-mut-2">
                 {i18n.t('set.auto.hint')}
               </p>
+
+              <div class="mt-3 flex items-center gap-2 border-t border-nc-line/70 pt-3">
+                <button
+                  role="switch"
+                  aria-checked={settings.autoResumeTranscript}
+                  aria-label={i18n.t('set.autoResume.label')}
+                  title={i18n.t('set.autoResume.label')}
+                  onclick={() => {
+                    settings.setAutoResumeTranscript(!settings.autoResumeTranscript);
+                    toast.push(
+                      'info',
+                      settings.autoResumeTranscript
+                        ? i18n.t('set.autoResume.on')
+                        : i18n.t('set.autoResume.off')
+                    );
+                  }}
+                  class="relative h-5 w-9 shrink-0 rounded-full transition-colors duration-150
+                         {settings.autoResumeTranscript ? 'bg-nc-brand' : 'bg-nc-panel-2'}"
+                >
+                  <span
+                    class="absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white transition-transform duration-150
+                           {settings.autoResumeTranscript ? 'translate-x-4' : ''}"
+                  ></span>
+                </button>
+                <span class="min-w-0 flex-1 text-[12px] text-nc-txt">
+                  {i18n.t('set.autoResume.label')}
+                </span>
+                <span class="shrink-0 text-[10.5px] text-nc-mut">
+                  {settings.autoResumeTranscript
+                    ? i18n.t('set.autoResume.on')
+                    : i18n.t('set.autoResume.off')}
+                </span>
+              </div>
+              <p class="mt-1.5 text-[10.5px] leading-relaxed text-nc-mut-2">
+                {i18n.t('set.autoResume.desc')}
+              </p>
+              <p class="mt-1 text-[10px] leading-snug text-nc-mut-2">
+                {i18n.t('set.autoResume.hint')}
+              </p>
             </section>
           {:else if layout.settingsTab === 'language'}
             <section class="rounded-xl border border-nc-line bg-nc-panel-2/50 p-4">

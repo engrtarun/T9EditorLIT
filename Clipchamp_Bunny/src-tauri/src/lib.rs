@@ -569,6 +569,63 @@ fn load_transcript(db_path: String, source_path: String) -> Result<Vec<Transcrip
     transcript::load_transcript(&conn, &source_path)
 }
 
+/// A stable fingerprint of a file's bytes: length + head/tail samples.
+///
+/// This is how a renamed copy of the same video finds its old transcript
+/// instead of paying Whisper twice (Case 3). It streams 32 KiB at a time and
+/// never loads the media into memory.
+#[tauri::command]
+fn source_fingerprint(path: String) -> Result<String, String> {
+    media::content_fingerprint(Path::new(&path))
+}
+
+/// Remember which content produced this path's transcript.
+#[tauri::command]
+fn remember_source_fingerprint(
+    db_path: String,
+    source_path: String,
+    content_hash: String,
+    size_bytes: u64,
+) -> Result<(), String> {
+    let conn = transcript::open_db(Path::new(&db_path))?;
+    transcript::remember_fingerprint(&conn, &source_path, &content_hash, size_bytes)
+}
+
+/// The transcript that was already bought for these exact bytes, under any
+/// previous path. `null` means this content has never been transcribed.
+#[tauri::command]
+fn transcript_by_hash(
+    db_path: String,
+    content_hash: String,
+) -> Result<Option<serde_json::Value>, String> {
+    let conn = transcript::open_db(Path::new(&db_path))?;
+    Ok(transcript::transcript_by_hash(&conn, &content_hash)?.map(|(source_path, lines)| {
+        serde_json::json!({ "sourcePath": source_path, "lines": lines })
+    }))
+}
+
+/// Delete one already-transcribed chunk WAV (Case 6: keep disk flat).
+///
+/// Only `chunk_*.wav` files inside the app's own chunks folder can be
+/// removed; a path from the page can never delete anything else.
+#[tauri::command]
+fn remove_audio_chunk(path: String) -> Result<bool, String> {
+    let file = PathBuf::from(&path);
+    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    if !name.starts_with("chunk_") || file.extension().and_then(|e| e.to_str()) != Some("wav") {
+        return Err("only chunk_*.wav files can be removed".to_string());
+    }
+    let base = std::env::temp_dir().join("nanamicut").join("chunks");
+    let base = base.canonicalize().unwrap_or(base);
+    let canonical = file
+        .canonicalize()
+        .map_err(|e| format!("chunk not found: {e}"))?;
+    if !canonical.starts_with(&base) {
+        return Err("refusing to remove a file outside the chunk folder".to_string());
+    }
+    Ok(std::fs::remove_file(&canonical).is_ok())
+}
+
 /// Replace the stored transcript for a source video, diff-style.
 ///
 /// Returns the number of rows SQLite actually wrote — the progress trail uses
@@ -1698,6 +1755,10 @@ pub fn run() {
             load_transcript,
             save_transcript,
             set_transcript_keep,
+            source_fingerprint,
+            remember_source_fingerprint,
+            transcript_by_hash,
+            remove_audio_chunk,
             log_app_event,
             log_edit_action,
             log_transcription_job,

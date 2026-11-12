@@ -132,6 +132,79 @@
   let mediaTimer = 0;
   let mediaSentAt = 0;
   let mediaKey = '';
+  /** The element that has actually played at least once. */
+  let playedEl = null;
+
+  const httpUrl = (raw) => {
+    if (!raw) return '';
+    try {
+      const url = new URL(raw, location.href);
+      return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+    } catch (e) {
+      return '';
+    }
+  };
+
+  const pageTitle = () => {
+    let title = '';
+    try {
+      const og = document.querySelector('meta[property="og:title"]');
+      title = (og && og.content) || document.title || '';
+    } catch (e) {
+      title = '';
+    }
+    // YouTube appends " - YouTube" to document.title; the card already shows
+    // the app name, so that suffix is noise, not part of the video title.
+    return title.replace(/\s*[-\u2013\u2014]\s*YouTube\s*$/i, '').trim();
+  };
+
+  const channelName = () => {
+    // YouTube keeps the channel next to the title. MediaSession metadata
+    // often has no `artist`, and the hostname ("youtube.com") is a terrible
+    // stand-in for the channel the user is actually watching.
+    const selectors = [
+      'ytd-watch-metadata ytd-channel-name a',
+      '#owner #channel-name a',
+      'ytd-video-owner-renderer ytd-channel-name a'
+    ];
+    for (const selector of selectors) {
+      try {
+        const node = document.querySelector(selector);
+        const name = node && (node.textContent || '').trim();
+        if (name) return name;
+      } catch (e) {
+        /* layout changed: try the next one */
+      }
+    }
+    return '';
+  };
+
+  const artworkOf = (metadata) => {
+    try {
+      const list = metadata && metadata.artwork ? metadata.artwork : [];
+      // The largest entry is last in every player seen so far (YouTube,
+      // Spotify). Only absolute http(s) survives: Windows fetches the image
+      // out-of-process, so a blob:/data: URL is a guaranteed blank card.
+      for (let i = list.length - 1; i >= 0; i--) {
+        const src = httpUrl(list[i] && list[i].src);
+        if (src) return src;
+      }
+    } catch (e) {
+      /* unusable artwork list */
+    }
+    try {
+      const og = document.querySelector('meta[property="og:image"]');
+      const src = httpUrl(og && og.content);
+      if (src) return src;
+    } catch (e) {
+      /* no og:image */
+    }
+    try {
+      return httpUrl(mediaElement() && mediaElement().poster);
+    } catch (e) {
+      return '';
+    }
+  };
 
   const reportMedia = () => {
     mediaTimer = 0;
@@ -146,32 +219,23 @@
     const duration = el && isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
     const position = el && isFinite(el.currentTime) ? el.currentTime : 0;
     const playing = !!el && !el.paused && !el.ended;
+    const title = ((metadata && metadata.title) || pageTitle()).trim();
+    // A preloaded / hover-preview <video> is paused at 0:00 with no metadata.
+    // That is *not* playback: until this element (or one like it) has really
+    // played, the report is `none` and no Windows card exists.
+    const everPlayed = !!el && (playedEl === el || !el.paused || position > 0.05);
+    // Muted hover previews on YouTube's home page have no metadata; they are
+    // decoration, not media the user asked for.
+    const decoration = !!el && el.muted && !(metadata && (metadata.title || metadata.artist));
     const state =
-      !el || (!playing && !position && !duration) ? 'none' : playing ? 'playing' : 'paused';
-    const title = (metadata && metadata.title) || document.title || '';
-    const artworkList = metadata && metadata.artwork ? metadata.artwork : [];
-    // The largest entry is last in every player seen so far (YouTube, Spotify).
-    // Rust hands the URL to Windows, which downloads it out-of-process, so it
-    // has to be absolute: resolve it here where `location` is still available.
-    let artworkSrc = artworkList.length ? artworkList[artworkList.length - 1].src || '' : '';
-    if (!artworkSrc) {
-      // Not every page fills `metadata.artwork` (YouTube often ships only
-      // `og:image`), and the flyout with no image at all looks broken.
-      try {
-        const og = document.querySelector('meta[property="og:image"]');
-        artworkSrc = (og && og.content) || '';
-      } catch (e) {
-        artworkSrc = '';
-      }
-    }
-    let artwork = '';
-    try {
-      artwork = artworkSrc ? new URL(artworkSrc, location.href).href : '';
-    } catch (e) {
-      artwork = '';
-    }
+      !el || !everPlayed || decoration || !title ? 'none' : playing ? 'playing' : 'paused';
     const host = location.hostname.replace(/^www\./, '');
-    const artist = (metadata && metadata.artist) || host;
+    const artist = (
+      (metadata && (metadata.artist || metadata.album)) ||
+      channelName() ||
+      host
+    ).trim();
+    const artwork = artworkOf(metadata);
     // The page's handlers are the real thing; YouTube's own next/previous
     // buttons are the fallback so the flyout arrows are never dead on a
     // watch page that skipped MediaSession registration.
@@ -190,10 +254,10 @@
     send({
       t9: 'media',
       state,
-      title,
-      artist,
+      title: state === 'none' ? '' : title,
+      artist: state === 'none' ? '' : artist,
       album: host,
-      artwork,
+      artwork: state === 'none' ? '' : artwork,
       position,
       duration,
       rate: el && isFinite(el.playbackRate) ? el.playbackRate : 1,
@@ -212,6 +276,12 @@
     mediaTimer = setTimeout(reportMedia, 300);
   };
 
+  const rememberPlayback = (event) => {
+    const el = event && event.target;
+    if (el && (el.tagName === 'VIDEO' || el.tagName === 'AUDIO')) playedEl = el;
+    scheduleMedia();
+  };
+
   for (const name of [
     'play',
     'playing',
@@ -221,14 +291,50 @@
     'loadedmetadata',
     'durationchange',
     'ratechange',
-    'timeupdate',
     'emptied',
     'canplay'
   ]) {
-    document.addEventListener(name, scheduleMedia, true);
+    document.addEventListener(name, rememberPlayback, true);
   }
+  // `timeupdate` fires ~4×/s. Reporting four times a second is pure overhead;
+  // this keeps the timeline honest at ~1.5 s while the page is playing.
+  document.addEventListener(
+    'timeupdate',
+    () => {
+      if (Date.now() - mediaSentAt > 1500) scheduleMedia();
+    },
+    true
+  );
   document.addEventListener('DOMContentLoaded', scheduleMedia, true);
   window.addEventListener('load', scheduleMedia, true);
+
+  // MediaSession metadata is usually assigned *after* playback starts (and
+  // again when an ad ends). Watching the assignment is what makes the title
+  // and the thumbnail appear without waiting for an unrelated DOM event.
+  if (mediaSession) {
+    try {
+      const proto = Object.getPrototypeOf(mediaSession);
+      const descriptor = Object.getOwnPropertyDescriptor(proto, 'metadata');
+      if (descriptor && descriptor.configurable) {
+        Object.defineProperty(mediaSession, 'metadata', {
+          configurable: true,
+          enumerable: descriptor.enumerable,
+          get() {
+            return descriptor.get ? descriptor.get.call(this) : undefined;
+          },
+          set(value) {
+            if (descriptor.set) descriptor.set.call(this, value);
+            scheduleMedia();
+            // Some players assign twice in one tick (placeholder, then real).
+            setTimeout(scheduleMedia, 800);
+            setTimeout(scheduleMedia, 2400);
+          }
+        });
+      }
+    } catch (e) {
+      /* frozen MediaSession: heartbeats still pick the metadata up */
+    }
+  }
 
   const runMediaAction = (name, details, fallback) => {
     const handler = mediaHandlers[name];

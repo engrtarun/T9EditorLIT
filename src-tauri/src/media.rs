@@ -405,6 +405,67 @@ pub fn format_timestamp(secs: f64) -> String {
     }
 }
 
+/// A streaming content fingerprint: file length plus the first and last
+/// 256 KiB, hashed with two independent FNV-1a passes.
+///
+/// This is what lets a **renamed copy** of the same video hit the transcript
+/// cache (Case 3). It is deliberately not a whole-file SHA-256: a 5 GB source
+/// would take seconds and the app has no hashing crate. The video is never
+/// read into memory — the two samples go through one 32 KiB buffer, so the
+/// peak cost is a few dozen kilobytes regardless of file size.
+pub fn content_fingerprint(path: &Path) -> Result<String, String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    const SAMPLE: u64 = 256 * 1024;
+    const CHUNK: usize = 32 * 1024;
+
+    fn eat(
+        file: &mut std::fs::File,
+        mut left: u64,
+        buf: &mut [u8],
+        h1: &mut u64,
+        h2: &mut u64,
+    ) -> Result<(), String> {
+        while left > 0 {
+            let want = CHUNK.min(left as usize);
+            let read = file
+                .read(&mut buf[..want])
+                .map_err(|e| format!("could not read for fingerprint: {e}"))?;
+            if read == 0 {
+                break;
+            }
+            for byte in &buf[..read] {
+                *h1 ^= u64::from(*byte);
+                *h1 = h1.wrapping_mul(0x100_0000_01b3);
+                *h2 ^= u64::from(*byte).rotate_left(1) ^ 0xa5;
+                *h2 = h2.wrapping_mul(0x100_0000_01b3);
+            }
+            left -= read as u64;
+        }
+        Ok(())
+    }
+
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("could not open {} for fingerprint: {e}", path.display()))?;
+    let len = file
+        .metadata()
+        .map_err(|e| format!("could not stat {} for fingerprint: {e}", path.display()))?
+        .len();
+    // Stable seeds: unlike DefaultHasher, these never change between builds,
+    // so a transcript saved by an older app version still matches.
+    let mut h1 = 0xcbf2_9ce4_8422_2325u64;
+    let mut h2 = 0x9e37_79b9_7f4a_7c15u64;
+    let mut buf = vec![0u8; CHUNK];
+
+    eat(&mut file, SAMPLE.min(len), &mut buf, &mut h1, &mut h2)?;
+    if len > SAMPLE {
+        file.seek(SeekFrom::Start(len - SAMPLE))
+            .map_err(|e| format!("could not seek for fingerprint: {e}"))?;
+        eat(&mut file, SAMPLE, &mut buf, &mut h1, &mut h2)?;
+    }
+    Ok(format!("{len:x}-{h1:016x}{h2:016x}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,5 +492,39 @@ mod tests {
     #[test]
     fn formats_within_an_hour_without_hours() {
         assert_eq!(format_timestamp(9.5), "00:09.500");
+    }
+
+    fn scratch(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("t9-fingerprint-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}-{name}", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn fingerprint_is_same_for_the_same_bytes_under_a_new_name() {
+        let bytes: Vec<u8> = (0..900_000u32).map(|i| (i % 251) as u8).collect();
+        let a = scratch("a.bin", &bytes);
+        let b = scratch("b.bin", &bytes);
+        assert_eq!(
+            content_fingerprint(&a).unwrap(),
+            content_fingerprint(&b).unwrap()
+        );
+        let _ = std::fs::remove_file(a);
+        let _ = std::fs::remove_file(b);
+    }
+
+    #[test]
+    fn fingerprint_notices_a_changed_tail() {
+        let mut bytes: Vec<u8> = vec![7u8; 800_000];
+        let a = scratch("head.bin", &bytes);
+        let before = content_fingerprint(&a).unwrap();
+        let last = bytes.len() - 10;
+        bytes[last] = 9;
+        let b = scratch("tail.bin", &bytes);
+        assert_ne!(before, content_fingerprint(&b).unwrap());
+        let _ = std::fs::remove_file(a);
+        let _ = std::fs::remove_file(b);
     }
 }

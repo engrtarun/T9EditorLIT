@@ -736,6 +736,27 @@
           </button>
         </div>
       {:else}
+        <!--
+          Case 10: a plan that stopped because the network/daemon went away
+          says so, with evidence — the failure text must actually look like a
+          connection problem. "Offline" here means "nothing is lost, the
+          remaining chunks are still pending", not an error.
+        -->
+        {#if project.transcriptOffline}
+          <div
+            class="mt-1 flex items-start gap-1.5 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-1"
+          >
+            <span class="shrink-0 text-[10px] font-semibold text-amber-300">Offline</span>
+            <span class="min-w-0 text-[9.5px] leading-snug text-nc-mut">
+              {project.planPending} chunk pending — network/daemon wapas aane par "Agla chunk" dabao.
+              Kuch bhi delete nahi hua; har done chunk SQLite me hai.
+            </span>
+          </div>
+        {:else if project.planFailed.length}
+          <p class="mt-1 text-[9.5px] leading-snug text-nc-red">
+            {project.planFailed.length} chunk fail hue — "Agla chunk" unhe dobara try karega.
+          </p>
+        {/if}
         <p class="mt-0.5 text-[9.5px] leading-snug text-nc-mut-2">
           {#if project.nextPlanSpan}
             Agla chunk {fmtShort(project.nextPlanSpan.startSec)}–{fmtShort(

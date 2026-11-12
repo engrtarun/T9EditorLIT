@@ -134,6 +134,13 @@ const en: Dict = {
     'When a clip is imported the app can call Groq Whisper and Gemini on its own to build the transcript. Turn this off and no API call happens at all — the transcript is only produced when you press the button in the editor.',
   'set.auto.hint':
     'A transcript is saved to SQLite once made, so a source is never transcribed twice.',
+  'set.autoResume.label': 'Resume an unfinished transcript when the project opens',
+  'set.autoResume.on': 'On',
+  'set.autoResume.off': 'Off (resume by hand)',
+  'set.autoResume.desc':
+    'A transcript that stopped mid-way (lost network, power cut) can continue on its own the next time its project is opened. Only a plan that has already transcribed a chunk resumes — a project that never asked for a transcript stays quiet.',
+  'set.autoResume.hint':
+    'The queue position lives in SQLite, so a resumed plan starts at the next missing chunk — never from zero.',
 
   /* language */
   'set.lang.title': 'LANGUAGE',
@@ -237,6 +244,9 @@ const en: Dict = {
   'dash.noProjects': 'No projects yet',
   'dash.noProjectsSub': 'Start with Import media — or a blank project from "Create a new video".',
   'dash.openDemo': '…or open the demo recording',
+  'dash.batch': 'Batch transcript',
+  'dash.batchHint':
+    'Queue many files and transcribe them one at a time — the position is shown per file.',
 
   /* --------------------------------------------------- create new project */
   'new.title': 'Create New Project',
@@ -510,6 +520,13 @@ const hinglish: Dict = {
     ' Clip import hote hi app khud Groq Whisper + Gemini API call karke transcript bana sakti hai. Band karo to koi API call nahi hoti — transcript sirf editor me button dabane pe banta hai.',
   'set.auto.hint':
     'Transcript ek baar ban gaya to SQLite me save — dobara kabhi transcribe nahi hoga.',
+  'set.autoResume.label': 'Project kholte hi adhoora transcript aage badhao',
+  'set.autoResume.on': 'On',
+  'set.autoResume.off': 'Off (khud se chalao)',
+  'set.autoResume.desc':
+    'Beech me ruka transcript (network gaya, power cut) agli baar project kholne par khud aage badh sakta hai. Sirf wahi plan resume hota hai jisme pehle se ek chunk ho chuka hai — jis project me transcript maanga hi nahi gaya, wo chup rehta hai.',
+  'set.autoResume.hint':
+    'Queue position SQLite me hai, isliye resume agle missing chunk se shuru hota hai — zero se nahi.',
 
   'set.lang.title': 'LANGUAGE',
   'set.lang.desc': 'Menus, buttons, settings aur dashboard ke labels turant badal jaate hain.',
@@ -611,6 +628,9 @@ const hinglish: Dict = {
   'dash.noProjects': 'Abhi koi project nahi hai',
   'dash.noProjectsSub': 'Import media se shuru karo — ya "Create a new video" se ek blank project.',
   'dash.openDemo': '…ya demo recording kholo',
+  'dash.batch': 'Batch transcript',
+  'dash.batchHint':
+    'Ek saath bahut files queue karo — ek waqt me ek transcribe hogi, position har file ke saamne dikhegi.',
 
   /* --------------------------------------------------- create new project */
   'new.title': 'Naya Project Banao',
@@ -898,6 +918,13 @@ const hi: Dict = {
     ' क्लिप इंपोर्ट होते ही ऐप अपने-आप Groq Whisper + Gemini API कॉल करके ट्रांसक्रिप्ट बना सकती है। बंद करने पर कोई API कॉल नहीं होती — ट्रांसक्रिप्ट सिर्फ़ एडिटर में बटन दबाने पर बनता है।',
   'set.auto.hint':
     'ट्रांसक्रिप्ट एक बार बन जाने पर SQLite में सेव हो जाता है — दोबारा कभी transcribe नहीं होगा.',
+  'set.autoResume.label': 'प्रोजेक्ट खोलते ही अधूरा ट्रांसक्रिप्ट आगे बढ़ाएँ',
+  'set.autoResume.on': 'चालू',
+  'set.autoResume.off': 'बंद (खुद से चलाएँ)',
+  'set.autoResume.desc':
+    'बीच में रुका ट्रांसक्रिप्ट (नेटवर्क गया, बिजली गई) अगली बार प्रोजेक्ट खोलने पर अपने-आप आगे बढ़ सकता है। सिर्फ़ वही प्लान रिज़्यूम होता है जिसमें पहले से एक चंक हो चुका है — जिस प्रोजेक्ट में ट्रांसक्रिप्ट माँगा ही नहीं गया, वह शांत रहता है।',
+  'set.autoResume.hint':
+    'क्यू की स्थिति SQLite में है, इसलिए रिज़्यूम अगले मिसिंग चंक से शुरू होता है — शून्य से नहीं.',
   'set.skip.bad': 'स्किप स्टेप एक सकारात्मक संख्या होनी चाहिए (सेकंड).',
   'set.skip.toast': 'स्किप स्टेप {n} सेकंड — J / L और ट्रांसपोर्ट बटन.',
 
@@ -1005,6 +1032,9 @@ const hi: Dict = {
   'dash.noProjects': 'अभी कोई प्रोजेक्ट नहीं है',
   'dash.noProjectsSub': 'मीडिया आयात से शुरू करें — या "नया वीडियो बनाएँ" से खाली प्रोजेक्ट.',
   'dash.openDemo': '…या डेमो रिकॉर्डिंग खोलें',
+  'dash.batch': 'बैच ट्रांसक्रिप्ट',
+  'dash.batchHint':
+    'एक साथ कई फ़ाइलें क्यू करें — एक बार में एक ट्रांसक्राइब होगी, हर फ़ाइल की स्थिति दिखेगी.',
 
   /* --------------------------------------------------- create new project */
   'new.title': 'नया प्रोजेक्ट बनाएँ',

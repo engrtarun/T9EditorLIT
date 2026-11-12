@@ -1463,6 +1463,7 @@ nahi).
 **Suggestion:** Daemon queue ke `Stats()` ko UI me badge banao ("2 pending, API
 5xx - retry in 30 s"), aur ek explicit "Auto-resume on next launch" setting jo
 default off ho.
+
 ---
 
 # PART 3 — deepseek Addendum: Cases 11–20 implemented (code, not analysis)
@@ -2255,3 +2256,75 @@ suite aur poora frontend suite **dono** green.
 **— deepseek** (opencode / minimax-m3.1-flash-free) · 2026-11-12
 *Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) — dono untouched. Ye part
 sirf append hai. Deployment record: commit `9145bf0`, build `ci-9145bf0`.*
+
+---
+
+## Round 3 — Cases 1–10 close-out (deepseek, 2026-11-12)
+
+> Append-only record. Yahan sirf wahi likha hai jo is worktree me **verify** hua:
+> `npm run check` = 0 errors, `npm test` = 115 pass, `cargo check --tests` dono
+> Rust crates me clean. Jo cheez CI ya install ke bina sach nahi hoti, wo
+> "Shipping" me alag se likhi hai — pehle se "shipped" nahi bol rahe.
+>
+> Rebase note: ye round `ee94bb6` par shuru hua tha, aur ship hone se pehle
+> Part 3 (ElevenLabs + cases 11–20, `45f6c4a`) ke upar rebase kiya gaya. Do
+> conflicts the — `project.svelte.ts` (unka audio-profile/language RPC + mera
+> overlap reconciler, dono rakhe) aur yahi doc (dono sections, kuch delete
+> nahi). Rebase ke **baad** ke numbers upar hain.
+
+### Browser — "site load hi nahi hoti / bahut slow"
+
+| Root cause | Fix | Kahan |
+| --- | --- | --- |
+| WebView2 tracking prevention **STRICT** third-party scripts/storage block kar raha tha (YouTube ka player/consent bootstrap isi me phansa) | **BALANCED** (Chromium default). Known cross-site trackers ab bhi block, par site ke apne login/player/comments/checkout kaam karte hain. Fine-grained blocking uBOL karta hai. | `Clipchamp_Bunny/src-tauri/src/browser.rs` (`configure_tab_webview`) |
+| Sirf active tab zinda tha — har tab switch par page dobara load | Active + **2 most-recent** tabs tak webview zinda (3 total), uske baad LRU destroy. Pinned tabs alag se Rust rakhta hai. | `src/lib/stores/browser.svelte.ts` (`recent()`) |
+| Hidden media flyout ka WebView2 renderer session bhar resident | Idle aur session-clear par `window.destroy()`; agla play `ping` se ~200 ms me recreate karta hai | `Clipchamp_Bunny/src-tauri/src/media_flyout.rs` |
+| Background tab par occlusion throttling | Pichhle round me shipped (`e6efab7`) | commit |
+
+### Win+A / Windows media card — bina title/thumbnail "T9 Editor LIT"
+
+| Root cause | Fix | Kahan |
+| --- | --- | --- |
+| SMTC session install par `SetIsEnabled(true)` + `PlaybackStatus::Closed` ke saath ban jaata tha | Session **disabled** shuru hota hai; sirf titled live playback par enable, last stop par disable + `ClearAll` | `Clipchamp_Bunny/src-tauri/src/smtc.rs` |
+| Page `play()` ke baad `mediaSession.metadata` set karta tha, shim dobara report hi nahi karta tha | Shim metadata ko observe karta hai (title/artist/album/artwork aate hi re-report) | `src-tauri/src/browser_shim.js` |
+| Non-HTTP artwork URL SMTC ko de diya jaata tha (blank thumb) | Sirf `http(s)` artwork accept; title/channel ke honest fallbacks | `browser_shim.js`, `smtc.rs` |
+| "Kabhi play nahi hua" aur "paused" me farq nahi tha | Live report ki shart: `playing`/`paused` **aur** non-empty title. Preload/hover wala silent `<video>` card nahi banata. | `smtc.rs` (`update`) |
+
+### Cases 1–10 — final status
+
+| Case | Status | Kya hua (code) |
+| --- | --- | --- |
+| 1 — speech-spans / silence na bheje | **fixed** | `audio.rs`: ek `silencedetect` pass, speech complement ke spans, leading/trailing silence trim, cut silence ke beech. `plan_spans` deterministic. |
+| 2 — cost pehle dikhe | **shipped (pehle)** | `estimateForDuration` / `planEstimate`; batch panel wahi helper use karta hai. |
+| 3 — renamed copy dobara transcribe | **fixed** | `media.rs::content_fingerprint` — size + first/last 256 KiB, dual FNV-1a, 32 KiB buffer (file RAM me nahi). `transcript.rs`: `source_fingerprints` table + `transcript_by_hash`; `lib.rs` ke 4 commands; `project.open`/batch hash-hit par lines naye path par copy. |
+| 4 — 30 files + Groq 429 | **fixed** | `batch-queue.ts` (pure model/estimate), `stores/batch.svelte.ts` (persisted queue, **sequential** worker, per-file status), `BatchQueuePanel.svelte` (3/30 position, per-file cost, stop after current, failed rows keep their reason), dashboard "Batch transcript". Ek waqt me ek file — 429 ka structural fix. |
+| 5 — 2 GB movie / vault | **fixed (app path)** | `MAX_SEGMENT_SECS = 760` (16 kHz mono ≈ 24.3 MB < Groq 25 MB), `plan_spans` target clamp, per-span FFmpeg extraction. Video bytes decode hote hi chhoot jaate hain (pehle se). Daemon-side 413 split future hardening hai, par 760 s cap usse pehle hi rok deta hai. |
+| 6 — studio WAV / tmp storage | **fixed (WAV path)** | Har chunk ka WAV transcript save hote hi `remove_audio_chunk` se delete (`project.transcribeSpan`, batch worker). Plan complete par poora chunk dir clean. FLAC variant abhi nahi — daemon reader change chahiye, isliye alag PR. |
+| 7 — 1 s se chhota clip | **shipped (pehle)** | `startTranscript` < 1 s par bina API call friendly error. Batch worker bhi wahi gate lagata hai. |
+| 8 — lambe files ka chunking | **fixed** | Same `plan_spans`: target ~300 s, silence boundary par cut, hard ceiling 760 s, deterministic. |
+| 9 — chunk boundary par word tear | **fixed** | Har span ke dono side **0.6 s overlap**; `reconcileBoundary` (Levenshtein ≤ 2 + timestamp overlap + normalized text) duplicate ko ek line karta hai, alag sentences dono rakhta hai. Rust + TS tests. |
+| 10 — network/power/API down | **fixed** | (a) Plan SQLite `kv` me — pending chunk wahin se retry. (b) `TranscriptPanel` footer me **evidence-based offline badge**: sirf `Failed to fetch`/ECONNREFUSED/ENOTFOUND jaisi connection failure par "Offline — N chunk pending"; 429/5xx/bad audio apni honest wording rakhte hain. (c) Naya setting `set.autoResumeTranscript` (default **off**, `t9-editor-lit.autoResumePlan`): project kholne par sirf wahi plan khud aage badhta hai jisme pehle se `done.length > 0` — jis project me transcript maanga hi nahi, wo chup rehta hai. |
+
+### Tests / verification (local)
+
+- `Clipchamp_Bunny`: `npm run check` — 0 errors, 0 warnings.
+- `Clipchamp_Bunny`: `npm run lint` — prettier clean.
+- `Clipchamp_Bunny`: `npm test` — **115 pass** (is round ke naye: `batch-queue.test.ts`
+  11, `transcript-plan.test.ts` me offline classifier + overlap cases; baaki 9
+  Part 3 ke hain jo rebase me aaye).
+- `src-tauri`: `cargo fmt --all -- --check` — clean.
+- `src-tauri`: `cargo check --tests` — clean (2 `unused_mut` warnings is round me
+  fix kiye, kyunki CI `clippy -D warnings` hard gate hai).
+- `Clipchamp_Bunny/src-tauri`: `cargo check --tests` — clean.
+- Go untouched is round; daemon contract same (`chunk.path + offset_secs + index`).
+
+### Shipping
+
+- Commit is worktree se `main` par jaata hai; compile **GitHub CI** karta hai
+  (`sarkari-artifact.yml`), phir `deploy.ps1 -Ci`.
+- App chal raha ho to naya build **staged** hota hai (`t9-editor-lit.new.exe`);
+  user **Update** click karta hai. Us click se pehle desktop purana build chalata
+  hai — is section ko "desktop par live" mat samajhna.
+- Deploy ka final sach ledger me hoga (`deploy.ps1 -Status`: `shipped`/`staged`).
+
+— deepseek
