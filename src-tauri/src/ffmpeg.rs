@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -47,6 +47,148 @@ pub fn silent(program: &str) -> Command {
     cmd
 }
 
+/* ------------------------------------------------------- child lifetime */
+
+/// Every long-running media child is adopted into one Windows Job Object
+/// whose `KILL_ON_JOB_CLOSE` limit is the whole point: when this process
+/// dies - clean exit, a crash, or Task Manager ending the task - the kernel
+/// closes the last job handle and terminates every process still inside it.
+///
+/// Without this an interrupted export, waveform or chunk scan outlives the
+/// app: FFmpeg keeps reading the source and writing the output, the user sees
+/// "app band ho gaya par CPU chalu hai", and the next launch competes with
+/// its own orphan. A parent-side `kill()` cannot cover the Task Manager case;
+/// the job object is the only mechanism that does.
+#[cfg(windows)]
+mod children {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+    use std::sync::OnceLock;
+
+    type Handle = *mut core::ffi::c_void;
+
+    const KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
+    const EXTENDED_LIMIT_INFORMATION: i32 = 9;
+
+    /// `JOBOBJECT_BASIC_LIMIT_INFORMATION` (winnt.h), field for field. The
+    /// `usize` fields are `SIZE_T`/`ULONG_PTR`; `repr(C)` inserts exactly the
+    /// same padding the C compiler does on x64.
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicLimit {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: u32,
+        minimum_working_set_size: usize,
+        maximum_working_set_size: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct IoCounters {
+        read_operation_count: u64,
+        write_operation_count: u64,
+        other_operation_count: u64,
+        read_transfer_count: u64,
+        write_transfer_count: u64,
+        other_transfer_count: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ExtendedLimit {
+        basic: BasicLimit,
+        io: IoCounters,
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateJobObjectW(attrs: *const core::ffi::c_void, name: *const u16) -> Handle;
+        fn SetInformationJobObject(
+            job: Handle,
+            class: i32,
+            info: *const core::ffi::c_void,
+            len: u32,
+        ) -> i32;
+        fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+        fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
+    }
+
+    /// The process-wide job. Stored as `usize` so the `OnceLock` stays
+    /// `Send + Sync` without wrapping a raw pointer; `0` means "the OS
+    /// refused", and every later call degrades to a no-op.
+    fn handle() -> Handle {
+        static JOB: OnceLock<usize> = OnceLock::new();
+        let stored = *JOB.get_or_init(|| unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return 0;
+            }
+            let mut info = ExtendedLimit::default();
+            info.basic.limit_flags = KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                job,
+                EXTENDED_LIMIT_INFORMATION,
+                &info as *const ExtendedLimit as *const core::ffi::c_void,
+                std::mem::size_of::<ExtendedLimit>() as u32,
+            );
+            if ok == 0 {
+                return 0;
+            }
+            job as usize
+        });
+        stored as Handle
+    }
+
+    pub(super) fn adopt(child: &Child) -> bool {
+        let job = handle();
+        if job.is_null() {
+            return false;
+        }
+        // Windows 8+ allows a process to belong to more than one job, so a
+        // host that already runs us inside one is not a reason to fail.
+        unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as Handle) != 0 }
+    }
+
+    pub(super) fn kill_all() {
+        let job = handle();
+        if !job.is_null() {
+            unsafe {
+                TerminateJobObject(job, 0);
+            }
+        }
+    }
+}
+
+/// Adopt a freshly spawned child into the kill-on-close job (no-op when the
+/// OS refuses, or on another platform). Returns whether it is tracked.
+pub fn adopt(child: &Child) -> bool {
+    #[cfg(windows)]
+    {
+        children::adopt(child)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = child;
+        false
+    }
+}
+
+/// Terminate every tracked child now. Called on the app's close path so a
+/// clean exit looks exactly like the kernel's crash exit: no FFmpeg survives.
+pub fn kill_children() {
+    #[cfg(windows)]
+    children::kill_all();
+}
+
 /// Run a binary to completion, capturing both streams.
 ///
 /// FFmpeg is chatty on stderr even on success (stream sizes, speed, etc.), so
@@ -68,6 +210,7 @@ pub fn run(program: &str, args: &[&str]) -> Result<RunOutput, String> {
             }
             format!("failed to spawn `{program}`: {e}")
         })?;
+    adopt(&child);
 
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
@@ -269,6 +412,9 @@ pub fn run_streaming<A: AsRef<std::ffi::OsStr>>(
         .spawn()
         .map_err(|e| format!("failed to spawn `{program}`: {e}"))?;
 
+    // An interrupted export must not survive the app (job object above).
+    adopt(&child);
+
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
 
@@ -426,8 +572,14 @@ mod tests {
     /// probe, waveform, thumbnail and export, so the helper is pinned here.
     #[test]
     fn the_silent_constructor_is_the_one_we_use() {
-        assert_eq!(silent("ffmpeg").get_program(), std::ffi::OsStr::new("ffmpeg"));
-        assert_eq!(silent("ffprobe").get_program(), std::ffi::OsStr::new("ffprobe"));
+        assert_eq!(
+            silent("ffmpeg").get_program(),
+            std::ffi::OsStr::new("ffmpeg")
+        );
+        assert_eq!(
+            silent("ffprobe").get_program(),
+            std::ffi::OsStr::new("ffprobe")
+        );
     }
 
     #[test]

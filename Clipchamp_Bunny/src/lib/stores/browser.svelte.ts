@@ -23,7 +23,9 @@ import {
   onBrowserPopup,
   onBrowserSpa,
   onBrowserTitle,
-  isTauri
+  isTauri,
+  statsGet,
+  statsSet
 } from '../ipc';
 import { downloads } from './downloads.svelte';
 import { ublock } from './ublock.svelte';
@@ -53,6 +55,8 @@ const CLOSED_CAP = 20;
 const HISTORY_KEY = 't9-browser-lit.history.v1';
 /** Pinned tabs, restored as tabs on the next boot. */
 const PINS_KEY = 't9-browser-lit.pins.v1';
+/** The whole tab strip, persisted in SQLite (localStorage is only a mirror). */
+const SESSION_KEY = 't9-browser-lit.session.v1';
 
 /** A pinned tab as it is written to disk: the page, not the webview. */
 interface PinnedTab {
@@ -751,6 +755,133 @@ class BrowserStore {
       if (isTauri()) void browserSetPinned(tab.id, true);
     }
     this.activeId = this.tabs[0].id;
+  }
+
+  /* ------------------------------------------------ tab session (disk) */
+
+  /**
+   * Where the strip is on disk: SQLite's `kv` table, the same durable store
+   * the project list and transcripts already use. localStorage is written
+   * too, but only as a synchronous mirror for the next mount.
+   */
+  private sessionRestored = false;
+  /** True only after the restore finished; writing before that would erase it. */
+  private sessionReady = false;
+  private sessionWrites = 0;
+
+  /**
+   * Snapshot the strip after every change (tab add/close/switch/navigate).
+   *
+   * Called from one `$effect` in `BrowserView`, which reads `tabs` and
+   * `activeId` here, so runes track every mutation without six call sites
+   * that can forget one. Writes coalesce to one per tick because a switch
+   * updates the strip and the active id in the same batch.
+   *
+   * Two guards, both learned the hard way: nothing is written until the
+   * restore has *finished* (the effect fires while `statsGet` is still in
+   * flight, and an empty strip would overwrite the saved one), and an empty
+   * strip is never written at all (closing the browser view is not the same
+   * as "the user has no tabs").
+   */
+  persistSession(): void {
+    if (!this.sessionReady) return;
+    const tabs = this.tabs
+      .filter((t) => t.url && t.url !== 'about:blank')
+      .map((t) => ({ url: t.url, title: t.title, pinned: t.pinned }));
+    if (!tabs.length) return;
+    const at = this.tabs.findIndex((t) => t.id === this.activeId);
+    const payload = JSON.stringify({ tabs, active: at < 0 ? 0 : at });
+    try {
+      localStorage.setItem(SESSION_KEY, payload);
+    } catch {
+      /* private mode / quota - the SQLite copy below still wins */
+    }
+    const seq = ++this.sessionWrites;
+    queueMicrotask(() => {
+      if (seq !== this.sessionWrites) return;
+      void statsSet(SESSION_KEY, payload);
+    });
+  }
+
+  /**
+   * Bring the strip back after a restart or a crash. Runs once per launch.
+   *
+   * Only metadata is restored: creating a webview here would start a saved
+   * YouTube tab behind the dashboard, which is exactly the "audio outlives
+   * the app" complaint. The first `showActive` (when the user opens the
+   * browser) is what brings the page on screen.
+   *
+   * SQLite is asked first; localStorage is the fallback for a fresh profile
+   * or a dev build without the command bridge. The old pins file stays as a
+   * last resort so a user upgrading from the previous build still gets their
+   * pinned YouTube tab back.
+   */
+  async restoreSession(): Promise<void> {
+    if (this.sessionRestored) return;
+    this.sessionRestored = true;
+    try {
+      if (this.tabs.length > 0) return;
+
+      let raw: string | null = null;
+      try {
+        raw = await statsGet(SESSION_KEY);
+      } catch {
+        /* no bridge */
+      }
+      if (!raw) {
+        try {
+          raw = localStorage.getItem(SESSION_KEY);
+        } catch {
+          /* blocked storage */
+        }
+      }
+      if (!raw) {
+        this.restorePinned();
+        return;
+      }
+
+      let stored: { tabs?: unknown; active?: unknown };
+      try {
+        stored = JSON.parse(raw) as { tabs?: unknown; active?: unknown };
+      } catch {
+        this.restorePinned();
+        return;
+      }
+      if (!Array.isArray(stored.tabs)) {
+        this.restorePinned();
+        return;
+      }
+
+      for (const entry of stored.tabs) {
+        if (this.tabs.length >= MAX_TABS) break;
+        if (!entry || typeof entry !== 'object') continue;
+        const { url, title, pinned } = entry as Record<string, unknown>;
+        if (typeof url !== 'string' || !url || url === 'about:blank') continue;
+        const tab = makeTab(url);
+        tab.title = typeof title === 'string' && title ? title : hostOf(url);
+        tab.pinned = pinned === true;
+        this.tabs.push(tab);
+        this.push(tab.id, url);
+        if (tab.pinned && isTauri()) void browserSetPinned(tab.id, true);
+      }
+      if (this.tabs.length === 0) {
+        this.restorePinned();
+        return;
+      }
+      const wanted = typeof stored.active === 'number' ? stored.active : 0;
+      this.activeId = this.tabs[Math.max(0, Math.min(this.tabs.length - 1, wanted))].id;
+      // Pins are part of the session now; keep the old file in step so a
+      // rollback to the previous build still sees them.
+      this.persistPins();
+    } finally {
+      // Only now may `persistSession` write: the mount effect fires while the
+      // `statsGet` above is still in flight, and an empty strip would erase
+      // the very session this launch is supposed to bring back. A tab opened
+      // during the await (tools panel -> browser) is saved here instead of
+      // being lost.
+      this.sessionReady = true;
+      if (this.tabs.length > 0) this.persistSession();
+    }
   }
 
   /** The menu's Pin/Unpin row. Returns the tab's state after the toggle. */

@@ -50,15 +50,31 @@
   /** A page (YouTube's ⛶) is fullscreen — Rust grew its webview over the chrome. */
   let fullscreen = $state(false);
 
+  /**
+   * Resolves when the first measured rectangle has actually reached Rust.
+   *
+   * `browser_show` and `browser_set_rect` are two independent async commands.
+   * A tab created in the same tick the view mounts used to reach show first,
+   * read 0x0 and be refused - "nayi tab nahi khul rahi". Rust now waits
+   * briefly too; this removes the race from the frontend instead of relying
+   * on that timeout.
+   */
+  let rectReady: (() => void) | null = null;
+  const rectSent = new Promise<void>((resolve) => {
+    rectReady = resolve;
+  });
+
   onMount(() => {
     browser.wireTauri();
-    // Pins from the last session come back as tabs before the first show, so
-    // the user is not re-pinning YouTube on every launch. No-op once any tab
-    // exists (the browser is already in use).
-    browser.restorePinned();
-    // A tab may already exist: the tools panel opens a link and *then* switches
-    // to this view, so the store created the tab before anything was wired.
-    browser.showActive();
+    // The strip comes back from SQLite (localStorage mirror, then the old pin
+    // file) before the first show. No webview is created here: a restored
+    // YouTube tab must not start playing behind the dashboard. Only metadata
+    // is restored, and the first show waits for the content box to be
+    // measured, so `browser_show` can never race a 0x0 rect.
+    void browser
+      .restoreSession()
+      .then(() => rectSent)
+      .then(() => browser.showActive());
     // One poll at mount: the daemon recovers unfinished downloads from their
     // sidecars, and the toolbar badge must show them without opening the panel.
     downloads.boot();
@@ -108,6 +124,14 @@
     }
   });
 
+  // Durable strip: one reactive read covers add/close/switch/navigate, and
+  // `persistSession` coalesces the burst into one write per tick. The SQLite
+  // copy is the one that survives a crash or a Task Manager kill; the
+  // localStorage mirror only makes the next paint instant.
+  $effect(() => {
+    browser.persistSession();
+  });
+
   // Keep the native webview's rect aligned with the content area. The
   // effect re-runs whenever the container's box changes (tab strip grows,
   // downloads panel opens, window resizes) because the ResizeObserver
@@ -147,7 +171,10 @@
       return;
     }
     lastSent = next;
-    void browserSetRect(next.x, next.y, next.width, next.height);
+    void browserSetRect(next.x, next.y, next.width, next.height).then(() => {
+      rectReady?.();
+      rectReady = null;
+    });
   }
 
   function pushRect(r: { x: number; y: number; width: number; height: number }) {

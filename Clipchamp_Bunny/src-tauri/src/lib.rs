@@ -1632,6 +1632,11 @@ pub fn run() {
                 .filter(|a| shell_menu::looks_like_video(a))
                 .collect();
             if let Some(window) = app.get_webview_window("main") {
+                // A second launch from the taskbar must always bring the
+                // shell back: show() covers a window that a previous close
+                // path hid, unminimize() covers the taskbar-minimized case,
+                // and set_focus() raises it above other apps.
+                let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
@@ -1732,6 +1737,24 @@ pub fn run() {
             dl_settings::dl_settings_save,
             notify::app_notify,
         ])
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // One close means one exit. The hidden media flyout is a
+                // window too, and Tauri only ends the event loop when the last
+                // window is gone - so without this the process outlived the
+                // shell, the page inside it kept playing, and the
+                // single-instance plugin made the taskbar icon a no-op.
+                let app = window.app_handle().clone();
+                browser::shutdown(&app);
+                media_flyout::shutdown(&app);
+                ffmpeg::kill_children();
+                background_video::background_cancel();
+                app.exit(0);
+            }
+        })
         .setup(|app| {
             #[cfg(debug_assertions)]
             if let Some(window) = app.get_webview_window("main") {
@@ -1748,6 +1771,10 @@ pub fn run() {
             // own session is off), so the flyout shows this app's name/icon
             // and every earbud button has exactly one owner to talk to.
             smtc::install(app.handle());
+            // Alt+F4 has to reach the shell even when a page webview owns the
+            // keyboard focus (the editor is a WebView2 with the same swallow
+            // path). Registers `AcceleratorKeyPressed` on the main controller.
+            browser::install_exit_accelerator(app.handle());
             // `T9_BROWSER_SMOKE=1`: prove tab webview creation + the real
             // extension list on this machine, then exit. It runs the same
             // builder the UI uses, so a green result is evidence, not a proxy.
@@ -1855,10 +1882,15 @@ pub fn run() {
         })
         .build(context)
         .expect("error while building T9 Editor LIT")
-        .run(|_app, event| {
+        .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
-                // Flush the telemetry queue and stamp `sessions.ended_at`
-                // before the process disappears.
+                // Belt and braces for every exit that did not come through
+                // `CloseRequested` (an explicit `app.exit`, the updater): no
+                // page webview may keep playing and no FFmpeg child may
+                // survive the process.
+                browser::shutdown(app);
+                media_flyout::shutdown(app);
+                ffmpeg::kill_children();
                 stats::shutdown_blocking();
             }
         });

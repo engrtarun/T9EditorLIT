@@ -210,6 +210,22 @@ fn hide_now<R: tauri::Runtime>(app: &tauri::AppHandle<R>, window: &tauri::Webvie
     diag("media flyout -> hidden");
 }
 
+/// Destroy the card's window on app shutdown.
+///
+/// The flyout is a *hidden window*, and Tauri keeps the event loop alive
+/// while any window exists. That is why a closed shell left a live process:
+/// `t9-editor-lit.exe` stayed in Task Manager, the single-instance plugin
+/// refused to open a second window, and the user's icon click did nothing.
+/// Closing the main window now destroys this one too, so the process can end.
+pub fn shutdown<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(window) = app.get_webview_window(LABEL) {
+        // `closable(false)` only removes the OS close button; `destroy` is the
+        // programmatic path and cannot be intercepted.
+        let _ = window.destroy();
+        diag("media flyout -> destroyed on shutdown");
+    }
+}
+
 /// One thread for the process: hide the card `IDLE` after the last event,
 /// unless the pointer is resting on it (which slides the deadline).
 /// Parked — a lock read and two sleeps — while nothing has ever shown.

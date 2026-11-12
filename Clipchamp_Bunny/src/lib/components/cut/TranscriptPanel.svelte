@@ -3,6 +3,7 @@
   import { player } from '../../stores/player.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { isTauri } from '../../ipc';
+  import { estimateForDuration } from '../../transcript-plan';
   import { fmtShort } from '../../utils';
   import type { LineFlag, TranscriptLine } from '../../types';
 
@@ -103,6 +104,13 @@
       .join(', ');
     return spans.length > 3 ? `${shown} +${spans.length - 3} aur` : shown;
   });
+
+  /**
+   * The cost card the playbook asks for (Case 2): duration is already probed,
+   * and the splitter's default is 300 s, so the numbers are arithmetic — no
+   * audio is touched and no API is called to show them.
+   */
+  const preClickEstimate = $derived(estimateForDuration(project.media?.durationSecs ?? 0));
 
   function jump(line: TranscriptLine) {
     // A transcript line belongs to the main source: previewing an extra clip
@@ -481,8 +489,15 @@
               >
                 {project.loadError ? 'Dobara try karo' : 'Transcript generate karo'}
               </button>
-              <p class="mt-2 text-[10.5px] text-nc-mut-2">
-                Ek baar ban gaya to SQLite me save — dobara API nahi lagegi.
+              {#if preClickEstimate.calls}
+                <p class="mt-2 font-mono text-[10px] leading-relaxed text-nc-mut">
+                  ~{fmtShort(preClickEstimate.audioSecs)} audio · {preClickEstimate.calls} Whisper calls
+                  · ~{fmtShort(preClickEstimate.etaSecs)} wait (estimate)
+                </p>
+              {/if}
+              <p class="mt-1 text-[10.5px] text-nc-mut-2">
+                Pehla chunk turant banega — poora video ek saath nahi. Har chunk SQLite me save hota
+                hai.
               </p>
             {:else}
               <p class="mt-2 text-[10.5px] text-nc-mut-2">
@@ -496,4 +511,90 @@
       {/if}
     {/if}
   </div>
+
+  <!--
+    Incremental transcript footer.
+
+    The first click buys one chunk; this bar is where the rest is decided.
+    "Agla chunk" is one more call, "Sab banao" walks the pending ones, "Rok do"
+    stops after the chunk already in flight. The plan (and every finished
+    chunk's words) is in SQLite, so closing the app does not lose the money
+    already spent — reopening resumes at this exact count.
+  -->
+  {#if project.transcriptPlan}
+    <div class="shrink-0 border-t border-nc-line bg-nc-panel-2/80 px-3 py-2">
+      <div class="flex items-center justify-between gap-2">
+        <span class="font-mono text-[10px] text-nc-mut">
+          Transcript <span class="font-semibold text-nc-txt"
+            >{project.planDone}/{project.planTotal}</span
+          > chunks
+        </span>
+        {#if project.planRunning}
+          <button
+            onclick={() => project.stopTranscript()}
+            class="shrink-0 rounded border border-nc-red/40 bg-nc-red/10 px-2 py-0.5 text-[10px]
+                   font-semibold text-nc-red transition-colors hover:bg-nc-red/20"
+          >
+            Rok do
+          </button>
+        {:else if !project.planComplete}
+          <span class="font-mono text-[9.5px] text-nc-mut-2">
+            {fmtShort(project.planEstimate.audioSecs)} · {project.planEstimate.calls} calls
+          </span>
+        {/if}
+      </div>
+
+      {#if project.planRunning}
+        <div class="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-nc-panel">
+          <div
+            class="h-full rounded-full bg-nc-brand transition-[width] duration-300"
+            style="width:{Math.max(3, Math.round((project.pipeline?.fraction ?? 0.05) * 100))}%"
+          ></div>
+        </div>
+        <p class="mt-1 truncate text-[10px] text-nc-mut-2">
+          {project.pipeline?.stage ?? 'Chunk chal raha hai…'}
+        </p>
+      {:else if project.planComplete}
+        <div class="mt-1.5 flex items-center gap-2">
+          <p class="min-w-0 flex-1 text-[10px] leading-snug text-nc-mut">
+            Saare chunks SQLite me hain — spelling autocorrect aur AI flags baaki hain.
+          </p>
+          <button
+            onclick={() => void project.transcribeAllChunks()}
+            class="shrink-0 rounded bg-nc-brand px-2 py-1 text-[10.5px] font-semibold text-white
+                   transition-[filter] duration-150 hover:brightness-110"
+          >
+            Finish karo
+          </button>
+        </div>
+      {:else}
+        <p class="mt-0.5 text-[9.5px] leading-snug text-nc-mut-2">
+          {#if project.nextPlanSpan}
+            Agla chunk {fmtShort(project.nextPlanSpan.startSec)}–{fmtShort(
+              project.nextPlanSpan.endSec
+            )} ({fmtShort(project.nextPlanSpan.endSec - project.nextPlanSpan.startSec)} audio) ·
+          {/if}
+          har chunk turant SQLite me save hota hai.
+        </p>
+        <div class="mt-1.5 flex items-center gap-2">
+          <button
+            onclick={() => void project.nextTranscriptChunk()}
+            class="rounded bg-nc-brand px-2 py-1 text-[10.5px] font-semibold text-white
+                   transition-[filter] duration-150 hover:brightness-110"
+          >
+            Agla chunk banao
+          </button>
+          {#if project.planEstimate.calls > 1}
+            <button
+              onclick={() => void project.transcribeAllChunks()}
+              class="rounded border border-nc-brand/50 px-2 py-1 text-[10.5px] font-semibold
+                     text-nc-brand transition-colors hover:bg-nc-brand/10"
+            >
+              Sab banao ({project.planEstimate.calls})
+            </button>
+          {/if}
+        </div>
+      {/if}
+    </div>
+  {/if}
 </aside>

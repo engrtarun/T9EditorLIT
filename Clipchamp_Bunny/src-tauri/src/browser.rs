@@ -726,8 +726,15 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
     let msg_app = app.clone();
     let msg_id = id.to_string();
     let note_id = id.to_string();
+    // Alt+F4 has to leave the app even while this page owns the keyboard
+    // focus; the handler is registered on every tab, not just the shell.
+    let close_app = app.clone();
 
     let posted = webview.with_webview(move |pw| unsafe {
+        // `controller()` hands back an owned COM reference on this Tauri
+        // version, so it is bound once and borrowed for the registration.
+        let controller = pw.controller();
+        attach_exit_accelerator(&close_app, &controller);
         let Ok(core) = pw.controller().CoreWebView2() else {
             diag("configure -> CoreWebView2 unavailable");
             return;
@@ -995,11 +1002,7 @@ pub async fn browser_show(
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
-    let rect = *app
-        .state::<BrowserState>()
-        .rect
-        .lock()
-        .map_err(|_| "browser rect lock poisoned".to_string())?;
+    let rect = measured_rect(&app)?;
     diag(&format!(
         "show id={id} url={url} keep={keep:?} force={force:?} resume={resume:?} rect={rect:?}"
     ));
@@ -1223,6 +1226,127 @@ pub async fn browser_view_closed(app: tauri::AppHandle) -> Result<(), String> {
         pinned.len()
     ));
     Ok(())
+}
+
+/// Close the shell: destroy every page webview and hand the media session
+/// back. Called from the window's close path before the process exits, so a
+/// YouTube page can never keep playing after the app is gone.
+///
+/// Sync on purpose: it runs inside `CloseRequested`, where the async runtime
+/// is already winding down, and `Webview::close()` only posts the teardown to
+/// the main thread.
+pub fn shutdown<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let mut closed = 0usize;
+    if let Some(window) = app.get_window("main") {
+        for webview in window.webviews() {
+            if webview.label().starts_with("tab-") {
+                let _ = webview.close();
+                closed += 1;
+            }
+        }
+    }
+    // The SMTC session is the other half of "audio outlives the app": Windows
+    // keeps the app in the volume mixer while a session is open, and a stale
+    // "playing" state also leaves the media flyout claiming it is alive.
+    crate::smtc::tabs_swept(app, &HashSet::new());
+    diag(&format!("shutdown -> closed {closed} tab webview(s)"));
+}
+
+/// Alt+F4 must close the app even when the key lands in a page webview.
+///
+/// WebView2 owns a real child HWND, and a system key that arrives while a
+/// page has focus is consumed there - the shell's window procedure never sees
+/// it. The symptom on this machine was literal: the user pressed Alt+F4, the
+/// window stayed open, and a YouTube video kept playing in the background.
+/// `AcceleratorKeyPressed` is the documented interception point; it fires for
+/// the system key before Chromium acts on it, and closing the window here is
+/// exactly the title-bar X.
+#[cfg(target_os = "windows")]
+fn attach_exit_accelerator<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    controller: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller,
+) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN, COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
+    };
+    use webview2_com::AcceleratorKeyPressedEventHandler;
+
+    let close_app = app.clone();
+    let handler = AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
+        if let Some(args) = args {
+            let mut kind = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+            let mut key = 0u32;
+            // The event args are COM accessors; reading them is unsafe by
+            // declaration, and the reads are straight out-params.
+            unsafe {
+                let _ = args.KeyEventKind(&mut kind);
+                let _ = args.VirtualKey(&mut key);
+            }
+            // VK_F4 = 0x73. `SYSTEM_KEY_DOWN` is the Alt-modified form;
+            // Ctrl+F4 stays a regular key and the shim still maps it to
+            // "close tab", which is what a browser should do.
+            if kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN && key == 0x73 {
+                diag("exit accelerator -> Alt+F4, closing the shell");
+                if let Some(window) = close_app.get_window("main") {
+                    let _ = window.close();
+                }
+            }
+        }
+        Ok(())
+    }));
+    let mut token = 0i64;
+    let registered = unsafe { controller.add_AcceleratorKeyPressed(&handler, &mut token) };
+    if registered.is_err() {
+        diag("exit accelerator -> registration failed");
+    }
+}
+
+/// Register the Alt+F4 intercept on the shell's own webview too. The editor
+/// is a WebView2 as well, so the same swallowed-key path applies there.
+#[cfg(target_os = "windows")]
+pub fn install_exit_accelerator<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let handle = app.clone();
+    let posted = window.with_webview(move |pw| {
+        let controller = pw.controller();
+        attach_exit_accelerator(&handle, &controller);
+    });
+    if posted.is_err() {
+        diag("exit accelerator -> main webview unavailable");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn install_exit_accelerator<R: Runtime>(_app: &tauri::AppHandle<R>) {}
+
+
+/// The content box the shell last measured, waiting briefly for the first
+/// measurement when a tab is shown in the same tick it is created.
+///
+/// `browser_set_rect` and `browser_show` are two independent async commands;
+/// before this, a new tab opened from the tools panel (which switches to the
+/// browser *and* creates the tab) could reach `show` first, read 0x0 and be
+/// refused - "nayi tab nahi khul rahi". The measurement lands milliseconds
+/// later, so waiting is the correct answer, not an error.
+fn measured_rect<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<ContentRect, String> {
+    let read = |app: &tauri::AppHandle<R>| -> Result<ContentRect, String> {
+        app.state::<BrowserState>()
+            .rect
+            .lock()
+            .map(|r| *r)
+            .map_err(|_| "browser rect lock poisoned".to_string())
+    };
+    let mut rect = read(app)?;
+    for _ in 0..50 {
+        if rect.width > 0.0 && rect.height > 0.0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        rect = read(app)?;
+    }
+    Ok(rect)
 }
 
 /// Pin or unpin a tab.

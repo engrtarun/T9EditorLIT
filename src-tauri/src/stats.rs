@@ -22,6 +22,7 @@
 
 use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -102,6 +103,11 @@ static TX: OnceLock<Sender<Msg>> = OnceLock::new();
 static WRITER: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
 /// The row id of the session this process started; `0` until `start()` runs.
 static SESSION: Mutex<i64> = Mutex::new(0);
+
+/// One close path calls this; `ExitRequested` calls it again. The flush must
+/// happen exactly once - a second send would hit a dead writer and, worse,
+/// could interleave with the first join.
+static SHUTDOWN_DONE: AtomicBool = AtomicBool::new(false);
 /// What the app is doing, for the metric sampler: `idle` · `exporting` …
 static PHASE: Mutex<String> = Mutex::new(String::new());
 
@@ -352,6 +358,9 @@ pub fn start(db_path: &Path, app_version: &str) {
 /// Flush everything and stop the writer. Called from Tauri's `ExitRequested`
 /// so the session row gets its `ended_at` and no edit is lost at close.
 pub fn shutdown_blocking() {
+    if SHUTDOWN_DONE.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let Some(tx) = TX.get() else { return };
     let id = SESSION.lock().map(|g| *g).unwrap_or(0);
     if id != 0 {

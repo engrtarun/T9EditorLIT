@@ -256,6 +256,7 @@ fn stream_peaks(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("ffmpeg spawn failed: {e}"))?;
+    crate::ffmpeg::adopt(&child);
 
     let mut stdout = child
         .stdout

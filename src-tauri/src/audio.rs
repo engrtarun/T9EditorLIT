@@ -137,6 +137,7 @@ pub fn extract_chunks(
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
+    crate::ffmpeg::adopt(&child);
 
     // Poll the directory while the child runs. 150 ms is far cheaper than the
     // decode itself and makes the chunk counter move at the speed the files
