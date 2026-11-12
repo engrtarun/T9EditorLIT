@@ -554,7 +554,7 @@
                       <tbody>
                         {#each calls as c (c.id)}
                           <tr class="border-t border-nc-line/70">
-                            <td class="py-1 pr-2 text-nc-mut-2">{timeAgo(c.ts * 1000)}</td>
+                            <td class="py-1 pr-2 text-nc-mut-2">{timeAgo(new Date(c.ts * 1000).toISOString())}</td>
                             <td class="py-1 pr-2 capitalize text-nc-txt">{c.service}</td>
                             <td class="py-1 pr-2 text-nc-mut">{c.op || '—'}</td>
                             <td
