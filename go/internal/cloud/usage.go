@@ -151,10 +151,14 @@ func atoi(s string) int {
 // recorder folds it into the running totals.
 type Call struct {
 	Service   string
+	Op        string
+	Model     string
+	KeyID     string
 	Status    int
 	LatencyMS int64
 	TokensIn  int
 	TokensOut int
+	AudioSecs float64
 	RateLimit *RateLimit
 	Err       string
 	At        time.Time
@@ -249,24 +253,50 @@ const (
 // recorder memory-only, which is what tests and a daemon without a writable
 // directory get.
 type UsageRecorder struct {
-	mu       sync.Mutex
-	path     string
-	services map[string]*serviceUsage
-	recent   []CallSummary
-	dirty    bool
-	lastSave time.Time
+	mu        sync.Mutex
+	path      string
+	callsPath string
+	services  map[string]*serviceUsage
+	recent    []CallSummary
+	dirty     bool
+	lastSave  time.Time
 }
 
 // NewUsageRecorder builds a recorder and loads any counters left by a previous
 // run. A missing or unreadable file is not an error — the daemon must start.
 func NewUsageRecorder(path string) *UsageRecorder {
 	rec := &UsageRecorder{
-		path:     path,
-		services: map[string]*serviceUsage{},
-		recent:   []CallSummary{},
+		path:      path,
+		callsPath: callsLogPath(path),
+		services:  map[string]*serviceUsage{},
+		recent:    []CallSummary{},
 	}
 	rec.load()
 	return rec
+}
+
+// callsLogPath derives the append-only per-call JSONL buffer from the counter
+// file's path: "%LOCALAPPDATA%\\T9EditorLIT\\api-usage.json" →
+// "%LOCALAPPDATA%\\T9EditorLIT\\api-usage-calls.jsonl". An empty counter path
+// means memory-only (tests), so the call log is empty too.
+func callsLogPath(counterPath string) string {
+	if counterPath == "" {
+		return ""
+	}
+	if i := strings.LastIndex(counterPath, "."); i >= 0 && i > strings.LastIndex(counterPath, string(os.PathSeparator)) {
+		return counterPath[:i] + "-calls.jsonl"
+	}
+	return counterPath + "-calls.jsonl"
+}
+
+// CallsPath exposes the buffer location so the app can ingest it into SQLite.
+func (r *UsageRecorder) CallsPath() string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.callsPath
 }
 
 func (r *UsageRecorder) svc(service string) *serviceUsage {
@@ -344,7 +374,84 @@ func (r *UsageRecorder) Record(c Call) {
 	}
 
 	r.dirty = true
+	// Append-only per-call log, so the app can ingest full history into SQLite
+	// without depending on the recorder's 40-call ring. Failure here never
+	// affects the in-memory totals above — the ring still works.
+	r.appendCallLocked(c)
 	r.saveLocked(false)
+}
+
+// callLogRow is one line of the append-only per-call JSONL buffer. Keys and
+// prompts are never recorded — only what the call cost and which account served
+// it. Field names are snake_case on disk so the Rust ingest can read them
+// without a camelCase transform.
+type callLogRow struct {
+	Service   string  `json:"service"`
+	Op        string  `json:"op,omitempty"`
+	Model     string  `json:"model,omitempty"`
+	KeyID     string  `json:"key_id,omitempty"`
+	At        string  `json:"at"`
+	Status    int     `json:"status"`
+	LatencyMS int64   `json:"latency_ms"`
+	TokensIn  int     `json:"tokens_in"`
+	TokensOut int     `json:"tokens_out"`
+	AudioSecs float64 `json:"audio_secs,omitempty"`
+	Err       string  `json:"err,omitempty"`
+	// Quota snapshot after the call, when the provider published one.
+	ReqLimit     int    `json:"req_limit,omitempty"`
+	ReqRemaining int    `json:"req_remaining,omitempty"`
+	ReqReset     string `json:"req_reset,omitempty"`
+	TokLimit     int    `json:"tok_limit,omitempty"`
+	TokRemaining int    `json:"tok_remaining,omitempty"`
+	TokReset     string `json:"tok_reset,omitempty"`
+}
+
+const maxCallLogBytes = 8 << 20 // 8 MiB cap, then rotate to .1
+
+// appendCallLocked writes one row. Caller must hold r.mu. Errors are swallowed:
+// the call log is best-effort telemetry, never a reason to fail a request.
+func (r *UsageRecorder) appendCallLocked(c Call) {
+	if r.callsPath == "" {
+		return
+	}
+	row := callLogRow{
+		Service:   c.Service,
+		Op:        c.Op,
+		Model:     c.Model,
+		KeyID:     c.KeyID,
+		At:        c.At.UTC().Format(time.RFC3339Nano),
+		Status:    c.Status,
+		LatencyMS: c.LatencyMS,
+		TokensIn:  c.TokensIn,
+		TokensOut: c.TokensOut,
+		AudioSecs: c.AudioSecs,
+		Err:       c.Err,
+	}
+	if c.RateLimit != nil {
+		row.ReqLimit = c.RateLimit.RequestsLimit
+		row.ReqRemaining = c.RateLimit.RequestsRemaining
+		row.ReqReset = c.RateLimit.RequestsReset
+		row.TokLimit = c.RateLimit.TokensLimit
+		row.TokRemaining = c.RateLimit.TokensRemaining
+		row.TokReset = c.RateLimit.TokensReset
+	}
+	data, err := json.Marshal(row)
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+
+	// Rotate if the file is already at the cap, keeping one generation.
+	if fi, err := os.Stat(r.callsPath); err == nil && fi.Size() >= maxCallLogBytes {
+		_ = os.Rename(r.callsPath, r.callsPath+".1")
+	}
+
+	f, err := os.OpenFile(r.callsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(data)
 }
 
 // Flush writes anything the throttle is holding back. Call it on shutdown.
@@ -558,8 +665,13 @@ func (t *UsageTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	start := time.Now()
 	resp, err := base.RoundTrip(req)
 
+	meta, _ := CallMetaFrom(req.Context())
 	call := Call{
 		Service:   t.Service,
+		Op:        meta.Op,
+		Model:     meta.Model,
+		KeyID:     meta.KeyID,
+		AudioSecs: meta.AudioSecs,
 		At:        start,
 		LatencyMS: time.Since(start).Milliseconds(),
 	}

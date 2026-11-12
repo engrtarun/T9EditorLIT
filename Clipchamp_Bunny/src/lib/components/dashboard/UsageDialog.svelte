@@ -15,6 +15,8 @@
    */
   import { i18n } from '../../stores/i18n.svelte';
   import { saveApiKey, deleteApiKey, fetchElevenKeys, type ElevenKeyStatus } from '../../cloud';
+  import { ingestApiCalls, fetchUsageTimeline, fetchUsageCalls } from '../../ipc';
+  import type { ApiCallRow, UsageDayRow } from '../../types';
   import { usageStore, type UsageTab } from '../../usage-store.svelte';
   import { num, pct, timeAgo } from '../../usage-format';
 
@@ -46,6 +48,37 @@
      hissab" with the probe's numbers, per account. */
   let eleven = $state<ElevenKeyStatus[]>([]);
   let elevenSeen = $state(false);
+
+  /* ------------------------------------------------------- history */
+  let timeline = $state<UsageDayRow[]>([]);
+  let calls = $state<ApiCallRow[]>([]);
+  let historyService = $state('');
+  let historyLoaded = $state(false);
+  let historyBusy = $state(false);
+
+  $effect(() => {
+    if (!open || tab !== 'history' || historyLoaded || historyBusy) return;
+    historyBusy = true;
+    const cp = usage?.callsPath ?? '';
+    void (async () => {
+      if (cp) await ingestApiCalls(cp);
+      const [t, c] = await Promise.all([
+        fetchUsageTimeline(30),
+        fetchUsageCalls(historyService, 100)
+      ]);
+      timeline = t;
+      calls = c;
+      historyLoaded = true;
+      historyBusy = false;
+    })();
+  });
+
+  $effect(() => {
+    if (!open || tab !== 'history') return;
+    // re-fetch calls when filter changes (after initial load)
+    if (!historyLoaded) return;
+    void fetchUsageCalls(historyService, 100).then((c) => (calls = c));
+  });
 
   $effect(() => {
     if (!open || elevenSeen) return;
@@ -153,7 +186,7 @@
 
       <!-- tabs -->
       <nav class="flex gap-1 border-b border-nc-line px-4 pt-3">
-        {#each ['limits', 'usage', 'keys'] as id (id)}
+        {#each ['limits', 'usage', 'history', 'keys'] as id (id)}
           <button
             type="button"
             onclick={() => (usageStore.tab = id as UsageTab)}
@@ -443,6 +476,105 @@
                 </ul>
               {/if}
             </div>
+          </div>
+
+          <!-- ─────────────────────────── history ─────────────────────────── -->
+        {:else if tab === 'history'}
+          <div class="space-y-4">
+            {#if historyBusy}
+              <p class="text-[12px] text-nc-mut">{i18n.t('usage.loading')}</p>
+            {:else}
+              <!-- 30-day timeline -->
+              <div class="rounded-xl border border-nc-line bg-nc-panel-2/60 p-4">
+                <div class="flex items-center gap-2">
+                  <span class="text-[13px] font-semibold text-nc-txt">
+                    {i18n.t('usage.timeline')}
+                  </span>
+                  <span class="ml-auto text-[11px] text-nc-mut-2">
+                    {i18n.t('usage.last30')}
+                  </span>
+                </div>
+                {#if timeline.length === 0}
+                  <p class="mt-3 text-[12px] text-nc-mut-2">
+                    {i18n.t('usage.recentEmpty')}
+                  </p>
+                {:else}
+                  {@const maxCalls = Math.max(1, ...timeline.map((d) => d.calls))}
+                  <div class="mt-3 flex items-end gap-1" style="height:96px">
+                    {#each timeline.slice().reverse() as d (d.day + d.service)}
+                      <div
+                        class="flex-1 rounded-t bg-nc-brand/70 transition-[height] duration-200"
+                        style="height:{Math.max(4, (d.calls / maxCalls) * 96)}px"
+                        title={`${d.day} · ${d.service} · ${d.calls} calls`}
+                      ></div>
+                    {/each}
+                  </div>
+                  <div class="mt-1 flex justify-between text-[10px] text-nc-mut-2 tabular-nums">
+                    <span>{timeline[timeline.length - 1]?.day ?? ''}</span>
+                    <span>{timeline[0]?.day ?? ''}</span>
+                  </div>
+                {/if}
+              </div>
+
+              <!-- filter -->
+              <div class="flex items-center gap-2">
+                <label class="text-[11px] text-nc-mut-2" for="hist-filter">
+                  {i18n.t('usage.filter')}
+                </label>
+                <select
+                  id="hist-filter"
+                  bind:value={historyService}
+                  class="rounded-lg border border-nc-line bg-nc-panel-2 px-2 py-1 text-[12px] text-nc-txt"
+                >
+                  <option value="">{i18n.t('usage.all')}</option>
+                  {#each ['elevenlabs', 'groq', 'gemini'] as s (s)}
+                    <option value={s}>{s}</option>
+                  {/each}
+                </select>
+              </div>
+
+              <!-- recent calls table -->
+              <div class="rounded-xl border border-nc-line bg-nc-panel-2/60 p-3">
+                {#if calls.length === 0}
+                  <p class="text-[12px] text-nc-mut-2">{i18n.t('usage.recentEmpty')}</p>
+                {:else}
+                  <div class="overflow-x-auto">
+                    <table class="w-full text-[11px] tabular-nums">
+                      <thead>
+                        <tr class="text-left text-nc-mut-2">
+                          <th class="pb-1 pr-2 font-medium">{i18n.t('usage.when')}</th>
+                          <th class="pb-1 pr-2 font-medium">{i18n.t('usage.engine')}</th>
+                          <th class="pb-1 pr-2 font-medium">{i18n.t('usage.op')}</th>
+                          <th class="pb-1 pr-2 font-medium">{i18n.t('usage.status')}</th>
+                          <th class="pb-1 pr-2 font-medium text-right">{i18n.t('usage.latency')}</th>
+                          <th class="pb-1 pr-2 font-medium text-right">{i18n.t('usage.tokens')}</th>
+                          <th class="pb-1 font-medium text-right">{i18n.t('usage.audio')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {#each calls as c (c.id)}
+                          <tr class="border-t border-nc-line/70">
+                            <td class="py-1 pr-2 text-nc-mut-2">{timeAgo(c.ts * 1000)}</td>
+                            <td class="py-1 pr-2 capitalize text-nc-txt">{c.service}</td>
+                            <td class="py-1 pr-2 text-nc-mut">{c.op || '—'}</td>
+                            <td
+                              class="py-1 pr-2 {c.status >= 400 || c.err
+                                ? 'text-nc-red'
+                                : 'text-nc-green'}">{c.status || 'net'}</td
+                            >
+                            <td class="py-1 pr-2 text-right">{c.latencyMs} ms</td>
+                            <td class="py-1 pr-2 text-right">{c.tokensIn}→{c.tokensOut}</td>
+                            <td class="py-1 text-right">
+                              {c.audioSecs > 0 ? `${c.audioSecs.toFixed(1)}s` : '—'}
+                            </td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
+                {/if}
+              </div>
+            {/if}
           </div>
 
           <!-- ─────────────────────────── keys ─────────────────────────── -->

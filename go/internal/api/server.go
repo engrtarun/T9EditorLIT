@@ -713,6 +713,7 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 //     in. A pin the text contradicts is released - unless the user chose
 //     that pin, in which case the user is told and nothing else happens.
 func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.TranscribeRequest) error {
+	ctx = cloud.WithCallMeta(ctx, cloud.CallMeta{Op: "transcribe"})
 	// Read once: every chunk of this job goes to the same clients, even if
 	// the user swaps a key while the transcription is running.
 	engines := transcribeEngines{
@@ -819,7 +820,12 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 			prompt = hint
 		}
 
-		res, engine, err := s.transcribeChunk(ctx, engines, chunk.Path, chunk.OffsetSecs, language, prompt)
+		audioSecs := 0.0
+		if scanErr == nil && scan != nil {
+			audioSecs = scan.DurationSecs()
+		}
+		chunkCtx := cloud.MergeCallMeta(ctx, cloud.CallMeta{AudioSecs: audioSecs})
+		res, engine, err := s.transcribeChunk(chunkCtx, engines, chunk.Path, chunk.OffsetSecs, language, prompt)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", filepath.Base(chunk.Path), err))
 			failedIdx = append(failedIdx, i)
@@ -1105,6 +1111,7 @@ func tailLine(segments []model.Segment) string {
 // leaves the uncorrected lines exactly as Whisper produced them, so the only
 // question is whether there is anything worth returning at all.
 func (s *Server) runCorrect(ctx context.Context, jobID string, req model.CorrectRequest) error {
+	ctx = cloud.WithCallMeta(ctx, cloud.CallMeta{Op: "correct"})
 	groq := s.groqClient()
 	if groq == nil {
 		return errors.New("groq client is not configured")
@@ -1150,6 +1157,7 @@ func errBatchFailures(err error) []string {
 }
 
 func (s *Server) runAnalyze(ctx context.Context, jobID string, req model.AnalyzeRequest) error {
+	ctx = cloud.WithCallMeta(ctx, cloud.CallMeta{Op: "analyze"})
 	gemini := s.geminiClient()
 	if gemini == nil {
 		return errors.New("gemini client is not configured")

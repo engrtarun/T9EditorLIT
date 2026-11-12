@@ -32,10 +32,15 @@ func (s *Server) handleUsage(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	var callsPath string
+	if s.deps.Usage != nil {
+		callsPath = s.deps.Usage.CallsPath()
+	}
 	writeJSON(w, http.StatusOK, usageResponse{
 		UsageSnapshot: snap,
 		Keys:          s.keyStates(),
 		OverlayPath:   config.KeysPath(s.deps.EnvPath),
+		CallsPath:     callsPath,
 	})
 }
 
@@ -44,4 +49,5 @@ type usageResponse struct {
 	cloud.UsageSnapshot
 	Keys        []keyState `json:"keys"`
 	OverlayPath string     `json:"overlay_path,omitempty"`
+	CallsPath   string     `json:"calls_path,omitempty"`
 }

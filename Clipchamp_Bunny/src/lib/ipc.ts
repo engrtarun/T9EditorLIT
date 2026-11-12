@@ -17,11 +17,13 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type {
+  ApiCallRow,
   AudioChunk,
   BackgroundState,
   BrowserExtensionsEvent,
   DownloadSettings,
   MemoryStats,
+  UsageDayRow,
   MediaInfo,
   SilenceRange,
   SystemDetails,
@@ -1250,6 +1252,24 @@ export function statsGet(key: string): Promise<string | null> {
 export function statsSet(key: string, value: string): Promise<void> {
   if (!isTauri()) return Promise.resolve();
   return invoke<void>('stats_kv_set', { key, value }).catch(() => {});
+}
+
+/** Pull new rows from the daemon's call log into telemetry.db. Returns inserted count. */
+export async function ingestApiCalls(callsPath: string): Promise<number> {
+  if (!isTauri() || !callsPath) return 0;
+  return invoke<number>('ingest_api_calls', { callsPath }).catch(() => 0);
+}
+
+/** N-day usage timeline, grouped by day + service. */
+export async function fetchUsageTimeline(days = 30): Promise<UsageDayRow[]> {
+  if (!isTauri()) return [];
+  return invoke<UsageDayRow[]>('usage_timeline', { days }).catch(() => []);
+}
+
+/** Recent calls, optionally filtered by service. */
+export async function fetchUsageCalls(service = '', limit = 100): Promise<ApiCallRow[]> {
+  if (!isTauri()) return [];
+  return invoke<ApiCallRow[]>('usage_calls', { service, limit }).catch(() => []);
 }
 
 /* ---------------------------------------------------------------- browser */

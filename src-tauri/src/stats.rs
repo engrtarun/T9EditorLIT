@@ -199,6 +199,38 @@ CREATE TABLE IF NOT EXISTS vault_transfers (
     started_at  INTEGER NOT NULL,
     finished_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS api_calls (
+    id           INTEGER PRIMARY KEY,
+    ts           INTEGER NOT NULL,
+    service      TEXT    NOT NULL,
+    op           TEXT    NOT NULL DEFAULT '',
+    model        TEXT    NOT NULL DEFAULT '',
+    key_id       TEXT    NOT NULL DEFAULT '',
+    status       INTEGER NOT NULL DEFAULT 0,
+    latency_ms   INTEGER NOT NULL DEFAULT 0,
+    tokens_in    INTEGER NOT NULL DEFAULT 0,
+    tokens_out   INTEGER NOT NULL DEFAULT 0,
+    audio_secs   REAL    NOT NULL DEFAULT 0,
+    err          TEXT    NOT NULL DEFAULT '',
+    req_limit    INTEGER NOT NULL DEFAULT 0,
+    req_remaining INTEGER NOT NULL DEFAULT 0,
+    req_reset    TEXT    NOT NULL DEFAULT '',
+    tok_limit    INTEGER NOT NULL DEFAULT 0,
+    tok_remaining INTEGER NOT NULL DEFAULT 0,
+    tok_reset    TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_api_calls_ts ON api_calls(ts);
+CREATE INDEX IF NOT EXISTS idx_api_calls_service ON api_calls(service);
+CREATE TABLE IF NOT EXISTS api_usage_daily (
+    day          TEXT    NOT NULL,
+    service      TEXT    NOT NULL,
+    calls        INTEGER NOT NULL DEFAULT 0,
+    tokens_in    INTEGER NOT NULL DEFAULT 0,
+    tokens_out   INTEGER NOT NULL DEFAULT 0,
+    audio_secs   REAL    NOT NULL DEFAULT 0,
+    errors       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, service)
+);
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -226,6 +258,8 @@ const ALL_TABLES: &[&str] = &[
     "exports",
     "app_events",
     "vault_transfers",
+    "api_calls",
+    "api_usage_daily",
     "kv",
 ];
 
@@ -720,6 +754,285 @@ pub fn phase() -> String {
 /// This process's session row id (0 before `start`).
 pub fn session_id() -> i64 {
     SESSION.lock().map(|g| *g).unwrap_or(0)
+}
+
+/// Ingest new rows from the daemon's append-only call log into telemetry.db.
+///
+/// The file is JSONL (one object per line). Only lines after the last
+/// successfully consumed byte offset are read, so calling this repeatedly is
+/// cheap and idempotent. The offset is persisted in the `kv` table under
+/// `api_calls_offset`, so a restart never re-imports the same lines.
+///
+/// Returns the number of rows inserted.
+pub fn ingest_api_calls(db_path: &Path, calls_path: &str) -> Result<i64, String> {
+    if calls_path.is_empty() {
+        return Ok(0);
+    }
+    let offset: i64 = kv_get(db_path, "api_calls_offset")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let file = match std::fs::File::open(calls_path) {
+        Ok(f) => f,
+        Err(_) => return Ok(0), // daemon hasn't written yet, or older daemon
+    };
+    use std::io::{BufRead, Seek, SeekFrom};
+    let mut reader = std::io::BufReader::new(file);
+    if reader.seek(SeekFrom::Start(offset as u64)).is_err() {
+        return Err("seek failed".to_string());
+    }
+
+    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let mut inserted: i64 = 0;
+    let mut consumed: u64 = offset as u64;
+    let mut line_buf = String::new();
+    loop {
+        line_buf.clear();
+        let n = match reader.read_line(&mut line_buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        // A partial final line (no trailing newline) is NOT consumed: leave the
+        // offset where it is so the next call picks it up once it's complete.
+        if !line_buf.ends_with('\n') {
+            // rewind the consumed count for this partial line
+            consumed -= n as u64;
+            break;
+        }
+        consumed += n as u64;
+        let trimmed = line_buf.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let row: CallLogRow = match serde_json::from_str(trimmed) {
+            Ok(r) => r,
+            Err(_) => continue, // skip malformed lines, never block the rest
+        };
+        let ts = parse_rfc3339(&row.at);
+        if tx
+            .execute(
+                "INSERT INTO api_calls
+                    (ts, service, op, model, key_id, status, latency_ms, tokens_in,
+                     tokens_out, audio_secs, err, req_limit, req_remaining, req_reset,
+                     tok_limit, tok_remaining, tok_reset)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                params![
+                    ts,
+                    row.service,
+                    row.op,
+                    row.model,
+                    row.key_id,
+                    row.status,
+                    row.latency_ms,
+                    row.tokens_in,
+                    row.tokens_out,
+                    row.audio_secs,
+                    row.err,
+                    row.req_limit,
+                    row.req_remaining,
+                    row.req_reset,
+                    row.tok_limit,
+                    row.tok_remaining,
+                    row.tok_reset,
+                ],
+            )
+            .is_ok()
+        {
+            inserted += 1;
+            // roll up the daily bucket
+            let day = if row.at.len() >= 10 { &row.at[..10] } else { "" };
+            let _ = tx.execute(
+                "INSERT INTO api_usage_daily (day, service, calls, tokens_in, tokens_out, audio_secs, errors)
+                 VALUES (?1,?2,1,?3,?4,?5,?6)
+                 ON CONFLICT(day, service) DO UPDATE SET
+                    calls = calls + 1,
+                    tokens_in = tokens_in + excluded.tokens_in,
+                    tokens_out = tokens_out + excluded.tokens_out,
+                    audio_secs = audio_secs + excluded.audio_secs,
+                    errors = errors + excluded.errors",
+                params![
+                    day,
+                    row.service,
+                    row.tokens_in,
+                    row.tokens_out,
+                    row.audio_secs,
+                    if row.status >= 400 || !row.err.is_empty() { 1i64 } else { 0i64 },
+                ],
+            );
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    // persist the new offset
+    let conn2 = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let _ = conn2.execute(
+        "INSERT INTO kv (key, value) VALUES ('api_calls_offset', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![consumed.to_string()],
+    );
+    Ok(inserted)
+}
+
+#[derive(serde::Deserialize, Default)]
+struct CallLogRow {
+    service: String,
+    #[serde(default)]
+    op: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    key_id: String,
+    #[serde(default)]
+    at: String,
+    #[serde(default)]
+    status: i64,
+    #[serde(default)]
+    latency_ms: i64,
+    #[serde(default)]
+    tokens_in: i64,
+    #[serde(default)]
+    tokens_out: i64,
+    #[serde(default)]
+    audio_secs: f64,
+    #[serde(default)]
+    err: String,
+    #[serde(default)]
+    req_limit: i64,
+    #[serde(default)]
+    req_remaining: i64,
+    #[serde(default)]
+    req_reset: String,
+    #[serde(default)]
+    tok_limit: i64,
+    #[serde(default)]
+    tok_remaining: i64,
+    #[serde(default)]
+    tok_reset: String,
+}
+
+fn parse_rfc3339(s: &str) -> i64 {
+    if s.len() < 19 {
+        return 0;
+    }
+    let b = s.as_bytes();
+    let parse2 = |i: usize| -> i64 {
+        ((b[i] as i64) - 48) * 10 + ((b[i + 1] as i64) - 48)
+    };
+    let y: i64 = (b[0] as i64 - 48) * 1000
+        + (b[1] as i64 - 48) * 100
+        + (b[2] as i64 - 48) * 10
+        + (b[3] as i64 - 48);
+    let m = parse2(5);
+    let d = parse2(8);
+    let hh = parse2(11);
+    let mm = parse2(14);
+    let ss = parse2(17);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return 0;
+    }
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    days * 86400 + hh * 3600 + mm * 60 + ss
+}
+
+/// One ingested call, for the UI's recent-call table.
+#[derive(serde::Serialize)]
+pub struct ApiCallRow {
+    pub id: i64,
+    pub ts: i64,
+    pub service: String,
+    pub op: String,
+    pub model: String,
+    pub key_id: String,
+    pub status: i64,
+    pub latency_ms: i64,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub audio_secs: f64,
+    pub err: String,
+}
+
+/// One day bucket, for the 30-day timeline.
+#[derive(serde::Serialize)]
+pub struct UsageDayRow {
+    pub day: String,
+    pub service: String,
+    pub calls: i64,
+    pub tokens_in: i64,
+    pub tokens_out: i64,
+    pub audio_secs: f64,
+    pub errors: i64,
+}
+
+fn map_api_call_row(r: &rusqlite::Row) -> rusqlite::Result<ApiCallRow> {
+    Ok(ApiCallRow {
+        id: r.get(0)?,
+        ts: r.get(1)?,
+        service: r.get(2)?,
+        op: r.get(3)?,
+        model: r.get(4)?,
+        key_id: r.get(5)?,
+        status: r.get(6)?,
+        latency_ms: r.get(7)?,
+        tokens_in: r.get(8)?,
+        tokens_out: r.get(9)?,
+        audio_secs: r.get(10)?,
+        err: r.get(11)?,
+    })
+}
+
+pub fn query_api_calls(db_path: &Path, service: &str, limit: i64) -> Result<Vec<ApiCallRow>, String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let sql = if service.is_empty() {
+        "SELECT id, ts, service, op, model, key_id, status, latency_ms, tokens_in, tokens_out, audio_secs, err
+         FROM api_calls ORDER BY id DESC LIMIT ?1"
+    } else {
+        "SELECT id, ts, service, op, model, key_id, status, latency_ms, tokens_in, tokens_out, audio_secs, err
+         FROM api_calls WHERE service = ?2 ORDER BY id DESC LIMIT ?1"
+    };
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let lim = if limit <= 0 { 100 } else { limit };
+    let mut out = Vec::new();
+    let mapped = if service.is_empty() {
+        stmt.query_map(params![lim], map_api_call_row)
+    } else {
+        stmt.query_map(params![lim, service], map_api_call_row)
+    };
+    if let Ok(rows) = mapped {
+        for r in rows.flatten() {
+            out.push(r);
+        }
+    }
+    Ok(out)
+}
+
+pub fn query_usage_daily(db_path: &Path, days: i64) -> Result<Vec<UsageDayRow>, String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT day, service, calls, tokens_in, tokens_out, audio_secs, errors
+                  FROM api_usage_daily ORDER BY day DESC LIMIT ?1")
+        .map_err(|e| e.to_string())?;
+    // days * 3 services approx; cap generously
+    let cap = if days <= 0 { 90 } else { days * 4 };
+    let rows = stmt
+        .query_map(params![cap], |r| Ok(UsageDayRow {
+            day: r.get(0)?, service: r.get(1)?, calls: r.get(2)?,
+            tokens_in: r.get(3)?, tokens_out: r.get(4)?, audio_secs: r.get(5)?,
+            errors: r.get(6)?,
+        }))
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows.flatten() {
+        out.push(r);
+    }
+    Ok(out)
 }
 
 /// Milliseconds since an arbitrary instant — child-process timing helper.

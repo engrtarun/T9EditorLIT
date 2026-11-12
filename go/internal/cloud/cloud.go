@@ -269,6 +269,7 @@ func (c *GroqClient) TranscribeChunkResult(
 		}
 	}()
 
+	ctx = MergeCallMeta(ctx, CallMeta{Model: c.Model})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, pr)
 	if err != nil {
 		return ChunkTranscript{}, fmt.Errorf("build groq request: %w", err)
@@ -687,6 +688,7 @@ func (c *GroqClient) chat(
 		return "", fmt.Errorf("encode groq chat request: %w", err)
 	}
 
+	ctx = MergeCallMeta(ctx, CallMeta{Model: c.ChatModel})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ChatURL, bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("build groq chat request: %w", err)
@@ -786,6 +788,7 @@ func (c *GeminiClient) GenerateText(ctx context.Context, prompt string) (string,
 		return "", fmt.Errorf("encode gemini request: %w", err)
 	}
 
+	ctx = MergeCallMeta(ctx, CallMeta{Model: c.Model})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("build gemini request: %w", err)

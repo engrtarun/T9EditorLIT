@@ -1,7 +1,7 @@
 import { fetchUsageState, type KeyState, type UsageResponse } from './cloud';
 
 export type UsageLink = 'loading' | 'ok' | 'outdated' | 'down';
-export type UsageTab = 'limits' | 'usage' | 'keys';
+export type UsageTab = 'limits' | 'usage' | 'history' | 'keys';
 
 /** On screen: 8 s. Panel open: 4 s — a ~2 kB loopback response, not a socket. */
 const POLL_SLOW_MS = 8000;

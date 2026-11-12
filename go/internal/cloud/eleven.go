@@ -195,6 +195,7 @@ func (c *ElevenClient) transcribeWith(
 		}
 	}()
 
+	ctx = MergeCallMeta(ctx, CallMeta{Model: c.Model, KeyID: key.Hash})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, pr)
 	if err != nil {
 		return ChunkTranscript{}, fmt.Errorf("build elevenlabs request: %w", err)

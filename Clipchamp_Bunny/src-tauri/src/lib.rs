@@ -511,6 +511,31 @@ fn stats_kv_set(key: String, value: String) {
     stats::kv_set(&key, &value);
 }
 
+/// Ingest new rows from the daemon's append-only call log into telemetry.db.
+#[tauri::command]
+fn ingest_api_calls(app: tauri::AppHandle, calls_path: String) -> Result<i64, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    stats::ingest_api_calls(&dir.join("telemetry.db"), &calls_path)
+}
+
+/// 30-day (or N-day) usage timeline, grouped by day + service.
+#[tauri::command]
+fn usage_timeline(app: tauri::AppHandle, days: i64) -> Result<Vec<stats::UsageDayRow>, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    stats::query_usage_daily(&dir.join("telemetry.db"), days)
+}
+
+/// Recent calls, optionally filtered by service.
+#[tauri::command]
+fn usage_calls(
+    app: tauri::AppHandle,
+    service: String,
+    limit: i64,
+) -> Result<Vec<stats::ApiCallRow>, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    stats::query_api_calls(&dir.join("telemetry.db"), &service, limit)
+}
+
 /// Default directory for extracted audio chunks.
 #[tauri::command]
 fn default_chunk_dir(app: tauri::AppHandle) -> Result<String, String> {
@@ -1764,6 +1789,9 @@ pub fn run() {
             log_transcription_job,
             stats_kv_get,
             stats_kv_set,
+            ingest_api_calls,
+            usage_timeline,
+            usage_calls,
             save_project,
             load_projects,
             update_project_opened,

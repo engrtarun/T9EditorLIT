@@ -425,3 +425,30 @@ export interface BrowserExtensionsEvent {
   enabled: boolean[];
   error: string | null;
 }
+
+/** One ingested provider call, from telemetry.db (api_calls). */
+export interface ApiCallRow {
+  id: number;
+  ts: number;
+  service: string;
+  op: string;
+  model: string;
+  keyId: string;
+  status: number;
+  latencyMs: number;
+  tokensIn: number;
+  tokensOut: number;
+  audioSecs: number;
+  err: string;
+}
+
+/** One day+service bucket, from telemetry.db (api_usage_daily). */
+export interface UsageDayRow {
+  day: string;
+  service: string;
+  calls: number;
+  tokensIn: number;
+  tokensOut: number;
+  audioSecs: number;
+  errors: number;
+}

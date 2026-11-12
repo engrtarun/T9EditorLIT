@@ -435,6 +435,7 @@ export interface UsageResponse {
   recent: CallSummary[];
   keys: KeyState[];
   overlayPath?: string;
+  callsPath?: string;
 }
 
 /**
