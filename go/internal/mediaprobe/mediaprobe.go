@@ -790,23 +790,28 @@ func AnalyzeFrames(frames [][]byte, w, h int) Grid {
 		g.Detail[c] = math.Sqrt(variance)
 	}
 
-	pairs := 0
+	cellPairCounts := make([]float64, cells)
 	for i := 1; i < len(frames); i++ {
 		a, b := frames[i-1], frames[i]
 		if len(a) < w*h || len(b) < w*h {
 			continue
 		}
-		pairs++
 		for y := 0; y < h; y++ {
 			for x := 0; x < w; x++ {
 				c := cellOf(x, y)
 				g.Motion[c] += math.Abs(float64(a[y*w+x])-float64(b[y*w+x])) / 255
+				cellPairCounts[c]++
 			}
 		}
 	}
-	if pairs > 0 {
-		for c := range g.Motion {
-			g.Motion[c] /= float64(pairs)
+	// Motion is a *mean* per cell, so it stays in 0..1 and the frozen-video
+	// guard (medianMotion < 0.008) means what it says. Dividing only by the
+	// frame-pair count would leave a per-cell sum that grows with cell size:
+	// the live file measured 8.7 instead of 0.015, and every threshold in
+	// this file would then be comparing numbers with no fixed scale.
+	for c := range g.Motion {
+		if cellPairCounts[c] > 0 {
+			g.Motion[c] /= cellPairCounts[c]
 		}
 	}
 

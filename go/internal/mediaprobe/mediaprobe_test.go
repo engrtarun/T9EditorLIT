@@ -246,6 +246,33 @@ func TestAnalyzeFramesIgnoresFrozenVideo(t *testing.T) {
 	}
 }
 
+// Motion is the *mean* per cell, so it stays in 0..1 and the frozen guard
+// (median < 0.008) keeps a fixed meaning. The first implementation divided
+// only by the frame-pair count, which left a per-cell *sum* that grows with
+// cell size: the live file reported 8.7 where the contract promises 0.015.
+func TestAnalyzeFramesMotionIsAFraction(t *testing.T) {
+	const w, h = 96, 54
+	frames := make([][]byte, 5)
+	for i := range frames {
+		f := make([]byte, w*h)
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				f[y*w+x] = byte((x*3 + y + i*40) % 255)
+			}
+		}
+		frames[i] = f
+	}
+	g := AnalyzeFrames(frames, w, h)
+	for i, m := range g.Motion {
+		if m < 0 || m > 1 {
+			t.Fatalf("motion[%d] = %v, want a 0..1 fraction", i, m)
+		}
+	}
+	if g.Motion[4] <= 0.05 {
+		t.Fatalf("a moving picture must have motion, got %v", g.Motion[4])
+	}
+}
+
 func TestReportJSONUsesSnakeCase(t *testing.T) {
 	rep := decode(t, liveDoc)
 	raw, err := json.Marshal(rep)
