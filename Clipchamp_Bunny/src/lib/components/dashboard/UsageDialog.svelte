@@ -546,7 +546,8 @@
                           <th class="pb-1 pr-2 font-medium">{i18n.t('usage.engine')}</th>
                           <th class="pb-1 pr-2 font-medium">{i18n.t('usage.op')}</th>
                           <th class="pb-1 pr-2 font-medium">{i18n.t('usage.status')}</th>
-                          <th class="pb-1 pr-2 font-medium text-right">{i18n.t('usage.latency')}</th>
+                          <th class="pb-1 pr-2 font-medium text-right">{i18n.t('usage.latency')}</th
+                          >
                           <th class="pb-1 pr-2 font-medium text-right">{i18n.t('usage.tokens')}</th>
                           <th class="pb-1 font-medium text-right">{i18n.t('usage.audio')}</th>
                         </tr>
@@ -554,7 +555,9 @@
                       <tbody>
                         {#each calls as c (c.id)}
                           <tr class="border-t border-nc-line/70">
-                            <td class="py-1 pr-2 text-nc-mut-2">{timeAgo(new Date(c.ts * 1000).toISOString())}</td>
+                            <td class="py-1 pr-2 text-nc-mut-2"
+                              >{timeAgo(new Date(c.ts * 1000).toISOString())}</td
+                            >
                             <td class="py-1 pr-2 capitalize text-nc-txt">{c.service}</td>
                             <td class="py-1 pr-2 text-nc-mut">{c.op || '—'}</td>
                             <td
