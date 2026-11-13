@@ -1246,6 +1246,54 @@ class ProjectStore {
   }
 
   /**
+   * "Regenerate": throw the saved transcript away and buy it again.
+   *
+   * This is the only action that deletes words, so the panel asks first. The
+   * cut/keep decisions ride on those rows and go with them — keeping old marks
+   * over new text would be worse, because a "cut" would then point at a
+   * sentence the user never saw.
+   *
+   * The chunk cache is dropped too: the previous run removed each WAV as it
+   * paid for it, so a fresh plan must re-split the source instead of sending
+   * paths that no longer exist.
+   */
+  async regenerateTranscript(): Promise<void> {
+    if (this.planRunning || this.pipeline) return;
+    const source = this.sourcePath;
+    if (!source) return;
+    const db = await defaultDbPath();
+    this.planRunning = true;
+    this.loadError = null;
+    // The click must be visible before the first await (same reason as
+    // startTranscript): deleting rows is quick, re-splitting is not.
+    this.pipeline = { stage: 'Purana transcript hata rahe hain…', fraction: 0.01 };
+    try {
+      // An empty list means "these are all the rows": the diff save deletes
+      // every stored line for this source (transcript.rs drops stale ids).
+      await this.saveSegments(db, source, []);
+      this.lines = [];
+      this.selectedIds = [];
+      this.partialTranscript = null;
+      this.writeGaps(source, null);
+      this.planFailed = [];
+      this.transcriptPlan = null;
+      this.writePlan(source, null);
+      this.noSpeech = false;
+      this.music = false;
+      this.audioProfile = null;
+      this.chunkCache = null;
+      this.refreshShape();
+    } catch (e) {
+      this.loadError = e instanceof Error ? e.message : String(e);
+      return;
+    } finally {
+      this.planRunning = false;
+      this.pipeline = null;
+    }
+    await this.startTranscript(false);
+  }
+
+  /**
    * "Rok do": stop before the next chunk. The request already sent to Whisper
    * cannot be un-spent, so the button promises "is chunk ke baad", not magic.
    */
