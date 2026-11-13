@@ -2967,6 +2967,50 @@ Doctor: marker hash = installed exe hash, koi staged file nahi.
 
 **— deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
 
+## P11. Follow-up — extra clip ka transcript nahi hota, aur main source ka "Regenerate" (live)
+
+User ne nayi video import ki, ek extra clip add kiya, aur poocha: is clip ka
+transcript generate/regenerate kahan hai? Do alag cheezein thin, dono ka jawab
+ab UI me likha hua hai.
+
+### B33. Extra clip ke liye transcript ka button hi nahi tha — aur hona bhi nahi chahiye
+
+| | |
+| --- | --- |
+| Kahan | `Clipchamp_Bunny/src/lib/components/cut/TranscriptPanel.svelte` |
+| Kya | Preview kisi extra clip par ho to panel wahi purana transcript dikhata tha (ya khaali), bina ye bataye ki clip ka apna transcript kabhi nahi hoga |
+| Kyun design hai | Cut pipeline `project.sourcePath` par chalti hai — transcript, cut map, phantom cut, export sab ek hi file ke around hain. Doosri video ko weave karne ke liye multi-source renderer chahiye, jo abhi nahi hai |
+| Fix | `project.activeClip` par ek **EXTRA CLIP** banner: alag media hai, transcript sirf main source ka hota hai, ise trim/split se kaato; kisi bhi transcript line par click karne se preview main source par wapas aa jata hai |
+| Jhooth kyun nahi | Generate button dikhaya hota to wo aisa text promise karta jise renderer kahin rakh hi nahi sakta |
+
+### Naya: main source ka "Regenerate"
+
+`project.regenerateTranscript()` — pehla aur akela action jo words **delete**
+karta hai, isliye confirm karta hai aur naam leta hai ki kya ja raha hai:
+
+- `saveSegments(db, source, [])` — empty diff-save ka matlab "ye saari rows
+  hain", isliye `transcript.rs` us source ki har stored line hata deta hai.
+- `chunkCache = null` — pichla run har WAV pay karne ke baad delete karta tha,
+  isliye fresh plan source ko dobara split karega, mara hua path nahi bhejega.
+- `lines`, `selectedIds`, gaps, plan, `noSpeech`, `music`, `audioProfile` reset,
+  phir `startTranscript(false)` chunk 1 se.
+- Cut/keep marks jaate hain: purane marks naye text par lagana galat hota —
+  "cut" us sentence ko point karta jo user ne kabhi dekha hi nahi.
+
+| Fact | Value |
+| --- | --- |
+| Commit | `24b27cfb05bebc5aac5bd0c6e122eae4abd2bacd` |
+| Build | `ci-24b27cf` → CI run https://github.com/engrtarun/T9EditorLIT/actions/runs/43383075391 |
+| App SHA-256 | `b12c571e0dc95043326da4049c85e98a9bf97d03868b4a4dd5e53bea287aeba7` |
+| Work order | `SARKARI-20261113-123426-0453` → mode **live** |
+| Daemon | `go-7a81d8959fe3dfa6` (app-only deploy, daemon untouched) |
+| Gates | svelte-check 0/0 → prettier clean → 157/157 tests |
+
+Deploy ke waqt app band thi, isliye binary seedha install hui (`mode: live`) —
+koi staged `.new.exe` nahi, Update click ki zaroorat nahi.
+
+**— deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
+
 ---
 
 **— deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
