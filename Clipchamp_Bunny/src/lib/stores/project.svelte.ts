@@ -28,6 +28,19 @@ import {
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 import { detectQualitySuggestions, type QualitySuggestion } from '../suggestions';
 import { chunkSourceKey } from '../cloud-contract';
+import type { LayoutReport, MediaReport } from '../media-report';
+import { tagIcon, tagsOf } from '../transcript-tags';
+import {
+  classifyGaps,
+  cutCandidates,
+  gapStats as computeGapStats,
+  subtractKeepZones,
+  type GapStats
+} from '../silence-map';
+import { buildShape, keepZones as shapeKeepZones, type ShapeSegment } from '../shape';
+import type { LexiconEntry } from '../lexicon';
+import { encodesFor, bumpEncodes } from '../encode-count';
+import { getLexicon, measureLayout, probeMediaReport, remuxMedia, saveLexicon } from '../pipeline';
 import {
   estimateForDuration,
   estimatePlan,
@@ -133,6 +146,11 @@ export type TrackId = 'video' | 'audio';
  */
 function baseId(id: string): string {
   return id.replace(/-[0-9a-z]+[ab]$/, '');
+}
+
+/** `undefined` for an empty list, so a row without tags stays a plain row. */
+function nonEmpty<T>(values: T[]): T[] | undefined {
+  return values.length ? values : undefined;
 }
 
 /**
@@ -401,6 +419,63 @@ class ProjectStore {
    */
   sensitivity = $state<Sensitivity>('balanced');
 
+  /**
+   * The import gate's report for this source (cases 27-38).
+   *
+   * One local ffprobe pass at open/import time: container quirks, variable
+   * frame rate, colour tags, an A/V start offset, bloat, the honest ASR copy
+   * size. Null means "not measured yet" or "the browser demo", and every
+   * consumer treats it as "no findings".
+   */
+  mediaReport = $state.raw<MediaReport | null>(null);
+
+  /**
+   * The picture's layout measurement (cases 37, 38).
+   *
+   * A static corner is watermark-like, a much busier corner is face-cam-like.
+   * It is metadata: the UI shows the regions and leaves any crop or blur to
+   * the user.
+   */
+  layout = $state.raw<LayoutReport | null>(null);
+
+  /**
+   * The classified silence map (cases 21, 35): micro / medium / big gaps.
+   *
+   * The raw detector output is not a cut list; this is. The auto-cut pass
+   * proposes big gaps only, and merges a reverb tail into the gap it belongs
+   * to instead of calling every seam a silence.
+   */
+  gapStats = $state.raw<GapStats | null>(null);
+
+  /**
+   * The creator vocabulary (case 39). Loaded once, edited in the UI, applied
+   * by the daemon on every later transcription.
+   */
+  lexicon = $state.raw<LexiconEntry[]>([]);
+
+  /**
+   * The video's shape from the transcript timings (case 40), plus the ranges
+   * auto-cut must never touch.
+   */
+  shape = $state.raw<ShapeSegment[]>([]);
+
+  /** How many times this source has been exported (case 36). */
+  encodes = $state(0);
+
+  /**
+   * Measured audio-vs-picture start offset in seconds (case 30).
+   *
+   * Positive means the audio begins later than the picture. The preview and
+   * the cut map share the audio clock, so this is shown rather than silently
+   * applied - a wrong shift would be worse than a known number.
+   */
+  avOffsetSecs = $derived(this.mediaReport?.av_offset_secs ?? 0);
+
+  /** The keep-zones the shape pass produced; auto-cut subtracts them. */
+  get keepZones(): SilenceRange[] {
+    return shapeKeepZones(this.shape);
+  }
+
   /** Filesystem path of the source, when running under Tauri. */
   sourcePath = $state<string | null>(null);
 
@@ -661,6 +736,11 @@ class ProjectStore {
     this.sourcePath = canonical;
     setSourcePath(canonical);
     setSourceUrl(this.media.url);
+    // The import gate runs beside the project load: a probe is one child
+    // process, and the project must not wait for it to be editable. The chip
+    // appears when the measurement is in.
+    void this.refreshGate(canonical);
+    void this.loadLexicon();
 
     // A rename lives in SQLite, not in the filename: take the stored name when
     // a row exists for this file, so reopening cannot wipe a custom rename —
@@ -755,6 +835,7 @@ class ProjectStore {
     let resumePlan: TranscriptPlan | null = null;
     try {
       this.lines = await this.ensureTranscript(canonical, info.durationSecs);
+      this.refreshShape();
       this.loadError = null;
       this.noSpeech = false;
       // A transcript with holes must say so on every open, not only in the
@@ -1496,6 +1577,9 @@ class ProjectStore {
       // Deleting it per chunk keeps a half-finished two-hour import from
       // holding every chunk on disk at once.
       if (isTauri()) void removeAudioChunk(chunk.path).catch(() => false);
+      // Every chunk can change the video's shape, so rebuild it now rather
+      // than waiting for the last chunk (case 40).
+      this.refreshShape();
       return { plan: markDone(plan, chunk.index), error: null };
     } catch (e) {
       if (e instanceof NoSpeechError) {
@@ -1522,6 +1606,7 @@ class ProjectStore {
       await this.saveSegments(db, sourcePath, refined);
       this.lines = this.toTranscriptLines(refined);
       this.syncCutsIntoLines();
+      this.refreshShape();
     }
     this.partialTranscript = null;
     this.writeGaps(sourcePath, null);
@@ -1562,6 +1647,7 @@ class ProjectStore {
       const segs = await this.refine(source, this.toCloudSegments(this.lines), [0.1, 0.97]);
       this.lines = this.toTranscriptLines(segs);
       this.syncCutsIntoLines();
+      this.refreshShape();
       await this.saveSegments(db, source, segs);
     } catch (e) {
       // The existing lines stay on screen: the failure only means the flags
@@ -1603,7 +1689,15 @@ class ProjectStore {
       words: l.words,
       language: l.language,
       translated_text: l.translatedText,
-      protected: l.protected
+      protected: l.protected,
+      tags: l.tags,
+      repeated: l.repeated,
+      repeat_of: l.repeatOf,
+      repeat_count: l.repeatCount,
+      repeat_kind: l.repeatKind,
+      crosstalk: l.crosstalk,
+      needs_confirm: l.needsConfirm,
+      lexicon_hits: l.lexiconHits
     }));
   }
 
@@ -1620,6 +1714,14 @@ class ProjectStore {
       language: s.language,
       translatedText: s.translated_text,
       protected: s.protected,
+      tags: s.tags,
+      repeated: s.repeated,
+      repeatOf: s.repeat_of,
+      repeatCount: s.repeat_count,
+      repeatKind: s.repeat_kind,
+      crosstalk: s.crosstalk,
+      needsConfirm: s.needs_confirm,
+      lexiconHits: s.lexicon_hits,
       words: s.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
     }));
   }
@@ -1634,11 +1736,14 @@ class ProjectStore {
       flag: toLineFlag(l.flag),
       keep: l.keep ? 'keep' : 'cut',
       confidence: 1,
+      // Old rows have no tag column; the tags are derivable from the text, so
+      // a project recorded before this feature still renders icons (case 23).
+      tags: nonEmpty(tagsOf(l.text)),
       words: l.words?.map((w) => ({ word: w.word, start: w.start, end: w.end }))
     }));
   }
 
-  /** Write one stage's segments to SQLite — the single transcript save path. */
+  /** Write one stage's segments to SQLite - the single transcript save path. */
   private async saveSegments(db: string, sourcePath: string, segs: CloudSegment[]) {
     await saveTranscript(
       db,
@@ -1755,6 +1860,13 @@ class ProjectStore {
       // A line the user pinned is never auto-cut. The automatic pass is a
       // suggestion; the pin is the user's decision, and it wins.
       if (l.protected) continue;
+      // Two voices at once (case 22) and anything the pass asked the user to
+      // confirm (case 26) are never decided by a detector: cutting the wrong
+      // speaker, or the take the speaker meant, is unrecoverable in the edit.
+      if (l.crosstalk || l.needsConfirm) continue;
+      // A collapsed hallucination duplicate is already out of the transcript;
+      // re-cutting it would only re-flag text Whisper invented.
+      if (l.repeated) continue;
       for (const r of ranges) {
         if (l.endSec > r.start && l.startSec < r.end) {
           cut.add(l.id);
@@ -1825,8 +1937,9 @@ class ProjectStore {
   /** Scan only — stage the green preview. */
   async suggestSilences(minSecs = 3.0): Promise<number> {
     const ranges = await this.findSilences(minSecs);
-    this.suggestions = ranges;
-    return ranges.length;
+    const candidates = this.silenceCandidates(ranges);
+    this.suggestions = candidates;
+    return candidates.length;
   }
 
   /** Turn the green preview into real cuts (undoable through history). */
@@ -1848,7 +1961,111 @@ class ProjectStore {
    */
   async autoCutSilence(minSecs = 3.0): Promise<number> {
     const ranges = await this.findSilences(minSecs);
-    return this.cutSilences(ranges);
+    const candidates = this.silenceCandidates(ranges);
+    this.gapStats = computeGapStats(classifyGaps(ranges, { lines: this.lines }));
+    return this.cutSilences(candidates);
+  }
+
+  /**
+   * The spans a silence pass should propose (cases 21, 35, 40).
+   *
+   * Raw `silencedetect` output is not a cut list: it calls an edit seam and an
+   * 87-second dead zone the same thing. The map is classified once (micro /
+   * medium / big), only big gaps are offered, reverb tails are merged into the
+   * gap they belong to, and the intro/outro/CTA keep-zones are subtracted so
+   * the parts that earn the creator money are never eaten by a detector.
+   */
+  silenceCandidates(ranges: SilenceRange[]): SilenceRange[] {
+    const gaps = classifyGaps(ranges, { lines: this.lines });
+    this.gapStats = computeGapStats(gaps);
+    const cut = cutCandidates(gaps);
+    return subtractKeepZones(cut, this.keepZones);
+  }
+
+  /**
+   * The import gate (cases 27-38): one local probe, plus the layout pass when
+   * the source has a picture.
+   *
+   * Failure is silent by design. A file the daemon cannot probe still opens
+   * and still edits; the gate is advice, never a lock on the project.
+   */
+  async refreshGate(path = this.sourcePath): Promise<void> {
+    if (!path || !isTauri()) return;
+    try {
+      const report = await probeMediaReport(path);
+      if (this.sourcePath !== path) return; // the user switched files mid-probe
+      this.mediaReport = report;
+      this.encodes = encodesFor(path).count;
+      if (report.audio_only || !report.video) {
+        this.layout = null;
+        return;
+      }
+      const layout = await measureLayout(path, report.duration_secs).catch(() => null);
+      if (this.sourcePath === path) this.layout = layout;
+    } catch {
+      /* the gate is advice; an unprobed source still edits normally */
+    }
+  }
+
+  /**
+   * Build a lossless repair copy (case 27) and return its path.
+   *
+   * The imported source is never modified: the repair is a NEW file in the
+   * user cache, and importing it is a separate decision the user makes.
+   */
+  async runRemux(): Promise<string | null> {
+    const path = this.sourcePath;
+    if (!path || !isTauri()) return null;
+    this.pipeline = { stage: 'Lossless remux chal raha hai…', fraction: 0.1 };
+    try {
+      const out = await remuxMedia(path, (p) => {
+        this.pipeline = { stage: p.message, fraction: 0.1 + p.fraction * 0.8 };
+      });
+      return out;
+    } finally {
+      this.pipeline = null;
+    }
+  }
+
+  /** Load the creator vocabulary (case 39). Silent on failure. */
+  async loadLexicon(): Promise<void> {
+    try {
+      this.lexicon = await getLexicon();
+    } catch {
+      /* no daemon: the editor simply has no saved vocabulary */
+    }
+  }
+
+  /** Persist the creator vocabulary; returns false when it could not be saved. */
+  async saveLexiconEntries(entries: LexiconEntry[]): Promise<boolean> {
+    try {
+      this.lexicon = await saveLexicon(entries);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Recompute the video's shape from the transcript (case 40).
+   *
+   * Cheap and pure: windowed speech density and pacing, no API call. Callers
+   * rebuild after a transcript arrives or a chunk is added.
+   */
+  refreshShape(): void {
+    this.shape = buildShape(this.lines, this.durationSec);
+  }
+
+  /**
+   * Record one successful export against this source (case 36).
+   *
+   * Generation loss is additive; the counter is the only honest way to warn
+   * before a third pass. Local-only and best-effort.
+   */
+  noteExport(): void {
+    const path = this.sourcePath;
+    if (!path) return;
+    this.encodes = bumpEncodes(path);
   }
 
   /**
@@ -2125,6 +2342,13 @@ class ProjectStore {
     this.past = [];
     this.future = [];
     this.splitSeq = 0;
+    this.mediaReport = null;
+    this.layout = null;
+    this.gapStats = null;
+    this.shape = [];
+    this.suggestions = [];
+    this.qualitySuggestions = [];
+    this.encodes = 0;
     player.currentTime = 0;
     player.playing = false;
   }
@@ -2843,6 +3067,24 @@ class ProjectStore {
     if (!line || line.keep === keep) return;
     this.commit();
     this.lines = this.lines.map((l) => (l.id === id ? { ...l, keep } : l));
+  }
+
+  /**
+   * The user answered a suggestion (case 26): keep or cut, and clear the ask.
+   *
+   * A retake is never pre-decided - the pass marks it and this is the one
+   * click that turns "maybe" into an edit.
+   */
+  resolveLine(id: string, keep: KeepState) {
+    const line = this.lines.find((l) => l.id === id);
+    if (!line) return;
+    this.commit();
+    this.lines = this.lines.map((l) => (l.id === id ? { ...l, keep, needsConfirm: false } : l));
+  }
+
+  /** Print one line's tags as icons, for the row title. */
+  tagIcons(line: TranscriptLine): string {
+    return (line.tags ?? []).map(tagIcon).join(' ');
   }
 
   /** One-hand arcade flow: after every X / V the cursor falls to the next line. */

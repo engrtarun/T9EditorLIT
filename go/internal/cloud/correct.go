@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/engrtarun/T9EditorLIT/go/internal/model"
+	"github.com/engrtarun/T9EditorLIT/go/internal/postpass"
 )
 
 // CorrectPrompt is the instruction sent to the text model.
@@ -104,6 +105,23 @@ func (c *GroqClient) CorrectSegmentsProgress(
 	segments []model.Segment,
 	onBatch func(done, total int),
 ) ([]model.Segment, error) {
+	return c.CorrectSegmentsWithLexicon(ctx, segments, nil, onBatch)
+}
+
+// CorrectSegmentsWithLexicon is CorrectSegmentsProgress with the creator's
+// vocabulary pinned into the prompt.
+//
+// The deterministic pass in `postpass` already applies the aliases, so this is
+// the second half of case 39: a model that has been told "this channel says
+// RAG, LLM and ChatGPT" stops re-guessing the same words, and lines the alias
+// table did not enumerate still come back right. The vocabulary is plain text
+// in the prompt, never a tool call and never a new dependency.
+func (c *GroqClient) CorrectSegmentsWithLexicon(
+	ctx context.Context,
+	segments []model.Segment,
+	entries []postpass.Entry,
+	onBatch func(done, total int),
+) ([]model.Segment, error) {
 	out := make([]model.Segment, len(segments))
 	copy(out, segments)
 	if len(segments) == 0 {
@@ -120,7 +138,7 @@ func (c *GroqClient) CorrectSegmentsProgress(
 		}
 
 		batch := segments[start:end]
-		corrections, err := c.correctBatch(ctx, batch)
+		corrections, err := c.correctBatch(ctx, batch, entries)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("lines %d-%d: %v", start+1, end, err))
 		} else {
@@ -144,6 +162,7 @@ func (c *GroqClient) CorrectSegmentsProgress(
 func (c *GroqClient) correctBatch(
 	ctx context.Context,
 	batch []model.Segment,
+	entries []postpass.Entry,
 ) ([]Correction, error) {
 	var sb strings.Builder
 	sb.WriteString("LINES\n")
@@ -154,11 +173,40 @@ func (c *GroqClient) correctBatch(
 		fmt.Fprintf(&sb, "%d\t%s\n", i, strings.TrimSpace(s.Text))
 	}
 
-	raw, err := c.Chat(ctx, CorrectPrompt, sb.String())
+	raw, err := c.Chat(ctx, correctPromptWithVocabulary(entries), sb.String())
 	if err != nil {
 		return nil, err
 	}
 	return ParseCorrections(raw)
+}
+
+// correctPromptWithVocabulary appends the channel's canonical spellings.
+//
+// The list is bounded before it reaches the prompt (the lexicon store caps
+// entries and aliases), and it is presented as facts, not instructions to
+// rewrite: the base prompt's "return it unchanged if unsure" rule still wins.
+func correctPromptWithVocabulary(entries []postpass.Entry) string {
+	if len(entries) == 0 {
+		return CorrectPrompt
+	}
+	var b strings.Builder
+	b.WriteString(CorrectPrompt)
+	b.WriteString("\n\nCREATOR VOCABULARY - these are the channel's own spellings. When the audio clearly says one of these, use the canonical term:\n")
+	for _, e := range entries {
+		term := strings.TrimSpace(e.Term)
+		if term == "" {
+			continue
+		}
+		b.WriteString("- ")
+		b.WriteString(term)
+		if len(e.Aliases) > 0 {
+			b.WriteString(" (heard as: ")
+			b.WriteString(strings.Join(e.Aliases, ", "))
+			b.WriteString(")")
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // applyCorrections writes the model's text back, one line at a time.

@@ -25,8 +25,10 @@ import (
 	"github.com/engrtarun/T9EditorLIT/go/internal/cloud"
 	"github.com/engrtarun/T9EditorLIT/go/internal/config"
 	"github.com/engrtarun/T9EditorLIT/go/internal/dl"
+	"github.com/engrtarun/T9EditorLIT/go/internal/lexicon"
 	"github.com/engrtarun/T9EditorLIT/go/internal/model"
 	"github.com/engrtarun/T9EditorLIT/go/internal/netspeed"
+	"github.com/engrtarun/T9EditorLIT/go/internal/postpass"
 	"github.com/engrtarun/T9EditorLIT/go/internal/queue"
 	"github.com/engrtarun/T9EditorLIT/go/internal/ublock"
 	"github.com/engrtarun/T9EditorLIT/go/internal/vad"
@@ -58,6 +60,11 @@ type Deps struct {
 	// EnvPath is the .env the daemon was started with. Keys saved from the UI
 	// go into the overlay file beside it (config.SetKey), never into that one.
 	EnvPath string
+	// Lexicon is the creator vocabulary (case 39). Nil is legal: tests and a
+	// daemon started without a writable config directory simply have none.
+	Lexicon *lexicon.Store
+	// CacheDir is where repair copies are written. Empty means the user cache.
+	CacheDir string
 }
 
 // Server wires the HTTP routes.
@@ -118,6 +125,18 @@ func (s *Server) routes() {
 	// The translation view (edge case 15): a second rendering of an existing
 	// transcript, beside the original and never over it.
 	s.mux.HandleFunc("POST /v1/translate", s.handleTranslate)
+
+	// The import gate and media layout (cases 27-38): one local measurement
+	// before editing starts, so container/timing/colour/overlay surprises are
+	// a chip at import instead of a mystery halfway through a project.
+	s.mux.HandleFunc("POST /v1/media/probe", s.handleMediaProbe)
+	s.mux.HandleFunc("POST /v1/media/remux", s.handleMediaRemux)
+	s.mux.HandleFunc("POST /v1/media/layout", s.handleMediaLayout)
+
+	// The creator vocabulary (case 39): persistent across videos, and shared
+	// by the deterministic pass and the autocorrect prompt.
+	s.mux.HandleFunc("GET /v1/lexicon", s.handleLexiconList)
+	s.mux.HandleFunc("PUT /v1/lexicon", s.handleLexiconSave)
 
 	// Dashboard greeting: one Groq line per language, cached on this side so
 	// twenty app launches cost a single call.
@@ -912,6 +931,22 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 		}
 	}
 
+	// Deterministic transcript hygiene, before the job is declared done:
+	// bracket tags become icons (23), a hallucinated loop collapses to one
+	// line (24), overlapping words are marked and protected (22), a retake is
+	// a confirmation instead of a deletion (26), and the creator vocabulary
+	// fixes known spellings (39). None of this needs a network call.
+	pass := postpass.Process(merged, s.lexiconEntries())
+	if pass.Tags+pass.Loops+pass.Retakes+pass.Crosstalk+pass.Lexicon > 0 {
+		s.deps.Log.Info("transcript post-pass",
+			"job", jobID,
+			"tagged_lines", pass.Tags,
+			"loop_duplicates", pass.Loops,
+			"retakes", pass.Retakes,
+			"crosstalk", pass.Crosstalk,
+			"lexicon_fixes", pass.Lexicon)
+	}
+
 	// The language the job settled on travels with the result, so the UI can
 	// show the badge and the warning without guessing.
 	s.store.setLanguage(jobID, pin.language(), pin.warningText())
@@ -1118,7 +1153,7 @@ func (s *Server) runCorrect(ctx context.Context, jobID string, req model.Correct
 	}
 	s.store.start(jobID)
 
-	corrected, err := groq.CorrectSegmentsProgress(ctx, req.Segments, func(_, _ int) {
+	corrected, err := groq.CorrectSegmentsWithLexicon(ctx, req.Segments, s.lexiconEntries(), func(_, _ int) {
 		// One tick per finished batch. The job's total is a batch count, so a
 		// two-hour transcript no longer sits at 0% for ten minutes and snaps.
 		s.store.advance(jobID, 1)

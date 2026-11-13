@@ -22,6 +22,14 @@ const (
 	// its own field, and the user cuts on what was said.
 	JobTranslate JobKind = "translate"
 
+	// JobRemux is a lossless container repair (stream copy, no re-encode).
+	//
+	// It is a job rather than a synchronous call because a 5 GB file is
+	// disk-bound: the UI keeps its progress row and the daemon is not blocked
+	// for a minute. The result is a path in the user cache, never a silent
+	// replacement of the imported file.
+	JobRemux JobKind = "remux"
+
 	// JobRestore is the read half of the vault: the daemon streams a backed-up
 	// file back out of Telegram, verifies part by part against the digests
 	// the upload recorded, and joins the parts into one file on disk. It
@@ -128,6 +136,52 @@ type Segment struct {
 	// ASMR whisper, a crosstalk overlap, a hook the detector reads as
 	// silence. Auto-cut skips protected lines; nothing else does.
 	Protected bool `json:"protected,omitempty"`
+
+	// Tags are the non-speech bracket labels Whisper emitted in this line:
+	// "music", "applause", "laughter", "silence", ...
+	//
+	// They are kept as data, not deleted from Text: the tags are the model's
+	// useful signal that this region is not speech, and the UI can render an
+	// icon instead of showing the user "[Music]" in the cut list.
+	Tags []string `json:"tags,omitempty"`
+
+	// Repeated marks a line that repeats an earlier line verbatim over
+	// non-speech audio (Whisper's stock-phrase loop, case 24).
+	//
+	// Its text is still here - the UI collapses the run and shows "(xN)";
+	// nothing is silently thrown away.
+	Repeated bool `json:"repeated,omitempty"`
+	// RepeatOf is the id of the line this one repeats.
+	RepeatOf string `json:"repeat_of,omitempty"`
+	// RepeatCount is set on the first line of a loop: how many copies the run
+	// held. Zero means "not a loop".
+	RepeatCount int `json:"repeat_count,omitempty"`
+	// RepeatKind classifies a repetition:
+	//
+	//   "loop"        - three or more identical lines over a long gap (a
+	//                   hallucination, safe to collapse)
+	//   "restatement" - a retake that added words (the second version is the
+	//                   one the speaker meant; case 26)
+	//   "fumble"      - a retake that lost words
+	//
+	// Only "loop" is safe to pre-decide. The other two are suggestions and
+	// always require the user's confirmation.
+	RepeatKind string `json:"repeat_kind,omitempty"`
+
+	// Crosstalk marks a line whose words overlap another line's words in
+	// time. Two voices at once is never auto-cut (case 22): the detector
+	// cannot know which speaker the user wants.
+	Crosstalk bool `json:"crosstalk,omitempty"`
+
+	// NeedsConfirm means the automated pass found something but deliberately
+	// did not decide it. The UI shows a confirm action instead of a
+	// pre-selected cut.
+	NeedsConfirm bool `json:"needs_confirm,omitempty"`
+
+	// LexiconHits lists the creator-vocabulary terms this line was corrected
+	// with (case 39). Text holds the corrected spelling; OriginalText holds
+	// the raw Whisper output when it changed.
+	LexiconHits []string `json:"lexicon_hits,omitempty"`
 }
 
 // Duration returns the segment length in seconds, never negative.
@@ -314,6 +368,10 @@ type Job struct {
 	// It is filled in for a transcribe job and can be fetched on its own,
 	// because the cut map wants it *before* the transcription starts.
 	AudioProfile *AudioProfile `json:"audio_profile,omitempty"`
+
+	// OutputPath is the file a repair job produced (remux). It is a new file
+	// in the user cache; the imported source is never modified.
+	OutputPath string `json:"output_path,omitempty"`
 
 	// Transcript is populated for transcribe jobs.
 	Transcript []Segment `json:"transcript,omitempty"`

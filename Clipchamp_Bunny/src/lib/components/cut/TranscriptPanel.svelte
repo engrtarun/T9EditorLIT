@@ -9,6 +9,8 @@
   import { SENSITIVITIES, SENSITIVITY_LABEL, describeProfile } from '../../audio-profile';
   import type { Sensitivity } from '../../audio-profile';
   import type { LineFlag, TranscriptLine } from '../../types';
+  import ProjectHealth from './ProjectHealth.svelte';
+  import ShapeStrip from './ShapeStrip.svelte';
 
   /* Virtual scroll constants — a 2-hour transcript can be 20k lines.
      Only ~30 rows ever exist in the DOM, so RAM stays flat. */
@@ -267,6 +269,14 @@
   {/if}
 
   <!--
+    The import gate and the video's shape sit above the rows: they are facts
+    about the whole file, not about one line. Both collapse, so a 46px row
+    budget is not spent on badges the user has already read.
+  -->
+  <ProjectHealth />
+  <ShapeStrip />
+
+  <!--
     A transcript with holes must say so at the top of the panel, not only in
     the session that discovered them. The daemon deliberately keeps the chunks
     that worked (throwing away 48 good minutes over one bad chunk would be
@@ -445,6 +455,49 @@
                 {line.confidence < 0.6 ? ` · ${(line.confidence * 100) | 0}%` : ''}
               </span>
             {/if}
+            <!--
+              Cases 22-24 and 26, as one badge row: a non-speech tag becomes an
+              icon, a collapsed loop shows how many copies it held, crosstalk
+              and a retake ask for a decision instead of pretending to know.
+            -->
+            {#if line.tags?.length}
+              <span
+                class="mt-0.5 ml-1 inline-block rounded border border-nc-line-2 bg-nc-panel-2 px-1 py-[1px] text-[8px] text-nc-mut"
+                dir="auto"
+                title="Non-speech sound: {line.tags.join(', ')}"
+              >
+                {project.tagIcons(line)}
+              </span>
+            {/if}
+            {#if line.repeatCount && line.repeatCount > 1}
+              <span
+                class="mt-0.5 ml-1 inline-block rounded border border-nc-line-2 bg-nc-panel-2 px-1 py-[1px] text-[8px] font-bold text-nc-mut"
+                title="Whisper ne ye line {line.repeatCount} baar repeat ki — baaki copies collapsed hain"
+              >
+                ×{line.repeatCount}
+              </span>
+            {/if}
+            {#if line.crosstalk}
+              <span
+                class="mt-0.5 ml-1 inline-block rounded border border-amber-400/40 bg-amber-400/10 px-1 py-[1px] text-[8px] font-bold tracking-wider text-amber-300"
+                title="Do awaazein overlap kar rahi hain — auto-cut ise kabhi nahi chhuega"
+              >
+                2 VOICES
+              </span>
+            {/if}
+            {#if line.needsConfirm}
+              <!--
+                The badge only asks. The answer lives in the right-hand
+                action strip: a button nested inside the row's jump button is
+                invalid markup, and a click would mean two things at once.
+              -->
+              <span
+                class="mt-0.5 ml-1 inline-block rounded border border-amber-400/40 bg-amber-400/10 px-1 py-[1px] text-[8px] font-bold tracking-wider text-amber-300"
+                title="Ye take ho sakta hai ki galti se bola gaya ho — right side se decide karo"
+              >
+                {line.repeatKind === 'stutter' ? 'STUTTER?' : 'RETAKE?'}
+              </span>
+            {/if}
             {#if isLanguageSwitch(line.language, project.language)}
               <!--
                 The badge appears only on the odd line out: a chip on every
@@ -463,6 +516,23 @@
         </button>
 
         <div class="flex shrink-0 items-center gap-1">
+          {#if line.needsConfirm}
+            <!-- The user's answer to a retake suggestion (case 26). -->
+            <button
+              onclick={() => project.resolveLine(line.id, 'cut')}
+              class="rounded border border-nc-red/40 px-1 py-[1px] text-[8px] font-bold text-nc-red hover:bg-nc-red/10"
+              title="Pehla take cut karo"
+            >
+              cut
+            </button>
+            <button
+              onclick={() => project.resolveLine(line.id, 'keep')}
+              class="rounded border border-nc-green/40 px-1 py-[1px] text-[8px] font-bold text-nc-green hover:bg-nc-green/10"
+              title="Rakho — ye take sahi hai"
+            >
+              keep
+            </button>
+          {/if}
           <!--
             The escape hatch for every detector that cannot be trusted: a
             whisper, a crosstalk overlap, a hook that reads as silence. The

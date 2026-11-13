@@ -30,6 +30,7 @@ import (
 	"github.com/engrtarun/T9EditorLIT/go/internal/cloud"
 	"github.com/engrtarun/T9EditorLIT/go/internal/config"
 	"github.com/engrtarun/T9EditorLIT/go/internal/dl"
+	"github.com/engrtarun/T9EditorLIT/go/internal/lexicon"
 	"github.com/engrtarun/T9EditorLIT/go/internal/queue"
 	"github.com/engrtarun/T9EditorLIT/go/internal/ublock"
 	"github.com/engrtarun/T9EditorLIT/go/internal/vault"
@@ -103,6 +104,15 @@ func run() error {
 	usage := cloud.NewUsageRecorder(usageCounterPath())
 	defer usage.Flush()
 
+	// Creator vocabulary: one small JSON file, read by every transcription and
+	// written only from the UI. A missing or corrupt file is logged and the
+	// daemon keeps working with an empty list - losing the vocabulary must
+	// never be the reason a transcript fails.
+	lex, lexErr := lexicon.Open(lexicon.DefaultPath())
+	if lexErr != nil {
+		log.Warn("lexicon unavailable, continuing without it", "err", lexErr)
+	}
+
 	deps := api.Deps{
 		Config:  cfg,
 		Queue:   q,
@@ -112,6 +122,7 @@ func run() error {
 		Vault:   vault.Unconfigured(),
 		Usage:   usage,
 		EnvPath: *envPath,
+		Lexicon: lex,
 	}
 
 	v, transport := buildVault(cfg, log)

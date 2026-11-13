@@ -424,6 +424,12 @@ func OnlyStockOutros(segments []model.Segment) bool {
 	const maxWords = 16
 	words := 0
 	for _, s := range segments {
+		// Collapsed duplicates are not content. Counting them is what made a
+		// thirty-line "Thank you for watching" loop look like a transcript and
+		// pass the no-speech gate.
+		if s.Repeated {
+			continue
+		}
 		phrase := normalizePhrase(s.Text)
 		if phrase == "" {
 			continue

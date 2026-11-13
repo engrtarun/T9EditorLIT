@@ -48,6 +48,27 @@ export interface TranscriptLine {
    */
   protected?: boolean;
   /**
+   * Non-speech bracket labels the daemon found ("music", "applause", ...).
+   *
+   * Case 23: the tags are data, not noise to delete. The row renders an icon
+   * and the text stays intact, so a cut list never shows "[Music]" as speech.
+   */
+  tags?: string[];
+  /** A verbatim duplicate collapsed into an earlier line (case 24). */
+  repeated?: boolean;
+  /** Id of the line this one repeats. */
+  repeatOf?: string;
+  /** Set on the first line of a loop: how many copies the run held. */
+  repeatCount?: number;
+  /** "loop" | "restatement" | "fumble" | "stutter" (cases 24, 26). */
+  repeatKind?: string;
+  /** Two voices overlap here — never auto-cut (case 22). */
+  crosstalk?: boolean;
+  /** The pass found something but deliberately did not decide it (case 26). */
+  needsConfirm?: boolean;
+  /** Creator-vocabulary terms applied to this line (case 39). */
+  lexiconHits?: string[];
+  /**
    * Word-level timings, when the engine has them (Whisper returns a `words`
    * array). With these, splitting a line also splits its **text** — cutting
    * "I LOVE U" at 4 s yields "I" and "LOVE U" instead of two identical rows.

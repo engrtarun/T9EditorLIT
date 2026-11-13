@@ -355,6 +355,8 @@
       result = res;
       warnings = res.warnings ?? [];
       percent = 100;
+      // Case 36: count the pass, so a third re-encode can warn about banding.
+      project.noteExport();
       toast.push('info', `Export done · ${fmtSize(res.sizeBytes)}`);
     } catch (e) {
       if (aborted) toast.push('info', 'Export cancelled');

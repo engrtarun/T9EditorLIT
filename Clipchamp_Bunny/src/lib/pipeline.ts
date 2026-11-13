@@ -2,6 +2,8 @@ import type { AudioChunk } from './types.ts';
 import { logTranscriptionJob } from './ipc.ts';
 import { JOB_CAP_MS, jobWatchdog } from './cloud-contract.ts';
 import type { AudioProfile, Sensitivity } from './audio-profile.ts';
+import type { LayoutReport, MediaReport } from './media-report.ts';
+import type { LexiconEntry } from './lexicon.ts';
 
 // The flag vocabulary lives with the other pure contract rules, and is
 // re-exported here because every caller already imports it from this module.
@@ -63,6 +65,21 @@ export interface CloudSegment {
    * crosstalk overlap, a hook that reads as silence.
    */
   protected?: boolean;
+  /** Non-speech bracket labels ("music", "applause", ...), case 23. */
+  tags?: string[];
+  /** A verbatim duplicate collapsed into an earlier line (case 24). */
+  repeated?: boolean;
+  repeat_of?: string;
+  /** Set on the first line of a loop: how many copies the run held. */
+  repeat_count?: number;
+  /** "loop" | "restatement" | "fumble" | "stutter" (cases 24, 26). */
+  repeat_kind?: string;
+  /** Two voices overlap here - never auto-cut (case 22). */
+  crosstalk?: boolean;
+  /** The pass found something but deliberately did not decide it (case 26). */
+  needs_confirm?: boolean;
+  /** Creator-vocabulary terms applied to this line (case 39). */
+  lexicon_hits?: string[];
 }
 
 export interface CloudJob {
@@ -112,6 +129,8 @@ export interface CloudJob {
   language_warning?: string;
   /** The local measurement of the source's audio. */
   audio_profile?: AudioProfile;
+  /** The file a remux job wrote; never the imported source (case 27). */
+  output_path?: string;
   transcript?: CloudSegment[];
   corrected?: CloudSegment[];
   /** The translated lines - the same lines with `translated_text` beside them. */
@@ -158,17 +177,21 @@ export interface StageProgress {
 
 export type Progress = (tick: StageProgress) => void;
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body)
+    method,
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body)
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`${path} → ${res.status} ${text.slice(0, 160)}`);
   }
   return (await res.json()) as T;
+}
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  return request<T>('POST', path, body);
 }
 
 async function job(id: string): Promise<CloudJob> {
@@ -489,4 +512,54 @@ export async function daemonHealth(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * The import gate (cases 27-38): one local ffprobe pass over the source.
+ *
+ * It is synchronous because a probe is one child process, not a decode. The
+ * answer is metadata + issues; no API call, no bytes changed.
+ */
+export async function probeMediaReport(path: string): Promise<MediaReport> {
+  return post<MediaReport>('/v1/media/probe', { path });
+}
+
+/**
+ * A lossless repair copy (case 27). The job resolves to the new path; the
+ * imported source is never modified.
+ */
+export async function remuxMedia(path: string, onProgress?: Progress): Promise<string> {
+  const created = await post<CloudJob>('/v1/media/remux', { path });
+  const done = await waitJob(created.id, onProgress);
+  const out = done.output_path?.trim();
+  if (!out) throw new Error('remux finished without an output path');
+  return out;
+}
+
+/**
+ * The layout measurement (cases 37, 38): static corner = watermark-like,
+ * busy corner = face-cam-like. Advice only - never a crop.
+ */
+export async function measureLayout(
+  path: string,
+  durationSecs = 0,
+  samples = 12
+): Promise<LayoutReport> {
+  return post<LayoutReport>('/v1/media/layout', {
+    path,
+    duration_secs: durationSecs,
+    samples
+  });
+}
+
+/** The creator vocabulary (case 39). */
+export async function getLexicon(): Promise<LexiconEntry[]> {
+  const out = await request<{ entries?: LexiconEntry[] }>('GET', '/v1/lexicon');
+  return Array.isArray(out.entries) ? out.entries : [];
+}
+
+/** Replace the creator vocabulary; returns what the daemon actually stored. */
+export async function saveLexicon(entries: LexiconEntry[]): Promise<LexiconEntry[]> {
+  const out = await request<{ entries?: LexiconEntry[] }>('PUT', '/v1/lexicon', { entries });
+  return Array.isArray(out.entries) ? out.entries : [];
 }

@@ -145,6 +145,20 @@ func (s *jobStore) succeed(id string, transcript, analysis []model.Segment, fail
 	})
 }
 
+// succeedRemux closes a container-repair job.
+//
+// OutputPath is a NEW file in the user cache. The imported source is never
+// modified and never replaced: the user decides whether to import the repaired
+// copy, and the project that was already open keeps working either way.
+func (s *jobStore) succeedRemux(id, outputPath string) {
+	s.mutate(id, func(j *model.Job) {
+		j.OutputPath = outputPath
+		j.Completed = j.Total
+		j.Updated = time.Now().Unix()
+		j.State = model.StateDone
+	})
+}
+
 // succeedNoSpeech closes a transcribe job that found no speech.
 //
 // This is a success, not a failure. Whisper ran, the audio was read, and the

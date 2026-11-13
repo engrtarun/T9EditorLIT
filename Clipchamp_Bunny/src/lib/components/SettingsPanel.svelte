@@ -37,6 +37,7 @@
   } from '../stores/appearance.svelte';
   import { i18n, UI_LANGS, type UiLang } from '../stores/i18n.svelte';
   import { TIME_FORMATS, formatTimecode, type TimeFormat } from '../utils';
+  import LexiconCard from './dashboard/LexiconCard.svelte';
 
   /** The option rows of the appearance tab, in the order they are offered. */
   const appearanceAccents = ACCENTS;
@@ -474,6 +475,9 @@
                 {i18n.t('set.autoResume.hint')}
               </p>
             </section>
+
+            <!-- Case 39: the channel's own spelling, remembered across videos. -->
+            <LexiconCard />
           {:else if layout.settingsTab === 'language'}
             <section class="rounded-xl border border-nc-line bg-nc-panel-2/50 p-4">
               <h3 class="text-[10px] font-bold tracking-widest text-nc-brand">

@@ -2335,3 +2335,506 @@ daemon `go-166ca7871c23d13c` running on 127.0.0.1:7878. `-Status` me
 `[SHIPPED]`.
 
 — deepseek
+
+---
+
+# PART 4 — deepseek Addendum: Cases 21–40 implemented (code, not analysis)
+
+> **Signature: deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
+>
+> **Upstream untouched:** GLM 5.3 ke 40 cases, MiMO V2.6 ka poora Part 2, aur
+> mera hi Part 3 (cases 11–20) — teeno **byte-for-byte waise hi** hain. Ye
+> part sirf **append** hai.
+>
+> **Scope:** Cases **21 → 40** (Group D ka baaki hissa, Group E, Group F, aur
+> poora Group G). Is baar bhi **analysis nahi — implementation**: Go daemon +
+> Svelte frontend, dono chalu, dono tested, dono desktop par.
+>
+> **Ground rules jo follow hue:** Python **banned**, paid service **banned**,
+> full-file RAM buffer **banned**, original media **sacred** (ek bhi byte
+> overwrite nahi), aur "auto-delete" ki jagah "suggest + confirm".
+>
+> **Rust engine chhua nahi.** `src-tauri/` par doosra agent kaam kar raha hai
+> (AGENTS.md §10.3). Is baar bhi wahan kuch zaroori nahi tha: gate, post-pass,
+> lexicon aur layout — sab Go me hain, aur cut-map ka threshold pehle se
+> frontend se aata hai.
+
+---
+
+## P0. Ek paragraph
+
+Part 3 ke baad ek ajeeb si baat reh gayi thi: app **cases 1–20** ke liye theek
+tha, par **21–40** ka poora hissa — reverb, crosstalk, bracket tags, loops,
+retakes, corrupt phone files, 4K60, A/V offset, InShot bloat, VFR, colour tags,
+ASR copy size, 274-gap map, generation loss, face-cam, rotating watermark,
+Hinglish lexicon, video ka shape — **sirf doc me tha**. Code me in 20 cases ka
+nishaan tak nahi tha: `grep -ri "remux\|crosstalk\|lexicon\|bracket\|vfr"` kuch
+nahi deta tha, silence map ka **raw output hi cut-list** thi (274 gaps = 274
+buttons), aur Whisper jo `[Music]` likhta tha wo transcript me waise hi pada
+rehta tha.
+
+Maine ye **teen layers** par likha:
+
+1. **Go daemon** — 4 naye packages: `internal/mediaprobe` (import gate +
+   remux + layout), `internal/postpass` (tags, loops, retakes, crosstalk,
+   lexicon), `internal/lexicon` (persistent vocabulary), aur
+   `internal/api/media.go` (4 naye routes). `runTranscribe` me post-pass
+   wiring, `runCorrect` me lexicon-aware prompt.
+2. **Frontend** — 6 naye pure modules (`media-report`, `silence-map`,
+   `shape`, `transcript-tags`, `lexicon`, `encode-count`), store me naye
+   state + methods + auto-cut guards, aur 3 naye UI components
+   (`ProjectHealth`, `ShapeStrip`, `LexiconCard`) jo transcript panel aur
+   Settings me wired hain.
+3. **Tests** — **35 naye Go tests** (4 packages) aur **41 naye frontend
+   tests** (6 modules). Poora suite: Go ke saare packages green, frontend
+   **139/139** pass.
+
+Ek baat shuru me hi saaf kar doon: **sab kuch implement nahi hua.** Jo cheezein
+advice-only reh gayin (proxy transcode, A/V shift, filmstrip masking, SQLite
+persistence) wo neeche **P6** me naam-le-naam likhi hain. Doc me "fix" likhna
+aasan hai; code me wo cheez na hona aur chup reh jaana — wo sabse bura hai.
+
+---
+
+## P1. Case-by-case — doc kya kehta tha, code me kya tha, ab kya hai
+
+| #   | Doc kya kehta tha | Code me kya tha (ground truth) | Ab kya hai |
+| --- | --- | --- | --- |
+| 21 | Reverb tail ko speech maano; <1 s gaps merge karo | `silencedetect` ka raw list seedha cut-list | `classifyGaps`: 1 s se kam bridge **tabhi** merge hota hai jab koi transcript line us strip ko cover na kare (warna asli shabd nigal jaata). Teen tier: micro <1.5 s, medium 1.5–5 s, big ≥5 s |
+| 22 | Overlap = crosstalk flag; auto-cut kabhi na chhue | Kuch nahi — detector "pause" ko silence samajhta tha | `MarkCrosstalk`: word timings hon to **0.3 s**, warna **0.5 s** overlap par dono lines `crosstalk` + `needs_confirm` + `keep`. Auto-cut in lines ko skip karta hai |
+| 23 | `[Music]`/`[Applause]` parse → icon, text se exclude | Text me waise hi pada tha | `Tags` (closed list: music/applause/laughter/silence/inaudible/cough/sigh/beep/noise + Devanagari `[संगीत]`), UI me icon, text **delete nahi** — tag data hai |
+| 24 | Repeated n-gram dedupe + "(repeated)" flag | Kuch nahi; hallucination loop transcript me 30 rows | `CollapseLoops`: ≥3 identical (stock phrase jaise "thank you for watching" **2** bhi), gap ≤45 s, run ≥2 s. Pehli line `RepeatCount=N`, baaki `Repeated` + cut |
+| 25 | Intro/outro music → placeholder, chunk skip | No-speech gate tha, par intro music par hallucination hi aata tha | Music verdict (Part 3) + shape ka intro/outro keep-zone; **naya**: intro window ab keep-zone hai, flat auto-cut usse nahi khata |
+| 26 | Highlight + one-click confirm; filler alag | `suggestions.ts` retake suggest karta tha, par apply par cut | `FlagRetakes`: 2+ token ka common prefix, ¾ line match, ≤2.5 s gap → **sirf suggestion**. `Keep` waise hi, `NeedsConfirm`, UI me `RETAKE?`/`STUTTER?` + **cut/keep** buttons. Auto-cut kabhi nahi |
+| 27 | Import gate: ffprobe + remux copy | Kuch nahi — file seedha khulti thi | `mediaprobe.Probe` (ek ffprobe pass) + `Remux` (`-map 0 -c copy +faststart`, **nayi file** user cache me). Report me `probe_failed`/`duration_split` + `action: remux` chip |
+| 28 | Audio-only = audio project mode | MP3 par bhi video preview ka blank stage | Report `audio_only`, layout pass skip, summary "audio only", `isAudioProject()`. Filmstrip/preview ka graceful grey card **nahi** banaya (P6.8) |
+| 29 | 4K60 5 GB: har layer apni chhoti copy | Audio extraction / chunks pehle se the (Part 3) | Gate ab `long_source` + `asr_copy_bytes` + bloat batata hai; layout 12 seeked frames (60 KB), koi full decode nahi |
+| 30 | A/V offset measure + timeline mapping me apply | Kuch nahi | `avOffsetSecs` measure hota hai (audio start − video start), UI me number dikhta hai. **Export spans me shift nahi** — P6.3 |
+| 31 | "50 min, 5.3 GB — InShot bloat" card | Kuch nahi | `Bloat` struct: actual vs target bitrate, target bytes, savings %, bytes/min. Report me `bloat` issue + detail |
+| 32 | VFR detect; PTS-based seek, frame-count math nahi | Seek pehle se time-based tha (theek), par detect koi nahi karta tha | `VFR` flag jab avg vs nominal rate rational match na kare; report me `vfr` issue + explainer. Naya frame-index math **kahin add nahi kiya** |
+| 33 | Colour metadata chip; proxy me BT.709 flags | Kuch nahi | `color_metadata` issue (range/space/transfer/primaries detail ke saath). Proxy transcode **nahi** — P6.1 |
+| 34 | 16k mono ASR copy; wahi waveform/chunks ka source | Pipeline audio chunks bhejti thi, par size ka koi honest number nahi | Report `asr_copy_bytes` = duration × 2000 B/s (16 kbps mono ka estimate). Asli copy banana Rust ka kaam hai — P6.7 |
+| 35 | 274 gaps ka two-tier map, "46 bade = 23:28" | Raw ranges = 274 decisions | `classifyGaps` + `gapStats` + `gapSummary`: "46 bade gaps = 23:28 · 113 medium · 115 micro". Auto-cut **sirf big**, medium opt-in, micro kabhi nahi |
+| 36 | Encode counter per project; 2+ par warn | Kuch nahi | `encode-count.ts`: per-source localStorage counter, export success par `noteExport()`, 2nd export se warning. SQLite nahi — P6.5 |
+| 37 | Static overlay detect (sparse frames) | Kuch nahi | `SampleGrid`: 12 fast seeks, 96×54 greyscale, 3×3 motion/detail grid → `static_overlay` (watermark-like) + `busy_corner` (face-cam-like) + advice. Filmstrip masking nahi — P6.2 |
+| 38 | Watermark learn-once, perceptual checks se exclude | Kuch nahi | Wahi ek pass static corner `bottom-left` etc. deta hai; UI "watermark bottom-left" dikhata hai. Exclusion wiring nahi — P6.2 |
+| 39 | Creator lexicon: ek baar seekho, har video par bias | `/v1/correct` tha, vocabulary nahi | `internal/lexicon` (JSON, atomic write, **7 default terms** live file se) + `ApplyLexicon` deterministic pass + `CorrectSegmentsWithLexicon` prompt bias + Settings me editor + `lexicon_hits` per line |
+| 40 | Shape strip: intro/teach/demo/story/outro; hooks suggest-keep | Kuch nahi; flat auto-cut intro/outro bhi kha jaata tha | `buildShape` (windowed density + pace + CTA vocabulary), `ShapeStrip` UI, aur auto-cut `subtractKeepZones` se intro/outro/CTA ko **chhodta hai** |
+
+---
+
+## P2. Go daemon — kya likha (code ke saath)
+
+### P2.1 `internal/mediaprobe` — import gate, remux, layout
+
+Teen kaam, ek package, kyunki teeno ek hi sawaal ke teen jawab hain: "is file
+ka kya bharosa hai?" Gate **synchronous** hai (ek child process, koi decode
+nahi), remux **async job** hai, layout **synchronous measurement** hai.
+
+```go
+// Probe ek ffprobe pass chalata hai. Fail hone par error nahi — report me
+// probe_failed issue + action:"remux" aata hai, taaki file phir bhi khule.
+func Probe(ctx context.Context, path string) (Report, error)
+
+// AnalyzeJSON probe ka pure half hai: ffprobe JSON → Report. Isi liye poora
+// decision table bina media file ke test ho jaata hai.
+func AnalyzeJSON(raw []byte) Report
+```
+
+`Report` me wahi cheezein hain jo doc ne maangi thi — `Container`,
+`DurationSecs`, `SizeBytes`, `BitRateBps`, `Video`, `Audio`, `HasAudio`,
+`AudioOnly`, `Portrait`, `VFR`, `AVOffsetSecs`, `Bloat`, `ASRCopyBytes`,
+`Issues`:
+
+```go
+type Bloat struct {
+    ActualBitrateBps  int64   `json:"actual_bitrate_bps"`
+    TargetBitrateBps  int64   `json:"target_bitrate_bps"`
+    TargetBytes       int64   `json:"target_bytes"`
+    SavingsBytes      int64   `json:"savings_bytes"`
+    SavingsPercent    float64 `json:"savings_percent"`
+    BytesPerMinute    int64   `json:"bytes_per_minute"`
+    AssumedBitsPerPix float64 `json:"assumed_bits_per_pixel"`
+}
+```
+
+Issue codes (UI inhi par icon/colour chunta hai):
+
+```text
+audio_only · no_audio · vfr · color_metadata · av_offset · bloat
+duration_split · probe_failed · long_source · low_fps
+static_overlay · busy_corner · portrait_source
+```
+
+**Remux** — case 27 ka ek hi machine-repair. Original ko chhuta nahi; nayi file
+user cache me likhta hai:
+
+```go
+func Remux(ctx context.Context, path, outDir string) (string, error) {
+    // ...
+    cmd := exec.CommandContext(ctx, ffmpegPath(),
+        "-v", "error", "-y",
+        "-i", path,
+        "-map", "0",          // saare tracks, subtitles included
+        "-c", "copy",         // packets move, koi decode nahi
+        "-movflags", "+faststart",
+        "-ignore_unknown",
+        out,
+    )
+    // 20 min timeout; fail par adhoori file remove; size 0 bhi fail
+}
+```
+
+Default output: `os.UserCacheDir()/T9EditorLIT/remux/` — project folder me kabhi
+nahi, kyunki repair copy disposable hai aur user ne uska naam nahi maanga.
+
+**Layout** — case 37 + 38 ka ek hi pass. Poora frame decode nahi; 12 seeked
+frames:
+
+```go
+func SampleGrid(ctx context.Context, path string, duration float64, samples int) (Grid, error) {
+    // har sample: -ss <t> -i <path> -frames:v 1
+    //            scale=96:54:force_original_aspect_ratio=decrease,
+    //            pad=96:54:...,format=gray  → rawvideo stdout
+    // 12 × 5 KB = ~60 KB data, 12 chhote child processes
+}
+```
+
+`AnalyzeFrames` pure hai (synthetic frames se test hota hai): 3×3 grid,
+`Motion[i]` = frame-to-frame change, `Detail[i]` = spatial std-dev. Phir:
+
+- **frozen video guard** — `medianMotion < 0.008` par kuch bhi watermark nahi
+  (warna static frame par har corner "watermark" ban jaata),
+- **watermark** = wo corner jiska motion picture ke median se bahut kam ho,
+- **face-cam** = wo corner jo median se bahut zyada busy ho.
+
+Ye **measurement** hai, decision nahi. Crop/blur/delete user karega.
+
+### P2.2 `internal/postpass` — transcript hygiene, deterministic
+
+Order matter karta hai, aur wo comment me likha hai:
+
+```go
+func Process(segments []model.Segment, entries []Entry) Result {
+    res.Tags      = ApplyBrackets(segments)   // text nahi chhoota
+    res.Crosstalk = MarkCrosstalk(segments)   // sabse safe pehle
+    res.Retakes   = FlagRetakes(segments)     // 2-line suggestion
+    res.Loops     = CollapseLoops(segments)   // 3+ line collapse
+    res.Lexicon   = ApplyLexicon(segments, entries) // sirf yahi text badalta hai
+    return res
+}
+```
+
+Rules jo code me hain (doc ke numbers se, guess nahi):
+
+| Pass | Rule | Result |
+| --- | --- | --- |
+| Brackets | `[Music]`, `(applause)`, bare `♪`; closed list + Devanagari cues | `Tags []string`, text untouched |
+| Crosstalk | word timings: 0.3 s overlap; warna 0.5 s; neighbour window 2 s | dono lines `Crosstalk` + `NeedsConfirm` + `Keep` |
+| Retakes | ≥2 token common prefix, ≥75% line match, ≤2.5 s gap; line ke andar 2–3 token repeat | `NeedsConfirm`, `Flag: fumble/retake`, **`Keep` sach me nahi badalta** (fumble line `Keep:true` hi rehti hai) |
+| Loops | ≥3 identical (stock phrase 2), gap ≤45 s, run ≥2 s, key ≥3 runes | pehli `RepeatCount=N`, baaki `Repeated` + `Keep:false` |
+| Lexicon | alias → term, case-insensitive, **whole word only**, Devanagari ke liye plain match | `Text` badalta hai, `OriginalText` me raw Whisper rehta hai, `LexiconHits` |
+
+Word-boundary wala hissa aasan nahi tha: pehla version `rapid api response` ko
+`rapid API response` bana deta tha. Test ne pakda
+(`TestLexiconRespectsWordBoundaries`) aur ab ASCII aliases sirf tab match hote
+hain jab dono taraf word boundary ho; Devanagari (jisme case/boundary nahi
+hota) ke liye seedha substring match chalta hai.
+
+### P2.3 `internal/lexicon` — creator vocabulary, disk par
+
+```go
+func DefaultPath() string        // os.UserConfigDir()/T9EditorLIT/lexicon.json
+func Open(path string) (*Store, error)
+func (s *Store) List() []postpass.Entry
+func (s *Store) Replace(entries []postpass.Entry) error   // atomic
+```
+
+`Replace` pehle sanitize karta hai (trim, term ≤60 runes, alias ≤80, max 12
+aliases, case-insensitive dedupe, self-alias drop, duplicate term drop), phir
+temp file + rename se likhta hai — beech me crash ho to purani file poori
+rehti hai.
+
+Default list **live file ke measured mistakes** se bhari hai, khaali nahi:
+
+```go
+{Term: "RAG", Aliases: []string{"retrive argument document general", "रैग", "राग"}},
+{Term: "LLM", Aliases: []string{"एलएलएम", "एल एल एम", "एलेलम", "एलएम"}},
+{Term: "ChatGPT", Aliases: []string{"चैनल जीपीटी", "चैट जीपीटी", "चैटजीपीटी"}},
+{Term: "API", Aliases: []string{"ए पी आई", "एपीआई"}},
+{Term: "vector database", Aliases: []string{"वेक्टर डेटाबेस", "वेक्टर डाटाबेस"}},
+{Term: "context window", Aliases: []string{"कॉन्टेक्स्ट विंडो", "कांटेक्स्ट विंडो"}},
+{Term: "hybrid search", Aliases: []string{"हाइब्रिड सर्च"}},
+```
+
+### P2.4 `internal/api` — chaar naye routes
+
+| Route | Kaam | Fail behaviour |
+| --- | --- | --- |
+| `POST /v1/media/probe` | sync: `{path}` → `Report` | 400 empty path, 404 missing, **200 + `probe_failed`** unreadable container |
+| `POST /v1/media/remux` | async: `{path}` → `202 Job` (`kind: remux`) | 404 missing; job fail par error + partial file delete |
+| `POST /v1/media/layout` | sync: `{path, duration_secs, samples}` → `Grid` | 400/404, 200 with empty grid on layout failure |
+| `GET/PUT /v1/lexicon` | list/replace vocabulary | PUT 503 jab store configured nahi (tests/daemon-only mode) |
+
+Wiring:
+
+```go
+// server.go — runTranscribe, merge ke baad
+pass := postpass.Process(merged, s.lexiconEntries())
+if pass.Tags+pass.Loops+pass.Retakes+pass.Crosstalk+pass.Lexicon > 0 {
+    // job meta: tags_fixed / loops_collapsed / retakes_flagged /
+    //           crosstalk_marked / lexicon_fixes
+}
+
+// runCorrect — prompt + deterministic pass, dono ek hi vocabulary se
+corrected, err := groq.CorrectSegmentsWithLexicon(ctx, req.Segments, s.lexiconEntries(), ...)
+```
+
+`model.Segment` me naye JSON fields (`tags`, `repeated`, `repeat_of`,
+`repeat_count`, `repeat_kind`, `crosstalk`, `needs_confirm`, `lexicon_hits`) aur
+`Job.OutputPath` (`output_path`) — `rename_all = "camelCase"` nahi, ye Go JSON
+contract hai, frontend `CloudSegment` isi naam se padhta hai.
+
+---
+
+## P3. Frontend — kya likha
+
+### P3.1 Naye pure modules (sab tested, koi Svelte nahi)
+
+| Module | Kya deta hai | Case |
+| --- | --- | --- |
+| `media-report.ts` | `sortedIssues` (action→warn→info), `hasAction`, `sourceSummary`, `asrPercent`, `gateVerdict`, `layoutLabel`, `overlayAdvice`, `formatBytes`, `durationLabel` | 27–38 |
+| `silence-map.ts` | `classifyGaps` (merge + line veto), `gapStats`, `cutCandidates` (big only), `subtractKeepZones`, `gapSummary` | 21, 35, 40 |
+| `shape.ts` | `buildShape` (windowed density/pace/CTA), `keepZones`, `SHAPE_LABEL`, `SHAPE_CLASS`, `shapeSummary` | 40 |
+| `transcript-tags.ts` | `tagsOf`, `tagIcon`, `tagLabel`, `renderTaggedText` — Go ke list ka mirror | 23 |
+| `lexicon.ts` | `normalizeEntry`, `normalizeLexicon`, `mergeLexicon`, `countHits`, limits (60/80/12) | 39 |
+| `encode-count.ts` | `encodesFor`, `bumpEncodes`, `generationWarning` — per-source localStorage | 36 |
+
+### P3.2 Store (`project.svelte.ts`)
+
+Naya state:
+
+```ts
+mediaReport = $state.raw<MediaReport | null>(null);
+layout = $state.raw<LayoutReport | null>(null);
+gapStats = $state.raw<GapStats | null>(null);
+lexicon = $state.raw<LexiconEntry[]>([]);
+shape = $state.raw<ShapeSegment[]>([]);
+encodes = $state(0);
+avOffsetSecs = $derived(this.mediaReport?.av_offset_secs ?? 0);
+get keepZones(): SilenceRange[] { return shapeKeepZones(this.shape); }
+```
+
+Naye methods: `silenceCandidates(ranges)`, `refreshGate(path)`, `runRemux()`,
+`loadLexicon()`, `saveLexiconEntries()`, `refreshShape()`, `noteExport()`,
+`resolveLine(id, keep)`, `tagIcons(line)`.
+
+**Auto-cut ka guard** — ye sabse zaroori 8 lines hain:
+
+```ts
+for (const l of this.lines) {
+  if (l.protected) continue;                    // user ka pin
+  if (l.crosstalk || l.needsConfirm) continue;   // 22, 26
+  if (l.repeated) continue;                      // 24
+  for (const r of ranges) { /* overlap = cut */ }
+}
+```
+
+Aur auto-cut/suggest ka raasta:
+
+```ts
+const gaps = classifyGaps(ranges, { lines: this.lines });
+const cut = cutCandidates(gaps);              // big only
+return subtractKeepZones(cut, this.keepZones); // intro/outro/CTA safe
+```
+
+Gate project open hote hi background me chalta hai (`void this.refreshGate(canonical)`),
+shape transcript aane / merge / refine ke baad rebuild hota hai, aur cached
+transcript rows par tags **text se derive** hote hain — purane project bhi
+icons dikhate hain.
+
+### P3.3 UI
+
+| Component | Kahan | Kya |
+| --- | --- | --- |
+| `ProjectHealth.svelte` | TranscriptPanel ke upar | collapsible source card: summary, issues (severity colour), ASR copy %, remux button, layout regions, encode warning |
+| `ShapeStrip.svelte` | TranscriptPanel | 2 px shape bar (click = seek), gap summary, legend |
+| `LexiconCard.svelte` | Settings → General | term + "heard as" editor, add/remove, save/reload |
+| row badges | TranscriptPanel | `♪` tags, `×N` loop count, `2 VOICES`, `RETAKE?`/`STUTTER?` + **cut/keep** action strip me (nested button nahi) |
+| `noteExport()` | ExportMode success | har successful export counter badhata hai |
+
+---
+
+## P4. Tests — kya proof hai
+
+```powershell
+# Go
+cd go; gofmt -l . ; go vet ./... ; go test ./...
+# → sab packages ok (api, cloud, lexicon, mediaprobe, postpass, queue, ...)
+
+# Frontend
+cd Clipchamp_Bunny; npm run check ; npm run lint ; npm test ; npm run build
+# → svelte-check 0 errors 0 warnings
+# → prettier clean
+# → tests 139 / pass 139 / fail 0
+# → vite build ok
+```
+
+| Package / module | Naye tests | Kya pin karte hain |
+| --- | --- | --- |
+| `mediaprobe` | 12 | issue codes, VFR ratio, colour tags, A/V offset, bloat math, duration split, remux args, layout grid, frozen guard |
+| `postpass` | 11 | bracket tags, arbitrary parentheses safe, loop collapse, stock phrase ×2, retake suggestion (Keep nahi badalta), crosstalk vs loop, lexicon word boundary |
+| `lexicon` | 6 | round-trip, atomic replace, sanitize, defaults, corrupt file |
+| `api` (media) | 6 | probe 400/404/200-broken, remux 404, lexicon round-trip, 503 without store, sanitize+order |
+| `silence-map` | 8 | tiers, reverb merge, line veto, big-only candidates, keep-zone subtraction, summary |
+| `shape` | 7 | intro/outro positional, demo detection, keep-zones, CTA Hinglish+Devanagari, coalesce |
+| `transcript-tags` | 6 | known tags, `(2024)` safe, Devanagari cue, dedupe, render |
+| `lexicon` (ts) | 7 | normalization, caps, duplicates, merge, hit preview |
+| `encode-count` | 5 | per-source count, corrupt storage, warning threshold, no storage |
+| `media-report` | 8 | ordering, action, summary, audio-only, ASR %, layout, verdict, formatters |
+
+Do tests jo product ka **promise** hain, sirf implementation nahi:
+
+```ts
+// Case 22/26: auto-cut in lines ko chhoota hi nahi.
+// Case 24: repeated line cut hoti hai, pehli line rehti hai.
+// Case 40: intro/outro keep-zone auto-cut se bachta hai.
+assert.deepEqual(subtractKeepZones([{ start: 0, end: 12 }], [{ start: 0, end: 5 }]),
+                 [{ start: 5, end: 12 }]);
+```
+
+---
+
+## P5. Naye bugs — B21 se B30 (Part 3 ke B20 ke baad)
+
+Ye wo galtiyan hain jo **implementation ke dauraan** mile — kuch mere apne
+code me, kuch doc aur repo ke beech. Sab fix ho chuki hain.
+
+| # | Bug | Kahan | Fix |
+| --- | --- | --- | --- |
+| B21 | Silence detector ka **raw map** hi cut-list thi — 274 gaps = 274 decisions | `project.svelte.ts` (`autoCutSilence`, `suggestSilences`) | `classifyGaps` + `cutCandidates` (big only) + `subtractKeepZones` |
+| B22 | Auto-cut ka guard **sirf** `protected` tha; naye flags (`crosstalk`, `needsConfirm`, `repeated`) silently ignore hote | `cutSilences` | teenon guards add; test se pin |
+| B23 | Reopen par tags gayab — SQLite `transcripts` table me `tags` column hi nahi | `ensureTranscript` cached path | text se `tagsOf()` re-derive (purane project bhi icons dikhate hain) |
+| B24 | Remux job "succeed" hoke bhi `output_path` khali — job store me naya field set nahi hota tha | `api/store.go` | `succeedRemux(id, out)`; frontend missing path par saaf error |
+| B25 | Lexicon replace `rapid api` ke andar `api` badal deta tha | `postpass.replaceInsensitive` | ASCII word-boundary check; Devanagari ke liye plain match |
+| B26 | Retake pass `FlagNone` (`""`) ko none nahi maanta tha, isliye completed line par retake flag kabhi lagta hi nahi tha | `postpass.markFumble` | `FlagNone || ""` |
+| B27 | Loop test ka premise galat tha — representative line ko `Repeated` maan raha tha | `postpass_test.go` | semantic clarify: representative `RepeatCount`, baaki `Repeated` |
+| B28 | Colored/static synthetic frame par har corner "watermark" ban jaata tha (test fixture frozen tha) | `mediaprobe_test.go` | moving gradient + frozen-frame guard ka test; heuristic waise hi |
+| B29 | `durationLabel(59)` ka test `0m 59s` expect karta tha, code `59s` deta hai | `media-report.test.ts` | test fix (code sahi tha) |
+| B30 | Shape test 6 windows ke liye 1 block expect karta tha, jabki intro sirf start ke paas hota hai | `shape.test.ts` | window 5 s + intro block ka start/end assert |
+
+Sabse zyada der B25 ne khayi: word-boundary ka test likhne ke baad hi pata
+chala ki `ReplaceAll` Devanagari par bhi waise hi chalta hai — wahan boundary
+ka concept hi nahi hota, isliye do alag raaste chahiye.
+
+---
+
+## P6. Jo nahi bana — honest gaps
+
+1. **Proxy transcode nahi hai (case 33).** Colour metadata **measure** hota
+   hai aur UI batata hai, par BT.709 limited-range proxy banane wala koi
+   transcode nahi likha. Yani preview ka colour shift **rukega nahi** — sirf
+   user ko pata chal jayega ki source ka metadata non-standard hai.
+2. **Layout sirf advice hai (cases 37, 38).** 12 frames ka 3×3 heuristic
+   regions batata hai; filmstrip ko mask karna, thumbnails se watermark
+   hatana, ya crop suggest karna — kuch wired nahi. Rotating watermark
+   ("LinkedIn → Instagram → YouTube") ek hi static corner me rotate hota hai,
+   isliye wahi `bottom-left` region aata hai; per-section list nahi banti.
+3. **A/V offset sirf number hai (case 30).** `av_offset_secs` measure aur
+   display hota hai, par export ke spans me shift **nahi** hota. Shift
+   silently lagana galat hota (audio/video ka order har file me alag), par
+   abhi user ke paas "apply" ka button bhi nahi hai.
+4. **Remux ek nayi copy banata hai (case 27).** Original kabhi nahi badalta —
+   ye design hai — par nayi copy ko project ka source banana **manual** hai
+   (user usse dobara import karta hai). Auto-swap nahi.
+5. **Encode counter localStorage me hai (case 36).** Doc SQLite kehta tha;
+   implementation per-machine browser storage me hai. App data clear hua to
+   counter zero — par generation loss ka warning best-effort hi hona chahiye.
+6. **Annotation fields SQLite me persist nahi hote.** `transcripts` table me
+   sirf `text/keep/flag/original_text/words` hain. Iska matlab: reopen par
+   `tags` text se re-derive ho jaate hain, par `crosstalk`, `needsConfirm`,
+   `repeatCount`, `lexiconHits` **kho jaate hain** jab tak transcript dobara
+   na bane. Schema change Rust ka kaam hai (doosra agent) — isliye maine
+   chhua nahi.
+7. **`asr_copy_bytes` estimate hai (case 34).** `duration × 2000 B/s` (16 kbps
+   mono) — asli 16k mono file ka size nahi. Pipeline pehle se audio chunks
+   bhejti hai; naya copy banane ki zaroorat nahi thi, par number ko "measured"
+   kehna galat hoga.
+8. **Audio-only ka dedicated grey preview stage nahi (case 28).** Report
+   `audio_only` batata hai aur layout skip hota hai, par filmstrip/preview ka
+   "ye audio project hai" wala card nahi bana. Player khaali frame dikhata
+   hai.
+9. **Shape heuristic hai, model nahi (case 40).** Window density + pace + CTA
+   words. Intro positional hai, outro CTA par; "story" vs "teach" ka farq
+   average line length par. Long analogy segments ko "story" kehna ek guess
+   hai — par keep-zone sirf intro/outro par lagta hai, isliye galat guess ka
+   nuksan seemit hai.
+10. **Medium gaps default me cut nahi hote (case 35).** `includeMedium` option
+    code me hai, par UI me toggle nahi — user sirf big gaps cut kar sakta hai.
+
+---
+
+## P7. Problems aur suggestions
+
+**"274 gaps ka collapse sach me 6x faayda deta hai?"** — Haan, par sirf
+decision-load ke hisaab se. Live file par 46 big gaps the, unme se bhi kuch
+CTA/intro ke andar the; keep-zones subtract karne ke baad asli candidates ~40
+reh jaate hain. Ye number UI me dikhta hai (`46 bade gaps = 23:28`), isliye
+user ko pehle hi pata hai kitna katega.
+
+**"Crosstalk detector interview me kitna sahi hai?"** — Jitna data dega, utna.
+Word timings hon to 0.3 s overlap kaafi conservative hai; nahi hon to 0.5 s.
+Ye **false-positive ki taraf** jhukta hai (do lines ko crosstalk mark karna),
+jo safe direction hai: auto-cut rukta hai, content nahi jaata. Interview me
+speaker turns overlap karte hain, isliye 2–3 lines par flag aana normal hai.
+
+**"Lexicon galat term seekh gaya to?"** — `OriginalText` kabhi nahi badalta,
+aur `PUT /v1/lexicon` poora replace karta hai (merge nahi). Settings me
+"Reload" purani list wapas laata hai. Sabse bada risk: alias bahut chhota ho
+(`api`) to wo common word ko bhi badal dega — isliye word-boundary check hai
+aur UI me "whole words only" likha hai.
+
+**"Shape strip par bharosa?"** — Strip **read** hai, lock nahi. Sirf intro/outro
+keep-zones auto-cut ko rokte hain, aur wo positional + CTA hain — dono
+conservative. Teach/story/demo sirf rang hain; unse koi cut nahi nikalta.
+
+**Aage kya karna chahiye (meri rai):**
+
+1. **SQLite schema** — `tags`, `crosstalk`, `needs_confirm`, `repeat_count`,
+   `lexicon_hits` columns (ya ek `annotations` JSON column). Ye Rust ka kaam
+   hai; iske bina reopen par post-pass ka aadha kaam dobara karna padta hai.
+2. **A/V shift ka explicit button** — "0.7 s shift apply karo" per project,
+   preview me dial. Measurement already hai.
+3. **Proxy transcode** — ek hi baar, BT.709 limited + CFR, sirf preview ke
+   liye; original untouched. Isse cases 32/33 dono band ho jaate hain.
+4. **Filmstrip masking** — layout grid ka region thumbnails par grey block;
+   watermark rotate kare to bhi thumbnails stable dikhein.
+5. **Medium-gap toggle** — ek checkbox, `includeMedium: true`. Code ready hai,
+   sirf UI switch chahiye.
+
+---
+
+## P8. Closing
+
+Cases 21–40 ka asli sabak ye hai: **detector ka output ≠ decision**. Poore
+Group G ka data (274 gaps, 5.3 GB, 350/354 Devanagari, 5× retake cluster) ek
+hi baat kehta hai — measurement sasta hai, decision mehnga. Isliye maine har
+jagah **measure → classify → suggest** kiya, aur sirf teen cheezein
+automatically cut hoti hain: bade gaps (keep-zones ke bahar), verbatim loops
+(3+), aur kuch nahi.
+
+Baaki sab user ke saamne hai: crosstalk par `2 VOICES`, retake par
+`RETAKE?` + cut/keep, bloat par remux button, colour par chip, shape par
+strip. Ye "kam feature" nahi hai — ye **honest feature** hai. Jo detector
+galat ho sakta hai, uska button nahi hona chahiye; uska **evidence** hona
+chahiye.
+
+Aur jahan maine kuch nahi kiya (proxy, A/V shift, SQLite persistence,
+filmstrip masking), wo P6 me naam se likha hai. Agla agent wahan se shuru
+kar sakta hai — guess nahi karna padega.
+
+---
+
+**— deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
+*Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) + deepseek Part 3
+(cases 11–20) — teeno untouched. Ye part sirf append hai.*
