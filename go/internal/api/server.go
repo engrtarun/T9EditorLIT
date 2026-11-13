@@ -182,6 +182,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/keys/elevenlabs/remove", s.handleElevenKeysRemove)
 	s.mux.HandleFunc("POST /v1/keys/elevenlabs/import", s.handleElevenKeysImport)
 	s.mux.HandleFunc("DELETE /v1/keys/elevenlabs", s.handleElevenKeysClear)
+	s.mux.HandleFunc("POST /v1/keys/elevenlabs/probe", s.handleElevenKeysProbeAll)
+	s.mux.HandleFunc("POST /v1/keys/elevenlabs/state", s.handleElevenKeysState)
+	s.mux.HandleFunc("PUT /v1/keys/groq/enabled", s.handleGroqEnabled)
 
 	// Everything the rate-limit gauge draws: calls, tokens, latency and
 	// Groq's x-ratelimit-* headers, as observed (api/usage.go).
@@ -313,9 +316,9 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	// the config flags. Checking config alone leaves two sources of truth
 	// that can disagree, and the worker would panic on a nil client.
 	// ElevenLabs is primary, Groq the fallback: either one alone is enough.
-	if s.groqClient() == nil && s.elevenClient() == nil {
+	if s.transcribeGroqClient() == nil && s.elevenClient() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "transcription unavailable: set ELEVENLABS_API_KEYS or GROQ_API_KEY",
+			"error": "transcription unavailable: enable Groq or set ELEVENLABS_API_KEYS",
 		})
 		return
 	}
@@ -737,12 +740,12 @@ func (s *Server) runTranscribe(ctx context.Context, jobID string, req model.Tran
 	// the user swaps a key while the transcription is running.
 	engines := transcribeEngines{
 		eleven: s.elevenClient(),
-		groq:   s.groqClient(),
+		groq:   s.transcribeGroqClient(),
 		gemini: s.geminiClient(),
 		mode:   s.transcribeMode(),
 	}
 	if engines.groq == nil && engines.eleven == nil {
-		return errors.New("no transcriber is configured")
+		return errors.New("no transcriber is configured (ElevenLabs has no usable account and Groq is off)")
 	}
 	if engines.mode == "accuracy" {
 		if engines.eleven != nil && engines.groq != nil && engines.gemini != nil {
@@ -1234,6 +1237,18 @@ func (s *Server) runAnalyze(ctx context.Context, jobID string, req model.Analyze
 func (s *Server) groqClient() *cloud.GroqClient {
 	s.keysMu.RLock()
 	defer s.keysMu.RUnlock()
+	return s.deps.Groq
+}
+
+// transcribeGroqClient is the Groq client the transcription pipeline may use.
+// It honours the user's switch: a saved key stays usable for autocorrect even
+// when Groq is turned off for transcription.
+func (s *Server) transcribeGroqClient() *cloud.GroqClient {
+	s.keysMu.RLock()
+	defer s.keysMu.RUnlock()
+	if s.deps.Config.GroqDisabled {
+		return nil
+	}
 	return s.deps.Groq
 }
 

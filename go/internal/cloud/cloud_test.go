@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -128,6 +129,25 @@ func TestGeminiGenerateText(t *testing.T) {
 	}
 	if gotKey != "gem-key" {
 		t.Errorf("api key header = %q", gotKey)
+	}
+}
+
+// TestGeminiGenerateTextSendsTemperatureZero pins the sampling pin: every
+// extraction call goes out at temperature 0, so the answer is reproducible
+// instead of drifting between runs.
+func TestGeminiGenerateTextSendsTemperatureZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(raw), `"temperature":0`) {
+			t.Errorf("request body missing temperature 0: %s", string(raw))
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}`))
+	}))
+	defer srv.Close()
+
+	client := NewGemini("gem-key", "gemini-2.5-flash", srv.URL)
+	if _, err := client.GenerateText(context.Background(), "hi"); err != nil {
+		t.Fatalf("GenerateText: %v", err)
 	}
 }
 

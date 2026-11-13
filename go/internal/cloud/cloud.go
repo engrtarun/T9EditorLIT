@@ -762,7 +762,16 @@ func NewGemini(apiKey, model, baseURL string) *GeminiClient {
 }
 
 type geminiRequest struct {
-	Contents []geminiContent `json:"contents"`
+	Contents         []geminiContent         `json:"contents"`
+	GenerationConfig *geminiGenerationConfig `json:"generationConfig,omitempty"`
+}
+
+// geminiGenerationConfig pins sampling. Every call this daemon makes to Gemini
+// is extraction — merge, analyze, translate — where a creative turn is a
+// defect rather than a feature, so temperature 0 keeps the answer reproducible
+// and on-script instead of drifting between runs.
+type geminiGenerationConfig struct {
+	Temperature float64 `json:"temperature"`
 }
 
 type geminiContent struct {
@@ -788,7 +797,8 @@ func (c *GeminiClient) GenerateText(ctx context.Context, prompt string) (string,
 	url := fmt.Sprintf("%s/%s:generateContent", strings.TrimRight(c.BaseURL, "/"), c.Model)
 
 	payload, err := json.Marshal(geminiRequest{
-		Contents: []geminiContent{{Parts: []geminiPart{{Text: prompt}}}},
+		Contents:         []geminiContent{{Parts: []geminiPart{{Text: prompt}}}},
+		GenerationConfig: &geminiGenerationConfig{Temperature: 0},
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode gemini request: %w", err)

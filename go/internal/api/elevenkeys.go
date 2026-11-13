@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/engrtarun/T9EditorLIT/go/internal/cloud"
 	"github.com/engrtarun/T9EditorLIT/go/internal/config"
@@ -155,6 +156,110 @@ func (s *Server) handleElevenKeysClear(w http.ResponseWriter, _ *http.Request) {
 	s.applyEleven(nil)
 	s.deps.Log.Info("elevenlabs pool cleared")
 	writeJSON(w, http.StatusOK, map[string]any{"keys": []cloud.KeyStatus{}})
+}
+
+// handleElevenKeysProbeAll answers POST /v1/keys/elevenlabs/probe.
+//
+// Re-probes every account so the quota bars and health reflect the provider's
+// current truth without the user re-adding a key. Probe-then-refresh: a key
+// that passes gets its quota snapshot updated; one that fails (including a
+// revoked credential) is reported in `failed` and left untouched otherwise.
+// Concurrency is capped so ten accounts do not hammer the provider at once.
+func (s *Server) handleElevenKeysProbeAll(w http.ResponseWriter, r *http.Request) {
+	eleven := s.elevenClient()
+	if eleven == nil || eleven.Pool == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"keys":      []cloud.KeyStatus{},
+			"refreshed": 0,
+			"failed":    []string{},
+		})
+		return
+	}
+
+	keys := eleven.Pool.Keys()
+	type result struct {
+		masked string
+		ok     bool
+	}
+	results := make([]result, len(keys))
+
+	// Cap concurrency at four: each probe is a small GET, and ten at once would
+	// only trip the provider's own rate limit.
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for i, key := range keys {
+		i, key := i, key
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			probe := eleven.Probe(r.Context(), key)
+			entry, _ := eleven.Pool.Add(key)
+			if probe.OK {
+				eleven.Pool.SetQuota(entry, probe.Tier, probe.QuotaUsed, probe.QuotaLimit)
+				results[i] = result{masked: maskKey(key), ok: true}
+			} else {
+				results[i] = result{masked: maskKey(key), ok: false}
+			}
+		}()
+	}
+	wg.Wait()
+
+	refreshed := 0
+	failed := []string{}
+	for _, res := range results {
+		if res.ok {
+			refreshed++
+		} else {
+			failed = append(failed, res.masked)
+		}
+	}
+
+	s.deps.Log.Info("elevenlabs probe-all", "refreshed", refreshed, "failed", len(failed))
+
+	elevenKeys := eleven.Pool.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"keys":      elevenKeys,
+		"refreshed": refreshed,
+		"failed":    failed,
+	})
+}
+
+// elevenStateRequest toggles one account's enabled flag.
+type elevenStateRequest struct {
+	ID      string `json:"id"`
+	Enabled *bool  `json:"enabled"`
+}
+
+// handleElevenKeysState answers POST /v1/keys/elevenlabs/state.
+func (s *Server) handleElevenKeysState(w http.ResponseWriter, r *http.Request) {
+	var req elevenStateRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	if req.Enabled == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "enabled field is required"})
+		return
+	}
+
+	eleven := s.elevenClient()
+	if eleven == nil || eleven.Pool == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such key"})
+		return
+	}
+	if !eleven.Pool.SetEnabled(id, *req.Enabled) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such key"})
+		return
+	}
+
+	s.deps.Log.Info("elevenlabs account toggled", "id", id, "enabled", *req.Enabled)
+	s.writeElevenStatus(w, "")
 }
 
 // elevenImportRequest carries a pasted .env as text, or a path to read. Both

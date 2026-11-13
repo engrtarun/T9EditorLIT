@@ -245,6 +245,30 @@ func (p *KeyPool) SetQuota(k *poolKey, tier string, used, limit int64) {
 	p.persist()
 }
 
+// SetEnabled manually disables or re-enables one account. A re-enabled account
+// has its cooldown and failure count cleared, because the user is asserting
+// "try this again"; a disabled account waits forever, like an auth failure.
+// It reports whether the account existed.
+func (p *KeyPool) SetEnabled(hash string, on bool) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, k := range p.h {
+		if k.Hash != hash {
+			continue
+		}
+		k.Disabled = !on
+		if on {
+			k.Cooled = time.Time{}
+			k.Fails = 0
+			k.LastErr = ""
+		}
+		heap.Fix(&p.h, i)
+		p.persist()
+		return true
+	}
+	return false
+}
+
 // Add inserts one key, deduplicating by hash. It returns the pool entry —
 // the caller records quota against it right after a probe — and whether the
 // key was new. "Already here" is not an error: the entry comes back so the

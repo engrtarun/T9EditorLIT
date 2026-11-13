@@ -58,6 +58,19 @@ type Config struct {
 	//   "fast" — a single engine per chunk: ElevenLabs when its pool has a
 	//     usable key, Groq otherwise.
 	TranscribeMode string
+	// GroqDisabled is the user's switch for the Groq transcriber.
+	//
+	// Groq is the secondary reading in accuracy mode and the fallback when
+	// the ElevenLabs pool is empty or cooling. Both cost nothing extra, but
+	// the user asked for control: off by default, on only when they flip the
+	// switch in the T9 Cloud page. The value is persisted as GROQ_ENABLED in
+	// the overlay and hot-applied under keysMu, so the live client never has
+	// to be rebuilt for it.
+	//
+	// A zero value means "on" — the historical behaviour — so that test
+	// configs and a daemon started without the flag keep working until the
+	// user (or .env) says otherwise.
+	GroqDisabled bool
 	// Telegram credentials enable the Chunk 5 vault.
 	TelegramAPIID   int
 	TelegramAPIHash string
@@ -131,20 +144,25 @@ func Load(envPath string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Addr:                pick(get("T9CLOUD_ADDR"), "127.0.0.1:7878"),
-		Workers:             pickInt(get("T9CLOUD_WORKERS"), 2),
-		QueueCapacity:       pickInt(get("T9CLOUD_QUEUE_CAPACITY"), 32),
-		MaxAttempts:         pickInt(get("T9CLOUD_MAX_ATTEMPTS"), 3),
-		BaseBackoff:         pickDuration(get("T9CLOUD_BASE_BACKOFF"), time.Second),
-		GroqAPIKey:          key("GROQ_API_KEY"),
-		GroqTranscribe:      pick(get("GROQ_TRANSCRIBE_MODEL"), "whisper-large-v3"),
-		GroqMaxChunkMB:      pickInt(get("GROQ_MAX_CHUNK_MB"), 15),
-		GroqChat:            get("GROQ_CHAT_MODEL"),
-		ElevenAPIKeys:       parseKeyList(key("ELEVENLABS_API_KEYS")),
-		ElevenModel:         pick(get("ELEVENLABS_STT_MODEL"), "scribe_v1"),
-		GeminiAPIKey:        key("GEMINI_API_KEY"),
-		GeminiModel:         pick(get("GEMINI_MODEL"), "gemini-2.5-flash"),
-		TranscribeMode:      normalizeMode(get("TRANSCRIBE_MODE")),
+		Addr:           pick(get("T9CLOUD_ADDR"), "127.0.0.1:7878"),
+		Workers:        pickInt(get("T9CLOUD_WORKERS"), 2),
+		QueueCapacity:  pickInt(get("T9CLOUD_QUEUE_CAPACITY"), 32),
+		MaxAttempts:    pickInt(get("T9CLOUD_MAX_ATTEMPTS"), 3),
+		BaseBackoff:    pickDuration(get("T9CLOUD_BASE_BACKOFF"), time.Second),
+		GroqAPIKey:     key("GROQ_API_KEY"),
+		GroqTranscribe: pick(get("GROQ_TRANSCRIBE_MODEL"), "whisper-large-v3"),
+		GroqMaxChunkMB: pickInt(get("GROQ_MAX_CHUNK_MB"), 15),
+		GroqChat:       get("GROQ_CHAT_MODEL"),
+		ElevenAPIKeys:  parseKeyList(key("ELEVENLABS_API_KEYS")),
+		ElevenModel:    pick(get("ELEVENLABS_STT_MODEL"), "scribe_v1"),
+		GeminiAPIKey:   key("GEMINI_API_KEY"),
+		GeminiModel:    pick(get("GEMINI_MODEL"), "gemini-2.5-flash"),
+		TranscribeMode: normalizeMode(get("TRANSCRIBE_MODE")),
+		// Groq is off by default — the user asked for an explicit switch.
+		// GROQ_ENABLED=1 (or on/true/yes) turns it on. An absent value
+		// keeps the historical "on" behaviour only in tests, where the field
+		// is never set; in production Load() flips it off here.
+		GroqDisabled:        !parseOnOff(key("GROQ_ENABLED"), false),
 		TelegramAPIID:       pickInt(get("TELEGRAM_API_ID"), 0),
 		TelegramAPIHash:     get("TELEGRAM_API_HASH"),
 		TelegramChat:        get("TELEGRAM_TARGET_CHAT"),
@@ -181,9 +199,12 @@ func (c *Config) HasGroq() bool { return c.GroqAPIKey != "" }
 // HasEleven reports whether the ElevenLabs pool has at least one account.
 func (c *Config) HasEleven() bool { return len(c.ElevenAPIKeys) > 0 }
 
-// HasAnyTranscriber reports whether transcription can run at all. ElevenLabs
-// is the primary engine and Groq the secondary; either one alone is enough.
-func (c *Config) HasAnyTranscriber() bool { return c.HasGroq() || c.HasEleven() }
+// HasAnyTranscriber reports whether transcription can run at all. Groq only
+// counts when its switch is on — the key alone is not enough while the user
+// keeps the engine disabled.
+func (c *Config) HasAnyTranscriber() bool {
+	return c.HasEleven() || (c.HasGroq() && !c.GroqDisabled)
+}
 
 // HasAutocorrect reports whether the spelling pass can run.
 //
@@ -214,11 +235,15 @@ func (c *Config) HasTelegramChat() bool { return c.TelegramChat != "" }
 // merged answer.
 func (c *Config) Capabilities() map[string]string {
 	out := map[string]string{}
-	out["transcribe"] = status(c.HasAnyTranscriber(), "ready",
+	// Groq counts as a transcriber only when its switch is on. The key can be
+	// saved and present while the engine stays off — the user's choice.
+	groqLive := c.HasGroq() && !c.GroqDisabled
+	out["transcribe"] = status(c.HasEleven() || groqLive, "ready",
 		"GROQ_API_KEY / ELEVENLABS_API_KEYS not set")
 	out["transcribe_groq"] = status(c.HasGroq(), "ready", "GROQ_API_KEY not set")
+	out["groq_enabled"] = onOff(!c.GroqDisabled)
 	out["transcribe_elevenlabs"] = status(c.HasEleven(), "ready", "ELEVENLABS_API_KEYS not set")
-	out["ensemble"] = status(c.HasEleven() && c.HasGroq() && c.HasGemini(), "ready",
+	out["ensemble"] = status(c.HasEleven() && groqLive && c.HasGemini(), "ready",
 		"needs ELEVENLABS_API_KEYS + GROQ_API_KEY + GEMINI_API_KEY")
 	out["autocorrect"] = status(c.HasAutocorrect(), "ready", "GROQ_CHAT_MODEL not set")
 	out["analyze"] = status(c.HasGemini(), "ready", "GEMINI_API_KEY not set")
@@ -232,6 +257,31 @@ func status(ok bool, ready, missing string) string {
 		return ready
 	}
 	return missing
+}
+
+// onOff renders a boolean as the healthz capability vocabulary ("on"/"off").
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+// parseOnOff reads a Groq-style on/off flag. Accepted truthy values are the
+// common ones; anything else (including the empty value) falls back to the
+// supplied default. This keeps .env, the overlay and the process environment
+// all speaking the same language.
+func parseOnOff(raw string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "on", "yes", "y", "enabled":
+		return true
+	case "0", "false", "off", "no", "n", "disabled":
+		return false
+	case "":
+		return fallback
+	default:
+		return fallback
+	}
 }
 
 // defaultSessionDir sits next to the app's other local data.

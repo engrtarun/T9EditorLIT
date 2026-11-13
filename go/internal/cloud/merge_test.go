@@ -159,3 +159,59 @@ func TestMergePromptNamesThePrimary(t *testing.T) {
 		t.Errorf("both readings must travel in the prompt:\n%s", prompt)
 	}
 }
+
+// TestMergeRejectsDroppedContent: a merge that keeps far fewer words than the
+// longer reading is rejected, so a Gemini answer that quietly dropped a
+// sentence degrades to the primary transcript instead of shipping the gap.
+func TestMergeRejectsDroppedContent(t *testing.T) {
+	long := "one two three four five six seven eight nine ten eleven twelve"
+	srv := stubGeminiMerge(t, `[{"start":0,"end":1,"text":"one two"}]`, nil)
+
+	c := NewGemini("gk", "gemini-2.5-flash", srv.URL)
+	primary := ChunkTranscript{Segments: []model.Segment{{Text: long, StartSecs: 0, EndSecs: 2}}}
+	secondary := ChunkTranscript{Segments: []model.Segment{{Text: long, StartSecs: 0, EndSecs: 2}}}
+
+	if _, err := c.MergeChunkTranscripts(context.Background(), 0, primary, secondary); err == nil {
+		t.Fatal("expected an error for a merge that dropped most of the text")
+	}
+}
+
+// TestMergeRejectsInventedContent: a merge that is notably longer than either
+// reading (the model concatenated both) is rejected for the same reason.
+func TestMergeRejectsInventedContent(t *testing.T) {
+	long := "one two three four five six seven eight nine ten"
+	srv := stubGeminiMerge(t, `[{"start":0,"end":2,"text":"one two three four five six seven eight nine ten one two three four five six seven eight nine ten"}]`, nil)
+
+	c := NewGemini("gk", "gemini-2.5-flash", srv.URL)
+	primary := ChunkTranscript{Segments: []model.Segment{{Text: long, StartSecs: 0, EndSecs: 2}}}
+	secondary := ChunkTranscript{Segments: []model.Segment{{Text: long, StartSecs: 0, EndSecs: 2}}}
+
+	if _, err := c.MergeChunkTranscripts(context.Background(), 0, primary, secondary); err == nil {
+		t.Fatal("expected an error for a merge that invented content")
+	}
+}
+
+// TestMergeClampsTimestampsAndOverlaps: a merge that slips past the prompt's
+// rules gets clamped to the recording's span and de-overlapped, so the editor
+// never receives a segment it cannot cut.
+func TestMergeClampsTimestampsAndOverlaps(t *testing.T) {
+	srv := stubGeminiMerge(t, `[{"start":0,"end":5,"text":"first line"},{"start":1,"end":2,"text":"second line"}]`, nil)
+
+	c := NewGemini("gk", "gemini-2.5-flash", srv.URL)
+	primary := ChunkTranscript{Segments: []model.Segment{{Text: "first line second line", StartSecs: 0, EndSecs: 2}}}
+	secondary := ChunkTranscript{Segments: []model.Segment{{Text: "first line second line", StartSecs: 0, EndSecs: 2}}}
+
+	segs, err := c.MergeChunkTranscripts(context.Background(), 0, primary, secondary)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if len(segs) != 2 {
+		t.Fatalf("got %d segments, want 2", len(segs))
+	}
+	if segs[0].EndSecs > 2.01 {
+		t.Errorf("first segment end = %v, want clamped to the 2s span", segs[0].EndSecs)
+	}
+	if segs[1].StartSecs < segs[0].EndSecs-0.001 {
+		t.Errorf("segments overlap: %+v / %+v", segs[0], segs[1])
+	}
+}

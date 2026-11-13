@@ -26,9 +26,38 @@
     configured: boolean;
     /** Stagger index for the entrance, clamped by the caller. */
     index?: number;
+    /** Groq only: whether the secondary engine is turned on. */
+    groqEnabled?: boolean;
+    /** Groq only: persist a new on/off value. Returns true on success. */
+    onGroqToggle?: (on: boolean) => Promise<boolean>;
   }
 
-  let { service, configured, index = 0 }: Props = $props();
+  let { service, configured, index = 0, groqEnabled, onGroqToggle }: Props = $props();
+
+  /** Local mirror of the switch, flipped optimistically on click. */
+  let engineOn = $state(true);
+  $effect(() => {
+    engineOn = groqEnabled ?? true;
+  });
+  let toggleError = $state('');
+  let toggling = $state(false);
+
+  async function flipEngine(): Promise<void> {
+    if (toggling || !onGroqToggle) return;
+    toggling = true;
+    toggleError = '';
+    const next = !engineOn;
+    engineOn = next; // optimistic
+    try {
+      const ok = await onGroqToggle(next);
+      if (!ok) {
+        engineOn = !next; // revert
+        toggleError = i18n.t('cloud.groq.engineError');
+      }
+    } finally {
+      toggling = false;
+    }
+  }
 
   let key = $state('');
   let reveal = $state(false);
@@ -107,6 +136,42 @@
   </div>
 
   <p class="mt-2 text-[12px] leading-relaxed text-nc-mut">{i18n.t(descKey)}</p>
+
+  {#if service === 'groq'}
+    <div
+      class="mt-3 flex items-center justify-between gap-3 rounded-lg border border-nc-line/70
+             bg-nc-bg/40 px-3 py-2"
+    >
+      <div class="min-w-0">
+        <p class="text-[12px] font-medium text-nc-txt">{i18n.t('cloud.groq.engineLabel')}</p>
+        <p class="mt-0.5 text-[11px] leading-snug text-nc-mut-2">
+          {i18n.t(engineOn ? 'cloud.groq.engineOn' : 'cloud.groq.engineOff')}
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={engineOn}
+        aria-label={i18n.t('cloud.groq.engineLabel')}
+        onclick={() => void flipEngine()}
+        disabled={toggling}
+        class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border
+               transition-colors duration-150 ease-out
+               {engineOn ? 'border-nc-brand/50 bg-nc-brand/30' : 'border-nc-line bg-nc-panel-2'}
+               focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-nc-brand
+               disabled:opacity-60"
+      >
+        <span
+          class="inline-block h-4 w-4 transform rounded-full bg-nc-txt shadow
+                 transition-transform duration-150 ease-out
+                 {engineOn ? 'translate-x-6' : 'translate-x-1'}"
+        ></span>
+      </button>
+    </div>
+    {#if toggleError}
+      <p role="alert" class="mt-1.5 text-[11.5px] text-nc-red">{toggleError}</p>
+    {/if}
+  {/if}
 
   <!-- the key field -->
   <div class="mt-3.5">

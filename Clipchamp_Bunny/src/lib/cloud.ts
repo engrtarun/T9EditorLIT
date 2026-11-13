@@ -90,9 +90,13 @@ export interface ProbeResult {
 
 /* --------------------------------------------------------- daemon helpers */
 
-async function withTimeout(input: string, init?: RequestInit): Promise<Response | null> {
+async function withTimeout(
+  input: string,
+  init?: RequestInit,
+  timeoutMs: number = TIMEOUT_MS
+): Promise<Response | null> {
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     return await fetch(input, { ...init, signal: ctl.signal, cache: 'no-store' });
   } catch {
@@ -230,6 +234,40 @@ async function verdict(res: Response): Promise<ProbeResult> {
   }
 }
 
+/* ---------------------------------------------------- Groq engine switch */
+
+/**
+ * Flip the Groq transcription switch. The daemon persists it in the overlay
+ * (GROQ_ENABLED) and hot-applies it, so the next transcription job sees the
+ * new value. Returns the daemon's capability map so the UI can re-render the
+ * truth without a separate /healthz round-trip.
+ */
+export async function setGroqEnabled(
+  enabled: boolean
+): Promise<
+  | { ok: true; enabled: boolean; capabilities?: Record<string, string> }
+  | { ok: false; detail: string }
+> {
+  const res = await withTimeout(`${DAEMON}/v1/keys/groq/enabled`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled })
+  });
+  if (!res) return { ok: false, detail: 'unavailable' };
+  if (res.status === 404) return { ok: false, detail: 'unavailable' };
+  try {
+    const body = (await res.json()) as Record<string, unknown>;
+    if (!res.ok) return { ok: false, detail: (body.error as string) ?? 'unavailable' };
+    return {
+      ok: true,
+      enabled: body.enabled === true,
+      capabilities: body.capabilities as Record<string, string> | undefined
+    };
+  } catch {
+    return { ok: false, detail: 'network' };
+  }
+}
+
 /* ------------------------------------------- ElevenLabs account pool */
 
 /**
@@ -301,6 +339,43 @@ export async function removeElevenKey(id: string): Promise<ElevenAction> {
 /** Clear the pool entirely. The overlay records the explicit empty value. */
 export async function clearElevenKeys(): Promise<ElevenAction> {
   const res = await withTimeout(`${DAEMON}/v1/keys/elevenlabs`, { method: 'DELETE' });
+  return elevenVerdict(res);
+}
+
+/**
+ * Re-probe every account so the quota bars and health reflect the provider's
+ * current truth. Returns the refreshed snapshot plus counts; the daemon keeps
+ * the pool on disk, so this never adds or removes accounts.
+ */
+export async function probeElevenKeys(): Promise<
+  | { ok: true; keys: ElevenKeyStatus[]; refreshed: number; failed: string[] }
+  | { ok: false; detail: string }
+> {
+  const res = await withTimeout(`${DAEMON}/v1/keys/elevenlabs/probe`, { method: 'POST' }, 15000);
+  if (!res) return { ok: false, detail: 'unavailable' };
+  if (res.status === 404) return { ok: false, detail: 'unavailable' };
+  try {
+    const raw = (await res.json()) as Record<string, unknown>;
+    if (!res.ok) return { ok: false, detail: (raw.error as string) ?? 'unavailable' };
+    const camel = snakeToCamel<ElevenKeysResult & { refreshed?: number; failed?: string[] }>(raw);
+    return {
+      ok: true,
+      keys: camel.keys ?? [],
+      refreshed: (raw.refreshed as number) ?? 0,
+      failed: (raw.failed as string[]) ?? []
+    };
+  } catch {
+    return { ok: false, detail: 'network' };
+  }
+}
+
+/** Enable or disable one account by its public id. */
+export async function setElevenKeyState(id: string, enabled: boolean): Promise<ElevenAction> {
+  const res = await withTimeout(`${DAEMON}/v1/keys/elevenlabs/state`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, enabled })
+  });
   return elevenVerdict(res);
 }
 

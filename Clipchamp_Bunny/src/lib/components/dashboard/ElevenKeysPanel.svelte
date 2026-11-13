@@ -31,7 +31,9 @@
     addElevenKey,
     clearElevenKeys,
     fetchElevenKeys,
+    probeElevenKeys,
     removeElevenKey,
+    setElevenKeyState,
     type ElevenKeyStatus
   } from '../../cloud';
   import ElevenEnvImport from './ElevenEnvImport.svelte';
@@ -41,16 +43,37 @@
     configured: boolean;
     /** `/healthz` → cloud.ensemble === 'ready' (both engines + reconciler). */
     ensemble: boolean;
+    /** Groq key saved + engine off — turning it on completes the ensemble. */
+    groqOffHint?: boolean;
+    /** Flip the Groq engine on. */
+    onEnableGroq?: () => Promise<boolean>;
     /** Stagger index for the entrance animation. */
     index?: number;
   }
 
-  let { configured, ensemble, index = 0 }: Props = $props();
+  let { configured, ensemble, groqOffHint = false, onEnableGroq, index = 0 }: Props = $props();
+
+  let enablingGroq = $state(false);
+  async function enableGroq(): Promise<void> {
+    if (!onEnableGroq || enablingGroq) return;
+    enablingGroq = true;
+    try {
+      await onEnableGroq();
+    } finally {
+      enablingGroq = false;
+    }
+  }
 
   let keys = $state<ElevenKeyStatus[]>([]);
   let loading = $state(true);
   /** A remove/clear failure, shown in red under the list. */
   let listError = $state('');
+  /** Quota probe in flight. */
+  let probing = $state(false);
+  /** Last probe result note. */
+  let probeNote = $state('');
+  /** Row currently being toggled enabled/disabled. */
+  let busyId = $state('');
 
   /* ---- add form ---- */
   let newKey = $state('');
@@ -76,6 +99,20 @@
           cooling: keys.filter((k) => k.state === 'cooldown').length
         })
   );
+
+  /** Pool-wide quota percentage, or null when no account has reported a limit. */
+  const quotaPct = $derived.by(() => {
+    let used = 0;
+    let limit = 0;
+    for (const k of keys) {
+      if (k.quotaLimit) {
+        used += k.quotaUsed ?? 0;
+        limit += k.quotaLimit;
+      }
+    }
+    if (limit <= 0) return null;
+    return Math.min(100, Math.round((used / limit) * 100));
+  });
 
   async function add(): Promise<void> {
     if (adding) return;
@@ -110,6 +147,45 @@
     const res = await clearElevenKeys();
     if (!res.ok) listError = detailText(res.detail);
     await refresh();
+  }
+
+  async function probeAll(): Promise<void> {
+    if (probing) return;
+    probing = true;
+    probeNote = '';
+    try {
+      const res = await probeElevenKeys();
+      if (!res.ok) {
+        probeNote = detailText(res.detail);
+      } else {
+        await refresh();
+        probeNote = i18n.t('cloud.eleven.probed', {
+          ok: res.refreshed,
+          failed: res.failed.length
+        });
+      }
+    } finally {
+      probing = false;
+    }
+  }
+
+  async function toggleState(k: ElevenKeyStatus): Promise<void> {
+    if (busyId) return;
+    busyId = k.id;
+    const enabling = k.state === 'disabled';
+    // Optimistic flip so the 3-second attention rule holds.
+    keys = keys.map((x) =>
+      x.id === k.id ? { ...x, state: enabling ? 'ready' : 'disabled', cooldownSecs: undefined } : x
+    );
+    try {
+      const res = await setElevenKeyState(k.id, enabling);
+      if (!res.ok) {
+        listError = detailText(res.detail);
+      }
+    } finally {
+      await refresh();
+      busyId = '';
+    }
   }
 
   /** Quota bar position, or null when no probe has reported a limit yet. */
@@ -196,6 +272,33 @@
       </svg>
       {i18n.t('cloud.eleven.ensemble')}
     </p>
+  {:else if groqOffHint}
+    <p class="mt-1.5 flex items-start gap-1.5 text-[11.5px] text-nc-amber">
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.8"
+        class="mt-px shrink-0"
+        aria-hidden="true"
+      >
+        <path d="M12 9v4m0 3h.01M12 3l9 16H3l9-16Z" />
+      </svg>
+      <span class="flex-1">{i18n.t('cloud.eleven.groqOffHint')}</span>
+      {#if onEnableGroq}
+        <button
+          type="button"
+          onclick={() => void enableGroq()}
+          disabled={enablingGroq}
+          class="shrink-0 text-[11px] font-medium text-nc-brand underline-offset-2
+                  hover:underline disabled:opacity-60"
+        >
+          {enablingGroq ? i18n.t('cloud.testing') : i18n.t('cloud.eleven.enableGroq')}
+        </button>
+      {/if}
+    </p>
   {/if}
 
   <!-- ── the pool ─────────────────────────────────────────────────────── -->
@@ -205,9 +308,51 @@
     {:else if keys.length === 0}
       <p class="text-[12px] leading-relaxed text-nc-mut-2">{i18n.t('cloud.eleven.empty')}</p>
     {:else}
-      <p class="mb-2 text-[11px] font-medium tracking-wide text-nc-mut-2 uppercase">
-        {summary}
-      </p>
+      <div class="mb-2 flex flex-wrap items-center gap-2">
+        <p class="text-[11px] font-medium tracking-wide text-nc-mut-2 uppercase">
+          {summary}
+          {#if quotaPct !== null}
+            <span class="ml-1 normal-case tracking-normal">
+              · {quotaPct}% {i18n.t('cloud.eleven.quotaTotal')}
+            </span>
+          {/if}
+        </p>
+        <button
+          type="button"
+          onclick={() => void probeAll()}
+          disabled={probing}
+          aria-label={i18n.t('cloud.eleven.refresh')}
+          class="ml-auto inline-flex items-center gap-1.5 rounded-md border border-nc-line bg-nc-panel-2
+                 px-2 py-0.5 text-[10.5px] font-medium text-nc-mut-2 transition-colors
+                 hover:border-nc-brand/50 hover:text-nc-txt disabled:opacity-60
+                 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-nc-brand"
+        >
+          {#if probing}
+            <span
+              class="t9-spin inline-block h-3 w-3 rounded-full border-[1.5px]
+                     border-nc-brand/30 border-t-nc-brand"
+              aria-hidden="true"
+            ></span>
+            {i18n.t('cloud.eleven.checking')}
+          {:else}
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              aria-hidden="true"
+            >
+              <path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" />
+            </svg>
+            {i18n.t('cloud.eleven.refresh')}
+          {/if}
+        </button>
+      </div>
+      {#if probeNote}
+        <p role="status" class="mb-2 text-[10.5px] text-nc-mut-2">{probeNote}</p>
+      {/if}
 
       {#each keys as k (k.id)}
         <div
@@ -240,6 +385,56 @@
                 {pct(k)}% {i18n.t('cloud.eleven.quotaUsed')}
               </span>
             {/if}
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={k.state !== 'disabled'}
+              onclick={() => void toggleState(k)}
+              disabled={busyId === k.id}
+              aria-label={i18n.t(
+                k.state === 'disabled' ? 'cloud.eleven.enableOne' : 'cloud.eleven.disableOne',
+                { key: k.masked }
+              )}
+              class="grid h-6 w-6 shrink-0 place-items-center rounded text-nc-mut-2
+                     transition-colors hover:bg-nc-brand/10 hover:text-nc-brand
+                     focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-nc-brand
+                     disabled:opacity-60"
+            >
+              {#if busyId === k.id}
+                <span
+                  class="t9-spin inline-block h-3 w-3 rounded-full border-[1.5px]
+                         border-nc-brand/30 border-t-nc-brand"
+                  aria-hidden="true"
+                ></span>
+              {:else if k.state === 'disabled'}
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              {:else}
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <rect x="6" y="5" width="4" height="14" rx="1" /><rect
+                    x="14"
+                    y="5"
+                    width="4"
+                    height="14"
+                    rx="1"
+                  />
+                </svg>
+              {/if}
+            </button>
 
             <button
               type="button"

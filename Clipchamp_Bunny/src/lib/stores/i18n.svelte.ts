@@ -312,6 +312,10 @@ const en: Dict = {
   'cloud.gemini.desc': 'Powers the AI analysis that flags the best moments.',
   'cloud.groq.name': 'Groq API',
   'cloud.groq.desc': 'Powers fast, accurate transcription and autocorrect.',
+  'cloud.groq.engineLabel': 'Secondary engine (Groq)',
+  'cloud.groq.engineOn': 'On — Groq transcribes beside ElevenLabs and feeds the accuracy merge.',
+  'cloud.groq.engineOff': 'Off — ElevenLabs runs alone; no Groq fallback.',
+  'cloud.groq.engineError': "Couldn't save that change.",
   'cloud.telegram.name': 'Telegram MTProto',
   'cloud.telegram.desc': 'Backs up your projects to Telegram cloud storage.',
   'cloud.telegram.manage': 'Manage connection',
@@ -373,6 +377,15 @@ const en: Dict = {
   'cloud.eleven.needEnv': 'Paste the .env contents or choose a file first.',
   'cloud.eleven.imported': '{added} added · {rejected} rejected · {duplicate} already in the pool',
   'cloud.eleven.network': "Couldn't reach the daemon — the request failed.",
+  'cloud.eleven.refresh': 'Refresh quotas',
+  'cloud.eleven.checking': 'Checking…',
+  'cloud.eleven.probed': '{ok} quotas refreshed · {failed} failed',
+  'cloud.eleven.enableOne': 'Enable {key}',
+  'cloud.eleven.disableOne': 'Disable {key}',
+  'cloud.eleven.quotaTotal': 'of pool quota used',
+  'cloud.eleven.groqOffHint':
+    'Groq secondary engine is off — accuracy mode is running ElevenLabs alone.',
+  'cloud.eleven.enableGroq': 'Turn on Groq',
 
   'cloud.footer': 'Keys are used only to test each connection and are never uploaded.',
 
@@ -706,6 +719,11 @@ const hinglish: Dict = {
   'cloud.gemini.desc': 'AI analysis ke liye — best moments flag karta hai.',
   'cloud.groq.name': 'Groq API',
   'cloud.groq.desc': 'Fast transcription aur autocorrect yahin se chalta hai.',
+  'cloud.groq.engineLabel': 'Secondary engine (Groq)',
+  'cloud.groq.engineOn':
+    'On — Groq ElevenLabs ke saath transcribe karta hai aur accuracy merge feed karta hai.',
+  'cloud.groq.engineOff': 'Off — sirf ElevenLabs chalega; Groq fallback nahi.',
+  'cloud.groq.engineError': 'Ye change save nahi ho paya.',
   'cloud.telegram.name': 'Telegram MTProto',
   'cloud.telegram.desc': 'Projects ko Telegram cloud storage me backup karta hai.',
   'cloud.t9.name': 'T9 Cloud',
@@ -768,6 +786,15 @@ const hinglish: Dict = {
   'cloud.eleven.needEnv': 'Pehle .env paste karo ya file chuno.',
   'cloud.eleven.imported': '{added} add · {rejected} reject · {duplicate} pehle se',
   'cloud.eleven.network': 'Daemon tak nahi pahuncha — request fail ho gayi.',
+  'cloud.eleven.refresh': 'Quota refresh karo',
+  'cloud.eleven.checking': 'Check ho raha…',
+  'cloud.eleven.probed': '{ok} quotas refresh · {failed} fail',
+  'cloud.eleven.enableOne': '{key} enable karo',
+  'cloud.eleven.disableOne': '{key} disable karo',
+  'cloud.eleven.quotaTotal': 'pool quota used',
+  'cloud.eleven.groqOffHint':
+    'Groq secondary engine off hai — accuracy mode sirf ElevenLabs chala raha hai.',
+  'cloud.eleven.enableGroq': 'Groq on karo',
 
   'cloud.footer': 'Keys sirf har connection test ke liye use hoti hain, kahin upload nahi hoti.',
 
@@ -1121,6 +1148,11 @@ const hi: Dict = {
   'cloud.gemini.desc': 'AI विश्लेषण के लिए — बेहतरीन पल चिह्नित करता है.',
   'cloud.groq.name': 'Groq API',
   'cloud.groq.desc': 'तेज़ ट्रांसक्रिप्शन और ऑटोकरेक्ट यहीं से चलता है.',
+  'cloud.groq.engineLabel': 'सेकेंडरी इंजन (Groq)',
+  'cloud.groq.engineOn':
+    'On — Groq ElevenLabs ke saath transcribe karta hai aur accuracy merge feed karta hai.',
+  'cloud.groq.engineOff': 'Off — sirf ElevenLabs chalega; Groq fallback nahi.',
+  'cloud.groq.engineError': 'Ye change save nahi ho paya.',
   'cloud.telegram.name': 'Telegram MTProto',
   'cloud.telegram.desc': 'प्रोजेक्ट को Telegram क्लाउड स्टोरेज में बैकअप करता है.',
   'cloud.t9.name': 'T9 Cloud',
@@ -1182,6 +1214,15 @@ const hi: Dict = {
   'cloud.eleven.needEnv': 'पहले .env पेस्ट करें या फ़ाइल चुनें.',
   'cloud.eleven.imported': '{added} जोड़े · {rejected} नकारे · {duplicate} पहले से',
   'cloud.eleven.network': 'डेमन तक नहीं पहुँच सका — अनुरोध विफल रहा.',
+  'cloud.eleven.refresh': 'Quota refresh karo',
+  'cloud.eleven.checking': 'Check ho raha…',
+  'cloud.eleven.probed': '{ok} quotas refresh · {failed} fail',
+  'cloud.eleven.enableOne': '{key} enable karo',
+  'cloud.eleven.disableOne': '{key} disable karo',
+  'cloud.eleven.quotaTotal': 'pool quota used',
+  'cloud.eleven.groqOffHint':
+    'Groq secondary engine off hai — accuracy mode sirf ElevenLabs chala raha hai.',
+  'cloud.eleven.enableGroq': 'Groq on karo',
 
   'cloud.footer':
     'कुंजियाँ केवल प्रत्येक कनेक्शन जाँचने के लिए उपयोग होती हैं, कहीं अपलोड नहीं होतीं.',

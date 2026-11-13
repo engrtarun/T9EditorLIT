@@ -89,6 +89,17 @@ func SetKey(envPath, service, key string) (string, error) {
 	return path, nil
 }
 
+// SetGroqEnabled persists the Groq transcription switch in the overlay, next to
+// the credentials. It uses the same overlay write as the keys, so the value
+// survives a daemon restart and wins over .env, exactly like a saved key.
+func SetGroqEnabled(envPath string, on bool) error {
+	value := "0"
+	if on {
+		value = "1"
+	}
+	return writeOverlay(KeysPath(envPath), "GROQ_ENABLED", value)
+}
+
 // ClearKey records an explicit empty value so the provider is genuinely
 // unconfigured after a reload, instead of reverting to whatever .env holds.
 func ClearKey(envPath, service string) (string, error) {

@@ -156,6 +156,51 @@ func (s *Server) handleKeysDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, keyState{Service: service, Configured: false})
 }
 
+// handleGroqEnabled answers PUT /v1/keys/groq/enabled.
+//
+// The Groq transcription switch is a preference, not a credential: it changes
+// whether the daemon USES a key it already has, never the key itself. It is
+// persisted in the same overlay (GROQ_ENABLED) and hot-applied under keysMu, so
+// the next transcription job sees the new value without a daemon restart.
+func (s *Server) handleGroqEnabled(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Enabled == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "enabled field is required",
+		})
+		return
+	}
+
+	if err := config.SetGroqEnabled(s.deps.EnvPath, *req.Enabled); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "could not save the switch: " + err.Error(),
+		})
+		return
+	}
+
+	s.applyGroqEnabled(*req.Enabled)
+	s.deps.Log.Info("groq transcription switch", "enabled", *req.Enabled)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"enabled":      *req.Enabled,
+		"capabilities": s.capabilities(),
+	})
+}
+
+// applyGroqEnabled flips the switch under the one lock the pipeline handlers
+// read through. No client is rebuilt — the gate lives in transcribeGroqClient.
+func (s *Server) applyGroqEnabled(on bool) {
+	s.keysMu.Lock()
+	defer s.keysMu.Unlock()
+	s.deps.Config.GroqDisabled = !on
+}
+
 // applyKey swaps the live client and the config flag together, under the one
 // lock the pipeline handlers read through. A nil key builds no client at all,
 // which is exactly what the nil guards in the pipeline check for — so

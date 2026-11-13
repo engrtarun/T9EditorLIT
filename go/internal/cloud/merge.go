@@ -49,6 +49,7 @@ Rules:
 - Every output line needs a time window from the input readings. You may merge adjacent lines when both readings show one continuous sentence, but never widen a window beyond the readings.
 - Lines must be ordered by start time and must not overlap.
 - If one reading is empty, copy the other. If both are empty, output [].
+- Cover the whole recording: do not drop a line to make the answer shorter. The total number of words in the output should be close to the longer reading's — not notably shorter (dropped words) and not notably longer (duplicated or merged-together text).
 
 Output ONLY a JSON array of objects with the keys "start", "end" and "text" (seconds as numbers). No prose, no code fence.`
 
@@ -154,6 +155,55 @@ func (c *GeminiClient) MergeChunkTranscripts(
 		return nil, err
 	}
 
+	// The merge is the upgrade, never the requirement — but a silently bad
+	// merge (dropped words, invented words, runaway timestamps) is worse than
+	// no merge at all. Validate before we let it ship; the caller degrades to
+	// the primary reading on any error here.
+	priLines := pri
+	secLines := sec
+	if err := checkMergeSanity(priLines, secLines, lines); err != nil {
+		return nil, err
+	}
+
+	// Clamp each window to the span the readings actually describe, and keep
+	// the lines from overlapping. The prompt already forbids both, but a model
+	// that slips through must not produce a segment the editor cannot cut.
+	span := 0.0
+	for _, l := range priLines {
+		if l.End > span {
+			span = l.End
+		}
+	}
+	for _, l := range secLines {
+		if l.End > span {
+			span = l.End
+		}
+	}
+	if span > 0 {
+		for i := range lines {
+			if lines[i].Start > span {
+				lines[i].Start = span
+			}
+			if lines[i].End > span {
+				lines[i].End = span
+			}
+			if lines[i].End < lines[i].Start {
+				lines[i].End = lines[i].Start
+			}
+		}
+	}
+	// Monotonic, non-overlapping windows.
+	prevEnd := 0.0
+	for i := range lines {
+		if lines[i].Start < prevEnd {
+			lines[i].Start = prevEnd
+		}
+		if lines[i].End < lines[i].Start {
+			lines[i].End = lines[i].Start
+		}
+		prevEnd = lines[i].End
+	}
+
 	idBase := fmt.Sprintf("%d", int(offsetSecs*1000))
 	segments := make([]model.Segment, 0, len(lines))
 	for i, l := range lines {
@@ -176,4 +226,57 @@ func (c *GeminiClient) MergeChunkTranscripts(
 	attachWordsToSegments(segments, words)
 
 	return segments, nil
+}
+
+// countWords counts the whitespace-separated words in a set of merge lines.
+// Punctuation alone contributes nothing, so a merge that is only punctuation
+// cannot pass the coverage check.
+func countWords(lines []mergeLine) int {
+	n := 0
+	for _, l := range lines {
+		for _, f := range strings.Fields(l.Text) {
+			// count a token only if it has at least one letter or digit
+			hasAlnum := false
+			for _, r := range f {
+				if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+					(r >= 0x0900 && r <= 0x097F) || (r >= 0x0980 && r <= 0x09FF) {
+					hasAlnum = true
+					break
+				}
+			}
+			if hasAlnum {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// checkMergeSanity rejects an answer that lost or invented content relative to
+// the readings. The baseline is the longer reading, because a good merge may
+// pick up words the primary missed but should never come out notably shorter
+// (dropped) or notably longer (invented or concatenated).
+func checkMergeSanity(primary, secondary, merged []mergeLine) error {
+	base := countWords(primary)
+	if sec := countWords(secondary); sec > base {
+		base = sec
+	}
+	got := countWords(merged)
+	if base == 0 {
+		// nothing to compare against; an empty primary+secondary is already
+		// rejected earlier in MergeChunkTranscripts
+		return nil
+	}
+	min := int(float64(base)*0.75) - 3
+	if min < 0 {
+		min = 0
+	}
+	max := int(float64(base)*1.35) + 3
+	if got < min {
+		return fmt.Errorf("merge kept %d of ~%d words — dropped content", got, base)
+	}
+	if got > max {
+		return fmt.Errorf("merge has %d words against ~%d — invented content", got, base)
+	}
+	return nil
 }

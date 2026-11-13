@@ -35,7 +35,13 @@
    */
   import { onMount } from 'svelte';
   import { i18n } from '../../stores/i18n.svelte';
-  import { fetchHealth, fetchVaultStatus, type CloudHealth, type VaultStatus } from '../../cloud';
+  import {
+    fetchHealth,
+    fetchVaultStatus,
+    setGroqEnabled,
+    type CloudHealth,
+    type VaultStatus
+  } from '../../cloud';
   import ApiKeyCard from './ApiKeyCard.svelte';
   import ApiUsageGauge from './ApiUsageGauge.svelte';
   import ElevenKeysPanel from './ElevenKeysPanel.svelte';
@@ -92,6 +98,20 @@
   const totalServices = 5;
 
   const daemonDown = $derived(health === null && !loading);
+
+  /** Whether the Groq secondary engine is turned on. */
+  const groqOn = $derived(health?.cloud?.groq_enabled === 'on');
+
+  /** Groq key saved AND engine off — turning it on would complete the ensemble. */
+  const groqOffHint = $derived(ready.eleven && ready.groq && ready.gemini && !groqOn);
+
+  async function setGroqEngine(on: boolean): Promise<boolean> {
+    const res = await setGroqEnabled(on);
+    if (!res.ok) return false;
+    const h = await fetchHealth();
+    if (h) health = h;
+    return true;
+  }
 
   /* --------------------------------------------------------- telegram modal */
 
@@ -209,14 +229,26 @@
     <!-- the five service cards: two columns wide, one when narrow -->
     <div class="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
       <ApiKeyCard service="gemini" configured={ready.gemini} index={0} />
-      <ApiKeyCard service="groq" configured={ready.groq} index={1} />
+      <ApiKeyCard
+        service="groq"
+        configured={ready.groq}
+        index={1}
+        groqEnabled={groqOn}
+        onGroqToggle={setGroqEngine}
+      />
 
       <!-- ElevenLabs account pool: full width, because the primary engine
            carries a list of accounts (masked rows, quota, cooldowns), not one
            field — and it is the surface where unlimited keys are added or
            imported from an .env. -->
       <div class="lg:col-span-2">
-        <ElevenKeysPanel configured={ready.eleven} ensemble={ready.ensemble} index={2} />
+        <ElevenKeysPanel
+          configured={ready.eleven}
+          ensemble={ready.ensemble}
+          {groqOffHint}
+          onEnableGroq={async () => await setGroqEngine(true)}
+          index={2}
+        />
       </div>
 
       <!-- Telegram MTProto -->
