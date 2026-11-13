@@ -2895,6 +2895,16 @@ class ProjectStore {
       this.activeClipId = null;
       player.seek(this.sourceAt(0) ?? 0);
     }
+    // Loudness is keyed by id and lives in the project state, not the clip
+    // record: without this a removed clip left its mute/volume behind forever.
+    if (this.mutedSegments.includes(id)) {
+      this.mutedSegments = this.mutedSegments.filter((x) => x !== id);
+    }
+    if (id in this.segmentVolume) {
+      const map = { ...this.segmentVolume };
+      delete map[id];
+      this.segmentVolume = map;
+    }
     this.saveClips();
   }
 

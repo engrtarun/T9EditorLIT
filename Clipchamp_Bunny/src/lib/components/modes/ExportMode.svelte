@@ -261,8 +261,17 @@
         await startExport({
           source: clip.path,
           // An extra clip is exported whole: its transcript does not exist, so
-          // there is nothing to cut inside it.
-          segments: [{ start: clip.inSec, end: clip.outSec }],
+          // there is nothing to cut inside it. Its loudness still rides along -
+          // the speaker button on the strip promises something about the file,
+          // and a sequence part is re-encoded anyway (canvas), so `volume=`
+          // applies exactly as it does for a main-cut segment.
+          segments: [
+            {
+              start: clip.inSec,
+              end: clip.outSec,
+              gain: project.isSegmentMuted(clip.id) ? 0 : project.segmentGain(clip.id)
+            }
+          ],
           output: part,
           options: partOptions,
           dbPath

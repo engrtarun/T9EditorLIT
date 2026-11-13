@@ -276,7 +276,10 @@
   interface CtxState {
     x: number;
     y: number;
-    segId: string;
+    /** The main-cut segment the menu was opened on, when it was one. */
+    segId?: string;
+    /** The extra clip the menu was opened on, when it was one. */
+    clipId?: string;
   }
   let ctx = $state<CtxState | null>(null);
 
@@ -1085,8 +1088,49 @@
     ctx = { x: e.clientX, y: e.clientY, segId: seg.id };
   }
 
+  /**
+   * Right-click on an extra clip.
+   *
+   * A clip has no transcript, so the menu cannot offer cut/keep: its material
+   * is fixed and only the trim moves. What it *can* own is its loudness, and
+   * that lives in the same `mutedSegments` / `segmentVolume` maps the main cut
+   * uses - keyed by the clip id, so preview and export read it through the
+   * exact same two functions instead of a parallel clip-only model.
+   */
+  function openExtraMenu(e: MouseEvent, clipId: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    ctx = { x: e.clientX, y: e.clientY, clipId };
+  }
+
   const clipMenuItems = $derived.by((): MenuItem[] => {
     const c = ctx;
+    if (c?.clipId) {
+      const extra = project.clips.find((x) => x.id === c.clipId);
+      if (!extra) return [];
+      const muted = project.isSegmentMuted(extra.id);
+      const gain = project.segmentGain(extra.id);
+      const vol = (v: number, label: string): MenuItem => ({
+        id: `vol-${v}`,
+        label: `${Math.abs(gain - v) < 0.005 ? '● ' : ''}Volume ${label}`,
+        icon: 'volume'
+      });
+      // No split/trim-to-playhead here: the strip's own handles trim a clip,
+      // and there is no transcript to split its words along.
+      return [
+        {
+          id: 'mute',
+          label: muted ? 'Unmute clip audio' : 'Mute clip audio',
+          icon: muted ? 'volumeOff' : 'volume'
+        },
+        { ...vol(1, '100%'), secondary: 'Preview and export both follow this' },
+        vol(0.75, '75%'),
+        vol(0.5, '50%'),
+        vol(0.25, '25%'),
+        { id: 'div-1', label: '', divider: true },
+        { id: 'remove', label: 'Remove from timeline', icon: 'trash', danger: true }
+      ];
+    }
     const seg = c?.segId ? segments.find((s) => s.id === c.segId) : null;
     if (!seg) return [];
     // A cut block is not editable material — it stays on the timeline as red
@@ -1137,6 +1181,24 @@
     const c = ctx;
     ctx = null;
     if (!c) return;
+
+    // A clip menu acts on a clip; the segment menu below never sees these ids.
+    if (c.clipId) {
+      if (id === 'mute') {
+        project.toggleSegmentMute(c.clipId);
+        toast.push(
+          'info',
+          project.isSegmentMuted(c.clipId) ? 'Clip audio muted' : 'Clip audio unmuted'
+        );
+      } else if (id.startsWith('vol-')) {
+        project.setSegmentVolume(c.clipId, Number(id.slice(4)));
+        toast.push('info', `Clip volume ${Math.round(project.segmentGain(c.clipId) * 100)}%`);
+      } else if (id === 'remove') {
+        project.removeClip(c.clipId);
+        toast.push('cut', 'Clip timeline se hata diya');
+      }
+      return;
+    }
 
     const seg = c.segId ? segments.find((s) => s.id === c.segId) : null;
     if (!seg) return;
@@ -1893,6 +1955,7 @@
                 : 'border-white/15 hover:border-nc-brand/70'}"
               style="left:{r.start * zoom}px;width:{Math.max(6, (r.end - r.start) * zoom)}px"
               onpointerdown={(e) => e.stopPropagation()}
+              oncontextmenu={(e) => openExtraMenu(e, r.clip.id)}
               onclick={(e) => {
                 e.stopPropagation();
                 project.activateClip(r.clip.id);
@@ -1934,6 +1997,43 @@
                 class="pointer-events-none absolute bottom-0.5 left-1.5 max-w-[calc(100%-2rem)] truncate font-mono text-[9px] text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,.9)]"
                 >{r.clip.kind === 'image' ? 'still' : fmtShort(r.clip.outSec - r.clip.inSec)}</span
               >
+              <!--
+                A clip owns its loudness exactly like a main-cut segment does:
+                the same two store maps, keyed by the clip id. The chip is the
+                evidence, so a half-volume clip is visible without opening the
+                menu - the same rule the segment strips follow.
+              -->
+              {#if project.segmentGain(r.clip.id) !== 1}
+                <span
+                  class="pointer-events-none absolute right-6 bottom-0.5 z-20 rounded bg-black/55 px-1 font-mono text-[8px] leading-4 text-white/85"
+                  title="Clip volume — right-click the clip to change"
+                  >{Math.round(project.segmentGain(r.clip.id) * 100)}%</span
+                >
+              {/if}
+              <button
+                onpointerdown={(e) => e.stopPropagation()}
+                onclick={(e) => {
+                  e.stopPropagation();
+                  project.toggleSegmentMute(r.clip.id);
+                  toast.push(
+                    'info',
+                    project.isSegmentMuted(r.clip.id) ? 'Clip audio muted' : 'Clip audio unmuted'
+                  );
+                }}
+                class="absolute right-1 bottom-0.5 z-20 grid h-4 w-4 place-items-center rounded bg-black/50 text-white/85 transition-opacity hover:bg-black/80 hover:text-white
+                       {project.isSegmentMuted(r.clip.id)
+                  ? 'text-nc-red opacity-100'
+                  : 'opacity-0 group-hover:opacity-100'}"
+                title={project.isSegmentMuted(r.clip.id) ? 'Unmute clip audio' : 'Mute clip audio'}
+                aria-label={project.isSegmentMuted(r.clip.id)
+                  ? 'Unmute {r.clip.name}'
+                  : 'Mute {r.clip.name}'}
+              >
+                <MenuIcon
+                  name={project.isSegmentMuted(r.clip.id) ? 'volumeOff' : 'volume'}
+                  size={11}
+                />
+              </button>
               <button
                 onclick={(e) => {
                   e.stopPropagation();

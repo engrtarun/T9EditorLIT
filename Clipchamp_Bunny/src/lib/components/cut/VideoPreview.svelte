@@ -282,12 +282,20 @@
         ) ?? null)
   );
 
+  /**
+   * Whoever owns the sound right now: the extra clip being previewed, or the
+   * main-cut segment under the playhead. Never both - the preview is one video
+   * element, and `activeClip` means the main cut is not the thing on screen.
+   * Volume lives in one pair of maps keyed by id, so a clip and a segment are
+   * read through the same two functions.
+   */
+  const audioOwner = $derived(activeClip ?? currentSegment);
+
   const audioHidden = $derived(
-    project.isTrackHidden('audio') ||
-      (currentSegment ? project.isSegmentMuted(currentSegment.id) : false)
+    project.isTrackHidden('audio') || (audioOwner ? project.isSegmentMuted(audioOwner.id) : false)
   );
   /** Per-clip loudness (the sketch's "mute/volume too because new clip"). */
-  const audioGain = $derived(currentSegment ? project.segmentGain(currentSegment.id) : 1);
+  const audioGain = $derived(audioOwner ? project.segmentGain(audioOwner.id) : 1);
   const videoHidden = $derived(project.isTrackHidden('video'));
   const clipTimeLeft = $derived(
     activeClip ? Math.max(0, activeClip.outSec - player.currentTime) : 0
