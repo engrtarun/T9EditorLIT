@@ -2835,6 +2835,95 @@ kar sakta hai — guess nahi karna padega.
 
 ---
 
+## P9. Deployment record — ye change desktop par hai (staged)
+
+> Ye hissa sirf record hai: kaunsa commit, kaunsa build, aur "live" hone ka
+> proof. Upar ka analysis waise hi hai — is section ne kuch badla nahi.
+
+| Fact | Value |
+| --- | --- |
+| Commit | `a27eabde8b356e0212a176f0431b62deb022ec86` (branch `main`) |
+| Build id | `ci-a27eabd` |
+| CI run | https://github.com/engrtarun/T9EditorLIT/actions/runs/43376932973 |
+| App SHA-256 (staged) | `a0b954e939b147c8e6de80fcd346d719fde6a2a793a05c96c8539e4c88ffcbb9` |
+| Daemon build | `go-7a81d8959fe3dfa6` (SHA-256 `66757c632aed8c6b80d6464d25c0c1e973ac8c6cd036be839e70a87937036d23`) |
+| Work order | `SARKARI-20261113-114128-7206` |
+| Scope | `both` (app + daemon) |
+| Mode | **staged** — app chal raha tha, isliye `t9-editor-lit.new.exe` + `t9cloud.new.exe` |
+| Install dir | `%LOCALAPPDATA%\Programs\T9EditorLIT\` |
+| Apply | app ke top bar me **Update** button → helper swap + restart |
+
+**Do deploys hue, aur doosra pehle ko supersede karta hai:**
+
+| # | Commit | Build | Work order | Result |
+| --- | --- | --- | --- | --- |
+| 1 | `8e3ae63` | `ci-8e3ae63` | `SARKARI-20261113-112550-17F4` | live install (11:35), app SHA `53c505be…` |
+| 2 | `a27eabd` | `ci-a27eabd` | `SARKARI-20261113-114128-7206` | **staged** (11:47), app SHA `a0b954e9…` |
+
+Doosra deploy zaroori tha kyunki pehle build ko **live probe** me ek bug mila
+(B31, neeche). App us waqt band tha, isliye pehla build seedha install hua;
+uske baad user ne app khola, aur doosra build stage ho gaya.
+
+**Live probe (staged daemon, port 7879, alag data dir):**
+
+```text
+HEALTHZ: ok version=go-7a81d8959fe3dfa6
+PROBE:   container=mov,mp4,… dur=197.78 asr=395562 issues=(none)
+LAYOUT:  grid=3x3 samples=12 cells=9 watermark='' facecam='top-left' motion0=0.0151
+LEXICON: GET 7 defaults (RAG | LLM | ChatGPT | API | vector database | context window | hybrid search)
+```
+
+`motion0=0.0151` hi B31 ka proof hai: pehle wahi file `8.7258` de rahi thi.
+
+**Gates jo deploy se pehle chale:**
+
+```text
+cd go       : gofmt -l . (clean) · go vet ./... (clean) · go test ./... (12 packages ok)
+Clipchamp   : svelte-check 0 errors 0 warnings · prettier clean · npm test 156/156 · vite build ok
+```
+
+**Doctor (staged mode, 11:48):**
+
+```text
+[ok] build.json Marker: PRESENT (mode: staged, buildId: ci-a27eabd)
+[*]  Staged Update (.new.exe): WAITING for user to click Update
+[ok] t9cloud Daemon: RUNNING on localhost:7878 (Version: go-f06eaeaf4389881c)
+```
+
+Doctor ka `[x] Marker hash does not match the installed exe!` **staged mode me
+expected hai**: marker naye (staged) build ka hash rakhta hai, jabki live exe
+purana build hai. Update click ke baad `normalize_installed_marker()` marker ko
+`mode: installed` karta hai aur dono hash match karte hain.
+
+**Us waqt machine par kya live tha (doosre agent ka kaam):** app `ci-87aab36`
+(`opencode/beam-free`, work order `SARKARI-20261113-113826-E5F2`), daemon
+`go-f06eaeaf4389881c`. Mera build uske **upar** stage hua hai, uski jagah nahi
+li — isliye Update click ke baad app + daemon dono `ci-a27eabd` par chale
+jaayenge.
+
+### B31. Layout ka motion 0..1 nahi tha (live probe ne pakda)
+
+| | |
+| --- | --- |
+| Kahan | `go/internal/mediaprobe/mediaprobe.go` (`AnalyzeFrames`) |
+| Kya | `g.Motion[c]` per-cell **sum** tha, divide sirf frame-pair count se hota tha — pixel count se nahi. 32×18 cell = 576 px, isliye live file `8.7` deti thi jahan contract `0..1` kehta hai |
+| Asar | Ratio-based decisions (watermark/face-cam vs median) bach gaye, par frozen-video guard (`medianMotion < 0.008`) asli file par kabhi fire hi nahi hota, aur API ka 0..1 promise jhooth tha |
+| Fix | `cellPairCounts[c]` — har cell ke pixel-pairs se divide; `TestAnalyzeFramesMotionIsAFraction` 0..1 range pin karta hai |
+| Proof | Wahi live file: pehle `8.7258`, ab `0.0151` |
+
+Ye bug **sirf live probe se mila** — Go tests synthetic frames par ratio check
+karte the, isliye green the. Isi liye P9 me probe ka number likha hai, sirf
+"tests pass" nahi.
+
+### Housekeeping (isse alag commit)
+
+`8e3ae63` — `UsageDialog.svelte` me do long lines prettier se wrap ki. Wo file
+`39b3426` me bina format ke aayi thi aur `npm run lint` (verify:fast ka pehla
+gate, aur `ci.yml` ka) **main par red** tha. Sirf whitespace, koi markup/text
+nahi badla.
+
+---
+
 **— deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
 *Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) + deepseek Part 3
 (cases 11–20) — teeno untouched. Ye part sirf append hai.*
