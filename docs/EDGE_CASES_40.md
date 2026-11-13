@@ -2924,6 +2924,51 @@ nahi badla.
 
 ---
 
+## P10. Follow-up — transcript panel fix + range transcription (live)
+
+Do cheezein user ne live app me pakdi, dono fix hui aur install ho gayi.
+
+### B32. Transcript row ka badge agli row par paint ho raha tha
+
+| | |
+| --- | --- |
+| Kahan | `Clipchamp_Bunny/src/lib/components/cut/TranscriptPanel.svelte` |
+| Kya | Row fixed `46px` thi, par text 2-line clamp (16+16) + language chip (13) = 45+ tha. Chip `clamp` ke baad block tha, isliye wo row se bahar nikal kar **agle row ke upar** paint hota tha |
+| Kab aaya | `9145bf0` (cases 11–20, language pin) — chip us waqt add hua, row height us waqt nahi badli |
+| Fix | Saare chips (flag, tag, `×N`, `2 VOICES`, `RETAKE?`, language) ek `flex-nowrap` row me, `overflow-hidden`; `ROW_H` 46 → 60. Virtual list ek hi constant use karti hai, isliye scroll math same |
+| Proof | `svelte-check` 0/0, prettier clean, 156/156 tests, live deploy `ci-13d07e4` |
+
+### Naya: "Sirf ye hissa" — range transcription
+
+Pehle 45-minute file me sirf 2 minute ka transcript khareedne ka koi raasta
+nahi tha (poora file, ya ek-ek chunk order me). Ab:
+
+- `spansInRange(plan, from, to)` (pure, tested) pending chunks chunta hai jo
+  range ko touch karte hain — half-open overlap, isliye boundary chunk do baar
+  nahi khareedta.
+- `project.transcribeRange(from, to)` wahi chunks `transcribeSpan` se bhejta
+  hai. Boundary chunk ke bahar wale words **rakhe jaate hain**: plan poore chunk
+  ko done likhta hai, aur text phenk dena agli baar silence jaisa dikhta.
+- Autocorrect + AI flags poore plan ke complete hone par hi chalte hain, waise
+  hi jaise "Agla chunk" path me.
+- UI: `RangeTranscribe.svelte` — khaali panel me button ke neeche, aur partial
+  plan ke footer me collapse hua.
+
+| Fact | Value |
+| --- | --- |
+| Commit | `d54e209001a3ce4dccd02cb5631fbfc4028b6626` |
+| Build | `ci-d54e209` · CI run https://github.com/engrtarun/T9EditorLIT/actions/runs/43379960994 |
+| App SHA-256 | `f62950be8489337f080a040ff83e6feae3c50be55bcec3db7ba3df308c0faa75` |
+| Work order | `SARKARI-20261113-120914-676F` · mode **live** |
+| Daemon | `go-7a81d8959fe3dfa6` (pehle se running, is deploy me app-only) |
+| Gates | svelte-check 0/0 · prettier clean · 157/157 tests |
+
+Doctor: marker hash = installed exe hash, koi staged file nahi.
+
+**— deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
+
+---
+
 **— deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
 *Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) + deepseek Part 3
 (cases 11–20) — teeno untouched. Ye part sirf append hai.*
