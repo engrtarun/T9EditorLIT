@@ -11,6 +11,7 @@
   import type { LineFlag, TranscriptLine } from '../../types';
   import ProjectHealth from './ProjectHealth.svelte';
   import ShapeStrip from './ShapeStrip.svelte';
+  import RangeTranscribe from './RangeTranscribe.svelte';
 
   /* Virtual scroll constants — a 2-hour transcript can be 20k lines.
      Only ~30 rows ever exist in the DOM, so RAM stays flat. */
@@ -745,6 +746,7 @@
                 Pehla chunk turant banega — poora video ek saath nahi. Har chunk SQLite me save hota
                 hai.
               </p>
+              <RangeTranscribe />
             {:else}
               <p class="mt-2 text-[10.5px] text-nc-mut-2">
                 Transcript ke liye desktop app use karo.
@@ -861,6 +863,19 @@
             </button>
           {/if}
         </div>
+        <!--
+          The panel keeps the range control reachable after the first chunk:
+          a plan that is half-done is exactly when "sirf 20:00-22:00 chahiye"
+          matters, and walking every chunk in order to reach it would buy the
+          minutes the user did not ask for. Collapsed so the footer stays one
+          line tall until it is needed.
+        -->
+        <details class="mt-1">
+          <summary class="cursor-pointer text-[10px] text-nc-mut-2">
+            Sirf ek hissa transcribe karna hai?
+          </summary>
+          <RangeTranscribe />
+        </details>
       {/if}
     </div>
   {/if}

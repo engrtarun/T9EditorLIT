@@ -12,6 +12,7 @@ import {
   pendingSecs,
   planFromChunks,
   reconcileBoundary,
+  spansInRange,
   type TranscriptPlan
 } from './transcript-plan.ts';
 import type { AudioChunk, TranscriptLine } from './types.ts';
@@ -74,6 +75,39 @@ test('the estimate only prices the audio that is still pending', () => {
 test('a short remainder still gets a realistic floor, not 0 seconds', () => {
   const plan = planFromChunks([chunk(0, 0, 20)]);
   assert.equal(estimatePlan(plan).etaSecs, 20);
+});
+
+test('a time range buys only the chunks that touch it', () => {
+  const plan = planFromChunks([chunk(0, 0), chunk(1, 300), chunk(2, 600), chunk(3, 900)]);
+
+  // 14:00-16:00 with 5-minute chunks straddles chunk 2 (600-900) and chunk 3
+  // (900-1200). Chunk 1 (300-600) is behind the range and must not be bought.
+  assert.deepEqual(
+    spansInRange(plan, 840, 960).map((s) => s.index),
+    [2, 3]
+  );
+  // 12:00-14:00 sits inside chunk 2 alone; the chunk that starts at 15:00 is
+  // outside it.
+  assert.deepEqual(
+    spansInRange(plan, 720, 840).map((s) => s.index),
+    [2]
+  );
+  // The boundary is half-open: a range that starts where chunk 2 starts does
+  // not also re-buy the chunk that ends there.
+  assert.deepEqual(
+    spansInRange(plan, 600, 601).map((s) => s.index),
+    [2]
+  );
+  // A chunk already in SQLite is never bought twice.
+  assert.deepEqual(
+    spansInRange(markDone(plan, 2), 600, 601).map((s) => s.index),
+    []
+  );
+  // Reversed inputs are the same range, not an empty one.
+  assert.deepEqual(
+    spansInRange(plan, 960, 840).map((s) => s.index),
+    [2, 3]
+  );
 });
 
 test('a stored plan is trusted only after its shape is checked', () => {

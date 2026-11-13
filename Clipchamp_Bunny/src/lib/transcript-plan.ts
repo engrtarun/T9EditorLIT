@@ -84,6 +84,22 @@ export function isPlanComplete(plan: TranscriptPlan): boolean {
   return pendingSpans(plan).length === 0;
 }
 
+/**
+ * The chunks a `[from, to]` request must buy.
+ *
+ * Whisper is called per chunk, so a range is a question about chunks, not
+ * seconds. Half-open overlap on purpose: a chunk that ends exactly at `from`
+ * lies behind the range and one that starts exactly at `to` lies ahead of it,
+ * so "12:00-14:00" buys the chunks that hold those minutes and nothing else.
+ * Done chunks are excluded — their words are already in SQLite.
+ */
+export function spansInRange(plan: TranscriptPlan, from: number, to: number): ChunkSpan[] {
+  const lo = Math.min(from, to);
+  const hi = Math.max(from, to);
+  const done = new Set(plan.done);
+  return plan.spans.filter((s) => !done.has(s.index) && s.endSec > lo && s.startSec < hi);
+}
+
 /** Seconds of audio still to send — the number the cost line is built from. */
 export function pendingSecs(plan: TranscriptPlan): number {
   return pendingSpans(plan).reduce((n, s) => n + Math.max(0, s.endSec - s.startSec), 0);

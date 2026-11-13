@@ -50,6 +50,7 @@ import {
   parsePlan,
   planFromChunks,
   reconcileBoundary,
+  spansInRange,
   transcriptPlanKey,
   isOfflineError,
   type TranscriptPlan
@@ -1250,6 +1251,94 @@ class ProjectStore {
    */
   stopTranscript(): void {
     this.planStop = true;
+  }
+
+  /**
+   * "Sirf is hissa": transcribe only the chunks that overlap `[from, to]`.
+   *
+   * Whisper works in ~5-minute chunks, so that is the honest granularity: a
+   * 12:00-14:00 request buys the chunks holding those minutes, not the other
+   * 45 minutes of the file. Every word those chunks produced is kept, because
+   * the plan records a whole chunk as done; discarding the out-of-range words
+   * would leave a "done" chunk whose text is missing and the panel could never
+   * tell the difference between that and silence.
+   *
+   * The transcript stays partial by design: `finishTranscript` (autocorrect +
+   * AI flags) still runs once, when the whole plan is done.
+   */
+  async transcribeRange(fromSecs: number, toSecs: number): Promise<void> {
+    await this.startTranscriptRange(fromSecs, toSecs);
+  }
+
+  private async startTranscriptRange(fromSecs: number, toSecs: number): Promise<void> {
+    if (this.planRunning || this.pipeline) return;
+    const source = this.sourcePath;
+    if (!source) return;
+    const durationSecs = this.media?.durationSecs ?? 0;
+    const from = Math.max(0, Math.min(fromSecs, toSecs));
+    const to = Math.min(Math.max(fromSecs, toSecs), durationSecs > 0 ? durationSecs : Infinity);
+    if (!(to > from)) {
+      this.loadError = 'Time range khaali hai — shuru ka time akhiri time se chhota hona chahiye.';
+      return;
+    }
+    this.planRunning = true;
+    this.planAll = false;
+    this.planStop = false;
+    this.loadError = null;
+    this.pipeline = { stage: 'Shuru ho raha hai…', fraction: 0.02 };
+    try {
+      const { plan, chunks } = await this.ensurePlan(source);
+      const wanted = spansInRange(plan, from, to);
+      if (!wanted.length) {
+        this.loadError =
+          'Is hisse ke saare chunks pehle se ban chuke hain — panel me lines dekh lo, ya "Sab banao" dabao.';
+        return;
+      }
+      if (!this.audioProfile) {
+        this.audioProfile = await fetchAudioProfile(chunks, this.sensitivity);
+      }
+      let current = plan;
+      const total = wanted.length;
+      for (let i = 0; i < wanted.length; i++) {
+        const span = wanted[i];
+        const chunk = chunks.find((c) => c.index === span.index);
+        if (!chunk) {
+          // A restored plan named a chunk this extraction does not have.
+          // Dropping the position is honest; re-sending would be a guess.
+          current = markDone(current, span.index);
+          this.transcriptPlan = current;
+          this.writePlan(source, current);
+          continue;
+        }
+        const step = await this.transcribeSpan(source, chunk, current, i + 1, total);
+        current = step.plan;
+        this.transcriptPlan = current;
+        this.writePlan(source, current);
+        if (step.error) {
+          if (!this.planFailed.includes(span.index)) {
+            this.planFailed = [...this.planFailed, span.index].sort((a, b) => a - b);
+          }
+          this.noteGaps(source, this.planFailed, chunks, step.error);
+          this.loadError = step.error;
+          break;
+        }
+        this.planFailed = this.planFailed.filter((i2) => i2 !== span.index);
+        if (!this.planFailed.length) this.noteGaps(source, [], chunks, '');
+        if (this.planStop) break;
+      }
+      // Only a range means the plan is usually still open; the whole-transcript
+      // stages wait for the last chunk, exactly as they do for "Agla chunk".
+      if (isPlanComplete(current)) await this.finishTranscript(source);
+    } catch (e) {
+      this.loadError = e instanceof Error ? e.message : String(e);
+      this.noSpeech = e instanceof NoSpeechError;
+      this.music = e instanceof NoSpeechError && e.music;
+    } finally {
+      this.planRunning = false;
+      this.planAll = false;
+      this.planStop = false;
+      this.pipeline = null;
+    }
   }
 
   /**
