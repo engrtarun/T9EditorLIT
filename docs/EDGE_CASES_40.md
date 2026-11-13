@@ -3011,6 +3011,28 @@ koi staged `.new.exe` nahi, Update click ki zaroorat nahi.
 
 **— deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
 
+### P11.1 Correction — sequence export pehle se hai (P11 ki ek line galat thi)
+
+P11 me maine likha tha "doosri video ko weave karne ke liye multi-source renderer
+chahiye, jo abhi nahi hai". **Ye galat tha.** Renderer pehle se multi-source
+sequence export karta hai:
+
+| Kahan | Kya |
+| --- | --- |
+| `Clipchamp_Bunny/src/lib/components/modes/ExportMode.svelte` | `multiClip = project.clips.length > 0` → part 0 = main cut, part 1..n = har clip (`inSec`–`outSec`), phir `concatParts()` |
+| `src-tauri/src/export.rs` | `options.canvas` — har part ek hi frame par letterbox + re-encode, taaki join stream copy ho; sequence part hamesha H.264 + AAC |
+| UI | "poora sequence ek MP4 me jayega. Main cut pehle, phir clips"; multi-clip ho to format MP4 par lock |
+
+Sahi baat sirf itni hai: clip ka **apna transcript nahi hota**, isliye clip ke
+andar ke words cut nahi kar sakte — clip poori `in`/`out` trim ke saath sequence
+me lagti hai. "Nahi ho sakta" wali baat transcript par lagi thi, export par nahi.
+
+Isi jaanch me ek asli gap mila: clip ka mute/volume export me apply nahi hota
+(`ExportMode.svelte` ka clip loop `gain` nahi bhejta, jabki `export.rs` line ~981
+`volume=` filter support karta hai). Fix pending.
+
+**— deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
+
 ---
 
 **— deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
