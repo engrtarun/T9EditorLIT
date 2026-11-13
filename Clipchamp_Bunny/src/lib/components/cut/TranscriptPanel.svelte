@@ -14,7 +14,7 @@
 
   /* Virtual scroll constants — a 2-hour transcript can be 20k lines.
      Only ~30 rows ever exist in the DOM, so RAM stays flat. */
-  const ROW_H = 46;
+  const ROW_H = 60;
   const OVERSCAN = 6;
 
   type Filter = 'all' | 'flagged' | 'cut';
@@ -391,7 +391,7 @@
       {@const cut = line.keep === 'cut'}
       <div
         style="height:{ROW_H}px"
-        class="group relative flex items-center gap-2 border-b border-nc-line/60 px-2 transition-colors
+        class="group relative flex items-center gap-2 overflow-hidden border-b border-nc-line/60 px-2 transition-colors
                {isCursor ? 'bg-nc-brand/8' : 'hover:bg-nc-panel-2'}
                {project.isSelected(line.id) ? 'bg-nc-brand/12' : ''}"
       >
@@ -445,73 +445,81 @@
                 {line.translatedText}
               </span>
             {/if}
-            {#if line.flag !== 'none'}
-              <span
-                use:flagFlash
-                class="mt-0.5 inline-block rounded border px-1 py-[1px] text-[8px] font-bold tracking-wider
-                       {FLAG_CHIP[line.flag]}"
-              >
-                {FLAG_LABEL[line.flag]}
-                {line.confidence < 0.6 ? ` · ${(line.confidence * 100) | 0}%` : ''}
-              </span>
-            {/if}
             <!--
-              Cases 22-24 and 26, as one badge row: a non-speech tag becomes an
-              icon, a collapsed loop shows how many copies it held, crosstalk
-              and a retake ask for a decision instead of pretending to know.
+              Every chip (flag, tag, loop count, crosstalk, retake, language)
+              lives in ONE non-wrapping row. The row has a fixed height for the
+              virtual list, so a second chip line used to paint over the row
+              below it - the badge row must never wrap.
             -->
-            {#if line.tags?.length}
-              <span
-                class="mt-0.5 ml-1 inline-block rounded border border-nc-line-2 bg-nc-panel-2 px-1 py-[1px] text-[8px] text-nc-mut"
-                dir="auto"
-                title="Non-speech sound: {line.tags.join(', ')}"
-              >
-                {project.tagIcons(line)}
-              </span>
-            {/if}
-            {#if line.repeatCount && line.repeatCount > 1}
-              <span
-                class="mt-0.5 ml-1 inline-block rounded border border-nc-line-2 bg-nc-panel-2 px-1 py-[1px] text-[8px] font-bold text-nc-mut"
-                title="Whisper ne ye line {line.repeatCount} baar repeat ki — baaki copies collapsed hain"
-              >
-                ×{line.repeatCount}
-              </span>
-            {/if}
-            {#if line.crosstalk}
-              <span
-                class="mt-0.5 ml-1 inline-block rounded border border-amber-400/40 bg-amber-400/10 px-1 py-[1px] text-[8px] font-bold tracking-wider text-amber-300"
-                title="Do awaazein overlap kar rahi hain — auto-cut ise kabhi nahi chhuega"
-              >
-                2 VOICES
-              </span>
-            {/if}
-            {#if line.needsConfirm}
+            <span class="mt-0.5 flex flex-nowrap items-center gap-1 overflow-hidden">
+              {#if line.flag !== 'none'}
+                <span
+                  use:flagFlash
+                  class="shrink-0 rounded border px-1 py-[1px] text-[8px] font-bold tracking-wider
+                         {FLAG_CHIP[line.flag]}"
+                >
+                  {FLAG_LABEL[line.flag]}
+                  {line.confidence < 0.6 ? ` · ${(line.confidence * 100) | 0}%` : ''}
+                </span>
+              {/if}
               <!--
-                The badge only asks. The answer lives in the right-hand
-                action strip: a button nested inside the row's jump button is
-                invalid markup, and a click would mean two things at once.
+                Cases 22-24 and 26, as one badge row: a non-speech tag becomes an
+                icon, a collapsed loop shows how many copies it held, crosstalk
+                and a retake ask for a decision instead of pretending to know.
               -->
-              <span
-                class="mt-0.5 ml-1 inline-block rounded border border-amber-400/40 bg-amber-400/10 px-1 py-[1px] text-[8px] font-bold tracking-wider text-amber-300"
-                title="Ye take ho sakta hai ki galti se bola gaya ho — right side se decide karo"
-              >
-                {line.repeatKind === 'stutter' ? 'STUTTER?' : 'RETAKE?'}
-              </span>
-            {/if}
-            {#if isLanguageSwitch(line.language, project.language)}
-              <!--
-                The badge appears only on the odd line out: a chip on every
-                line of a Hindi video is noise, a chip on the one English
-                line is information.
-              -->
-              <span
-                class="mt-0.5 ml-1 inline-block rounded border border-nc-line-2 bg-nc-panel-2 px-1
-                       py-[1px] text-[8px] font-bold tracking-wider text-nc-mut"
-                title="Ye line is language me hai jo baaki transcript se alag hai"
-              >
-                {languageLabel(line.language)}
-              </span>
-            {/if}
+              {#if line.tags?.length}
+                <span
+                  class="shrink-0 rounded border border-nc-line-2 bg-nc-panel-2 px-1 py-[1px] text-[8px] text-nc-mut"
+                  dir="auto"
+                  title="Non-speech sound: {line.tags.join(', ')}"
+                >
+                  {project.tagIcons(line)}
+                </span>
+              {/if}
+              {#if line.repeatCount && line.repeatCount > 1}
+                <span
+                  class="shrink-0 rounded border border-nc-line-2 bg-nc-panel-2 px-1 py-[1px] text-[8px] font-bold text-nc-mut"
+                  title="Whisper ne ye line {line.repeatCount} baar repeat ki — baaki copies collapsed hain"
+                >
+                  ×{line.repeatCount}
+                </span>
+              {/if}
+              {#if line.crosstalk}
+                <span
+                  class="shrink-0 rounded border border-amber-400/40 bg-amber-400/10 px-1 py-[1px] text-[8px] font-bold tracking-wider text-amber-300"
+                  title="Do awaazein overlap kar rahi hain — auto-cut ise kabhi nahi chhuega"
+                >
+                  2 VOICES
+                </span>
+              {/if}
+              {#if line.needsConfirm}
+                <!--
+                  The badge only asks. The answer lives in the right-hand
+                  action strip: a button nested inside the row's jump button is
+                  invalid markup, and a click would mean two things at once.
+                -->
+                <span
+                  class="shrink-0 rounded border border-amber-400/40 bg-amber-400/10 px-1 py-[1px] text-[8px] font-bold tracking-wider text-amber-300"
+                  title="Ye take ho sakta hai ki galti se bola gaya ho — right side se decide karo"
+                >
+                  {line.repeatKind === 'stutter' ? 'STUTTER?' : 'RETAKE?'}
+                </span>
+              {/if}
+              {#if isLanguageSwitch(line.language, project.language)}
+                <!--
+                  The badge appears only on the odd line out: a chip on every
+                  line of a Hindi video is noise, a chip on the one English
+                  line is information.
+                -->
+                <span
+                  class="shrink-0 rounded border border-nc-line-2 bg-nc-panel-2 px-1 py-[1px] text-[8px]
+                         font-bold tracking-wider text-nc-mut"
+                  title="Ye line is language me hai jo baaki transcript se alag hai"
+                >
+                  {languageLabel(line.language)}
+                </span>
+              {/if}
+            </span>
           </span>
         </button>
 
