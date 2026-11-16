@@ -833,17 +833,17 @@ class BrowserStore {
   }
 
   /**
-   * Bring the strip back after a restart or a crash. Runs once per launch.
+   * Read the saved strip on launch. Runs once per launch.
    *
-   * Only metadata is restored: creating a webview here would start a saved
-   * YouTube tab behind the dashboard, which is exactly the "audio outlives
-   * the app" complaint. The first `showActive` (when the user opens the
-   * browser) is what brings the page on screen.
+   * A cold start lands on the speed dial (the Home tab), never on the page
+   * that happened to be open last: restoring the strip reopened a stuck
+   * YouTube tab on every launch, so the browser opened on YouTube and Home
+   * was never seen. The saved entries are kept as restore points instead -
+   * Ctrl+Shift+T brings them back one at a time - and no webview is created
+   * here, which also keeps a saved video from playing behind the dashboard.
    *
    * SQLite is asked first; localStorage is the fallback for a fresh profile
-   * or a dev build without the command bridge. The old pins file stays as a
-   * last resort so a user upgrading from the previous build still gets their
-   * pinned YouTube tab back.
+   * or a dev build without the command bridge.
    */
   async restoreSession(): Promise<void> {
     if (this.sessionRestored) return;
@@ -881,27 +881,29 @@ class BrowserStore {
         return;
       }
 
+      const saved: { url: string; title: string; index: number }[] = [];
       for (const entry of stored.tabs) {
-        if (this.tabs.length >= MAX_TABS) break;
+        if (saved.length >= MAX_TABS) break;
         if (!entry || typeof entry !== 'object') continue;
-        const { url, title, pinned } = entry as Record<string, unknown>;
+        const { url, title } = entry as Record<string, unknown>;
         if (typeof url !== 'string' || !url || url === 'about:blank') continue;
-        const tab = makeTab(url);
-        tab.title = typeof title === 'string' && title ? title : hostOf(url);
-        tab.pinned = pinned === true;
-        this.tabs.push(tab);
-        this.push(tab.id, url);
-        if (tab.pinned && isTauri()) void browserSetPinned(tab.id, true);
+        saved.push({
+          url,
+          title: typeof title === 'string' && title ? title : hostOf(url),
+          index: saved.length
+        });
       }
-      if (this.tabs.length === 0) {
+      if (saved.length === 0) {
         this.restorePinned();
         return;
       }
+      // `reopenClosed` pops the last entry, so the tab that was active last
+      // is pushed last and comes back first on Ctrl+Shift+T.
       const wanted = typeof stored.active === 'number' ? stored.active : 0;
-      this.activeId = this.tabs[Math.max(0, Math.min(this.tabs.length - 1, wanted))].id;
-      // Pins are part of the session now; keep the old file in step so a
-      // rollback to the previous build still sees them.
-      this.persistPins();
+      const activeAt = Math.max(0, Math.min(saved.length - 1, wanted));
+      const [wasActive] = saved.splice(activeAt, 1);
+      saved.push(wasActive);
+      for (const entry of saved) this.closed.push(entry);
     } finally {
       // Only now may `persistSession` write: the mount effect fires while the
       // `statsGet` above is still in flight, and an empty strip would erase

@@ -84,6 +84,20 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
 
 - **Status:** `open` — this is the gate for every row above.
 
+## 9. Browser cold start — YouTube restored instead of Home
+
+- **Status:** `in-progress`
+- **Seen:** a fresh launch, then `Ctrl+Shift+B`, opened the browser on YouTube,
+  not the speed dial. The log names the reason:
+  `show id=1 url=https://www.youtube.com/ ... resume=Some(true)` —
+  `restoreSession()` put the last strip back into `tabs`, so the Home tab never
+  existed. The same screenshot showed the restored page area white while
+  `event page finished 1` had already been logged.
+- **Fix:** a cold start always lands on the speed dial; the saved strip is kept
+  as "recently closed" and comes back one tab at a time with `Ctrl+Shift+T`.
+- **Done when:** relaunch -> `Ctrl+Shift+B` shows the Home/speed dial with zero
+  tabs, and `Ctrl+Shift+T` restores the previous tab.
+
 ---
 
 ## Next actions
