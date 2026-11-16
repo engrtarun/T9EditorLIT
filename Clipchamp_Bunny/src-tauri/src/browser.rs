@@ -808,11 +808,17 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
         ICoreWebView2_13, ICoreWebView2_2, ICoreWebView2_24,
         COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
         COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_UTILITY_PROCESS_EXITED,
         COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_BALANCED, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
     };
     use webview2_com::{
         take_pwstr, NotificationReceivedEventHandler, PermissionRequestedEventHandler,
-        WebMessageReceivedEventHandler, WebResourceRequestedEventHandler,
+        ProcessFailedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler,
     };
     use windows::core::{Interface, PCWSTR, PWSTR};
     use windows::Win32::System::Com::IStream;
@@ -821,6 +827,11 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
     let msg_app = app.clone();
     let msg_id = id.to_string();
     let note_id = id.to_string();
+    // A dead or spinning renderer has to be reported by name, and the handler
+    // runs long after this function returns - so the handle is cloned here,
+    // outside the `'static` webview closure, where `app` is still a borrow.
+    let fail_app = (*app).clone();
+    let fail_id = id.to_string();
     // Alt+F4 has to leave the app even while this page owns the keyboard
     // focus; the handler is registered on every tab, not just the shell.
     let close_app = app.clone();
@@ -1005,6 +1016,59 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
                 Ok(())
             }));
             let _ = core24.add_NotificationReceived(&note, &mut note_token);
+        }
+
+        // A renderer that dies - or one that spins forever - keeps painting
+        // its last frame. The page then looks like a frozen app, and every
+        // shortcut that lives in the page shim is dead with it; the shim runs
+        // *inside* that renderer. Without this hook the app had no name for
+        // that state, which is why "kabhi kabhi load nahi hota" could never be
+        // told apart from "app not responding".
+        //
+        // Recovery: a dead renderer never comes back on its own, so it is
+        // reloaded (twice at most, so a page that crashes in a loop cannot
+        // pin the CPU). An unresponsive one still might recover, so it is only
+        // recorded - reloading would throw away a page that is still working.
+        let fail_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut fail_token = 0i64;
+        let fail = ProcessFailedEventHandler::create(Box::new(move |sender, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND_UTILITY_PROCESS_EXITED;
+            if args.ProcessFailedKind(&mut kind).is_err() {
+                return Ok(());
+            }
+            let name = if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE {
+                "renderer-unresponsive"
+            } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED {
+                "renderer-exited"
+            } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED {
+                "frame-renderer-exited"
+            } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED {
+                "browser-exited"
+            } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED {
+                "gpu-exited"
+            } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_UTILITY_PROCESS_EXITED {
+                "utility-exited"
+            } else {
+                "other-exited"
+            };
+            diag(&format!("process failed {fail_id} -> {name}"));
+            let dead = name == "renderer-exited"
+                || name == "frame-renderer-exited"
+                || name == "browser-exited";
+            if dead && fail_count.fetch_add(1, Ordering::Relaxed) < 2 {
+                if let Some(sender) = sender {
+                    let _ = sender.Reload();
+                    diag(&format!("process failed {fail_id} -> reloaded"));
+                }
+            }
+            let _ = fail_app.emit("browser:process-failed", &fail_id);
+            Ok(())
+        }));
+        if let Err(err) = core.add_ProcessFailed(&fail, &mut fail_token) {
+            diag(&format!("process failed hook ERR {err}"));
         }
     });
     if posted.is_err() {
