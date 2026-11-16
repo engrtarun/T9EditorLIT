@@ -8,16 +8,59 @@
    * favicon — or a letter tile when the icon cannot be fetched — so the page
    * never shows a broken image.
    *
+   * Above the field sits the part a visitor notices first: a time-aware
+   * greeting, a live clock, and three honest status chips (ad blocker, tab
+   * budget, search engine). Nothing here is decoration for its own sake — each
+   * chip reads a real store, and the clock never claims a number it does not
+   * have.
+   *
    * Everything renders in the *main* webview (Svelte DOM), so an empty tab
    * costs zero megabytes: the native page webview only exists once a real URL
    * is navigated to.
    */
   import { browser, SPEED_DIAL, toUrl } from '../../stores/browser.svelte';
   import { pinnedTools, hostOfUrl } from '../../stores/pinned-tools.svelte';
+  import { ublock } from '../../stores/ublock.svelte';
+  import { getSearchEngine } from '../../search-engines';
   import SiteIcon from './SiteIcon.svelte';
   import { isTauri } from '../../ipc';
 
   let query = $state('');
+
+  /** The clock ticks every 15 s, so the minute counter flips within one tick. */
+  let now = $state(new Date());
+  $effect(() => {
+    const id = setInterval(() => (now = new Date()), 15_000);
+    return () => clearInterval(id);
+  });
+
+  const greeting = $derived.by(() => {
+    const h = now.getHours();
+    if (h < 5) return 'Shubh ratri';
+    if (h < 12) return 'Suprabhat';
+    if (h < 17) return 'Namaste';
+    if (h < 21) return 'Shubh sandhya';
+    return 'Shubh ratri';
+  });
+
+  const clock = $derived(
+    now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
+  );
+  const today = $derived(
+    now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })
+  );
+
+  /** Display-only: the URL bar owns the pick; the dial just mirrors it. */
+  const engine = $derived(getSearchEngine());
+
+  /** Green = WebView2 loaded the blocker, red = it did not, grey = no answer. */
+  const shieldTone = $derived(
+    ublock.runtime === 'loaded'
+      ? 'bg-emerald-400'
+      : ublock.runtime === 'missing'
+        ? 'bg-red-400'
+        : 'bg-nc-mut-2'
+  );
 
   function search(e: SubmitEvent) {
     e.preventDefault();
@@ -32,31 +75,51 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 flex-col overflow-y-auto px-6 py-8">
-  <div class="mx-auto w-full max-w-[660px]">
-    <p class="dial-in text-center text-[11px] font-bold tracking-[0.22em] text-nc-mut-2 uppercase">
-      Naya tab
-    </p>
+<div
+  class="relative flex h-full min-h-0 flex-col overflow-y-auto bg-gradient-to-b from-nc-bg via-nc-bg to-nc-panel/40 px-6 py-8"
+>
+  <!-- one soft brand glow, behind everything, pointer-inert -->
+  <div
+    class="pointer-events-none absolute -top-24 left-1/2 h-64 w-[560px] -translate-x-1/2 rounded-full bg-nc-brand/10 blur-3xl"
+    aria-hidden="true"
+  ></div>
+
+  <div class="relative mx-auto w-full max-w-[660px]">
+    <!-- hero: greeting + live clock -->
+    <div class="dial-in flex items-end justify-between gap-4">
+      <div class="min-w-0">
+        <p class="text-[11px] font-semibold tracking-[0.18em] text-nc-mut-2 uppercase">
+          {today}
+        </p>
+        <h1 class="mt-1 truncate text-[26px] leading-tight font-semibold text-nc-txt">
+          {greeting}
+        </h1>
+        <p class="mt-1 text-[11px] text-nc-mut">
+          Sab kuch aapke PC par — koi cloud nahi, koi account nahi.
+        </p>
+      </div>
+      <div class="shrink-0 text-right">
+        <p class="text-[30px] leading-none font-bold tabular-nums text-nc-txt">{clock}</p>
+        <p class="mt-1 text-[9px] font-semibold tracking-[0.16em] text-nc-mut-2 uppercase">
+          Local time
+        </p>
+      </div>
+    </div>
 
     <!-- the one thing a new tab is for -->
     <form
       onsubmit={search}
-      class="dial-in dial-in-1 mt-3 flex h-11 items-center gap-2.5 rounded-full border border-nc-line bg-nc-panel px-4
+      class="dial-in dial-in-1 mt-6 flex h-11 items-center gap-2.5 rounded-full border border-nc-line bg-nc-panel px-4
              shadow-[0_10px_30px_rgba(0,0,0,.28)] transition-colors
              focus-within:border-nc-brand focus-within:ring-2 focus-within:ring-nc-brand/20"
     >
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.9"
-        class="shrink-0 text-nc-mut"
-        aria-hidden="true"
+      <span
+        class="grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-bold text-white"
+        style="background:{engine.color}"
+        title="Search engine: {engine.name} — URL bar me badlo"
       >
-        <circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" />
-      </svg>
+        {engine.letter}
+      </span>
       <input
         bind:value={query}
         placeholder="Search ya website ka address likho…"
@@ -70,6 +133,33 @@
         >↵</kbd
       >
     </form>
+
+    <!-- honest status chips: every dot reads a real store -->
+    <div class="dial-in dial-in-2 mt-3 flex flex-wrap items-center gap-1.5">
+      <span
+        class="flex items-center gap-1.5 rounded-full border border-nc-line bg-nc-panel px-2.5 py-1 text-[10px] text-nc-mut"
+        title={ublock.runtime === 'loaded'
+          ? `uBlock Origin Lite${ublock.version ? ` v${ublock.version}` : ''} WebView2 me load hai`
+          : ublock.runtime === 'missing'
+            ? 'Ad blocker WebView2 me load nahi hua — menu me check karo'
+            : 'Ad blocker status abhi pata nahi'}
+      >
+        <span class="h-1.5 w-1.5 rounded-full {shieldTone}"></span>
+        uBlock Lite{ublock.version ? ` · v${ublock.version}` : ''}
+      </span>
+      <span
+        class="rounded-full border border-nc-line bg-nc-panel px-2.5 py-1 text-[10px] tabular-nums text-nc-mut"
+      >
+        {browser.tabs.length} / 9 tabs
+      </span>
+      <span
+        class="flex items-center gap-1.5 rounded-full border border-nc-line bg-nc-panel px-2.5 py-1 text-[10px] text-nc-mut"
+        title="Search engine — URL bar ki chip se badlo"
+      >
+        <span class="h-1.5 w-1.5 rounded-full" style="background:{engine.color}"></span>
+        {engine.name}
+      </span>
+    </div>
 
     <!-- shortcuts -->
     <p class="dial-in dial-in-2 mt-7 mb-2 px-1 text-[10px] font-bold tracking-widest text-nc-mut-2">
@@ -166,18 +256,11 @@
       </div>
     {/if}
 
-    <!-- the cap, stated where the user counts cards -->
-    <div class="mt-8 flex flex-wrap items-center justify-center gap-2">
-      <span
-        class="rounded-full border border-nc-line bg-nc-panel px-2.5 py-1 text-[10px] text-nc-mut"
-      >
-        {browser.tabs.length} / 9 tabs
-      </span>
-      <span class="text-[10px] text-nc-mut-2">
-        Sab kuch app ke andar khulta hai — koi link system browser me nahi jata.
-        {isTauri() ? '' : '(dev preview)'}
-      </span>
-    </div>
+    <!-- the one-line promise, stated where the user counts cards -->
+    <p class="mt-8 text-center text-[10px] text-nc-mut-2">
+      Sab kuch app ke andar khulta hai — koi link system browser me nahi jata.
+      {isTauri() ? '' : '(dev preview)'}
+    </p>
   </div>
 </div>
 

@@ -3,6 +3,8 @@ package api
 import (
 	"errors"
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/engrtarun/T9EditorLIT/go/internal/dl"
 )
@@ -87,6 +89,54 @@ func (s *Server) handleDLSettingsSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleDLFileDelete removes one finished download's file, on the user's
+// explicit click (the history row's delete button). DELETE
+// /v1/dl/file?path=<absolute path>.
+//
+// The manager's own gate decides what may go: the path must sit inside the
+// download folder, never be a `.part`/sidecar, and never belong to a row
+// that is still running or paused. Windows can hold a freshly written file
+// for a moment (the antivirus scan of a large file is not instant), so a
+// refusal retries quietly for ~2 s before it is reported.
+func (s *Server) handleDLFileDelete(w http.ResponseWriter, r *http.Request) {
+	if s.deps.DL == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "downloader unavailable",
+		})
+		return
+	}
+	p := r.URL.Query().Get("path")
+	if p == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
+		return
+	}
+	if !s.deps.DL.CanDelete(p) {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "ye file delete nahi ho sakti — download folder ke andar ki finished file hi delete hoti hai",
+		})
+		return
+	}
+	var err error
+	for i := 0; i < 8; i++ {
+		if err = os.Remove(p); err == nil {
+			break
+		}
+		// Already gone is the outcome the caller wanted — no point retrying.
+		if os.IsNotExist(err) {
+			err = nil
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "file delete nahi hui (" + err.Error() + ") — shayad koi app usse khol ke baitha hai",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // handleDLAction is pause / resume / cancel on one row: POST

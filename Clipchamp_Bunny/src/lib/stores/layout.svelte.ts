@@ -29,6 +29,13 @@ class LayoutStore {
   helpOpen = $state(false);
   /** The settings dialog (gear icon). */
   settingsOpen = $state(false);
+  /**
+   * The transcript import dialog.
+   *
+   * While it is open the editor's global shortcuts stand down: a stray X / V
+   * typed into the dialog must not cut a line behind the overlay.
+   */
+  importOpen = $state(false);
   /** Which settings tab the dialog opens on (the profile menu jumps to About). */
   settingsTab = $state<'general' | 'language' | 'appearance' | 'about'>('general');
   /**

@@ -17,6 +17,7 @@
   import { openPath, revealPath } from '../../ipc';
   import { toast } from '../../stores/toast.svelte';
   import type { DownloadItem } from '../../types';
+  import type { DownloadHistoryEntry } from '../../stores/downloads.svelte';
 
   /** Bytes/s → "4.2 MB/s". */
   function fmtSpeed(bps: number): string {
@@ -105,6 +106,40 @@
     const done = downloads.items.find((i) => i.status === 'done' && i.path);
     return done ? folderOf(done.path) : null;
   });
+
+  /**
+   * Two-step delete: a real file does not vanish on one stray click. The
+   * first click arms the row (red for 3.5 s); the second deletes the file and
+   * the history row. The timer stops a red row from lingering as a trap.
+   */
+  let armed = $state<string | null>(null);
+  let armedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  $effect(() => () => {
+    if (armedTimer) clearTimeout(armedTimer);
+  });
+
+  function armDelete(id: string): void {
+    if (armedTimer) clearTimeout(armedTimer);
+    armed = id;
+    armedTimer = setTimeout(() => (armed = null), 3500);
+  }
+
+  /** A live finished row: delete the file, then take the row off the list. */
+  async function removeLive(item: DownloadItem): Promise<void> {
+    armed = null;
+    const gone = item.path ? await downloads.deleteFile(item.path) : true;
+    if (!gone) return; // the toast already says why (file still in use)
+    await downloads.removeHistory(item.id, false);
+    downloads.dismiss(item.id);
+    toast.push('info', `${item.filename} delete ho gayi`);
+  }
+
+  /** A row that only lives in the durable history. */
+  async function removePast(h: DownloadHistoryEntry): Promise<void> {
+    armed = null;
+    await downloads.removeHistory(h.id);
+  }
 </script>
 
 {#if downloads.open}
@@ -505,6 +540,29 @@
                     />
                   </svg>
                 </button>
+                <button
+                  type="button"
+                  onclick={() => (armed === item.id ? void removeLive(item) : armDelete(item.id))}
+                  class="grid h-6 w-6 place-items-center rounded transition-colors
+                         {armed === item.id
+                    ? 'bg-nc-red/25 text-nc-red ring-1 ring-nc-red/60'
+                    : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
+                  title={armed === item.id
+                    ? 'Dobara click: file disk se delete hogi'
+                    : 'Delete file + history'}
+                  aria-label={armed === item.id ? 'Confirm delete' : 'Delete download'}
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                  >
+                    <path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13" />
+                  </svg>
+                </button>
               {/if}
 
               {#if item.status === 'running' || item.status === 'paused'}
@@ -668,6 +726,42 @@
                     ? 'text-nc-mut-2'
                     : 'text-nc-red'}">{h.status}</span
                 >
+                <button
+                  type="button"
+                  onclick={() => (armed === h.id ? void removePast(h) : armDelete(h.id))}
+                  class="grid h-6 w-6 shrink-0 place-items-center rounded transition-colors
+                         {armed === h.id
+                    ? 'bg-nc-red/25 text-nc-red ring-1 ring-nc-red/60'
+                    : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
+                  title={armed === h.id
+                    ? 'Dobara click: file disk se delete hogi'
+                    : 'Delete file + history row'}
+                  aria-label={armed === h.id ? 'Confirm delete' : 'Delete history row'}
+                >
+                  {#if armed === h.id}
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.1"
+                    >
+                      <path d="M6 6l12 12M18 6L6 18" />
+                    </svg>
+                  {:else}
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                    >
+                      <path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13" />
+                    </svg>
+                  {/if}
+                </button>
               </li>
             {/each}
           </ul>

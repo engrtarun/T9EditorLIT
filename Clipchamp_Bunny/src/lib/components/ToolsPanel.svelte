@@ -2,10 +2,10 @@
   /**
    * Tools panel — the 9-dots launcher.
    *
-   * Nine built-in websites the app ships with (search, TTS, trends, docs, the
-   * video indexes) that can never be removed, plus whatever the user pins with
-   * the + button. Pinned tools live in `pinnedTools`, which the browser's
-   * new-tab page reads too — pin a site once, see it in both places.
+   * The built-in websites the app ships with (search, TTS, transcription,
+   * trends, docs, the video indexes) can never be removed, plus whatever the
+   * user pins with the + button. Pinned tools live in `pinnedTools`, which the
+   * browser's new-tab page reads too — pin a site once, see it in both places.
    *
    * **A tile never leaves the app.** It is a button, not an `<a target="_blank">`:
    * an anchor with a target hands the URL to Windows, which opens Edge/Firefox
@@ -34,6 +34,11 @@
     { id: 'brave', name: 'Brave Search', url: 'https://search.brave.com/?lang=en-in' },
     { id: 'qwen', name: 'Qwen Chat', url: 'https://chat.qwen.ai/' },
     { id: 'minimax', name: 'MiniMax TTS', url: 'https://www.minimax.io/audio/text-to-speech' },
+    {
+      id: 'elevenlabs-stt',
+      name: 'ElevenLabs STT',
+      url: 'https://elevenlabs.io/app/speech-to-text'
+    },
     { id: 'adobe-podcast', name: 'Adobe Podcast', url: 'https://podcast.adobe.com/en/enhance#' },
     {
       id: 'trends',

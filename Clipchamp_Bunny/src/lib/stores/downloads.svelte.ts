@@ -412,6 +412,53 @@ class DownloadsStore {
   }
 
   /**
+   * Delete one finished file from disk, on the user's explicit click.
+   *
+   * The daemon owns the folder: it refuses a path outside it, a `.part` or
+   * sidecar, and the file of a row still running or paused — so this can never
+   * kill a half-written download or reach outside Downloads. It also retries
+   * briefly, because Windows (an antivirus scan of a big file) can hold a
+   * freshly written file for a moment.
+   */
+  async deleteFile(path: string): Promise<boolean> {
+    if (!isTauri()) {
+      toast.push('info', 'Dev preview: file delete sirf desktop app me hota hai');
+      return false;
+    }
+    try {
+      const res = await fetch(`${DAEMON}/v1/dl/file?path=${encodeURIComponent(path)}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error ?? `delete refused (${res.status})`);
+      }
+      return true;
+    } catch (err) {
+      toast.push('warn', err instanceof Error ? err.message : String(err), 6000);
+      return false;
+    }
+  }
+
+  /**
+   * Remove one row from the durable history — and, by default, the file it
+   * names. History is the user's own record: the row goes even when the disk
+   * delete is refused, so a locked file cannot resurrect a "deleted" entry.
+   * Returns whether the file itself is gone (true when there was no path).
+   */
+  async removeHistory(id: string, withFile = true): Promise<boolean> {
+    const entry = this.history.find((h) => h.id === id);
+    if (!entry) return false;
+    const gone = withFile && entry.path ? await this.deleteFile(entry.path) : true;
+    if (gone && withFile && entry.path) {
+      toast.push('info', `${entry.filename} delete ho gayi`);
+    }
+    this.history = this.history.filter((h) => h.id !== id);
+    this.persistHistory();
+    return gone;
+  }
+
+  /**
    * The download began. Windows' notification centre is the only surface
    * that reaches the user when the panel is behind the editor, so every
    * accepted start gets one line there. Respects the single "notify me"

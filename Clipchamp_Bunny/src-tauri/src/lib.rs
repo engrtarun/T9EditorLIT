@@ -70,6 +70,9 @@ mod background_video;
 /// The in-built browser's native half: one WebView2 child per live tab.
 mod browser;
 
+/// Text extraction for transcript files exported from another tool (DOCX/PDF).
+mod transcript_import;
+
 mod smtc;
 
 /// The media OSD flyout (`flyout.html`) — shown on play/seek/media key,
@@ -592,6 +595,21 @@ async fn extract_waveform(
 fn load_transcript(db_path: String, source_path: String) -> Result<Vec<TranscriptLine>, String> {
     let conn = transcript::open_db(Path::new(&db_path))?;
     transcript::load_transcript(&conn, &source_path)
+}
+
+/// Turn a transcript file the user exported elsewhere into plain text.
+///
+/// Text/SRT/VTT/JSON/HTML are read as text; DOCX and PDF are extracted natively.
+/// The parse itself happens in TypeScript (`transcript-import.ts`), so the same
+/// file produces the same rows in browser mode. `spawn_blocking` keeps a large
+/// PDF off the UI thread.
+#[tauri::command]
+async fn read_transcript_file(
+    path: String,
+) -> Result<transcript_import::ImportedTranscript, String> {
+    tauri::async_runtime::spawn_blocking(move || transcript_import::read_path(PathBuf::from(path)))
+        .await
+        .map_err(|e| format!("Transcript file read task failed: {e}"))?
 }
 
 /// A stable fingerprint of a file's bytes: length + head/tail samples.
@@ -1779,6 +1797,7 @@ pub fn run() {
             extract_waveform,
             load_transcript,
             save_transcript,
+            read_transcript_file,
             set_transcript_keep,
             source_fingerprint,
             remember_source_fingerprint,

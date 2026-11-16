@@ -233,6 +233,9 @@
       e.preventDefault();
       return;
     }
+    // The transcript import dialog owns the keyboard while it is open. It
+    // handles its own Escape; nothing here may act on a key typed into it.
+    if (layout.importOpen) return;
 
     // In the **browser** Firefox's own key map runs FIRST — it lives in
     // src/lib/browser-keys.ts and is allowed to fire with the address bar

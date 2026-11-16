@@ -136,7 +136,7 @@
       <input
         type="range"
         min="1"
-        max="16"
+        max="32"
         step="1"
         value={connections}
         disabled={downloads.savingSettings}

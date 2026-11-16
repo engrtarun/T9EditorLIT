@@ -89,13 +89,15 @@ const (
 	// pay off: 45–90 GB over the default eight sockets leaves real
 	// throughput on the table, so huge files get more.
 	HugeBytes    = 1 << 30 // 1 GiB
-	HugeSegments = 16
+	HugeSegments = 24
 
-	// HardMaxSegments is the ceiling; some hosts refuse or throttle above
-	// a dozen connections on one file. Measured on this machine (1 GB test
-	// file, 15 s windows): 1 conn = 6 MB/s, 8 = 14 MB/s, 16 = 17-19 MB/s,
-	// 24 = 17 MB/s - sixteen is where the curve flattens.
-	HardMaxSegments = 16
+	// HardMaxSegments is the ceiling. Some hosts refuse or throttle above a
+	// dozen connections on one file — but the 429 machinery below makes a
+	// higher ceiling safe: a host that answers `too many connections` halves
+	// the budget (slowDown) and earns sockets back one at a time (speedUp),
+	// so a host that wanted five still gets five. On CDNs that scale per
+	// connection (~1 MB/s each) the extra sockets are the whole difference.
+	HardMaxSegments = 32
 
 	// keepTerminalFor is how long a finished row stays in the list before
 	// List() drops it, so a long-running daemon cannot grow the queue
@@ -382,6 +384,40 @@ func (m *Manager) Dir() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.dir
+}
+
+// CanDelete reports whether the daemon will delete this path on the user's
+// explicit request (the downloads history's delete button). Three gates, in
+// order: the path must sit INSIDE the download folder (no `..\..` escapes,
+// no "C:\Windows"), it must not be a `.part`/sidecar this queue could still
+// be writing, and it must not be the final path of a row still running or
+// paused. Everything else — a finished file the user is done with — deletes.
+func (m *Manager) CanDelete(path string) bool {
+	clean := filepath.Clean(path)
+	m.mu.Lock()
+	dir := m.dir
+	m.mu.Unlock()
+
+	rel, err := filepath.Rel(dir, clean)
+	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return false
+	}
+	base := filepath.Base(clean)
+	if strings.HasSuffix(base, ".part") || strings.HasSuffix(base, ".part.json") {
+		return false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range m.items {
+		if d.status != StatusRunning && d.status != StatusPaused {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSuffix(d.partPath, ".part"), clean) {
+			return false
+		}
+	}
+	return true
 }
 
 // Settings is the part of the queue's configuration the app owns.
@@ -2306,6 +2342,15 @@ func (d *download) pause() error {
 
 	d.mu.Lock()
 	d.saveSidecarLocked()
+	// Close the handle. While a row is paused its `.part` must be free for
+	// the file manager to delete — "file in use by another process" was a
+	// paused download holding its own file open for days. The pointer stays
+	// (not nil): a straggler writer that woke between the sleep and here
+	// calls WriteAt on a closed file, gets ErrClosed and exits — a nil field
+	// would be a panic instead. resume() always opens a fresh handle.
+	if d.file != nil {
+		_ = d.file.Close()
+	}
 	d.mu.Unlock()
 	return nil
 }
@@ -2320,21 +2365,28 @@ func (d *download) resume() error {
 		d.mu.Unlock()
 		return ErrBusy
 	}
-	if d.file == nil {
-		f, err := os.OpenFile(d.partPath, os.O_CREATE|os.O_RDWR, 0o644)
-		if err != nil {
-			d.mu.Unlock()
-			return fmt.Errorf("partial file nahi khul paayi: %w", err)
-		}
-		if err := markSparse(f); err != nil {
-			d.log.Warn("partial file is not sparse - unwritten gaps will cost disk",
-				"id", d.id, "path", d.partPath, "err", err)
-		}
-		if d.totalBytes > 0 {
-			_ = f.Truncate(d.totalBytes)
-		}
-		d.file = f
+	// pause() and fail() close the handle while the row is dead (the file
+	// manager must be able to delete the `.part`), so a resume always opens
+	// a FRESH handle. A stale pointer to that closed file must never become
+	// the writer's handle — a WriteAt on it would fail the resume with
+	// ErrClosed.
+	if d.file != nil {
+		_ = d.file.Close()
+		d.file = nil
 	}
+	f, err := os.OpenFile(d.partPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		d.mu.Unlock()
+		return fmt.Errorf("partial file nahi khul paayi: %w", err)
+	}
+	if err := markSparse(f); err != nil {
+		d.log.Warn("partial file is not sparse - unwritten gaps will cost disk",
+			"id", d.id, "path", d.partPath, "err", err)
+	}
+	if d.totalBytes > 0 {
+		_ = f.Truncate(d.totalBytes)
+	}
+	d.file = f
 	d.status = StatusRunning
 	d.errText = ""
 	// A row recovered from a sidecar has no start stamp; the retry is its
@@ -2367,9 +2419,12 @@ func (d *download) cancel() {
 	time.Sleep(20 * time.Millisecond)
 
 	d.mu.Lock()
+	// Close, but keep the pointer (see pause()): a straggler writer that
+	// wakes before it sees the cancellation calls WriteAt on a closed file
+	// and exits with ErrClosed — a nil field would be a panic. A cancelled
+	// row is terminal (its files are gone), so nobody reads the pointer.
 	if d.file != nil {
-		d.file.Close()
-		d.file = nil
+		_ = d.file.Close()
 	}
 	d.mu.Unlock()
 	_ = os.Remove(d.partPath)
@@ -2383,6 +2438,12 @@ func (d *download) fail(err error) {
 		d.errText = err.Error()
 		d.finishedAt = time.Now()
 		d.saveSidecarLocked() // a failed row can still be resumed later
+		// Same contract as pause(): a failed row's `.part` belongs to the
+		// user's file manager, not to a handle this row forgot to give up.
+		// The closed pointer stays for a straggler (ErrClosed, not nil).
+		if d.file != nil {
+			_ = d.file.Close()
+		}
 		diagf("fail id=%s status=%s err=%s recv=%d total=%d",
 			d.id, d.status, d.errText, d.received.Load(), d.totalBytes)
 	}

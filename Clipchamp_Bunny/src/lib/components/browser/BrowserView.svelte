@@ -224,6 +224,7 @@
       layout.profileOpen ||
       layout.settingsOpen ||
       layout.helpOpen ||
+      browser.searchPickerOpen ||
       !!menu.current;
     if (!isTauri()) return;
     void browserSetVisible(!open);
@@ -309,9 +310,79 @@
         {/if}
       </button>
 
+      <!-- Home: Firefox's house, straight to the speed dial. Always live —
+           "home" here is the browser's own new-tab page, never a guess. -->
+      <button
+        type="button"
+        onclick={() => browser.goHome()}
+        class="grid h-8 w-8 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt"
+        title="Home — speed dial (Alt+Home)"
+        aria-label="Home"
+      >
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.9"
+          stroke-linejoin="round"
+        >
+          <path d="M4 11.5l8-7 8 7" />
+          <path d="M6.5 10v10h4.5v-5.5h2V20h4.5V10" />
+        </svg>
+      </button>
+
       <div class="mx-1 min-w-0 flex-1">
         <UrlBar />
       </div>
+
+      <!--
+        uBlock Origin Lite's status, where Firefox's shield sits. There is no
+        per-page blocked counter to show — filtering happens inside WebView2
+        and uBOL exposes no number — so this is the honest version: a shield
+        and a live dot (green loaded, red missing, grey unknown). Clicking it
+        opens the menu, whose Add-ons section shows the full truth.
+      -->
+      <button
+        type="button"
+        onclick={() => browser.toggleSettings()}
+        class="relative grid h-8 w-8 place-items-center rounded-full transition-colors hover:bg-nc-panel-2
+               {ublock.runtime === 'loaded'
+          ? 'text-emerald-400'
+          : ublock.runtime === 'missing'
+            ? 'text-red-400'
+            : 'text-nc-mut hover:text-nc-txt'}"
+        title={ublock.runtime === 'loaded'
+          ? `uBlock Origin Lite active${ublock.version ? ` · v${ublock.version}` : ''}`
+          : ublock.runtime === 'missing'
+            ? 'Ad blocker WebView2 me load nahi hua — menu me check karo'
+            : 'Ad blocker status abhi pata nahi'}
+        aria-label="Ad blocker status"
+      >
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linejoin="round"
+        >
+          <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />
+          {#if ublock.runtime === 'loaded'}
+            <path d="M9 12l2 2 4-4" />
+          {/if}
+        </svg>
+        <span
+          class="absolute right-1.5 bottom-1.5 h-1.5 w-1.5 rounded-full ring-2 ring-nc-panel
+                 {ublock.runtime === 'loaded'
+            ? 'bg-emerald-400'
+            : ublock.runtime === 'missing'
+              ? 'bg-red-400'
+              : 'bg-nc-mut-2'}"
+        ></span>
+      </button>
 
       <!-- downloads: opens the panel, shows the running count -->
       <button

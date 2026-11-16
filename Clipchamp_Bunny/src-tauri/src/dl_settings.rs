@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 /// so a drift here is cosmetic, never a broken download.
 pub const DEFAULT_CONNECTIONS: i64 = 8;
 /// Mirrors `dl.HardMaxSegments`.
-pub const MAX_CONNECTIONS: i64 = 16;
+pub const MAX_CONNECTIONS: i64 = 32;
 
 /// What the Downloads settings popover edits.
 ///

@@ -197,6 +197,103 @@ export function pickMediaFiles(): Promise<File[]> {
   });
 }
 
+/** A transcript file after the native side has turned it into text. */
+export interface ImportedTranscriptFile {
+  /** File name, e.g. `transcript.docx`. */
+  name: string;
+  /** `text`, `docx` or `pdf` — how the text was extracted. */
+  kind: string;
+  text: string;
+  /** Bytes on disk (0 in browser mode). */
+  bytes: number;
+  /** Full path on the desktop; empty in browser mode. */
+  path: string;
+}
+
+/** The extensions the import dialog offers, matched by the Rust extractor. */
+const TRANSCRIPT_EXTENSIONS = [
+  'txt',
+  'md',
+  'markdown',
+  'srt',
+  'vtt',
+  'json',
+  'html',
+  'htm',
+  'docx',
+  'pdf'
+];
+
+/**
+ * Pick a transcript file and read it into text.
+ *
+ * Desktop: the native dialog picks the file and Rust turns DOCX/PDF into text.
+ * Browser: a hidden file input reads the text formats directly; DOCX/PDF need
+ * the desktop extractor and say so instead of failing silently.
+ */
+export async function pickTranscriptFile(): Promise<ImportedTranscriptFile | null> {
+  if (isTauri()) {
+    const picked = await open({
+      multiple: false,
+      directory: false,
+      filters: [
+        { name: 'Transcript', extensions: TRANSCRIPT_EXTENSIONS },
+        { name: 'All files', extensions: ['*'] }
+      ]
+    });
+    if (typeof picked !== 'string') return null;
+    return readTranscriptFile(picked);
+  }
+  const file = await pickTextFileInBrowser();
+  if (!file) return null;
+  const ext = file.name.toLowerCase().split('.').pop() ?? '';
+  if (ext === 'docx' || ext === 'pdf') {
+    throw new Error(
+      `${ext.toUpperCase()} file padhne ke liye desktop app chahiye. Abhi Text, SRT, VTT, JSON ya HTML use karo.`
+    );
+  }
+  return {
+    name: file.name,
+    kind: 'text',
+    text: await file.text(),
+    bytes: file.size,
+    path: ''
+  };
+}
+
+/**
+ * Read a transcript file at a path the app already knows — the one the
+ * in-built browser just saved, for example. Same extractor the picker uses, so
+ * DOCX/PDF work here too.
+ */
+export async function readTranscriptFile(path: string): Promise<ImportedTranscriptFile> {
+  if (!isTauri()) {
+    throw new Error('File path se transcript padhne ke liye desktop app chahiye.');
+  }
+  const file = await invoke<Omit<ImportedTranscriptFile, 'path'>>('read_transcript_file', {
+    path
+  });
+  return { ...file, path };
+}
+
+/** The browser half of the transcript picker (no native dialog exists). */
+function pickTextFileInBrowser(): Promise<File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = TRANSCRIPT_EXTENSIONS.map((ext) => `.${ext}`).join(',');
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    const done = (file: File | null) => {
+      input.remove();
+      resolve(file);
+    };
+    input.addEventListener('change', () => done(input.files?.[0] ?? null));
+    input.addEventListener('cancel', () => done(null));
+    input.click();
+  });
+}
+
 /**
  * Open the native folder picker — used for the export folder default.
  *
@@ -1466,6 +1563,19 @@ export function onBrowserDownload(
   cb: (p: { url: string; referer: string | null }) => void
 ): Promise<() => void> {
   return listen<{ url: string; referer: string | null }>('browser:download', (e) => cb(e.payload));
+}
+
+/**
+ * A `blob:`/`data:` download (ElevenLabs' export buttons) that WebView2 saved
+ * itself. `path` is where it landed, so the import dialog can point at it.
+ */
+export function onBrowserDownloadSaved(
+  cb: (p: { url: string; path: string | null; success: boolean }) => void
+): Promise<() => void> {
+  return listen<{ url: string; path: string | null; success: boolean }>(
+    'browser:download-saved',
+    (e) => cb(e.payload)
+  );
 }
 
 /**

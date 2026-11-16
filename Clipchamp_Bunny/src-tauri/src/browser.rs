@@ -33,6 +33,9 @@
 //!                           handler cancels it and the frontend hands the
 //!                           URL to the Go daemon's multi-segment
 //!                           downloader instead        { url, referer }
+//!   · `browser:download-saved` — a `blob:`/`data:` download (ElevenLabs'
+//!                           exports) was saved by WebView2 itself
+//!                                                       { url, path, success }
 
 use std::collections::HashSet;
 use std::fs::OpenOptions;
@@ -121,6 +124,22 @@ const AD_PATHS: &[&str] = &["/pagead/", "/ptracking", "/api/stats/ads"];
 /// Requests refused by the native ad shield since launch — diag proof that
 /// the shield is doing something, not a counter the UI has to hold.
 static AD_BLOCKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The one site that may use the microphone.
+///
+/// ElevenLabs' "record in the browser" flow is a genuinely useful free path,
+/// and the app opened that page itself. Every other site keeps WebView2's own
+/// prompt, so the grant cannot leak into ordinary browsing.
+fn mic_host_allowed(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let Some(scheme_end) = lower.find("://") else {
+        return false;
+    };
+    let rest = &lower[scheme_end + 3..];
+    let host_end = rest.find(['/', ':', '?', '#']).unwrap_or(rest.len());
+    let host = &rest[..host_end];
+    host == "elevenlabs.io" || host.ends_with(".elevenlabs.io")
+}
 
 /// Is this URL one the browser refuses on its own?
 ///
@@ -220,6 +239,20 @@ const SHIM: &str = include_str!("browser_shim.js");
 pub struct DownloadPayload {
     pub url: String,
     pub referer: Option<String>,
+}
+
+/// A `blob:`/`data:` download that WebView2 saved itself.
+///
+/// The daemon downloads http(s) URLs, but a blob URL only exists inside the
+/// page that made it - ElevenLabs' export buttons use exactly that. The page
+/// saves it, and this event tells the UI where it landed so the user can import
+/// it straight away.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadSavedPayload {
+    pub url: String,
+    pub path: Option<String>,
+    pub success: bool,
 }
 
 /// The content rectangle (logical pixels, relative to the window's client
@@ -711,9 +744,9 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2PermissionRequestedEventArgs2, ICoreWebView2Profile3, ICoreWebView2Settings3,
         ICoreWebView2_13, ICoreWebView2_2, ICoreWebView2_24,
-        COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION,
-        COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_BALANCED,
-        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
+        COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_BALANCED, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
     };
     use webview2_com::{
         take_pwstr, NotificationReceivedEventHandler, PermissionRequestedEventHandler,
@@ -858,13 +891,24 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
         // Site notifications (YouTube's bell, web chat). The browser has one
         // user and no second profile, so the permission prompt is noise:
         // grant it. WebView2 then paints the native Windows toast.
+        //
+        // The microphone is the one permission that is **not** granted to
+        // every site: it is handed to elevenlabs.io only, because that is the
+        // page the user records into on purpose to get a free transcript.
+        // Everything else keeps WebView2's own prompt (i.e. denied).
         let mut perm_token = 0i64;
         let perm = PermissionRequestedEventHandler::create(Box::new(|_sender, args| {
             if let Some(args) = args {
                 let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
-                if args.PermissionKind(&mut kind).is_ok()
-                    && kind == COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS
-                {
+                if args.PermissionKind(&mut kind).is_err() {
+                    return Ok(());
+                }
+                let mut allow = kind == COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS;
+                if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                    let mut raw = PWSTR::null();
+                    allow = args.Uri(&mut raw).is_ok() && mic_host_allowed(&take_pwstr(raw));
+                }
+                if allow {
                     let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
                     // `Handled` lives on the _2 interface; the base one only
                     // carries State. Marking it handled suppresses WebView2's
@@ -1691,14 +1735,25 @@ fn build_tab_webview<R: Runtime>(
         }
     };
 
-    // Download hook: WebView2's own download UI never appears — returning
-    // false cancels it, and the URL goes to the frontend, which hands it to
-    // the daemon's multi-segment downloader (1DM-style speed). The tab's
-    // current URL travels as the referer.
+    // Download hook: WebView2's own download UI never appears for a normal
+    // file - returning false cancels it, and the URL goes to the frontend,
+    // which hands it to the daemon's multi-segment downloader (1DM-style
+    // speed). The tab's current URL travels as the referer.
+    //
+    // `blob:` and `data:` URLs are the exception: the bytes live inside the
+    // page that made them, so a separate downloader cannot fetch them at all.
+    // ElevenLabs' export menu builds its Text/PDF/DOCX/JSON/HTML/SRT/VTT files
+    // this way, and cancelling those made "export" look broken. They are
+    // allowed through, and the finished path is reported to the UI.
     let dl_app = app.clone();
     let dl_id = id.to_string();
-    builder.on_download(move |webview, event| {
-        if let DownloadEvent::Requested { url, .. } = &event {
+    builder.on_download(move |webview, event| match &event {
+        DownloadEvent::Requested { url, .. } => {
+            let scheme = url.scheme();
+            if scheme == "blob" || scheme == "data" {
+                diag(&format!("event download allowed {} ({scheme})", dl_id));
+                return true;
+            }
             diag(&format!("event download requested {} -> {url}", dl_id));
             let referer = webview.url().ok().map(|u| u.to_string());
             let _ = dl_app.emit(
@@ -1708,9 +1763,33 @@ fn build_tab_webview<R: Runtime>(
                     referer,
                 },
             );
+            // false = cancel WebView2's download; the daemon owns the bytes now.
+            false
         }
-        // false = cancel WebView2's download; the daemon owns the bytes now.
-        false
+        DownloadEvent::Finished {
+            url,
+            path,
+            success,
+        } => {
+            let scheme = url.scheme();
+            if scheme == "blob" || scheme == "data" {
+                let saved = path.as_ref().map(|p| p.to_string_lossy().into_owned());
+                diag(&format!(
+                    "event download finished {} -> {saved:?} success={success}",
+                    dl_id
+                ));
+                let _ = dl_app.emit(
+                    "browser:download-saved",
+                    DownloadSavedPayload {
+                        url: url.to_string(),
+                        path: saved,
+                        success: *success,
+                    },
+                );
+            }
+            true
+        }
+        _ => true,
     })
 }
 
@@ -1926,7 +2005,34 @@ mod tests {
     }
 
     #[test]
-    fn payloads_serialize_camel_case() {        let nav = NavPayload {
+    fn microphone_is_granted_to_elevenlabs_only() {
+        assert!(mic_host_allowed("https://elevenlabs.io/app/speech-to-text"));
+        assert!(mic_host_allowed(
+            "https://www.elevenlabs.io/app/speech-to-text"
+        ));
+        assert!(mic_host_allowed("https://api.elevenlabs.io/v1/x"));
+        assert!(!mic_host_allowed("https://not-elevenlabs.io/x"));
+        assert!(!mic_host_allowed("https://elevenlabs.io.evil.com/x"));
+        assert!(!mic_host_allowed("https://example.com/elevenlabs.io"));
+        assert!(!mic_host_allowed(""));
+    }
+
+    #[test]
+    fn a_saved_blob_download_reports_its_path() {
+        let saved = DownloadSavedPayload {
+            url: "blob:https://elevenlabs.io/abc".into(),
+            path: Some(r"C:\Users\me\Downloads\transcript.docx".into()),
+            success: true,
+        };
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains("\"path\":"));
+        assert!(json.contains("transcript.docx"));
+        assert!(json.contains("\"success\":true"));
+    }
+
+    #[test]
+    fn payloads_serialize_camel_case() {
+        let nav = NavPayload {
             id: "3".into(),
             url: "https://example.com".into(),
         };

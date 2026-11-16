@@ -29,6 +29,7 @@ import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 import { detectQualitySuggestions, type QualitySuggestion } from '../suggestions';
 import { chunkSourceKey } from '../cloud-contract';
 import type { LayoutReport, MediaReport } from '../media-report';
+import type { BuiltImport, ImportFormat } from '../transcript-import';
 import { tagIcon, tagsOf } from '../transcript-tags';
 import {
   classifyGaps,
@@ -260,6 +261,37 @@ export interface TranscriptGaps {
   missing: Array<{ startSec: number; endSec: number }>;
   /** The provider's reason, shown in the details line. */
   error: string;
+}
+
+/**
+ * Where an imported transcript came from, and what it could measure.
+ *
+ * The app's own transcript is bought from ElevenLabs/Groq, so its timings are
+ * real. An imported file may be a plain-text copy with no timestamps at all —
+ * in which case every cut is a guess spread over the media. That difference
+ * must be visible in the UI, not hidden, which is why `estimated` travels with
+ * the rows and is persisted next to them.
+ */
+export interface TranscriptImportInfo {
+  /** File name, or "Paste" when the text came from the clipboard. */
+  source: string;
+  /** Full path on the desktop (`''` for a paste or browser mode). */
+  path: string;
+  /** `srt`, `vtt`, `json`, `html` or `text`. */
+  format: ImportFormat;
+  /** The chip's text: "ElevenLabs JSON", "SRT", "Text". */
+  label: string;
+  /** True when the rows' timings came from the file. */
+  timed: boolean;
+  /** True when the rows were spread over the media by word count. */
+  estimated: boolean;
+  speakers: number;
+  words: number;
+  lines: number;
+  /** Cues that began past the end of the media and were skipped. */
+  dropped: number;
+  /** When the import happened (epoch ms). */
+  at: number;
 }
 
 class ProjectStore {
@@ -843,6 +875,9 @@ class ProjectStore {
       // session that produced it. The gaps live in localStorage next to the
       // project's other per-machine state.
       this.partialTranscript = this.readGaps(canonical);
+      // A transcript imported from a file must say so on every open: its cuts
+      // may be estimated, and that cannot look like a measured transcript.
+      this.importedTranscript = await this.readImportInfo(canonical);
       // Resume an interrupted plan — even when lines already exist. A
       // transcript that is 3/10 chunks done must say so instead of posing as
       // whole, and the footer's "next chunk" continues from exactly there.
@@ -1133,6 +1168,80 @@ class ProjectStore {
   }
 
   /**
+   * The transcript was imported from a file, not bought from the API.
+   *
+   * `null` means the rows came from the app's own transcription (or there are
+   * no rows yet). The panel reads this to say where the words came from and
+   * whether the cuts can be trusted to the millisecond.
+   */
+  importedTranscript = $state<TranscriptImportInfo | null>(null);
+
+  /** SQLite `kv` key for one source's import record (localStorage is a mirror). */
+  private importKey(path: string): string {
+    return `t9-editor-lit.transcript-import.${path}`;
+  }
+
+  /**
+   * Read the import record back. SQLite first, localStorage as the fallback —
+   * the same order the plan and the gaps use, so a dev build without the
+   * bridge still shows the banner.
+   */
+  private async readImportInfo(path: string): Promise<TranscriptImportInfo | null> {
+    let raw: string | null = null;
+    try {
+      raw = await statsGet(this.importKey(path));
+    } catch {
+      /* no bridge */
+    }
+    if (!raw) {
+      try {
+        raw = localStorage.getItem(this.importKey(path));
+      } catch {
+        /* blocked storage */
+      }
+    }
+    if (!raw) return null;
+    try {
+      const value = JSON.parse(raw) as Partial<TranscriptImportInfo>;
+      // A record without rows is not worth a banner; the shape check keeps a
+      // half-written value from crashing the panel.
+      if (typeof value.source !== 'string' || typeof value.lines !== 'number') return null;
+      if (value.lines <= 0) return null;
+      const format = value.format;
+      return {
+        source: value.source,
+        path: typeof value.path === 'string' ? value.path : '',
+        format:
+          format === 'srt' || format === 'vtt' || format === 'json' || format === 'html'
+            ? format
+            : 'text',
+        label: typeof value.label === 'string' ? value.label : 'Text',
+        timed: value.timed === true,
+        estimated: value.estimated === true,
+        speakers: typeof value.speakers === 'number' ? value.speakers : 0,
+        words: typeof value.words === 'number' ? value.words : 0,
+        lines: value.lines,
+        dropped: typeof value.dropped === 'number' ? value.dropped : 0,
+        at: typeof value.at === 'number' ? value.at : 0
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private writeImportInfo(path: string, info: TranscriptImportInfo | null): void {
+    const key = this.importKey(path);
+    const json = info ? JSON.stringify(info) : '';
+    try {
+      if (info) localStorage.setItem(key, json);
+      else localStorage.removeItem(key);
+    } catch {
+      /* private mode / quota — SQLite below still wins */
+    }
+    void statsSet(key, json);
+  }
+
+  /**
    * Remember a partial run: sets the banner state and persists it for the next
    * open. `null` clears both, which is what a complete run does.
    */
@@ -1291,6 +1400,73 @@ class ProjectStore {
       this.pipeline = null;
     }
     await this.startTranscript(false);
+  }
+
+  /**
+   * Replace this project's transcript with one the user imported.
+   *
+   * The rows are **the** transcript: keeping the old ones would leave two
+   * sources of truth on one timeline, and every cut decision rides on those
+   * rows. So the derived state goes with them — the AI's auto-cut ids, the gap
+   * warnings, the chunk plan, the quality flags — and the new rows are written
+   * to SQLite, so the next open is an ordinary cache hit and no API call is
+   * spent on a file that already has words.
+   *
+   * `built` comes from `buildTranscriptLines` in `transcript-import.ts`; this
+   * method only owns the store side (state, persistence, shape).
+   */
+  async importTranscript(
+    built: BuiltImport,
+    file: { name: string; path: string }
+  ): Promise<number> {
+    if (!built.lines.length) return 0;
+    const source = this.sourcePath;
+    const info: TranscriptImportInfo = {
+      source: file.name,
+      path: file.path,
+      format: built.format,
+      label: built.label,
+      timed: built.timed,
+      estimated: built.estimated,
+      speakers: built.speakers,
+      words: built.words,
+      lines: built.lines.length,
+      dropped: built.dropped,
+      at: Date.now()
+    };
+
+    this.lines = built.lines;
+    this.importedTranscript = info;
+    this.selectedIds = [];
+    this.cursor = 0;
+    this.aiCutIds = [];
+    this.suggestions = [];
+    this.qualitySuggestions = [];
+    this.noSpeech = false;
+    this.music = false;
+    this.audioProfile = null;
+    this.partialTranscript = null;
+    this.planFailed = [];
+    this.transcriptPlan = null;
+    this.chunkCache = null;
+
+    if (source) {
+      this.writeGaps(source, null);
+      this.writePlan(source, null);
+      this.writeImportInfo(source, info);
+      if (isTauri()) {
+        try {
+          const db = await defaultDbPath();
+          await this.saveSegments(db, source, this.toCloudSegments(this.lines));
+        } catch (e) {
+          // The rows are on screen either way; a failed save means this
+          // session has them and the next open has to import again.
+          this.loadError = e instanceof Error ? e.message : String(e);
+        }
+      }
+    }
+    this.refreshShape();
+    return built.lines.length;
   }
 
   /**
@@ -2452,6 +2628,7 @@ class ProjectStore {
     // The previous file's plan stays on disk under its own key; this session
     // must not carry its chunks, its failures or its in-flight flags across.
     this.transcriptPlan = null;
+    this.importedTranscript = null;
     this.planRunning = false;
     this.planAll = false;
     this.planStop = false;

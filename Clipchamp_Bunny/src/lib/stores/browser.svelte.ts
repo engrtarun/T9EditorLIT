@@ -17,6 +17,7 @@ import {
   browserSetZoom,
   browserSetPinned,
   onBrowserDownload,
+  onBrowserDownloadSaved,
   onBrowserExtensions,
   onBrowserNav,
   onBrowserPage,
@@ -28,8 +29,10 @@ import {
   statsSet
 } from '../ipc';
 import { downloads } from './downloads.svelte';
+import { lastTranscriptDownload } from './last-transcript-download.svelte';
 import { ublock } from './ublock.svelte';
 import { toast } from './toast.svelte';
+import { searchUrlFor } from '../search-engines';
 
 /** The hard cap. Nine tabs, like the plan says — no more. */
 export const MAX_TABS = 9;
@@ -103,9 +106,6 @@ function loadPinnedTabs(): PinnedTab[] {
   }
 }
 
-/** Brave Search, not Google: no account, no ad profile on every keystroke. */
-const SEARCH_URL = 'https://search.brave.com/search?q=';
-
 /**
  * The speed-dial sites on the new-tab page.
  *
@@ -126,15 +126,16 @@ export const SPEED_DIAL: ReadonlyArray<{ url: string; label: string }> = [
  * Normalise whatever the user typed into a URL.
  *
  * A bare `youtube.com` becomes `https://youtube.com` (the scheme is implied);
- * anything with whitespace or no dot becomes a Brave search. Returns the
- * search URL when the input is a query, so the caller never has to branch.
+ * anything with whitespace or no dot becomes a search on the engine picked in
+ * the address bar (Brave by default). Returns the search URL when the input is
+ * a query, so the caller never has to branch.
  */
 export function toUrl(input: string): string {
   const raw = input.trim();
   if (!raw) return '';
   if (/^https?:\/\//i.test(raw)) return raw;
   // A single word or a phrase with spaces is a search; a dotted word is a host.
-  if (/\s/.test(raw) || !raw.includes('.')) return SEARCH_URL + encodeURIComponent(raw);
+  if (/\s/.test(raw) || !raw.includes('.')) return searchUrlFor(raw);
   return 'https://' + raw;
 }
 
@@ -230,9 +231,20 @@ class BrowserStore {
    */
   settingsOpen = $state(false);
 
+  /**
+   * The address bar's search-engine picker. It floats below the URL bar,
+   * over the content rect, so BrowserView parks the page while it is open —
+   * same reason as the menu. The chosen engine is persisted by
+   * `search-engines.ts`; this flag only tracks the dropdown.
+   */
+  searchPickerOpen = $state(false);
+
   toggleSettings(): void {
     this.settingsOpen = !this.settingsOpen;
-    if (this.settingsOpen) this.historyOpen = false;
+    if (this.settingsOpen) {
+      this.searchPickerOpen = false;
+      this.historyOpen = false;
+    }
   }
 
   /**
@@ -1058,6 +1070,16 @@ class BrowserStore {
       // downloads panel as a row; without this catch it was an unhandled
       // rejection and the click simply did nothing.
       downloads.start(url, referer ? { referer } : undefined).catch(() => {});
+    });
+
+    // A `blob:`/`data:` download (ElevenLabs' export buttons) is saved by
+    // WebView2 itself — a URL that only exists inside the page cannot be
+    // fetched by the daemon. Remembering the path is what lets the transcript
+    // panel offer the just-saved file instead of sending the user to Explorer.
+    void onBrowserDownloadSaved(({ url, path, success }) => {
+      if (!success || !path) return;
+      const name = lastTranscriptDownload.note(path, url);
+      if (name) toast.push('info', `Transcript saved: ${name}`, 4000);
     });
 
     // WebView2's own extension list — the only honest answer to "is uBlock
