@@ -285,6 +285,12 @@ pub struct BrowserState {
     /// Rect updates still arrive (the window can be resized behind a modal);
     /// none of them may un-park the page or the overlay loses its lower half.
     parked: AtomicBool,
+    /// Labels currently at WebView2's LOW memory target. `SetMemoryUsageTarget-
+    /// Level` is a synchronous COM call that runs on the UI thread, so it is
+    /// only issued when the level actually changes - never on every tab
+    /// switch, and never to push a parked page back to NORMAL. The set is how
+    /// the next show knows whether a wake-up call is owed at all.
+    dimmed: Mutex<HashSet<String>>,
 }
 
 impl Default for BrowserState {
@@ -295,6 +301,7 @@ impl Default for BrowserState {
             pinned: Mutex::new(HashSet::new()),
             fullscreen: Mutex::new(HashSet::new()),
             parked: AtomicBool::new(false),
+            dimmed: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -325,6 +332,12 @@ pub(crate) fn label_for(id: &str) -> String {
 /// later tab is then built without extensions instead of paying the exact
 /// same failure again; the UI is told the truth through `browser:extensions`.
 static EXTENSIONS_OFF: AtomicBool = AtomicBool::new(false);
+
+/// Set once the profile has answered the extension question. The list is
+/// profile-wide, not tab-specific, so one answer serves every tab: asking on
+/// every show meant up to three synchronous `GetBrowserExtensions` round
+/// trips on the UI thread per tab switch, for an answer that cannot change.
+static EXTENSIONS_REPORTED: AtomicBool = AtomicBool::new(false);
 
 /// Per-tab WebView2 switches. `additional_browser_args` replaces wry's
 /// defaults, so the three protective switches are repeated verbatim and the
@@ -528,6 +541,10 @@ fn extension_list<R: Runtime>(webview: &Webview<R>) -> Result<Vec<(String, bool)
 /// WebView2 thread, and blocking that thread is how a browser deadlocks.
 #[cfg(target_os = "windows")]
 fn report_extensions<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>, id: &str) {
+    // One answer per process: the list belongs to the profile, not the tab.
+    if EXTENSIONS_REPORTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
     let app = app.clone();
     let id = id.to_string();
 
@@ -594,17 +611,49 @@ fn extensions_dir<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<std::path::P
     None
 }
 
-/// Collapse a live but not-visible webview: 1×1 px, and optionally tell
-/// WebView2 to trim.
+/// Collapse a live but not-visible webview: 1×1 px and WebView2's LOW memory
+/// target.
 ///
-/// Audio and timers keep running (the page is still "visible" to Chromium),
-/// but it paints nothing and cannot sit above the active tab. `keep_awake`
-/// is for pinned tabs: the user asked for that page to keep running, so it
-/// is parked but never pushed to WebView2's LOW memory target — the renderer
-/// stays fully awake for YouTube playback.
-fn park_webview<R: Runtime>(webview: &Webview<R>, keep_awake: bool) {
-    let _ = webview.set_size(LogicalSize::new(1.0, 1.0));
-    set_memory_target(webview, !keep_awake);
+/// The size is the real resource control: 1×1 paints nothing and cannot sit
+/// above the active tab. Chromium keeps scripts and audio running (the page is
+/// still "visible" to it), so a pinned YouTube tab keeps playing. Microsoft's
+/// own docs recommend LOW for exactly this "inactive app, keep running" case
+/// and note that scripts are not impacted — only that memory may be swapped to
+/// disk. LOW is applied once, never on every switch, because that COM call
+/// runs on the UI thread.
+fn park_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>) {
+    // A failed resize means the child is already gone; don't record a trim
+    // for a webview that will never answer.
+    if webview.set_size(LogicalSize::new(1.0, 1.0)).is_err() {
+        return;
+    }
+    let label = webview.label().to_string();
+    let first = app
+        .state::<BrowserState>()
+        .dimmed
+        .lock()
+        .map(|mut set| set.insert(label))
+        .unwrap_or(false);
+    if first {
+        set_memory_target(webview, true);
+    }
+}
+
+/// Put a page back on screen: NORMAL only when it was actually trimmed.
+///
+/// Forcing NORMAL on every show was a synchronous COM call per switch — and
+/// for a parked pinned page that was already at NORMAL, a call for nothing.
+fn wake_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>) {
+    let label = webview.label().to_string();
+    let was_dimmed = app
+        .state::<BrowserState>()
+        .dimmed
+        .lock()
+        .map(|mut set| set.remove(&label))
+        .unwrap_or(false);
+    if was_dimmed {
+        set_memory_target(webview, false);
+    }
 }
 
 /// Interpret one message from `browser_shim.js`.
@@ -1084,10 +1133,9 @@ pub async fn browser_show(
             if !wl.starts_with("tab-") || !keep_labels.iter().any(|k| k == &wl) {
                 continue;
             }
-            let keep_awake = pinned.iter().any(|tab_id| label_for(tab_id) == wl);
-            park_webview(&webview, keep_awake);
+            park_webview(&app, &webview);
         }
-        destroy_others(&window, &keep_labels, &pinned);
+        destroy_others(&app, &window, &keep_labels, &pinned);
         set_active(&app, "");
         diag(&format!("show blank -> swept (kept {keep_labels:?})"));
         return Ok(());
@@ -1130,16 +1178,13 @@ pub async fn browser_show(
             continue;
         }
         if keep_labels.iter().any(|k| k == wl) {
-            // Kept alive but collapsed: 1×1 px at the content rect's
-            // origin. Rendering cost ≈ 0, scroll position and page state
-            // intact, and z-order stops mattering because a collapsed
-            // webview is effectively invisible. A pinned tab is NOT told to
-            // trim: the user explicitly asked for it to stay awake (YouTube
-            // audio/video), and LOW is a memory hint the renderer may act on.
-            let keep_awake = pinned_now
-                .iter()
-                .any(|tab_id| label_for(tab_id) == wl);
-            park_webview(&webview, keep_awake);
+            // Kept alive but parked: 1×1 px, LOW memory target. Rendering
+            // cost ≈ 0, scroll position and page state intact, and z-order
+            // stops mattering because a collapsed webview is effectively
+            // invisible. A pinned tab is parked the same way: Chromium keeps
+            // its scripts and audio running, and LOW is what Microsoft's docs
+            // recommend for an inactive WebView that must keep working.
+            park_webview(&app, &webview);
         } else {
             let _ = webview.close();
         }
@@ -1161,7 +1206,7 @@ pub async fn browser_show(
             // an address-bar submit passes false and still navigates.
             if resume.unwrap_or(false) {
                 set_active(&app, &label);
-                set_memory_target(&webview, false);
+                wake_webview(&app, &webview);
                 report_extensions(&app, &webview, &id);
                 diag("show -> resumed live page (no navigation)");
                 return Ok(());
@@ -1176,7 +1221,7 @@ pub async fn browser_show(
                         set_active(&app, &label);
                         // Coming back from LOW is the other half of the trim:
                         // the visible page must be render-ready again.
-                        set_memory_target(&webview, false);
+                        wake_webview(&app, &webview);
                         report_extensions(&app, &webview, &id);
                         diag("show kept fast-path (already at url)");
                         return Ok(());
@@ -1199,7 +1244,7 @@ pub async fn browser_show(
     if let Some(webview) = find_tab(&window, &label) {
         // The visible tab returns to NORMAL and reports the profile's real
         // extension list (the UI's "uBlock loaded" claim).
-        set_memory_target(&webview, false);
+        wake_webview(&app, &webview);
         report_extensions(&app, &webview, &id);
     }
     set_active(&app, &label);
@@ -1256,7 +1301,7 @@ pub async fn browser_view_closed(app: tauri::AppHandle) -> Result<(), String> {
     // parked at 1×1 (so they can never paint over the editor) and told to
     // trim; every unpinned webview is destroyed as before.
     let pinned = pinned_ids(&app);
-    destroy_others(&window, &[], &pinned);
+    destroy_others(&app, &window, &[], &pinned);
     // A pinned page keeps playing (that is what pinning is for), so its
     // session survives the unmount. Any other owner was just destroyed.
     crate::smtc::tabs_swept(&app, &pinned);
@@ -1403,6 +1448,12 @@ fn measured_rect<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<ContentRect, S
 /// while the tab is out of sight. Unpinning makes it ordinary again: if it is
 /// not the active tab, its webview is destroyed right away, exactly like any
 /// other background tab.
+///
+/// Pinning does **no** WebView2 work: every background webview is already
+/// parked by the show that switched away from it, and the active one must stay
+/// on screen. That matters because `SetMemoryUsageTargetLevel` is a
+/// synchronous UI-thread COM call — the old code issued one on the pin path,
+/// which is exactly when the app hung.
 #[tauri::command]
 pub async fn browser_set_pinned(
     app: tauri::AppHandle,
@@ -1417,24 +1468,26 @@ pub async fn browser_set_pinned(
         }
     }
 
-    let window = app
-        .get_window("main")
-        .ok_or_else(|| "main window missing".to_string())?;
-    let label = label_for(&id);
-    let active = app
-        .state::<BrowserState>()
-        .active
-        .lock()
-        .map(|a| a.clone())
-        .unwrap_or_default();
-
-    match find_tab(&window, &label) {
-        Some(webview) if active != label && pinned => park_webview(&webview, true),
-        Some(webview) if active != label => {
-            let _ = webview.close();
-            crate::smtc::tab_closed(&app, &id);
+    if !pinned {
+        let window = app
+            .get_window("main")
+            .ok_or_else(|| "main window missing".to_string())?;
+        let label = label_for(&id);
+        let active = app
+            .state::<BrowserState>()
+            .active
+            .lock()
+            .map(|a| a.clone())
+            .unwrap_or_default();
+        // Only a background webview is closed. The active page is the one the
+        // user is looking at, a live one keeps running until the next show
+        // sweeps it.
+        if active != label {
+            if let Some(webview) = find_tab(&window, &label) {
+                let _ = webview.close();
+                crate::smtc::tab_closed(&app, &id);
+            }
         }
-        _ => {}
     }
 
     diag(&format!("pin {id} -> {pinned}"));
@@ -1454,15 +1507,6 @@ pub async fn browser_set_rect(
     height: f64,
 ) -> Result<(), String> {
     let rect = ContentRect { x, y, width, height };
-    diag(&format!(
-        "set_rect {}x{} @ ({x},{y})",
-        width, height
-    ));
-    *app
-        .state::<BrowserState>()
-        .rect
-        .lock()
-        .map_err(|_| "browser rect lock poisoned".to_string())? = rect;
 
     // A zero-sized rect means the browser view is unmounting: keep the
     // stored value (it re-measures on the next mount) but do not stack a
@@ -1471,9 +1515,33 @@ pub async fn browser_set_rect(
         return Ok(());
     }
 
+    let state = app.state::<BrowserState>();
+    {
+        // A sub-pixel/2-px wobble is the layout settling, not a resize. The
+        // old path resized the live child for every 740 ↔ 742 flip the
+        // observer reported around each show, which made YouTube (and every
+        // other heavy page) re-layout mid-load. Snap to the stored rect
+        // instead: a real window resize moves by far more than 2 px.
+        let mut stored = state
+            .rect
+            .lock()
+            .map_err(|_| "browser rect lock poisoned".to_string())?;
+        let close = (stored.width - width).abs() <= 2.0
+            && (stored.height - height).abs() <= 2.0
+            && (stored.x - x).abs() <= 2.0
+            && (stored.y - y).abs() <= 2.0;
+        if close && stored.width >= 2.0 && stored.height >= 2.0 {
+            return Ok(());
+        }
+        *stored = rect;
+    }
+    diag(&format!(
+        "set_rect {}x{} @ ({x},{y})",
+        width, height
+    ));
+
     // Parked for an overlay: the rect is remembered (above) but the page must
     // stay at 1×1 until `browser_set_visible(true)` restores it.
-    let state = app.state::<BrowserState>();
     if state.parked.load(Ordering::Relaxed) {
         return Ok(());
     }
@@ -1568,10 +1636,10 @@ pub async fn browser_set_visible(app: tauri::AppHandle, visible: bool) -> Result
             let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
             let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
         }
-        set_memory_target(&webview, false);
+        wake_webview(&app, &webview);
         diag("overlay -> page restored");
     } else {
-        park_webview(&webview, true);
+        park_webview(&app, &webview);
         diag("overlay -> page parked");
     }
     Ok(())
@@ -1587,16 +1655,22 @@ fn find_tab<R: Runtime>(window: &Window<R>, label: &str) -> Option<Webview<R>> {
 
 /// Destroy every `tab-*` child webview not in `keep` (empty = sweep all),
 /// except pinned tabs, which are parked at 1×1 instead of destroyed.
-fn destroy_others<R: Runtime>(window: &Window<R>, keep: &[String], pinned: &HashSet<String>) {
+fn destroy_others<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    window: &Window<R>,
+    keep: &[String],
+    pinned: &HashSet<String>,
+) {
     for webview in window.webviews() {
         let label = webview.label();
         if !label.starts_with("tab-") || keep.iter().any(|k| k == label) {
             continue;
         }
         if pinned.iter().any(|id| label_for(id) == label) {
-            // Pinned: parked but kept awake (no LOW trim), so leaving the
+            // Pinned: parked at 1×1 with LOW. Chromium keeps scripts and
+            // audio running at LOW (Microsoft's docs say so), so leaving the
             // browser for the editor does not pause a YouTube video.
-            park_webview(&webview, true);
+            park_webview(app, &webview);
         } else {
             let _ = webview.close();
         }

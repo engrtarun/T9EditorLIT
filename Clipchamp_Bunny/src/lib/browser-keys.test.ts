@@ -55,10 +55,13 @@ describe('browser keys — the Firefox map', () => {
     for (const entry of BINDINGS) {
       for (const combo of entry.combos) {
         const { deps, calls } = recorder();
-        const parts = combo.split('+');
-        const key = ['tab', 'pageup', 'pagedown', 'delete'].includes(parts.at(-1)!)
-          ? parts.at(-1)![0].toUpperCase() + parts.at(-1)!.slice(1)
-          : parts.at(-1)!;
+        const plus = combo.slice(-2) === '++';
+        const parts = (plus ? combo.slice(0, -2) : combo).split('+');
+        const last = plus ? '+' : parts.at(-1)!;
+        const key =
+          !plus && ['tab', 'pageup', 'pagedown', 'delete'].includes(last)
+            ? last[0].toUpperCase() + last.slice(1)
+            : last;
         const fired = dispatchBrowserKey(
           asEvt(
             ev(key, {

@@ -571,114 +571,123 @@
 
   /* ── keyboard: the same bindings as src/lib/browser-keys.ts ────────── */
 
+  /*
+   * Kept in table form on purpose: `browser-keys.test.ts` parses these rows
+   * and fails when they drift from BINDINGS, so the page webview and the
+   * address bar can never disagree about a shortcut. Columns:
+   *
+   *   combo | action | value | whileTyping
+   *
+   * `whileTyping` is Firefox's rule: tab management, reload, downloads and
+   * save still work while the focus sits in an <input>, <textarea> or
+   * contenteditable. Every other row belongs to the page in that moment
+   * (Ctrl+C, Ctrl+V, Ctrl+A, Ctrl+Z, Ctrl+B for bold, …).
+   */
+  const KEYS = [
+    ['ctrl+t', 'newTab', 0, true],
+    ['ctrl+w', 'closeTab', 0, true],
+    ['ctrl+f4', 'closeTab', 0, true],
+    ['ctrl+n', 'newTab', 0, true],
+    ['ctrl+shift+t', 'reopenClosedTab', 0, true],
+    ['ctrl+shift+tab', 'prevTab', 0, true],
+    ['ctrl+pageup', 'prevTab', 0, true],
+    ['ctrl+tab', 'nextTab', 0, true],
+    ['ctrl+pagedown', 'nextTab', 0, true],
+    ['ctrl+1', 'selectTabN', 0, true],
+    ['ctrl+2', 'selectTabN', 1, true],
+    ['ctrl+3', 'selectTabN', 2, true],
+    ['ctrl+4', 'selectTabN', 3, true],
+    ['ctrl+5', 'selectTabN', 4, true],
+    ['ctrl+6', 'selectTabN', 5, true],
+    ['ctrl+7', 'selectTabN', 6, true],
+    ['ctrl+8', 'selectTabN', 7, true],
+    ['ctrl+9', 'lastTab', 0, true],
+    ['ctrl+shift+pageup', 'moveTab', -1, true],
+    ['ctrl+shift+pagedown', 'moveTab', 1, true],
+    ['ctrl+shift+p', 'pinTab', 0, true],
+    ['ctrl+shift+w', 'closeBrowserView', 0, true],
+    ['alt+arrowleft', 'back', 0, false],
+    ['backspace', 'back', 0, false],
+    ['alt+arrowright', 'forward', 0, false],
+    ['shift+backspace', 'forward', 0, false],
+    ['f5', 'reload', 0, true],
+    ['ctrl+r', 'reload', 0, true],
+    ['ctrl+f5', 'reload', 1, true],
+    ['ctrl+shift+r', 'reload', 1, true],
+    ['escape', 'stopLoading', 0, false],
+    ['alt+home', 'goHome', 0, false],
+    ['ctrl+l', 'focusUrlbar', 0, true],
+    ['alt+d', 'focusUrlbar', 0, true],
+    ['ctrl+k', 'focusUrlbar', 0, true],
+    ['ctrl+j', 'downloads', 0, true],
+    ['ctrl+h', 'history', 0, false],
+    ['ctrl+shift+delete', 'clearHistory', 0, false],
+    ['ctrl+d', 'bookmark', 0, false],
+    ['ctrl+shift+d', 'bookmarkAllTabs', 0, false],
+    ['ctrl+b', 'openBookmarks', 0, false],
+    ['ctrl+shift+o', 'openBookmarks', 0, false],
+    ['ctrl+s', 'savePage', 0, true],
+    ['ctrl+o', 'openFile', 0, true],
+    ['ctrl+p', 'printPage', 0, false],
+    ['ctrl+u', 'viewSource', 0, false],
+    ['ctrl+f', 'findInPage', 0, false],
+    ['f3', 'findInPage', 0, false],
+    ['shift+f3', 'findInPage', 0, false],
+    ['ctrl+shift+g', 'findInPage', 0, false],
+    ['ctrl+shift+f', 'findInPage', 0, false],
+    ['ctrl+=', 'zoom', 1, false],
+    ['ctrl+shift+=', 'zoom', 1, false],
+    ['ctrl++', 'zoom', 1, false],
+    ['ctrl+-', 'zoom', -1, false],
+    ['ctrl+0', 'zoom', 0, false],
+    ['f1', 'openHelp', 0, true]
+  ];
+
   function grab(e) {
     e.preventDefault();
     e.stopPropagation();
     if (e.stopImmediatePropagation) e.stopImmediatePropagation();
   }
 
-  function hit(e, action, value) {
-    grab(e);
-    send({ t9: 'key', action, value: typeof value === 'number' ? value : null });
+  function typingInPage(e) {
+    const path = e.composedPath ? e.composedPath() : null;
+    const target = (path && path[0]) || e.target;
+    if (!target || target.nodeType !== 1) return false;
+    const tag = target.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable === true;
+  }
+
+  function comboHit(e, combo) {
+    // `ctrl++` is the "+" key: a plain split would leave an empty last part.
+    const plus = combo.slice(-2) === '++';
+    const parts = (plus ? combo.slice(0, -2) : combo).split('+');
+    const key = plus ? '+' : parts.pop();
+    if (e.ctrlKey !== parts.includes('ctrl')) return false;
+    if (e.altKey !== parts.includes('alt')) return false;
+    // "+" is Shift+= on most layouts, but the numpad sends "+" without it,
+    // so Shift is not part of that row.
+    if (!plus && e.shiftKey !== parts.includes('shift')) return false;
+    return e.key.toLowerCase() === key;
   }
 
   window.addEventListener(
     'keydown',
     (e) => {
       if (e.metaKey) return; // Windows key chords belong to the OS
-      const key = e.key;
-      const lower = key.length === 1 ? key.toLowerCase() : key;
+      // Fullscreen: Escape belongs to the page (YouTube's exit), not to the
+      // browser's stop-loading. Grabbing it here trapped the user in a
+      // fullscreen video with no way out except the ⛶ button.
+      if (e.key === 'Escape' && document.fullscreenElement) return;
 
-      /* Alt+… */
-      if (e.altKey) {
-        if (e.ctrlKey) return;
-        if (key === 'ArrowLeft') return hit(e, 'back');
-        if (key === 'ArrowRight') return hit(e, 'forward');
-        if (key === 'Home') return hit(e, 'goHome');
-        if (lower === 'd') return hit(e, 'focusUrlbar');
+      const typing = typingInPage(e);
+      for (let i = 0; i < KEYS.length; i++) {
+        const row = KEYS[i];
+        if (typing && !row[3]) continue;
+        if (!comboHit(e, row[0])) continue;
+        grab(e);
+        send({ t9: 'key', action: row[1], value: row[2] });
         return;
       }
-
-      /* No Ctrl: F5 / Esc / F1 only. Backspace is deliberately not "back":
-         it would break every text field on every site. */
-      if (!e.ctrlKey) {
-        if (key === 'F5') return hit(e, 'reload', 0);
-        if (key === 'Escape') {
-          // Fullscreen: Escape belongs to the page (YouTube's exit), not to
-          // the browser's stop-loading. Grabbing it here trapped the user in
-          // a fullscreen video with no way out except the ⛶ button.
-          if (document.fullscreenElement) return;
-          return hit(e, 'stopLoading');
-        }
-        if (key === 'F1') return hit(e, 'openHelp');
-        return;
-      }
-
-      /* Ctrl+Shift+… */
-      if (e.shiftKey) {
-        if (key === 'Tab') return hit(e, 'prevTab');
-        if (key === 'PageUp') return hit(e, 'moveTab', -1);
-        if (key === 'PageDown') return hit(e, 'moveTab', 1);
-        if (key === 'F3') return hit(e, 'findInPage');
-        if (key === 'F4') return hit(e, 'closeTab');
-        if (key === 'F5') return hit(e, 'reload', 1);
-        if (key === 'Delete') return hit(e, 'clearHistory');
-        if (lower === 't') return hit(e, 'reopenClosedTab');
-        if (lower === 'p') return hit(e, 'pinTab');
-        if (lower === 'w') return hit(e, 'closeBrowserView');
-        if (lower === 'r') return hit(e, 'reload', 1);
-        if (lower === 'd') return hit(e, 'bookmarkAllTabs');
-        if (lower === 'o') return hit(e, 'openBookmarks');
-        if (lower === 'f' || lower === 'g') return hit(e, 'findInPage');
-        return;
-      }
-
-      /* Ctrl+… */
-      if (key === 'Tab') return hit(e, 'nextTab');
-      if (key === 'PageDown') return hit(e, 'nextTab');
-      if (key === 'PageUp') return hit(e, 'prevTab');
-      if (key === 'F3') return hit(e, 'findInPage');
-      if (key === 'F4') return hit(e, 'closeTab');
-      if (key === 'F5') return hit(e, 'reload', 1);
-
-      switch (lower) {
-        case 't':
-        case 'n':
-          return hit(e, 'newTab');
-        case 'w':
-          return hit(e, 'closeTab');
-        case 'r':
-          return hit(e, 'reload', 0);
-        case 'l':
-        case 'k':
-          return hit(e, 'focusUrlbar');
-        case 'j':
-          return hit(e, 'downloads');
-        case 'h':
-          return hit(e, 'history');
-        case 'd':
-          return hit(e, 'bookmark');
-        case 'b':
-          return hit(e, 'openBookmarks');
-        case 's':
-          return hit(e, 'savePage');
-        case 'o':
-          return hit(e, 'openFile');
-        case 'p':
-          return hit(e, 'printPage');
-        case 'u':
-          return hit(e, 'viewSource');
-        case 'f':
-          return hit(e, 'findInPage');
-        default:
-          break;
-      }
-
-      if (key === '+' || key === '=') return hit(e, 'zoom', 1);
-      if (key === '-' || key === '_') return hit(e, 'zoom', -1);
-      if (key === '0') return hit(e, 'zoom', 0);
-      if (/^[1-8]$/.test(key)) return hit(e, 'selectTabN', Number(key) - 1);
-      if (key === '9') return hit(e, 'lastTab');
     },
     true
   );

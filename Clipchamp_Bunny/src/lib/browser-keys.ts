@@ -138,12 +138,16 @@ const norm = (key: string): string => {
 };
 
 const matchCombo = (e: KeyEvt, combo: string): boolean => {
-  const parts = combo.split('+');
-  const key = parts[parts.length - 1];
+  // `ctrl++` names the "+" key; a plain split would leave an empty last part.
+  const plus = combo.slice(-2) === '++';
+  const parts = (plus ? combo.slice(0, -2) : combo).split('+');
+  const key = plus ? '+' : parts[parts.length - 1];
   if (e.metaKey) return false; // Windows key chords belong to the OS, never here
   if (e.ctrlKey !== parts.includes('ctrl')) return false;
-  if (e.shiftKey !== parts.includes('shift')) return false;
   if (e.altKey !== parts.includes('alt')) return false;
+  // Shift is how "+" is typed on most layouts, but the numpad sends it with
+  // no Shift, so that row does not constrain the modifier.
+  if (!plus && e.shiftKey !== parts.includes('shift')) return false;
   if (norm(e.key) !== key) return false;
   return true;
 };
