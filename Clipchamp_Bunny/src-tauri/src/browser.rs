@@ -611,6 +611,19 @@ fn extensions_dir<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<std::path::P
     None
 }
 
+/// Collapse a webview for a few hundred milliseconds — an overlay is on
+/// screen — without touching its memory target.
+///
+/// Size is the only thing an overlay needs: 1×1 stops the child webview from
+/// painting above the app's own DOM. A memory trim is the wrong tool here: it
+/// is a synchronous UI-thread COM call, and it would swap out a page that is
+/// about to be put straight back on screen. The pin action lives inside a
+/// context menu, so that trim used to land on the exact click that pinned a
+/// playing video.
+fn park_visual<R: Runtime>(webview: &Webview<R>) {
+    let _ = webview.set_size(LogicalSize::new(1.0, 1.0));
+}
+
 /// Collapse a live but not-visible webview: 1×1 px and WebView2's LOW memory
 /// target.
 ///
@@ -1639,8 +1652,13 @@ pub async fn browser_set_visible(app: tauri::AppHandle, visible: bool) -> Result
         wake_webview(&app, &webview);
         diag("overlay -> page restored");
     } else {
-        park_webview(&app, &webview);
-        diag("overlay -> page parked");
+        // Visual hide only: an overlay is on screen for a moment, and the
+        // pin action lives *inside* a context menu. Trimming the page to LOW
+        // for that moment meant two synchronous COM calls on the UI thread
+        // and a swap-out of a page that was about to be shown again - which
+        // is exactly the hitch the pin menu used to cause on a playing video.
+        park_visual(&webview);
+        diag("overlay -> page parked (visual)");
     }
     Ok(())
 }
