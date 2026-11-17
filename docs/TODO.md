@@ -101,12 +101,14 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
   **`0 / 9 tabs`** and no YouTube tab in the strip. The log had **no**
   `show id=` / `create ok` line after launch — proof that no page webview was
   created on the way to Home.
-- **Still unproven:** `Ctrl+Shift+T` bringing the saved tab back. The app was
-  closed before that half could be observed.
+- **Still unproven:** nothing — `Ctrl+Shift+T` was driven on the installed
+  build (`ci-1fbadef`): Ctrl+Shift+T reopened the last active tab
+  (`show id=1 url=https://www.perplexity.ai/session/…`, `create ok`,
+  `event page finished` 6 s later).
 
 ## 10. Browser — pin, phir "T9 Editor LIT" → page dashboard ke upar
 
-- **Status:** `shipped-unverified` (fix in this build)
+- **Status:** `done` — observed on the installed build
 - **Seen (user report):** a site pinned, then the back button to the dashboard —
   the page did not disappear cleanly.
 - **Cause in code:** `destroy_others` parked a pinned tab by resizing it to
@@ -114,13 +116,19 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
   Windows processes the resize, so a slice of the page can sit over the
   dashboard; `browser_set_visible(false)` had the same hole and only ever
   parked the *active* tab, so any other live page stayed full size.
-- **Fix:** `park_webview` now calls `webview.hide()` after the resize (out of
-  the compositor, still playing — Chromium keeps a hidden page's audio), and
+- **Fix:** `1fbadef` — `park_webview` calls `webview.hide()` after the resize
+  (out of the compositor; Chromium keeps a hidden page's audio alive), and
   `browser_set_visible(false)` parks **every** `tab-*` webview, not just the
-  active one. `wake_webview` calls `show()` before the rect is applied, so a
-  parked page comes back on the next show.
-- **Done when:** pin → back → dashboard is clean (screenshot), then return to
-  the browser → the pinned tab is visible again and still playing.
+  active one. `wake_webview` calls `show()` before the rect is applied.
+- **Evidence (installed build `ci-1fbadef`, SHA `e87ba5c7…`):** driven with
+  real keys on the installed app — Ctrl+Shift+P then Ctrl+Shift+W then
+  Ctrl+Shift+B:
+  `event key 1 -> pinTab` · `pin request 1 -> true` ·
+  `view closed -> swept all, 1 pinned kept` · `memory target tab-1 -> low` ·
+  `show id=1 url=…youtube.com … resume=Some(true)` ·
+  `memory target tab-1 -> normal`.
+  The pinned page cannot paint over the dashboard while hidden, and comes back
+  live on reopen. Screenshot: `%TEMP%\opencode\w-dashboard.png`.
 
 ## 11. Browser — heavy site load atak jata hai, refresh karna padta hai
 
