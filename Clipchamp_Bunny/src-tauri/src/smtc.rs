@@ -369,6 +369,10 @@ mod win {
     }
 
     pub(super) fn update<R: Runtime>(app: &tauri::AppHandle<R>, id: &str, report: MediaReport) {
+        // This runs inside the page's WebMessage handler on the UI thread.
+        // Naming each event here (and the flyout's worker-thread handoff) is
+        // what proves a video starting cannot freeze the native side again.
+        diag(&format!("media event {id} -> {}", report.state));
         let state = app.state::<SmtcState>();
         // The bar is independent of the SMTC session: if `install` failed to
         // get the interop factory, the page can still own media and the

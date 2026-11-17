@@ -207,6 +207,25 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
     in the log is the proof that the document reloaded.
   - `lib.rs` `CloseRequested` writes `window -> close requested` as its first
     action, so a future hang can be located before/after the handler.
+- **ROOT CAUSE found (same session, evidence in the log):** a YouTube video
+  starting to play freezes the native side. The page's shim reports media
+  through `WebMessageReceived`, which already runs on the UI thread, and
+  `smtc::update` called `media_flyout::ping` -> `ensure` ->
+  `WebviewWindowBuilder::build()` **on that same thread** — building a window
+  marshals back onto the UI thread, so it deadlocks itself. Proof: no
+  `media flyout -> created` line exists in any affected session; after the
+  first video frame the log stops (`event page finished` never arrives), then
+  `Ctrl+Shift+W` writes no `ui ->` line, no cleanup runs (so the page paints
+  over Home), and `CloseMainWindow()` leaves the process `Responding=False`.
+  The first YouTube home load also stayed a skeleton until F5 — same freeze
+  class. `browser.rs:785` already documents this trap for the fullscreen path
+  and uses `std::thread::spawn`; the media path did not.
+- **Fix written (commit pending):** `media_flyout::ping` and `hide` now defer
+  every window operation to a worker thread; `smtc::win::update` logs
+  `media event <id> -> <state>` at entry. Verification must show
+  `media event … -> playing`, `media flyout -> ping (deferred to worker)`,
+  `media flyout -> created`, and a still-responsive native side (a back keypress
+  must write `ui -> screen -> close browser`).
 - **Next:** after deploy, open a page, reload the shell while the browser is
   open, and assert (a) a second `shell -> attached`, (b) `view -> closed` +
   `view closed -> swept all`, (c) a screenshot with NO page over Home. Then

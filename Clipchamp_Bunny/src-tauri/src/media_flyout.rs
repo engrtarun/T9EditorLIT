@@ -68,14 +68,25 @@ fn touch() {
 /// page.
 pub fn ping<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     touch();
-    if !ensure(app) {
-        return;
-    }
-    if WATCHDOG.swap(true, Ordering::SeqCst) {
-        return; // the watchdog is already running
-    }
+    // A page reports media from inside WebMessageReceived, which already runs
+    // on the UI thread. The first report calls `ensure()` -> `create()` ->
+    // WebviewWindowBuilder::build(), which marshals back onto that same UI
+    // thread: a self-deadlock. The installed build froze the instant a
+    // YouTube video started (no log line after `event nav`, no cleanup when
+    // leaving the browser, no response to a close request). The fullscreen
+    // handler below already uses this exact worker-thread pattern; every
+    // window operation in a page event handler must use it.
     let handle = app.clone();
-    std::thread::spawn(move || watchdog(handle));
+    std::thread::spawn(move || {
+        diag("media flyout -> ping (deferred to worker)");
+        if !ensure(&handle) {
+            return;
+        }
+        if WATCHDOG.swap(true, Ordering::SeqCst) {
+            return; // the watchdog is already running
+        }
+        watchdog(handle);
+    });
 }
 
 /// The session cleared: take the card down at once instead of waiting out
@@ -84,14 +95,20 @@ pub fn hide<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Ok(mut slot) = LAST_EVENT.lock() {
         *slot = None;
     }
-    if let Some(window) = app.get_webview_window(LABEL) {
-        hide_now(app, &window);
-        // A hidden webview still holds a renderer process. Destroy it so the
-        // 8 GB machine gets the whole card back; `ping` recreates it the next
-        // time a page actually plays.
-        let _ = window.destroy();
-        diag("media flyout -> destroyed (session clear)");
-    }
+    // Same reason as `ping`: this is reached from the page's media events
+    // (a video ending), so window hide/destroy must not run on the caller's
+    // thread. `shutdown()` is the only caller that may do it inline.
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        if let Some(window) = handle.get_webview_window(LABEL) {
+            hide_now(&handle, &window);
+            // A hidden webview still holds a renderer process. Destroy it so
+            // the 8 GB machine gets the whole card back; `ping` recreates it
+            // the next time a page actually plays.
+            let _ = window.destroy();
+            diag("media flyout -> destroyed (session clear)");
+        }
+    });
 }
 
 /// Create the window if this is the first media ever, put it on the work
