@@ -1852,6 +1852,11 @@ pub fn run() {
                 return;
             }
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // The app once sat there not-responding after a close with a
+                // YouTube page live. The first line in this handler says
+                // whether WM_CLOSE was ever delivered: no line means the UI
+                // thread was already stuck before the close path began.
+                browser::diag("window -> close requested");
                 // One close means one exit. The hidden media flyout is a
                 // window too, and Tauri only ends the event loop when the last
                 // window is gone - so without this the process outlived the

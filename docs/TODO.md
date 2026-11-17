@@ -175,6 +175,43 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
   navigate (reuse the webview, navigate it), and prove a paint after
   `page finished`.
 
+## 12. Browser page paints over Home after a shell reload; app hangs on close
+
+- **Status:** `in-progress` — cause identified from the installed build's log,
+  two instrumentation fixes written, verification pending
+- **Evidence (installed `ci-fcf586b`, 13:09–13:17):** screenshot `now1.png`
+  shows the Home dashboard's top bar (`Home / T9 Cloud / Trash`) with a
+  YouTube **watch page painted below it**, not the browser chrome. The native
+  child list at that moment had two visible webviews: `Chrome_WidgetWin_1`
+  titled `Jethalal Ne Sabko Dikha Diye Iyer Ka Purana Photo! … YouTube` and
+  the shell titled `T9 Editor LIT`.
+- **Cause:** the log has `view -> open` at 1794901798 and **no `view -> closed`
+  anywhere afterwards**. BrowserView's `{#if}` cleanup (which calls
+  `browserSetViewOpen(false)` + `browserViewClosed()`) cannot run when the
+  shell document itself is replaced: Svelte state resets to `view = 'home'`
+  while Rust still has `view_open = true` and the child webview at
+  `0,121 1536x742`. Nothing sweeps it, so it paints on the dashboard.
+- **Close hang:** `CloseMainWindow()` returned `True`, but 14 s later the
+  process was still there with `Responding=False`; it had to be force-killed.
+  No `shutdown -> closed … tab webview(s)` line was written, so the close
+  handler either never received `WM_CLOSE` (UI thread already stuck) or never
+  got as far as its first log.
+- **Also observed in the same slice:** `show id=251985 …youtube` at
+  1794901800, then one second later `show id=251985 url=about:blank` →
+  `show blank -> swept (kept [])`. A blank nudge (`goHome()`) destroys the
+  page that had just been restored, one second after it was created.
+- **Fix written (pending deploy):**
+  - `App.svelte` `onMount` now claims a fresh shell: `browserSetViewOpen(false)`
+    + `browserViewClosed()` sweep any leftover child, and write
+    `ui -> shell -> attached (home, stale pages swept)`. A **second** such line
+    in the log is the proof that the document reloaded.
+  - `lib.rs` `CloseRequested` writes `window -> close requested` as its first
+    action, so a future hang can be located before/after the handler.
+- **Next:** after deploy, open a page, reload the shell while the browser is
+  open, and assert (a) a second `shell -> attached`, (b) `view -> closed` +
+  `view closed -> swept all`, (c) a screenshot with NO page over Home. Then
+  repeat the pinned-YouTube cycle and assert the video keeps playing.
+
 ## Next actions
 
 1. **Decide the browser architecture** (row 4). Everything in rows 2–5 is a

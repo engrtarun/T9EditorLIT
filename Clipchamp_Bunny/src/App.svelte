@@ -32,7 +32,9 @@
     browserClearBrowsingData,
     onBrowserKey,
     browserNote,
-    browserFocusShell
+    browserFocusShell,
+    browserSetViewOpen,
+    browserViewClosed
   } from './lib/ipc';
   import { keys, type KeyAction } from './lib/stores/keys.svelte';
   import { clamp, fmtTime } from './lib/utils';
@@ -191,6 +193,21 @@
    * `runBrowserAction`, so both paths stay one implementation.
    */
   onMount(() => {
+    // A fresh shell document owns NO page webviews. If the previous document
+    // was reloaded while the browser was open, its BrowserView cleanup never
+    // ran (the JS is gone), so Rust still has the child on screen and it
+    // paints straight over the dashboard. Observed on the installed build:
+    // `view -> open` + a YouTube page, then Home's top bar with the video
+    // still painted below it and no `view -> closed` anywhere. Claim the
+    // view here - sweep everything - before any tab can be restored. The
+    // note also makes a reload visible: a second `shell -> attached` in the
+    // diag log means the document restarted, not the app.
+    void (async () => {
+      await browserSetViewOpen(false);
+      await browserViewClosed();
+      void browserNote('shell -> attached (home, stale pages swept)');
+    })();
+
     // The batch queue outlives the screen it was started from, so it is read
     // back once at the root. A list that vanished on restart was the whole
     // complaint behind "30 files, kisi ka pata nahi chala".
