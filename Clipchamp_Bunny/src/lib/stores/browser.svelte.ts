@@ -33,7 +33,7 @@ import { downloads } from './downloads.svelte';
 import { lastTranscriptDownload } from './last-transcript-download.svelte';
 import { ublock } from './ublock.svelte';
 import { toast } from './toast.svelte';
-import { searchUrlFor } from '../search-engines';
+import { searchUrlFor, type EngineGroup } from '../search-engines.svelte';
 
 /** The hard cap. Nine tabs, like the plan says — no more. */
 export const MAX_TABS = 9;
@@ -144,16 +144,18 @@ export const SPEED_DIAL: ReadonlyArray<{ url: string; label: string }> = [
  * Normalise whatever the user typed into a URL.
  *
  * A bare `youtube.com` becomes `https://youtube.com` (the scheme is implied);
- * anything with whitespace or no dot becomes a search on the engine picked in
- * the address bar (Brave by default). Returns the search URL when the input is
- * a query, so the caller never has to branch.
+ * anything with whitespace or no dot becomes a search. Which engine answers a
+ * query depends on where the text was typed: `group = 'web'` (the address bar,
+ * Brave by default) or `group = 'ai'` (the speed dial's box, Perplexity by
+ * default). Returns the search URL when the input is a query, so the caller
+ * never has to branch.
  */
-export function toUrl(input: string): string {
+export function toUrl(input: string, group: EngineGroup = 'web'): string {
   const raw = input.trim();
   if (!raw) return '';
   if (/^https?:\/\//i.test(raw)) return raw;
   // A single word or a phrase with spaces is a search; a dotted word is a host.
-  if (/\s/.test(raw) || !raw.includes('.')) return searchUrlFor(raw);
+  if (/\s/.test(raw) || !raw.includes('.')) return searchUrlFor(raw, group);
   return 'https://' + raw;
 }
 
@@ -259,17 +261,20 @@ class BrowserStore {
   settingsOpen = $state(false);
 
   /**
-   * The address bar's search-engine picker. It floats below the URL bar,
-   * over the content rect, so BrowserView parks the page while it is open —
-   * same reason as the menu. The chosen engine is persisted by
-   * `search-engines.ts`; this flag only tracks the dropdown.
+   * Which search-engine picker is open, if any: `'urlbar'` (the address
+   * bar's web list) or `'dial'` (the speed dial's AI list). A single
+   * host-tagged value instead of two booleans so opening one picker can
+   * never render the other host's panel too. The value is truthy while any
+   * picker is open, which is exactly the condition BrowserView parks the
+   * page on. The chosen engines are persisted by `search-engines.svelte.ts`;
+   * this flag only tracks the dropdown.
    */
-  searchPickerOpen = $state(false);
+  searchPickerOpen = $state<'' | 'urlbar' | 'dial'>('');
 
   toggleSettings(): void {
     this.settingsOpen = !this.settingsOpen;
     if (this.settingsOpen) {
-      this.searchPickerOpen = false;
+      this.searchPickerOpen = '';
       this.historyOpen = false;
     }
   }
@@ -817,6 +822,7 @@ class BrowserStore {
       if (isTauri()) void browserSetPinned(tab.id, true);
     }
     this.activeId = this.tabs[0].id;
+    this.landOnDial();
   }
 
   /* ------------------------------------------------ tab session (disk) */
@@ -830,6 +836,17 @@ class BrowserStore {
   /** True only after the restore finished; writing before that would erase it. */
   private sessionReady = false;
   private sessionWrites = 0;
+
+  /**
+   * Pinned tabs restored from the pin file stay in the strip but do not become
+   * the active page on a cold start: a pinned YouTube tab must not start
+   * playing before the user has even opened the browser. `activeId = null` is
+   * the store's "dial" state (the same one a brand-new browser has).
+   */
+  private landOnDial(): void {
+    if (this.tabs.length === 0) return;
+    this.activeId = null;
+  }
 
   /**
    * Snapshot the strip after every change (tab add/close/switch/navigate).

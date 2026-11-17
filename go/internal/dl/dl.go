@@ -1411,6 +1411,12 @@ type download struct {
 	finishedAt time.Time
 	file       *os.File
 	stop       context.CancelFunc
+	// runGen hands StatusRunning to the newest run: resume() bumps it under
+	// mu, run() captures the value it saw, and a superseded run's end-block
+	// stays quiet when the two differ — otherwise a Retry that lands before
+	// the dead run finished unwinding gets its fresh StatusRunning
+	// overwritten with "download adhoora reh gaya".
+	runGen int64
 	// workCancel stops the CURRENT round of workers without touching `stop`:
 	// a re-plan (more sockets) and a stall reconnect both need the writers to
 	// let go of their ranges while the download itself keeps running.
@@ -1590,6 +1596,7 @@ func (d *download) run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d.mu.Lock()
+	myGen := d.runGen
 	d.stop = cancel
 	d.status = StatusRunning
 	d.widenReq = false
@@ -1745,9 +1752,11 @@ func (d *download) run() {
 	}
 
 	// The status may already be paused/cancelled — those paths set it and
-	// cancelled this same context; only a clean finish lands here.
+	// cancelled this same context; only a clean finish lands here. When a
+	// resume already handed the row to a newer run (runGen moved), this
+	// end-block belongs to a dead attempt and must write nothing.
 	d.mu.Lock()
-	if d.status == StatusRunning {
+	if d.runGen == myGen && d.status == StatusRunning {
 		if d.allFinished() {
 			d.finishLocked()
 		} else {
@@ -2388,6 +2397,10 @@ func (d *download) resume() error {
 	}
 	d.file = f
 	d.status = StatusRunning
+	// Hand the row to the run about to start: the previous run's end-block
+	// (still unwinding after fail() cancelled it) must not overwrite this
+	// fresh StatusRunning with its "download adhoora reh gaya".
+	d.runGen++
 	d.errText = ""
 	// A row recovered from a sidecar has no start stamp; the retry is its
 	// first real transfer. A terminal stamp from the failed attempt must go —

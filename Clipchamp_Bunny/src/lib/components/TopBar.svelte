@@ -88,7 +88,10 @@
     </span>
   </button>
 
-  <!-- project dropdown — Clipchamp's project menu (Rename / Open file location / New video) -->
+  <!-- project dropdown — Clipchamp's project menu (Rename / Open file location / New video).
+       Hidden while the browser view is open: a project rename is an editing
+       job, and the browser already has its own chrome. An in-progress rename
+       still shows, so blur/Enter can commit it. -->
   {#if renaming}
     <input
       bind:value={draft}
@@ -99,7 +102,7 @@
       }}
       class="ml-1 w-[190px] rounded-md border border-nc-brand bg-nc-panel-2 px-2 py-1 text-[13px] outline-none"
     />
-  {:else}
+  {:else if app.view !== 'browser'}
     <button
       onclick={toggleProj}
       class="ml-1 flex items-center gap-1.5 rounded-md bg-nc-panel-2 px-2.5 py-1 text-[13px] font-medium hover:bg-nc-line"

@@ -788,14 +788,28 @@ fn handle_shim_message<R: Runtime>(app: &tauri::AppHandle<R>, id: &str, raw: &st
             // page and the window responsive.
             std::thread::spawn(move || {
                 if on {
+                    // The WINDOW goes fullscreen too: growing only the child
+                    // webview left the title bar and the taskbar on screen —
+                    // a windowed "fullscreen" no real browser ships. The size
+                    // is re-read after the switch because the window is now
+                    // screen-sized, not the size captured above.
+                    let _ = window.set_fullscreen(true);
+                    let size = window.inner_size().unwrap_or(size);
+                    let scale = window.scale_factor().unwrap_or(scale);
                     let _ = webview.set_position(LogicalPosition::new(0.0, 0.0));
                     let _ = webview.set_size(LogicalSize::new(
                         f64::from(size.width) / scale,
                         f64::from(size.height) / scale,
                     ));
-                } else if rect.width >= 2.0 && rect.height >= 2.0 {
-                    let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
-                    let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
+                } else {
+                    // The content rect is only valid in the normal window, so
+                    // the webview is put back first and the window shrinks
+                    // around it — no post-shrink correction is needed.
+                    if rect.width >= 2.0 && rect.height >= 2.0 {
+                        let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
+                        let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
+                    }
+                    let _ = window.set_fullscreen(false);
                 }
                 diag(&format!("event fullscreen {id_owned} -> {on}"));
             });
@@ -1378,8 +1392,16 @@ pub async fn browser_hide(app: tauri::AppHandle, id: String) -> Result<(), Strin
         set.remove(&id);
     }
     let label = label_for(&id);
-    if let Ok(mut set) = app.state::<BrowserState>().fullscreen.lock() {
-        set.remove(&label);
+    let was_fullscreen = app
+        .state::<BrowserState>()
+        .fullscreen
+        .lock()
+        .map(|mut set| set.remove(&label))
+        .unwrap_or(false);
+    if was_fullscreen {
+        // The fullscreen page is the one being closed: the window must come
+        // back with it, or the next screen is shown behind a black hole.
+        let _ = window.set_fullscreen(false);
     }
     if let Some(webview) = find_tab(&window, &label) {
         let _ = webview.close();
@@ -1454,6 +1476,9 @@ pub async fn browser_view_closed(app: tauri::AppHandle) -> Result<(), String> {
     if let Ok(mut set) = app.state::<BrowserState>().fullscreen.lock() {
         set.clear();
     }
+    // …and the window itself must come back, or the editor is shown behind
+    // a screen-sized hole with no page in it.
+    let _ = window.set_fullscreen(false);
     diag(&format!(
         "view closed -> swept all, {} pinned kept",
         pinned.len()
@@ -1704,6 +1729,16 @@ pub async fn browser_set_rect(
     if active.is_empty() {
         return Ok(());
     }
+    // A page is fullscreen: the webview is window-sized on purpose, and the
+    // box the observer reports is the content area *under* the chrome (it
+    // only grew because the window did). Applying it would shrink the
+    // fullscreen video back onto the chrome, and storing it would make the
+    // exit path restore the wrong box.
+    if let Ok(fs) = state.fullscreen.lock() {
+        if fs.contains(&active) {
+            return Ok(());
+        }
+    }
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
@@ -1747,6 +1782,15 @@ pub async fn browser_set_visible(app: tauri::AppHandle, visible: bool) -> Result
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
     let state = app.state::<BrowserState>();
+    // Idempotent: the frontend effect fires on every mount and on every
+    // same-state re-run. Without this, a cold create (no webview yet) was
+    // followed by a burst of restore/park calls while the heavy page was
+    // still navigating — WebView2 re-laid out mid-load and came up stale,
+    // needing a manual refresh. `parked` now records the truth, so the guard
+    // in `browser_set_rect` actually engages while an overlay is open.
+    if state.parked.load(Ordering::Relaxed) == !visible {
+        return Ok(());
+    }
     let rect = *state
         .rect
         .lock()
@@ -1780,6 +1824,9 @@ pub async fn browser_set_visible(app: tauri::AppHandle, visible: bool) -> Result
         .lock()
         .map_err(|_| "browser active lock poisoned".to_string())?
         .clone();
+    // Record the truth first: even when there is no webview to move yet
+    // (cold create), the next `browser_set_rect` must know an overlay is up.
+    state.parked.store(!visible, Ordering::Relaxed);
     if active.is_empty() {
         return Ok(());
     }

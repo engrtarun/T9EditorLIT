@@ -9,10 +9,8 @@
    * never shows a broken image.
    *
    * Above the field sits the part a visitor notices first: a time-aware
-   * greeting, a live clock, and three honest status chips (ad blocker, tab
-   * budget, search engine). Nothing here is decoration for its own sake — each
-   * chip reads a real store, and the clock never claims a number it does not
-   * have.
+   * greeting, a live clock, and the tab budget — one honest status chip
+   * that reads the real store. Nothing here is decoration for its own sake.
    *
    * Everything renders in the *main* webview (Svelte DOM), so an empty tab
    * costs zero megabytes: the native page webview only exists once a real URL
@@ -20,12 +18,34 @@
    */
   import { browser, SPEED_DIAL, toUrl } from '../../stores/browser.svelte';
   import { pinnedTools, hostOfUrl } from '../../stores/pinned-tools.svelte';
-  import { ublock } from '../../stores/ublock.svelte';
-  import { getSearchEngine } from '../../search-engines';
+  import { getSearchEngine, setSearchEngine } from '../../search-engines.svelte';
   import SiteIcon from './SiteIcon.svelte';
+  import EnginePicker from './EnginePicker.svelte';
+  import { toast } from '../../stores/toast.svelte';
   import { isTauri } from '../../ipc';
 
   let query = $state('');
+
+  /**
+   * One line at a time, swapped every 3 s with a small slide-up fade: the
+   * promise under the search box is the first thing a new tab reads, so it
+   * rotates through the things this browser is actually about instead of
+   * freezing on one sentence. `prefers-reduced-motion` keeps the text but
+   * stops the swap animation (the interval itself still runs — a changing
+   * fact is content, not motion).
+   */
+  const TAGLINES = [
+    'Sab kuch aapke PC par — koi cloud nahi, koi account nahi.',
+    'Bol ke likho — Hinglish dictation, turant script me.',
+    'In-built browser, downloader aur editor — sab ek jagah.',
+    'Ad blocker on — koi tracker aapko peecha nahi karega.',
+    'Koi login nahi, koi telemetry nahi — bas apna kaam karo.'
+  ];
+  let lineIdx = $state(0);
+  $effect(() => {
+    const id = setInterval(() => (lineIdx = (lineIdx + 1) % TAGLINES.length), 3000);
+    return () => clearInterval(id);
+  });
 
   /** The clock ticks every 15 s, so the minute counter flips within one tick. */
   let now = $state(new Date());
@@ -44,35 +64,53 @@
   });
 
   const clock = $derived(
-    now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
+    now
+      .toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })
+      .toUpperCase()
   );
   const today = $derived(
     now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })
   );
 
-  /** Display-only: the URL bar owns the pick; the dial just mirrors it. */
-  const engine = $derived(getSearchEngine());
-
-  /** Green = WebView2 loaded the blocker, red = it did not, grey = no answer. */
-  const shieldTone = $derived(
-    ublock.runtime === 'loaded'
-      ? 'bg-emerald-400'
-      : ublock.runtime === 'missing'
-        ? 'bg-red-400'
-        : 'bg-nc-mut-2'
-  );
+  /** The dial's own AI engine — the URL bar's web pick never touches it. */
+  const engine = $derived(getSearchEngine('ai'));
 
   function search(e: SubmitEvent) {
     e.preventDefault();
     const raw = query.trim();
     if (!raw) return;
-    browser.navigate(toUrl(raw));
+    browser.navigate(toUrl(raw, 'ai'));
     query = '';
   }
 
   function open(url: string) {
     browser.navigate(url);
   }
+
+  /** The dial's engine chip — opens the AI-only picker under the box. */
+  let dialWrap: HTMLDivElement | undefined = $state();
+
+  function togglePicker(): void {
+    browser.searchPickerOpen = browser.searchPickerOpen === 'dial' ? '' : 'dial';
+  }
+
+  function pickAiEngine(id: string): void {
+    setSearchEngine(id);
+    toast.push('info', `🔎 ${getSearchEngine('ai').name}`);
+  }
+
+  // The picker floats under the box; a click anywhere else closes it.
+  $effect(() => {
+    if (browser.searchPickerOpen !== 'dial') return;
+    const el = dialWrap;
+    const onDown = (ev: PointerEvent) => {
+      const t = ev.target as Node | null;
+      if (el && t && el.contains(t)) return;
+      browser.searchPickerOpen = '';
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  });
 </script>
 
 <div
@@ -94,9 +132,9 @@
         <h1 class="mt-1 truncate text-[26px] leading-tight font-semibold text-nc-txt">
           {greeting}
         </h1>
-        <p class="mt-1 text-[11px] text-nc-mut">
-          Sab kuch aapke PC par — koi cloud nahi, koi account nahi.
-        </p>
+        {#key lineIdx}
+          <p class="tagline mt-1 text-[11px] text-nc-mut">{TAGLINES[lineIdx]}</p>
+        {/key}
       </div>
       <div class="shrink-0 text-right">
         <p class="text-[30px] leading-none font-bold tabular-nums text-nc-txt">{clock}</p>
@@ -106,58 +144,86 @@
       </div>
     </div>
 
-    <!-- the one thing a new tab is for -->
-    <form
-      onsubmit={search}
-      class="dial-in dial-in-1 mt-6 flex h-11 items-center gap-2.5 rounded-full border border-nc-line bg-nc-panel px-4
-             shadow-[0_10px_30px_rgba(0,0,0,.28)] transition-colors
-             focus-within:border-nc-brand focus-within:ring-2 focus-within:ring-nc-brand/20"
-    >
-      <span
-        class="grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-bold text-white"
-        style="background:{engine.color}"
-        title="Search engine: {engine.name} — URL bar me badlo"
+    <!-- the one thing a new tab is for: an AI search box with the engine's
+         real logo; the chip opens the AI-only picker under the box -->
+    <div class="relative mt-6" bind:this={dialWrap}>
+      <form
+        onsubmit={search}
+        class="dial-in dial-in-1 flex h-11 items-center gap-2.5 rounded-full border border-nc-line bg-nc-panel px-4
+               shadow-[0_10px_30px_rgba(0,0,0,.28)] transition-colors
+               focus-within:border-nc-brand focus-within:ring-2 focus-within:ring-nc-brand/20"
       >
-        {engine.letter}
-      </span>
-      <input
-        bind:value={query}
-        placeholder="Search ya website ka address likho…"
-        spellcheck="false"
-        autocomplete="off"
-        class="min-w-0 flex-1 bg-transparent text-[13px] leading-none text-nc-txt outline-none placeholder:text-nc-mut-2"
-        aria-label="Search or enter a website"
-      />
-      <kbd
-        class="shrink-0 rounded border border-nc-line-2 bg-nc-panel-2 px-1.5 py-0.5 text-[10px] text-nc-mut-2"
-        >↵</kbd
-      >
-    </form>
+        <button
+          type="button"
+          onclick={togglePicker}
+          class="engine-chip group -ml-1 flex h-7 shrink-0 items-center gap-1 rounded-full pr-1.5 pl-1 transition-colors
+                 hover:bg-nc-line {browser.searchPickerOpen === 'dial' ? 'bg-nc-line' : ''}"
+          title="AI engine: {engine.name} — click to change"
+          aria-label="Choose AI search engine"
+          aria-haspopup="menu"
+          aria-expanded={browser.searchPickerOpen === 'dial'}
+        >
+          <span class="engine-chip-logo">
+            <SiteIcon url={engine.site} label={engine.name} size={18} shape="circle" />
+          </span>
+          <svg
+            width="8"
+            height="8"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="3"
+            class="shrink-0 text-nc-mut transition-transform duration-200 ease-out
+                   {browser.searchPickerOpen === 'dial' ? 'rotate-180' : ''}"
+            aria-hidden="true"
+          >
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
+        <input
+          bind:value={query}
+          placeholder="AI se pooch, ya website ka address likho…"
+          spellcheck="false"
+          autocomplete="off"
+          class="min-w-0 flex-1 bg-transparent text-[13px] leading-none text-nc-txt outline-none placeholder:text-nc-mut-2"
+          aria-label="Search or enter a website"
+        />
+        <!-- the search affordance every other browser's box has: a muted
+             magnifier on the right that runs the query. It is a real
+             submit button, so clicking it does what Enter does. -->
+        <button
+          type="submit"
+          class="search-go grid h-7 w-7 shrink-0 place-items-center rounded-full text-nc-mut
+                 transition-colors hover:bg-nc-line hover:text-nc-txt focus-visible:text-nc-txt"
+          title="Search on web"
+          aria-label="Search on web"
+        >
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" />
+          </svg>
+        </button>
+      </form>
+      {#if browser.searchPickerOpen === 'dial'}
+        <EnginePicker group="ai" onpick={pickAiEngine} />
+      {/if}
+    </div>
 
-    <!-- honest status chips: every dot reads a real store -->
+    <!-- the tab budget — the one honest status chip left: it reads the
+         live tab store and nothing else -->
     <div class="dial-in dial-in-2 mt-3 flex flex-wrap items-center gap-1.5">
-      <span
-        class="flex items-center gap-1.5 rounded-full border border-nc-line bg-nc-panel px-2.5 py-1 text-[10px] text-nc-mut"
-        title={ublock.runtime === 'loaded'
-          ? `uBlock Origin Lite${ublock.version ? ` v${ublock.version}` : ''} WebView2 me load hai`
-          : ublock.runtime === 'missing'
-            ? 'Ad blocker WebView2 me load nahi hua — menu me check karo'
-            : 'Ad blocker status abhi pata nahi'}
-      >
-        <span class="h-1.5 w-1.5 rounded-full {shieldTone}"></span>
-        uBlock Lite{ublock.version ? ` · v${ublock.version}` : ''}
-      </span>
       <span
         class="rounded-full border border-nc-line bg-nc-panel px-2.5 py-1 text-[10px] tabular-nums text-nc-mut"
       >
         {browser.tabs.length} / 9 tabs
-      </span>
-      <span
-        class="flex items-center gap-1.5 rounded-full border border-nc-line bg-nc-panel px-2.5 py-1 text-[10px] text-nc-mut"
-        title="Search engine — URL bar ki chip se badlo"
-      >
-        <span class="h-1.5 w-1.5 rounded-full" style="background:{engine.color}"></span>
-        {engine.name}
       </span>
     </div>
 
@@ -257,9 +323,8 @@
     {/if}
 
     <!-- the one-line promise, stated where the user counts cards -->
-    <p class="mt-8 text-center text-[10px] text-nc-mut-2">
-      Sab kuch app ke andar khulta hai — koi link system browser me nahi jata.
-      {isTauri() ? '' : '(dev preview)'}
+    <p class="mt-8 text-center font-brand text-[11px] tracking-[0.14em] text-nc-mut-2 uppercase">
+      {isTauri() ? '' : 'dev preview · '}Everything opens in-app
     </p>
   </div>
 </div>
@@ -312,10 +377,87 @@
     animation-delay: calc(140ms + var(--i, 0) * 45ms);
   }
 
+  /*
+   * Two small motions added with the AI search box:
+   *
+   *  1. the tagline swap — the line slides up and fades as the next one
+   *     arrives from below, every 3 s. The `{#key}` remounts the <p>, so the
+   *     animation always plays fresh; under reduced-motion the text still
+   *     changes (it is content) but without the slide.
+   *  2. the engine chip's logo settling in once, and popping on hover — the
+   *     affordance for "click to switch AI engine".
+   */
+  @keyframes t9-tagline-swap {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes t9-logo-in {
+    from {
+      opacity: 0;
+      transform: scale(0.6);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .tagline {
+    animation: t9-tagline-swap 320ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  }
+
+  .engine-chip-logo {
+    display: grid;
+    place-items: center;
+    animation: t9-logo-in 260ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  }
+
+  .engine-chip:hover .engine-chip-logo {
+    transform: scale(1.1);
+    transition: transform 160ms ease-out;
+  }
+
+  /* The magnifier eases toward the brand tint while the box has focus:
+     the box is live, and the button that runs the query says so. */
+  .search-go {
+    transition:
+      color 160ms ease-out,
+      background-color 160ms ease-out,
+      transform 120ms ease-out;
+  }
+
+  form:focus-within .search-go {
+    color: var(--nc-brand, #6d8cff);
+  }
+
+  .search-go:active {
+    transform: scale(0.92);
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .dial-in,
-    .dial-card {
+    .dial-card,
+    .tagline,
+    .engine-chip-logo {
       animation: none;
+    }
+
+    .engine-chip:hover .engine-chip-logo {
+      transform: none;
+    }
+
+    .search-go,
+    form:focus-within .search-go,
+    .search-go:active {
+      transition: none;
+      transform: none;
     }
   }
 </style>

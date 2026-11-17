@@ -237,10 +237,18 @@
   // When the downloads panel toggles, re-measure right away — the native
   // webview must never sit over the panel's header buttons, even for a
   // frame. (The RO above catches it too, but this is synchronous.)
+  let rectMountRun = true;
   $effect(() => {
     downloads.open;
     const el = contentEl;
     if (!el || !isTauri()) return;
+    // The RO seed above already sends the first rect. A second one in the
+    // first frame after a cold create raced `browser_show`'s create+navigate
+    // and re-laid the page mid-load (heavy sites came up needing a refresh).
+    if (rectMountRun) {
+      rectMountRun = false;
+      return;
+    }
     requestAnimationFrame(() => {
       const r = el.getBoundingClientRect();
       applyRect({ x: r.left, y: r.top, width: r.width, height: r.height });
@@ -252,6 +260,7 @@
   // right-click menu — is painted *under* a native child webview, so its
   // lower half used to disappear behind the page. Park the page while any of
   // them is open; audio and page state survive because nothing is closed.
+  let lastVisible: boolean | null = null;
   $effect(() => {
     const open =
       layout.toolsOpen ||
@@ -261,6 +270,11 @@
       browser.searchPickerOpen ||
       !!menu.current;
     if (!isTauri()) return;
+    const visible = !open;
+    // Only IPC on a real change. At mount (and on every same-state re-run)
+    // this used to fire a restore call into the cold-create race above.
+    if (visible === lastVisible) return;
+    lastVisible = visible;
     // The log used to say only "parked"/"restored", so a page that flashed
     // every second had no named cause. Say *which* overlay asked for it.
     if (open) {
@@ -276,7 +290,7 @@
         .join('+');
       browserNote(`overlay -> park (${which})`);
     }
-    void browserSetVisible(!open);
+    void browserSetVisible(visible);
   });
 </script>
 

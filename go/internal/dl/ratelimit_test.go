@@ -168,8 +168,22 @@ func TestResumeAfterAPermanentRefusal(t *testing.T) {
 	// Counted across the resume only: a resume that asks for the bytes already
 	// on disk is the bug this whole file exists to prevent.
 	var served atomic.Int64
+	// The handler refuses segments 1..3, but only once segment 0 has landed
+	// at least one byte on disk: a refusal that wins the race against the
+	// first write leaves ReceivedBytes == 0, which is not the row this test
+	// is about (a red row at 25%, not a row that never started).
+	var mgr atomic.Pointer[Manager]
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if mode.Load() == 1 && segmentRange(r) && !strings.HasPrefix(r.Header.Get("Range"), "bytes=0-") {
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				if m := mgr.Load(); m != nil {
+					if items := m.List(); len(items) > 0 && items[0].ReceivedBytes > 0 {
+						break
+					}
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -179,6 +193,7 @@ func TestResumeAfterAPermanentRefusal(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	m := newTestManager(t, srv)
+	mgr.Store(m)
 	item, err := m.Start(srv.URL+"/big.bin", "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
