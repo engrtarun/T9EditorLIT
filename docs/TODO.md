@@ -132,7 +132,30 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
 
 ## 11. Browser — heavy site load atak jata hai, refresh karna padta hai
 
-- **Status:** `in-progress` — measured cause, not yet fixed
+- **Status:** `in-progress` — the stall is now *instrumented and bounded*;
+  verification on the installed build is pending
+- **Measured (12:49–12:51, installed `ci-fface3b`):** a reopen of the browser
+  logged `view -> open` and `set_rect 1536x742 @ (0,121)` and then **nothing** —
+  no `show id=`, no `refused`. The next `show` was a user reload two seconds
+  later (`force=Some(true)`). That is the stall: the mount chain
+  (`view open → restoreSession → rectSent → showActive`) never reached
+  `showActive`, so no webview was ever created and the content box kept the
+  shell's `… khul raha hai` placeholder. The reload button bypasses the chain
+  (it calls `nudge` directly), which is why refresh "fixed" it.
+- **Cause:** `restoreSession()` awaited `stats_kv_get` (a synchronous Rust
+  command that opens `telemetry.db`). A call that stays pending has no
+  rejection to catch, so the chain waited forever. It is invisible in the log
+  because only the native side writes there.
+- **Fix (commit `1e1400c`):**
+  - `restoreSession` reads the strip with a 1.5 s deadline and the mount chain
+    races it again — storage may delay the strip, never the first page.
+  - New `browser_ui_note` command, so the UI writes into the same
+    `browser-diag.log`: `mount -> restore done|timeout (tabs N)`,
+    `mount -> rect ready, showActive`, and `showActive -> skipped (reason)` /
+    `resume <id> <url>`.
+  - The overlay effect names the popover that parked the page
+    (`overlay -> park (profile+menu)`) — the 12:49 log had 15 park/restore
+    pairs in 15 s with no way to tell which one.
 - **Measured:** the log shows the whole webview being thrown away and rebuilt
   on the way to a new site:
   `show id=1 url=about:blank … show blank -> swept (kept [])` immediately
@@ -145,8 +168,11 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
 - **Not yet ruled out:** renderer death (row 2 instrumentation is installed but
   no `process failed` line has been produced yet), and RAM starvation (the box
   runs at 80–96 % used).
-- **Next:** stop the blank-tab sweep from destroying the page the user is about
-  to navigate (reuse the webview, navigate it), and prove a paint after
+- **Next:** verify on `ci-1e1400c` that a cold start's first browser open logs
+  `mount -> restore done|timeout` **and** a `show id=` within ~2 s of
+  `view -> open`, with the page painted in a screenshot; then close this row.
+  Then stop the blank-tab sweep from destroying the page the user is about to
+  navigate (reuse the webview, navigate it), and prove a paint after
   `page finished`.
 
 ## Next actions
