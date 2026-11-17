@@ -29,6 +29,8 @@ class LayoutStore {
   helpOpen = $state(false);
   /** The settings dialog (gear icon). */
   settingsOpen = $state(false);
+  /** The command palette (Ctrl+K) is open. */
+  commandPaletteOpen = $state(false);
   /**
    * The transcript import dialog.
    *

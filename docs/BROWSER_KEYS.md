@@ -19,36 +19,36 @@ reason is written) · **⛔ not available** (with the reason).
 
 ## Tabs & windows
 
-| Key                                  | Firefox action            | T9 browser view                                                              |
-| ------------------------------------ | ------------------------- | ---------------------------------------------------------------------------- |
-| Ctrl + T                             | New tab                   | ✅ new tab                                                                   |
-| Ctrl + W / Ctrl + F4                 | Close tab                 | ✅ close; the **last** tab closes the browser view (Firefox rule)            |
-| Ctrl + Shift + T                     | Reopen last closed tab    | ✅ restores at its old slot, 20-deep                                         |
-| Ctrl + Tab / Ctrl + PgDn             | Next tab                  | ✅ wraps around                                                              |
-| Ctrl + Shift + Tab / Ctrl + PgUp     | Previous tab              | ✅ wraps around                                                              |
-| Ctrl + 1 … 8                         | Select tab n              | ✅                                                                           |
-| Ctrl + 9                             | Select the last tab       | ✅                                                                           |
-| Ctrl + Shift + PgUp / PgDn           | Move tab left / right     | ✅ reorders the strip                                                        |
-| Ctrl + N                             | New **window**            | 🔁 new tab — T9 is a single-window app                                       |
-| Ctrl + Shift + W / Ctrl + Shift + F4 | Close window              | 🔁 closes the browser view and returns to the editor                         |
+| Key                                  | Firefox action            | T9 browser view                                                                                                                                                   |
+| ------------------------------------ | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ctrl + T                             | New tab                   | ✅ new tab                                                                                                                                                        |
+| Ctrl + W / Ctrl + F4                 | Close tab                 | ✅ close; the **last** tab closes the browser view (Firefox rule)                                                                                                 |
+| Ctrl + Shift + T                     | Reopen last closed tab    | ✅ restores at its old slot, 20-deep                                                                                                                              |
+| Ctrl + Tab / Ctrl + PgDn             | Next tab                  | ✅ wraps around                                                                                                                                                   |
+| Ctrl + Shift + Tab / Ctrl + PgUp     | Previous tab              | ✅ wraps around                                                                                                                                                   |
+| Ctrl + 1 … 8                         | Select tab n              | ✅                                                                                                                                                                |
+| Ctrl + 9                             | Select the last tab       | ✅                                                                                                                                                                |
+| Ctrl + Shift + PgUp / PgDn           | Move tab left / right     | ✅ reorders the strip                                                                                                                                             |
+| Ctrl + N                             | New **window**            | 🔁 new tab — T9 is a single-window app                                                                                                                            |
+| Ctrl + Shift + W / Ctrl + Shift + F4 | Close window              | 🔁 closes the browser view and returns to the editor                                                                                                              |
 | Ctrl + Shift + P                     | New private window        | 🔁 pins/unpins the active tab — one window, no profile isolation, so the chord is put to the use the user asked for (a pinned tab keeps its page and audio alive) |
-| Ctrl + Shift + B                     | Bookmark toolbar          | 🔁 opens the in-built browser from **any** screen (dashboard, editor); inside the browser it does nothing, the key map owns that view |
-| Ctrl + Shift + N                     | Reopen last closed window | ⛔ same single-window reason                                                 |
+| Ctrl + Shift + B                     | Bookmark toolbar          | 🔁 opens the in-built browser from **any** screen (dashboard, editor); inside the browser it does nothing, the key map owns that view                             |
+| Ctrl + Shift + N                     | Reopen last closed window | ⛔ same single-window reason                                                                                                                                      |
 
 ## Navigation
 
-| Key                                                 | Firefox action                               | T9 browser view                                                                                         |
-| --------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Alt + ← / Backspace                                 | Back                                         | ✅ store history stack                                                                                  |
-| Alt + → / Shift + Backspace                         | Forward                                      | ✅                                                                                                      |
-| F5 / Ctrl + R                                       | Reload                                       | ✅                                                                                                      |
-| Ctrl + F5 / Ctrl + Shift + R                        | Reload, override cache                       | ✅ same forced nudge — T9 never shows a cached page from the old webview                                |
+| Key                                                 | Firefox action                               | T9 browser view                                                                                                        |
+| --------------------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Alt + ← / Backspace                                 | Back                                         | ✅ store history stack                                                                                                 |
+| Alt + → / Shift + Backspace                         | Forward                                      | ✅                                                                                                                     |
+| F5 / Ctrl + R                                       | Reload                                       | ✅                                                                                                                     |
+| Ctrl + F5 / Ctrl + Shift + R                        | Reload, override cache                       | ✅ same forced nudge — T9 never shows a cached page from the old webview                                               |
 | Esc                                                 | Stop loading                                 | ✅ the loading spinner stops — unless a page is fullscreen, where Esc goes to the page so YouTube can leave fullscreen |
-| Alt + Home                                          | Home page                                    | ✅ the speed dial **is** the home page                                                                  |
-| Ctrl + L / Alt + D                                  | Focus address bar                            | ✅ (the toolbar magnifier's tooltip now tells the truth)                                                |
-| Ctrl + K                                            | Focus search bar                             | ✅ same pill; a phrase becomes a Brave search                                                           |
-| Ctrl + E / F6                                       | Tab search / cycle chrome ↔ page             | ⛔ v1 — the address bar already searches, and F6 inside a WebView2 child belongs to the page            |
-| Ctrl + Enter / Shift + Enter / Ctrl + Shift + Enter | Complete `.com` / `.net` / `.org` in the bar | ⛔ the URL bar has no autocomplete yet (`toUrl` is the whole parser)                                    |
+| Alt + Home                                          | Home page                                    | ✅ the speed dial **is** the home page                                                                                 |
+| Ctrl + L / Alt + D                                  | Focus address bar                            | ✅ (the toolbar magnifier's tooltip now tells the truth)                                                               |
+| Ctrl + K                                            | Focus search bar                             | ✅ same pill; a phrase becomes a Brave search                                                                          |
+| Ctrl + E / F6                                       | Tab search / cycle chrome ↔ page             | ⛔ v1 — the address bar already searches, and F6 inside a WebView2 child belongs to the page                           |
+| Ctrl + Enter / Shift + Enter / Ctrl + Shift + Enter | Complete `.com` / `.net` / `.org` in the bar | ⛔ the URL bar has no autocomplete yet (`toUrl` is the whole parser)                                                   |
 
 ## Page, bookmarks & panels
 
@@ -70,16 +70,16 @@ reason is written) · **⛔ not available** (with the reason).
 
 ## Zoom, devtools, the rest
 
-| Key                                                    | Firefox action        | T9 browser view                                                                                              |
-| ------------------------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Key                                                    | Firefox action        | T9 browser view                                                                                                                                                                           |
+| ------------------------------------------------------ | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Ctrl + = / Ctrl + Shift + = / Ctrl + - / Ctrl + 0      | Zoom in / out / reset | ✅ real page zoom inside the child webview (**30 % … 300 %, 10 % per press**, like Firefox), kept per tab; the URL bar shows a `%` chip only when it is not 100 % and one click resets it |
-| F12 / Ctrl + Shift + I / K / C / E / J / M / S         | DevTools suite        | ⛔ release builds compile devtools out, and Tauri documents child-webview devtools as unsupported on Windows |
-| Ctrl + Shift + A                                       | Add-ons manager       | ⛔ there is no add-on system                                                                                 |
-| F7                                                     | Caret browsing        | ⛔ WebView2 has no caret-browsing API                                                                        |
-| F11                                                    | Full screen           | ⛔ the window-controls contract doesn't grant fullscreen; use the window's own buttons                       |
-| F1                                                     | Help                  | ✅ opens this shortcut sheet                                                                                 |
-| Ctrl + X / C / V / A / Z, Del, Ctrl + Shift + V        | Text editing          | ℹ️ native — plain inputs and the page webview handle these themselves                                        |
-| Space / Shift + Space, PgUp / PgDn, Home / End, arrows | Page scroll           | ℹ️ native inside the page                                                                                    |
+| F12 / Ctrl + Shift + I / K / C / E / J / M / S         | DevTools suite        | ⛔ release builds compile devtools out, and Tauri documents child-webview devtools as unsupported on Windows                                                                              |
+| Ctrl + Shift + A                                       | Add-ons manager       | ⛔ there is no add-on system                                                                                                                                                              |
+| F7                                                     | Caret browsing        | ⛔ WebView2 has no caret-browsing API                                                                                                                                                     |
+| F11                                                    | Full screen           | ⛔ the window-controls contract doesn't grant fullscreen; use the window's own buttons                                                                                                    |
+| F1                                                     | Help                  | ✅ opens this shortcut sheet                                                                                                                                                              |
+| Ctrl + X / C / V / A / Z, Del, Ctrl + Shift + V        | Text editing          | ℹ️ native — plain inputs and the page webview handle these themselves                                                                                                                     |
+| Space / Shift + Space, PgUp / PgDn, Home / End, arrows | Page scroll           | ℹ️ native inside the page                                                                                                                                                                 |
 
 ## How the focus works (read this before "the keys don't work")
 

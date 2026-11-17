@@ -5,6 +5,7 @@
   import RightRail from './lib/components/RightRail.svelte';
   import DropOverlay from './lib/components/DropOverlay.svelte';
   import ShortcutsHelp from './lib/components/ShortcutsHelp.svelte';
+  import CommandPalette from './lib/components/CommandPalette.svelte';
   import SettingsPanel from './lib/components/SettingsPanel.svelte';
   import Toasts from './lib/components/Toasts.svelte';
   import ContextMenu from './lib/components/ContextMenu.svelte';
@@ -262,7 +263,13 @@
     }
     // The transcript import dialog owns the keyboard while it is open. It
     // handles its own Escape; nothing here may act on a key typed into it.
-    if (layout.importOpen) return;
+    if (layout.commandPaletteOpen) {
+      if (e.key === 'Escape') {
+        layout.commandPaletteOpen = false;
+        e.preventDefault();
+      }
+      return;
+    }
 
     // In the **browser** Firefox's own key map runs FIRST — it lives in
     // src/lib/browser-keys.ts and is allowed to fire with the address bar
@@ -271,15 +278,17 @@
     // typing rules (it stands down for editing chords).
     if (browserOpen && dispatchBrowserKey(e, browserDeps)) return;
 
-    // One chord opens the in-built browser from anywhere — dashboard, studio,
-    // the editor — so a quick lookup never means hunting for the 9-dots menu
-    // first. Ctrl+Shift+B is unclaimed elsewhere in the app and Firefox uses
-    // it for a toolbar this browser does not have. Inside the browser it is a
-    // no-op: that view's own key map owns the keyboard.
-    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'b' && app.view !== 'browser') {
+    // Command palette — Ctrl+K from anywhere outside the browser. Inside the
+    // browser Ctrl+K keeps its Firefox meaning (focus the address bar).
+    if (
+      e.ctrlKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      e.key.toLowerCase() === 'k' &&
+      app.view !== 'browser'
+    ) {
       e.preventDefault();
-      void browserNote(`screen -> open browser (Ctrl+Shift+B from ${app.view})`);
-      app.openBrowser(app.view);
+      layout.commandPaletteOpen = !layout.commandPaletteOpen;
       return;
     }
 
@@ -596,6 +605,7 @@
 
 <DropOverlay />
 <ShortcutsHelp />
+<CommandPalette />
 <SettingsPanel />
 <Toasts />
 <!-- One usage panel for both triggers (the T9 Cloud card and the editor's

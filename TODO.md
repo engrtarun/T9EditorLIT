@@ -1,0 +1,30 @@
+# TODO - Scratch Pad
+
+_Last updated: 2026-11-17_
+
+## 🔴 High Priority
+
+- [ ] Browser: architecture decide - per-tab webview vs ek hi webview (added: 2026-11-16)
+- [ ] Browser: renderer crash/unresponsive ko log karo + auto-reload (instrument first) (added: 2026-11-16) — auto-reload shipped `22e7e57`, abhi tak koi `process failed` line nahi aayi, isliye open
+- [ ] Browser: heavy site load atak jata hai, refresh karna padta hai — asli chain `view -> open` → `set_rect` → **kuch nahi** (koi `show`, koi `refused`): `restoreSession()` ke `stats_kv_get` par mount chain ruk jata thi. Fix `1e1400c` (1.5 s deadline + har stage ka `ui ->` log) install + verify hona baaki (docs/TODO.md §11)
+- [ ] Browser: back dabane ke 1 s baad view khud wapas khulta hai (`view -> closed` → `view -> open` → `resume`) — ab `screen -> open|close browser (...)` log line se caller pakda jayega (added: 2026-11-17)
+- [ ] Browser: overlay park/restore 15 baar 15 s me (`layout.*Open` flap) — ab `overlay -> park (naam)` line se culprit pata chalega (added: 2026-11-17)
+- [x] Browser: shell reload ke baad YouTube page Home ke upar paint hota hai + close par app hang (`Responding=False`) — fix shipped: mount par stale webview sweep (`ffe3ccd`) + media flyout UI-thread deadlock (`94dfbb1`); installed `ci-94dfbb1` par verify (docs/TODO.md §12)
+- [x] Browser: pinned YouTube → editor → wapas, video band na ho — `ci-94dfbb1` par `media event … playing` + `pin … true` + `show … resume=Some(true)`, aur user ke manual test me playback chalta raha (docs/TODO.md §12)
+
+## 🟡 Medium Priority
+
+- [ ] Transcript import: DOCX/PDF native picker + restart persistence (added: 2026-11-16)
+- [ ] ElevenLabs STT browser flow: upload / record / transcribe / export (added: 2026-11-16)
+
+## 🟢 Nice to Have
+
+## ✅ Done
+
+- [x] Browser: page-shim shortcuts installed build par prove karo — `event key 1 -> pinTab`, `event key 1 -> closeBrowserView` live log me (build `ci-1fbadef`, 2026-11-17)
+- [x] Browser: pin/unpin round installed build par — pin → back (`swept all, 1 pinned kept`, page hidden) → wapas (`resume=Some(true)`, memory normal). Commit `1fbadef`, docs/TODO.md §10
+- [x] Browser cold start Home par khulta hai, YouTube restore nahi — `4880033`; `Ctrl+Shift+T` se band tab wapas (docs/TODO.md §9)
+
+---
+
+## Notes

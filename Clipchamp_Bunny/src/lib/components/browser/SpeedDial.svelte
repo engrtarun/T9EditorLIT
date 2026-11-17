@@ -188,15 +188,19 @@
           class="min-w-0 flex-1 bg-transparent text-[13px] leading-none text-nc-txt outline-none placeholder:text-nc-mut-2"
           aria-label="Search or enter a website"
         />
-        <!-- the search affordance every other browser's box has: a muted
-             magnifier on the right that runs the query. It is a real
-             submit button, so clicking it does what Enter does. -->
+        <!-- ChatGPT's send mark: a filled circle with an up arrow. It reads as
+             "run it" at a glance, and the fill gives the affordance the muted
+             magnifier never had. A real submit button, so it does what Enter
+             does. -->
         <button
           type="submit"
-          class="search-go grid h-7 w-7 shrink-0 place-items-center rounded-full text-nc-mut
-                 transition-colors hover:bg-nc-line hover:text-nc-txt focus-visible:text-nc-txt"
+          class="search-go grid h-7 w-7 shrink-0 place-items-center rounded-full bg-nc-brand text-white
+                 transition-[filter,transform] duration-150 hover:brightness-110
+                 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-nc-brand
+                 {query.trim() ? '' : 'opacity-45'}"
           title="Search on web"
           aria-label="Search on web"
+          disabled={!query.trim()}
         >
           <svg
             width="13"
@@ -204,11 +208,12 @@
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            stroke-width="2"
+            stroke-width="2.4"
             stroke-linecap="round"
+            stroke-linejoin="round"
             aria-hidden="true"
           >
-            <circle cx="11" cy="11" r="6.5" /><path d="M16 16l4.5 4.5" />
+            <path d="M12 19V5M5 12l7-7 7 7" />
           </svg>
         </button>
       </form>
@@ -227,11 +232,9 @@
       </span>
     </div>
 
-    <!-- shortcuts -->
-    <p class="dial-in dial-in-2 mt-7 mb-2 px-1 text-[10px] font-bold tracking-widest text-nc-mut-2">
-      SHORTCUTS
-    </p>
-    <div class="dial-in dial-in-2 grid grid-cols-3 gap-1 sm:grid-cols-6">
+    <!-- speed-dial sites — no section label: the icons speak for
+         themselves, and the label only pushed them down the page -->
+    <div class="dial-in dial-in-2 mt-7 grid grid-cols-3 gap-1 sm:grid-cols-6">
       {#each SPEED_DIAL as site, i (site.url)}
         <button
           type="button"
@@ -424,21 +427,21 @@
     transition: transform 160ms ease-out;
   }
 
-  /* The magnifier eases toward the brand tint while the box has focus:
-     the box is live, and the button that runs the query says so. */
+  /* The send mark presses like a physical button: a small squash on click.
+     Its colour comes from the fill, so there is no focus tint to override. */
   .search-go {
     transition:
-      color 160ms ease-out,
-      background-color 160ms ease-out,
-      transform 120ms ease-out;
+      filter 160ms ease-out,
+      transform 120ms ease-out,
+      opacity 160ms ease-out;
   }
 
-  form:focus-within .search-go {
-    color: var(--nc-brand, #6d8cff);
+  .search-go:active:not(:disabled) {
+    transform: scale(0.9);
   }
 
-  .search-go:active {
-    transform: scale(0.92);
+  .search-go:disabled {
+    cursor: default;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -454,8 +457,7 @@
     }
 
     .search-go,
-    form:focus-within .search-go,
-    .search-go:active {
+    .search-go:active:not(:disabled) {
       transition: none;
       transform: none;
     }

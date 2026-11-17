@@ -133,11 +133,11 @@ function withDeadline<T>(task: Promise<T>, ms: number, fallback: T): Promise<T> 
  */
 export const SPEED_DIAL: ReadonlyArray<{ url: string; label: string }> = [
   { url: 'https://www.youtube.com', label: 'YouTube' },
-  { url: 'https://github.com/engrtarun/T9EditorLIT', label: 'GitHub' },
-  { url: 'https://search.brave.com', label: 'Brave' },
-  { url: 'https://groq.com', label: 'Groq' },
-  { url: 'https://aistudio.google.com', label: 'Gemini' },
-  { url: 'https://web.telegram.org', label: 'Telegram' }
+  { url: 'https://www.instagram.com', label: 'Instagram' },
+  { url: 'https://x.com', label: 'X' },
+  { url: 'https://www.snapchat.com', label: 'Snapchat' },
+  { url: 'https://web.whatsapp.com', label: 'WhatsApp' },
+  { url: 'https://github.com/engrtarun/T9EditorLIT', label: 'GitHub' }
 ];
 
 /**

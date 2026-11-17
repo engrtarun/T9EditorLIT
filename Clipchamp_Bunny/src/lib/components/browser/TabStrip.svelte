@@ -43,9 +43,9 @@
              {tab.id === browser.activeId
         ? 'bg-nc-panel-2 text-nc-txt ring-1 ring-white/5'
         : 'text-nc-mut hover:bg-nc-panel-2/60 hover:text-nc-txt'}"
-      title={icon ?? 'New tab'}
+      title={icon ?? 'Home'}
     >
-      <!-- favicon (or the globe) + a spinner while the page loads -->
+      <!-- favicon (or the home mark) + a spinner while the page loads -->
       <span class="grid h-4 w-4 shrink-0 place-items-center overflow-hidden">
         {#if tab.loading}
           <span
@@ -55,6 +55,7 @@
         {:else if icon}
           <SiteIcon url={icon} label={tab.title || hostOf(icon)} size={16} />
         {:else}
+          <!-- Firefox's home mark: roof, walls, door — one stroke, reads at 14 px. -->
           <svg
             width="14"
             height="14"
@@ -62,17 +63,19 @@
             fill="none"
             stroke="currentColor"
             stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
             aria-hidden="true"
           >
-            <circle cx="12" cy="12" r="9" /><path
-              d="M3 12h18M12 3c2.5 2.6 4 5.7 4 9s-1.5 6.4-4 9c-2.5-2.6-4-5.7-4-9s1.5-6.4 4-9z"
-            />
+            <path d="M3.5 10.8 12 4l8.5 6.8" />
+            <path d="M5.7 9.6V20h12.6V9.6" />
+            <path d="M9.8 20v-5h4.4v5" />
           </svg>
         {/if}
       </span>
 
       <span class="min-w-0 flex-1 truncate text-left">
-        {icon ? tab.title || hostOf(icon) : 'New tab'}
+        {icon ? tab.title || hostOf(icon) : 'Home'}
       </span>
 
       {#if tab.pinned}

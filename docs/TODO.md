@@ -14,7 +14,7 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
 - **Commits:** `e08fe33` (pin path no longer calls `SetMemoryUsageTargetLevel`,
   background pages parked + LOW), `ce572a7` (overlay park is visual-only; the pin
   action lives inside the tab context menu, so it used to trim a playing page)
-- **Evidence it is *not* proven:** the diag log shows the old build surviving
+- **Evidence it is _not_ proven:** the diag log shows the old build surviving
   11 minutes after `pin 1 -> true`; the 2 s `shutdown` was the Update restart.
   So the original "pin freezes the app" correlation was never established.
 - **Needs:** one manual pin → editor → back → unpin round on the installed build,
@@ -115,7 +115,7 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
   1×1 and nothing else. A 1×1 child HWND still exists and still paints until
   Windows processes the resize, so a slice of the page can sit over the
   dashboard; `browser_set_visible(false)` had the same hole and only ever
-  parked the *active* tab, so any other live page stayed full size.
+  parked the _active_ tab, so any other live page stayed full size.
 - **Fix:** `1fbadef` — `park_webview` calls `webview.hide()` after the resize
   (out of the compositor; Chromium keeps a hidden page's audio alive), and
   `browser_set_visible(false)` parks **every** `tab-*` webview, not just the
@@ -132,7 +132,7 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
 
 ## 11. Browser — heavy site load atak jata hai, refresh karna padta hai
 
-- **Status:** `in-progress` — the stall is now *instrumented and bounded*;
+- **Status:** `in-progress` — the stall is now _instrumented and bounded_;
   verification on the installed build is pending
 - **Measured (12:49–12:51, installed `ci-fface3b`):** a reopen of the browser
   logged `view -> open` and `set_rect 1536x742 @ (0,121)` and then **nothing** —
@@ -163,7 +163,7 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
   navigation is a cold WebView2 start (profile + uBlock unpack) that took
   **3–6 s** in the log, with a blank surface until the first paint.
 - **Also measured:** `event page finished` fires 3–6 s after `event nav`, so the
-  network is *not* stalling — the visible "atka hua" page is a surface that has
+  network is _not_ stalling — the visible "atka hua" page is a surface that has
   no first paint yet, not a slow download.
 - **Not yet ruled out:** renderer death (row 2 instrumentation is installed but
   no `process failed` line has been produced yet), and RAM starvation (the box
@@ -204,9 +204,9 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
   page that had just been restored, one second after it was created.
 - **Fix written (pending deploy):**
   - `App.svelte` `onMount` now claims a fresh shell: `browserSetViewOpen(false)`
-    + `browserViewClosed()` sweep any leftover child, and write
-    `ui -> shell -> attached (home, stale pages swept)`. A **second** such line
-    in the log is the proof that the document reloaded.
+    - `browserViewClosed()` sweep any leftover child, and write
+      `ui -> shell -> attached (home, stale pages swept)`. A **second** such line
+      in the log is the proof that the document reloaded.
   - `lib.rs` `CloseRequested` writes `window -> close requested` as its first
     action, so a future hang can be located before/after the handler.
 - **ROOT CAUSE found (same session, evidence in the log):** a YouTube video
@@ -233,12 +233,12 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
     deadlock. The native side stayed alive afterwards.
   - `pin request 195207 -> true` / `pin 195207 -> true`.
   - `show id=195207 url=https://www.youtube.com/ keep=Some([])
-    force=Some(false) resume=Some(true)` — a resume, not a navigation.
-  - Address-bar navigation still worked *after* media played
+force=Some(false) resume=Some(true)` — a resume, not a navigation.
+  - Address-bar navigation still worked _after_ media played
     (`show id=704509 … resume=Some(true)`), which used to be impossible: the
     UI thread was frozen.
   - Every launch writes `view closed -> swept all` + `ui -> shell -> attached
-    (home, stale pages swept)`, so a stale page can no longer paint over Home.
+(home, stale pages swept)`, so a stale page can no longer paint over Home.
   - User's manual test: pin → editor → return, playback continues; close works.
 - **Remaining known-issue (separate, smaller):** the first YouTube document
   sometimes paints only its skeleton until F5 (same in this session at

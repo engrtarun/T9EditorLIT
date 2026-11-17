@@ -12,18 +12,18 @@ still runs.
 
 ## Where the pieces live
 
-| Piece | Owner | Path / endpoint |
-| --- | --- | --- |
-| uBlock source (provenance only) | git submodule | `modules/uBlock` (classic uBO source, reference) |
-| Official release archive | Go daemon | GitHub release `uBOLite_<ver>.chromium.zip` |
-| Unpacked extension | Go daemon | `%LOCALAPPDATA%\T9EditorLIT\ublock\extensions-mv3\uBOLite.chromium` |
-| Legacy MV2 folder (deleted on start) | Go daemon | `%LOCALAPPDATA%\T9EditorLIT\ublock\extensions\uBlock0.chromium` |
-| Install marker | Go daemon | `%LOCALAPPDATA%\T9EditorLIT\ublock\version.json` |
-| Disk status | Go daemon | `GET /v1/ublock/status` |
-| Manual re-check | Go daemon | `POST /v1/ublock/update` |
-| WebView2 load | Rust | `browser_extensions_enabled(true).extensions_path(...)` on a **dedicated tab profile** (`%LOCALAPPDATA%\T9EditorLIT\browser-profile`) |
-| Runtime proof | Rust + WebView2 | `ICoreWebView2Profile7::GetBrowserExtensions` → `browser:extensions` |
-| Panel UI | Svelte | Browser toolbar ☰ → uBlock Origin Lite section (also downloader settings) |
+| Piece                                | Owner           | Path / endpoint                                                                                                                       |
+| ------------------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| uBlock source (provenance only)      | git submodule   | `modules/uBlock` (classic uBO source, reference)                                                                                      |
+| Official release archive             | Go daemon       | GitHub release `uBOLite_<ver>.chromium.zip`                                                                                           |
+| Unpacked extension                   | Go daemon       | `%LOCALAPPDATA%\T9EditorLIT\ublock\extensions-mv3\uBOLite.chromium`                                                                   |
+| Legacy MV2 folder (deleted on start) | Go daemon       | `%LOCALAPPDATA%\T9EditorLIT\ublock\extensions\uBlock0.chromium`                                                                       |
+| Install marker                       | Go daemon       | `%LOCALAPPDATA%\T9EditorLIT\ublock\version.json`                                                                                      |
+| Disk status                          | Go daemon       | `GET /v1/ublock/status`                                                                                                               |
+| Manual re-check                      | Go daemon       | `POST /v1/ublock/update`                                                                                                              |
+| WebView2 load                        | Rust            | `browser_extensions_enabled(true).extensions_path(...)` on a **dedicated tab profile** (`%LOCALAPPDATA%\T9EditorLIT\browser-profile`) |
+| Runtime proof                        | Rust + WebView2 | `ICoreWebView2Profile7::GetBrowserExtensions` → `browser:extensions`                                                                  |
+| Panel UI                             | Svelte          | Browser toolbar ☰ → uBlock Origin Lite section (also downloader settings)                                                            |
 
 ## Why the release zip, not the submodule
 
@@ -74,7 +74,7 @@ download and never crashes the daemon.
 
 `extensions_path` is fire-and-forget in wry: it calls
 `AddBrowserExtension` per folder and ignores the result. So a folder on disk
-proves the *download*, not the *load*.
+proves the _download_, not the _load_.
 
 The only runtime truth is WebView2's own list. After a tab becomes visible,
 Rust asks the profile (`ICoreWebView2Profile7::GetBrowserExtensions`) and emits
@@ -126,15 +126,14 @@ neither is visible in the UI:
 So the browser enforces two more layers itself, in `browser.rs` and
 `browser_shim.js`:
 
-| Layer | What it catches | Why it is safe |
-| --- | --- | --- |
-| Tracking prevention `STRICT` (`ICoreWebView2Profile3`) | Known cross-site trackers Chromium already classifies | First-party content is never touched |
-| Native request shield (`WebResourceRequested` → 403) | Ad-only hosts (`doubleclick.net`, `googlesyndication.com`, …) and YouTube's `/pagead/`, `/ptracking`, `/api/stats/ads` | The host list excludes `googlevideo.com`/`ytimg.com`, so playback is never on the block list |
-| YouTube player-response prune (document-start shim) | In-stream ads: `adPlacements`, `adSlots`, `playerAds`, `adBreakHeartbeatParams` are deleted from parsed JSON on `youtube.com` | The same keys uBO's own scriptlet deletes; an ad-free response is a normal response |
+| Layer                                                  | What it catches                                                                                                               | Why it is safe                                                                               |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Tracking prevention `STRICT` (`ICoreWebView2Profile3`) | Known cross-site trackers Chromium already classifies                                                                         | First-party content is never touched                                                         |
+| Native request shield (`WebResourceRequested` → 403)   | Ad-only hosts (`doubleclick.net`, `googlesyndication.com`, …) and YouTube's `/pagead/`, `/ptracking`, `/api/stats/ads`        | The host list excludes `googlevideo.com`/`ytimg.com`, so playback is never on the block list |
+| YouTube player-response prune (document-start shim)    | In-stream ads: `adPlacements`, `adSlots`, `playerAds`, `adBreakHeartbeatParams` are deleted from parsed JSON on `youtube.com` | The same keys uBO's own scriptlet deletes; an ad-free response is a normal response          |
 
 Every block is written to `browser-diag.log` (`ad shield -> N blocked`), which
 is how "is it actually filtering?" is answered without guessing.
-
 
 ## Why tabs have their own WebView2 profile
 
@@ -174,6 +173,7 @@ hidden 1×1 webview, asks the profile which extensions actually loaded, writes
 the verdict to `browser-diag.log`, and exits with 0 (uBlock loaded) or 3/4
 (missing / create failed). It is the evidence lane for the CI build: no
 compile, no click.
+
 ## Tests
 
 `go test ./internal/ublock` covers:

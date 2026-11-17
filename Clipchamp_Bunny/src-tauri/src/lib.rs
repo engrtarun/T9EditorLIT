@@ -1847,8 +1847,18 @@ pub fn run() {
             dl_settings::dl_settings_get,
             dl_settings::dl_settings_save,
             notify::app_notify,
+            media_flyout::media_flyout_close,
         ])
         .on_window_event(|window, event| {
+            if window.label() == "media-flyout" {
+                // The PiP-style card: remember where the user dragged it,
+                // and slide the idle clock while a native drag/resize runs —
+                // the modal loop keeps firing events while the watchdog
+                // thread keeps ticking, and without the touch it could
+                // destroy the window mid-drag.
+                media_flyout::on_window_event(window.app_handle(), event);
+                return;
+            }
             if window.label() != "main" {
                 return;
             }

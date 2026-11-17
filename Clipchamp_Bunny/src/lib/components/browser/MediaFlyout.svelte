@@ -20,6 +20,12 @@
    * This page is its own webview: it shares no store with the main window,
    * which is why there is no "go to the playing tab" button here — the tab
    * state lives in the other window's JS context.
+   *
+   * The window behaves like Firefox's picture-in-picture card: drag it by
+   * any chrome that is not a button (`data-tauri-drag-region="deep"` — the
+   * injected script blocks clicks on buttons/inputs on its own), resize it
+   * from the native borders, X to dismiss through `media_flyout_close`.
+   * Rust remembers the rect across the idle destroy and the app restart.
    */
   import { onMount } from 'svelte';
   import BrandMark from '../dashboard/BrandMark.svelte';
@@ -27,6 +33,7 @@
     browserMediaAction,
     browserMediaState,
     isTauri,
+    mediaFlyoutClose,
     onBrowserMedia,
     type BrowserMediaSnapshot
   } from '../../ipc';
@@ -154,10 +161,18 @@
 </script>
 
 {#if snap}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     class="flex h-full flex-col justify-center gap-2 px-3"
     role="region"
     aria-label="Media controls"
+    data-tauri-drag-region="deep"
+    onmousedown={(e) => {
+      // The injected drag script maximizes on a double-click; a 372×104
+      // media card must not. Stop the second mousedown before document
+      // sees it — single clicks pass through and drag as usual.
+      if (e.detail === 2) e.stopPropagation();
+    }}
   >
     <!-- Row 1: artwork, title/channel, transport. The card is only a
          window wide, so the title truncates and the buttons never move. -->
@@ -254,6 +269,30 @@
             stroke-linejoin="round"
           >
             <path d="M18 5v14M5 5l9 7-9 7" />
+          </svg>
+        </button>
+
+        <span class="mx-1 h-4 w-px shrink-0 bg-nc-line" aria-hidden="true"></span>
+
+        <!-- X — dismiss the card now (Rust hides + destroys the window);
+             the next transport transition brings it back. -->
+        <button
+          type="button"
+          onclick={() => void mediaFlyoutClose()}
+          class="grid h-7 w-7 place-items-center rounded-full text-nc-mut transition-colors hover:bg-[#c42b1c] hover:text-white"
+          title="Close"
+          aria-label="Close media card"
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          >
+            <path d="M6 6l12 12M18 6L6 18" />
           </svg>
         </button>
       </div>

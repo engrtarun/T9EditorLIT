@@ -710,6 +710,7 @@ Ye 40 cases isi do meta-questions par ghate hain: **"API ko kya dena hai"** aur
 na RAM.
 
 ---
+
 ---
 
 # PART 2 — MiMO V2.6 Addendum: Review · Bugs · Hybrid Verification · Naye Cases · HLD
@@ -724,6 +725,7 @@ na RAM.
 > multi-agents repo me code karenge (P0/P1/P2 build order M6 me hai).
 >
 > **Evidence jo maine padha (ground ke liye):**
+>
 > - `docs/EDGE_CASES_40.md` (GLM 5.3) — poora
 > - `temp\opencode\inshot\transcript_digest.txt` (354 segments) + `audio_analysis.txt`
 >   (ebur128 + silencedetect raw) — cross-check ke liye
@@ -754,48 +756,48 @@ HLD (M6).
 Rai symbols: ✅ = jaisa hai waisa sahi · 🟡 = sahi par extend karo · 🔴 = method me
 kami, sudharna zaroori (detail M2 me).
 
-| # | Rai | Ek-line addendum (meri suggestion) |
-|---|---|---|
-| 1 | 🟡 | Core win ✅, par concat spans ke liye scalar `offset_secs` nahi chalega → span-map contract zaroori (B1 / Case 43). |
-| 2 | 🟡 | Estimate card ab **pipeline-wise** price kare (groq-only vs ensemble) aur ETA dikhaye — ensemble me Groq ∥ Scribe parallel, ETA = max, sum nahi (M4). |
-| 3 | 🟡 | File-hash dobara-export ko nahi pakadta (same audio, naya container) → **audio-hash** primary key + cache key me model+language+prompt-version bhi (B6, Case 45). |
-| 4 | 🟡 | Sahi — ledger me TPD/reset-time dikhao aur ab **multi-key rotation** bhi chahiye (4×11labs) (Case 42). |
-| 5 | 🟡 | Sahi — ek cheez missing: multi-track files (commentary/default track trap) me **kaunsa audio track** chunna hai, wo import gate me decide ho. |
-| 6 | ✅ | Solid, koi objection nahi. Ek WAV banao jo VAD bhi padhe aur upload usi se ho (do copies nahi). |
-| 7 | 🟡 | Min-duration guard **user ke explicitly imported clip** par fail-open: skip nahi, "manual-only" mark. Micro-batch bhi span-map se hi (B1). |
-| 8 | ✅ | Plus fallback: silence-map me koi gap hi na ho (continuous speech) to word-timestamp boundary par split — **mid-word kabhi nahi**. |
-| 9 | ✅ | Reconcile original-time par chale (span-map ke baad) + overlap se duplicate-word drop compulsory. |
-| 10 | ✅ | Doc ko code se align karo: `FailedChunks` + `StatePartial` already hain (server.go). Resume par VAD gate dobara chale (no-speech chunks re-upload nahi). |
-| 11 | 🟡 | `task=translate` sirf **optional view** hai — primary content Hinglish/Devanagari hi rahe, warna meaning change ho jaata hai. |
-| 12 | 🔴 | Code **first chunk** ki language pin karta hai — bootstrap risk (pehla chunk music/nonsense → poora job galat) → section-wise re-pin (B4 / Case 44). |
-| 13 | ✅ | Local **script-ratio pre-check** (Devanagari% vs pinned lang) user ko override suggest kare — wo dikhe usse pehle ki galat detect hua. |
-| 14 | ✅ | Display-layer only, destructive nahi — bilkul sahi. |
-| 15 | ✅ | Source-primary + "via translation" badge — sahi priority. |
-| 16 | ✅ | Plus ensemble ka naya signal: do STTs ke **lyrics-disagreement** = music hona free proof (M3). |
-| 17 | ✅ | Code already `succeedNoSpeech` return karta hai — doc aur code aligned. |
-| 18 | 🟡 | `afftdn` i3 par 50-min file par slow hoga — filter **sirf** tab chalo jab measurement kaho (SNR kharaab), 16k copy par, aur ETA card me CPU time dikhao. |
-| 19 | 🔴 | "astats percentile" method technically nahi chalta (astats whole-file stats deta hai, time-percentile nahi) → ebur128 momentary series (already produced) ka **10th percentile** = noise floor (B10). |
-| 20 | ✅ | `vad.go` ka peak-relative threshold pehle se ASMR ka partial ilaaj hai; slider = absFloor override, sahi design. |
-| 21 | ✅ | Reverb **tail measure** karo (energy fall-off) aur cut-padding me add — fixed 0.4s nahi, per-file. |
-| 22 | 🟡 | Detection vague hai — free signal: stereo files me **L/R channel correlation drop** (do mics) mono par skip; flag-only rahe, sahi hai. |
-| 23 | ✅ | Local regex pehle; Gemini pass sirf tab jab regex ambiguous. |
-| 24 | 🟡 | Dedupe zaruri, par root fix: **3-signal hallucination filter** (B7) + prompt hygiene (B5) — dedupe sirf last line of defense. |
-| 25 | ✅ | Skip-regions + prompt hygiene dono — sahi. |
-| 26 | ✅ | Pehle **local fuzzy clustering** (word-timestamp text, free), Gemini sirf ambiguous clusters par — cost control ke liye. |
-| 27 | 🟡 | Remux + ek aur: `-fflags +genpts` (missing timestamps) aur probe `-v error` se parse. |
-| 28 | ✅ | Graceful grey-card — sahi. |
-| 29 | 🟡 | Thumbs bhi **throttled** (max 1 ffmpeg child) — Case 4 ka parallelism rule filmstrip/thumbnail generation par bhi lagta hai, warna 30 children = RAM death. |
-| 30 | 🟡 | `start_time` aksar **0** hota hai edit-list ke saath → free cross-check: first-audio-energy vs first-scene-change (Case 51, elst/CTS trap). |
-| 31 | ✅ | Disk precheck gate fix me already likha hai — sahi. Original ko kabhi dobara copy mat karo. |
-| 32 | 🟡 | Export me **hybrid seek**: pehle keyframe tak fast seek (`-ss` before `-i`), phir precise decode seek — accurate cut + speed dono. |
-| 33 | ✅ | Explicit flags **dono derived copies** par (proxy + render), original untouched — sahi. |
-| 34 | ✅ | Sabse strong proof — 5.3 GB → 6 MB, koi frame decode nahi. |
-| 35 | 🟡 | **Medium tier (113 gaps) orphan hai** — na merge na cut → third disposition + context-aware rule (B8 / Case 46). |
-| 36 | 🟡 | Counter theek hai, par asli fix: render **hamesha ORIGINAL se** (proxy→final chain mat), aur keyframe-snapped **stream-copy fast path** (B12 / Case 47). |
-| 37 | ✅ | Variance pass overlay **aur** watermark (Case 38) dono ka kaam karega — ek pass, do fayde, sahi. |
-| 38 | 🟡 | Single-template nahi — rotating watermark + wider banner ke liye **corner grid-cell mask** (region-based, template-based nahi). |
-| 39 | 🟡 | Lexicon + **ensemble agreement** se confidence badhao; Gemini correct sirf low-agreement segments par (M4). |
-| 40 | ✅ | Shape strip ke saare inputs pehle se hain; hooks ka detection lexicon se **free** — koi extra API nahi. |
+| #   | Rai | Ek-line addendum (meri suggestion)                                                                                                                                                                    |
+| --- | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | 🟡  | Core win ✅, par concat spans ke liye scalar `offset_secs` nahi chalega → span-map contract zaroori (B1 / Case 43).                                                                                   |
+| 2   | 🟡  | Estimate card ab **pipeline-wise** price kare (groq-only vs ensemble) aur ETA dikhaye — ensemble me Groq ∥ Scribe parallel, ETA = max, sum nahi (M4).                                                 |
+| 3   | 🟡  | File-hash dobara-export ko nahi pakadta (same audio, naya container) → **audio-hash** primary key + cache key me model+language+prompt-version bhi (B6, Case 45).                                     |
+| 4   | 🟡  | Sahi — ledger me TPD/reset-time dikhao aur ab **multi-key rotation** bhi chahiye (4×11labs) (Case 42).                                                                                                |
+| 5   | 🟡  | Sahi — ek cheez missing: multi-track files (commentary/default track trap) me **kaunsa audio track** chunna hai, wo import gate me decide ho.                                                         |
+| 6   | ✅  | Solid, koi objection nahi. Ek WAV banao jo VAD bhi padhe aur upload usi se ho (do copies nahi).                                                                                                       |
+| 7   | 🟡  | Min-duration guard **user ke explicitly imported clip** par fail-open: skip nahi, "manual-only" mark. Micro-batch bhi span-map se hi (B1).                                                            |
+| 8   | ✅  | Plus fallback: silence-map me koi gap hi na ho (continuous speech) to word-timestamp boundary par split — **mid-word kabhi nahi**.                                                                    |
+| 9   | ✅  | Reconcile original-time par chale (span-map ke baad) + overlap se duplicate-word drop compulsory.                                                                                                     |
+| 10  | ✅  | Doc ko code se align karo: `FailedChunks` + `StatePartial` already hain (server.go). Resume par VAD gate dobara chale (no-speech chunks re-upload nahi).                                              |
+| 11  | 🟡  | `task=translate` sirf **optional view** hai — primary content Hinglish/Devanagari hi rahe, warna meaning change ho jaata hai.                                                                         |
+| 12  | 🔴  | Code **first chunk** ki language pin karta hai — bootstrap risk (pehla chunk music/nonsense → poora job galat) → section-wise re-pin (B4 / Case 44).                                                  |
+| 13  | ✅  | Local **script-ratio pre-check** (Devanagari% vs pinned lang) user ko override suggest kare — wo dikhe usse pehle ki galat detect hua.                                                                |
+| 14  | ✅  | Display-layer only, destructive nahi — bilkul sahi.                                                                                                                                                   |
+| 15  | ✅  | Source-primary + "via translation" badge — sahi priority.                                                                                                                                             |
+| 16  | ✅  | Plus ensemble ka naya signal: do STTs ke **lyrics-disagreement** = music hona free proof (M3).                                                                                                        |
+| 17  | ✅  | Code already `succeedNoSpeech` return karta hai — doc aur code aligned.                                                                                                                               |
+| 18  | 🟡  | `afftdn` i3 par 50-min file par slow hoga — filter **sirf** tab chalo jab measurement kaho (SNR kharaab), 16k copy par, aur ETA card me CPU time dikhao.                                              |
+| 19  | 🔴  | "astats percentile" method technically nahi chalta (astats whole-file stats deta hai, time-percentile nahi) → ebur128 momentary series (already produced) ka **10th percentile** = noise floor (B10). |
+| 20  | ✅  | `vad.go` ka peak-relative threshold pehle se ASMR ka partial ilaaj hai; slider = absFloor override, sahi design.                                                                                      |
+| 21  | ✅  | Reverb **tail measure** karo (energy fall-off) aur cut-padding me add — fixed 0.4s nahi, per-file.                                                                                                    |
+| 22  | 🟡  | Detection vague hai — free signal: stereo files me **L/R channel correlation drop** (do mics) mono par skip; flag-only rahe, sahi hai.                                                                |
+| 23  | ✅  | Local regex pehle; Gemini pass sirf tab jab regex ambiguous.                                                                                                                                          |
+| 24  | 🟡  | Dedupe zaruri, par root fix: **3-signal hallucination filter** (B7) + prompt hygiene (B5) — dedupe sirf last line of defense.                                                                         |
+| 25  | ✅  | Skip-regions + prompt hygiene dono — sahi.                                                                                                                                                            |
+| 26  | ✅  | Pehle **local fuzzy clustering** (word-timestamp text, free), Gemini sirf ambiguous clusters par — cost control ke liye.                                                                              |
+| 27  | 🟡  | Remux + ek aur: `-fflags +genpts` (missing timestamps) aur probe `-v error` se parse.                                                                                                                 |
+| 28  | ✅  | Graceful grey-card — sahi.                                                                                                                                                                            |
+| 29  | 🟡  | Thumbs bhi **throttled** (max 1 ffmpeg child) — Case 4 ka parallelism rule filmstrip/thumbnail generation par bhi lagta hai, warna 30 children = RAM death.                                           |
+| 30  | 🟡  | `start_time` aksar **0** hota hai edit-list ke saath → free cross-check: first-audio-energy vs first-scene-change (Case 51, elst/CTS trap).                                                           |
+| 31  | ✅  | Disk precheck gate fix me already likha hai — sahi. Original ko kabhi dobara copy mat karo.                                                                                                           |
+| 32  | 🟡  | Export me **hybrid seek**: pehle keyframe tak fast seek (`-ss` before `-i`), phir precise decode seek — accurate cut + speed dono.                                                                    |
+| 33  | ✅  | Explicit flags **dono derived copies** par (proxy + render), original untouched — sahi.                                                                                                               |
+| 34  | ✅  | Sabse strong proof — 5.3 GB → 6 MB, koi frame decode nahi.                                                                                                                                            |
+| 35  | 🟡  | **Medium tier (113 gaps) orphan hai** — na merge na cut → third disposition + context-aware rule (B8 / Case 46).                                                                                      |
+| 36  | 🟡  | Counter theek hai, par asli fix: render **hamesha ORIGINAL se** (proxy→final chain mat), aur keyframe-snapped **stream-copy fast path** (B12 / Case 47).                                              |
+| 37  | ✅  | Variance pass overlay **aur** watermark (Case 38) dono ka kaam karega — ek pass, do fayde, sahi.                                                                                                      |
+| 38  | 🟡  | Single-template nahi — rotating watermark + wider banner ke liye **corner grid-cell mask** (region-based, template-based nahi).                                                                       |
+| 39  | 🟡  | Lexicon + **ensemble agreement** se confidence badhao; Gemini correct sirf low-agreement segments par (M4).                                                                                           |
+| 40  | ✅  | Shape strip ke saare inputs pehle se hain; hooks ka detection lexicon se **free** — koi extra API nahi.                                                                                               |
 
 **Scorecard:** 17 ✅ · 19 🟡 · 4 🔴 (12, 19 + do method-level B-list me). Overall:
 playbook grade **A-** — direction solid, integration aur verification layer missing
@@ -809,6 +811,7 @@ Har bug me: kahan hai → evidence → fix direction. **Ye future agents ke acce
 criteria hain** — inke bina koi bhi related PR incomplete.
 
 ### B1 — Speech-span concat vs daemon ka scalar `offset_secs` (architectural)
+
 - **Kahan:** Case 1/7 fix ↔ `model.ChunkRequest.OffsetSecs` ↔ `server.go:656`
   (`seg.StartSecs - chunk.OffsetSecs`).
 - **Bug:** Case 1 kehta hai bahut saare speech spans jod kar ek file bhejo — par phir
@@ -821,6 +824,7 @@ criteria hain** — inke bina koi bhi related PR incomplete.
   ho — but micro-batch (Case 7) ke saath span-map hi right answer hai.
 
 ### B2 — Do alag "silence" definitions ek dusre se ladti hain
+
 - **Kahan:** `vad.go` (absFloor −56 dB + peak/64 relative, upload gate) ↔
   `silencedetect` −30 dB (cut map, Case 19).
 - **Bug:** Ek hi audio par vad bol sakta hai "audible hai" aur silencedetect bol
@@ -832,6 +836,7 @@ criteria hain** — inke bina koi bhi related PR incomplete.
   consumers** (M6 me HLD).
 
 ### B3 — Segment-level audio gate bahut mota hai — LIVE PROOF (mera sabse strong finding)
+
 - **Kahan:** `vad.go:270-293` (`BacksSegment`, segment-level) + `server.go:687-701`.
 - **Evidence (aapke apne files se cross-check kiya):**
   - `transcript_digest.txt` line 1: segment **0.0–14.1 s** = "आपको जी पर टू जी"
@@ -852,6 +857,7 @@ criteria hain** — inke bina koi bhi related PR incomplete.
   API. (Case 49)
 
 ### B4 — Language pin = first chunk pe bootstrap (fragile)
+
 - **Kahan:** `server.go:670-681` — pehle successful chunk ki language pin ho jaati
   hai, phir poori job usi par chalti hai.
 - **Bug:** Agar pehla chunk music/noise ho jisme detect galat aaya (ya Hinglish me
@@ -863,6 +869,7 @@ criteria hain** — inke bina koi bhi related PR incomplete.
   consecutive chunks agree karein. (Case 44)
 
 ### B5 — Prompt-tail hallucination ko **seed** karta hai
+
 - **Kahan:** `server.go:650` `prompt := transcriptTail(merged, 300)`.
 - **Evidence:** Digest me garbage zone ke turant baad repetition loops — 961–1049 s
   gibberish → **1078.3–1108.3 s "प्रति प्रति प्रति" exactly 30.0 s** ka segment.
@@ -873,6 +880,7 @@ criteria hain** — inke bina koi bhi related PR incomplete.
   unique-tokens me cap karo. (Case 50)
 
 ### B6 — Dedupe cache key incomplete
+
 - **Kahan:** Case 3 (content-hash → transcript cache).
 - **Bug:** Agar cache key sirf audio-hash hai, to **alag model/language/prompt par
   purana transcript** mil jaayega (turbo se transcribe kiya, large maanga to wahi
@@ -883,9 +891,10 @@ criteria hain** — inke bina koi bhi related PR incomplete.
   path ke liye. (Case 45)
 
 ### B7 — Hallucination filter 2-signal hai, confident loop nikal jaata hai
+
 - **Kahan:** `cloud.go:333-344` — drop tabhi jab `no_speech_prob > threshold`
-  **AND** `avg_logprob ≤ −1.0`. Comment khud maanta hai: *"a confident hallucination
-  can score well on avg_logprob"*.
+  **AND** `avg_logprob ≤ −1.0`. Comment khud maanta hai: _"a confident hallucination
+  can score well on avg_logprob"_.
 - **Bug:** "Thank you for watching" loops (Case 24) confident hote hain → dono
   condition satisfy nahi karte → **filter pass**. Aapke evidence me bhi exactly-30s
   repetition segments (1078 s, 2823.8–2853.8, 2896.8–2926.8) isi category ke
@@ -897,6 +906,7 @@ criteria hain** — inke bina koi bhi related PR incomplete.
   (M3 me matrix)
 
 ### B8 — Case 35 ka medium tier (113 gaps) kahin nahi gaya
+
 - **Kahan:** Case 35 — <1.5 s merge, >5 s cut-candidate; **1.5–5 s = 113 gaps
   beech me latke** (ne na merge hue na cut).
 - **Bug:** Ye 113 gaps hain asli editing decisions wale (breathing pauses vs
@@ -907,8 +917,9 @@ criteria hain** — inke bina koi bhi related PR incomplete.
   (Case 46)
 
 ### B9 — Case 19 ka "astats percentile" method technically nahi chalta
-- **Kahan:** Case 19 fix: *"noise floor measure karo (quietest percentile astats
-  se)"*.
+
+- **Kahan:** Case 19 fix: _"noise floor measure karo (quietest percentile astats
+  se)"_.
 - **Bug:** `astats` whole-file/whole-interval stats deta hai — **time-series
   percentile nahi**. Ye command chalegi hi nahi jo likha hai.
 - **Fix direction (dono free):** (a) `ebur128` momentary (M) series jo aap
@@ -917,6 +928,7 @@ criteria hain** — inke bina koi bhi related PR incomplete.
   Threshold = floor + margin (Case 19 ka baaki logic waisa hi).
 
 ### B10 — Render chain generation loss + i3 par time bomb
+
 - **Kahan:** Case 36 (counter) — par doc render strategy decide nahi karta.
 - **Bug:** Agar render proxy→final chain me jaata hai = extra generation, aur 50-min
   1080p full re-encode i3 par **15–30+ min** = user intazaar karta hai, beech me
@@ -928,6 +940,7 @@ criteria hain** — inke bina koi bhi related PR incomplete.
   UI dono option dikhaye ETA ke saath. (Case 47)
 
 ### B11 — Estimate card ensemble ko price nahi karta
+
 - **Kahan:** Case 2 (₹ estimate) ↔ M4 (Groq + 11labs + Gemini).
 - **Bug:** Ab teen sources hain — card sirf Groq rate dikhayega to **credit burn
   chhup jaayega** (11labs 10k = 3 videos).
@@ -936,6 +949,7 @@ criteria hain** — inke bina koi bhi related PR incomplete.
   bachi: X%" (M4, Case 42).
 
 ### B12 — PII transcript ke saath cloud passes me jaata hai (privacy)
+
 - **Kahan:** Case 39/40 ke Gemini correct/analyze passes — **aapke evidence me hi
   2255 s par real UPI ID** ("सुरेशचंद्र 506 …") transcript me hai, aur names/numbers
   bhi.
@@ -957,33 +971,34 @@ independent free signals** agree karein tabhi T0 (auto-accept); warna T2
 
 ### Signal pool (sab free, sab local ya already-existing)
 
-| ID | Signal | Source | Kya pakadta hai |
-|---|---|---|---|
-| S1 | dB silence map | ffmpeg silencedetect (adaptive threshold, B9 method) | dead zones |
-| S2 | Frame energies | `vad.go` (10 ms frames, 16k WAV) | audible-vs-not, word backing |
-| S3 | Loudness series | ebur128 momentary (already produced) | noise floor, energy arc |
-| S4 | Confidence pair | Groq `no_speech_prob` + `avg_logprob` (already parsed) | model ka doubt |
-| S5 | **30s-window detector (naya, free)** | segment duration ≈ 30.000 s + repetition-ratio + silence-overlap | confident loop hallucination (B7) |
-| S6 | Second STT | **ElevenLabs Scribe** (11labs budget, M4) | independent model family ka verdict |
-| S7 | Script-ratio | local Unicode block count | language mismatch (B4) |
-| S8 | Lexicon/hooks | SQLite creator lexicon | protected regions (Case 39/40) |
-| S9 | Video variance | sparse thumbs (Case 37/38) | overlay/watermark/scene |
+| ID  | Signal                               | Source                                                           | Kya pakadta hai                     |
+| --- | ------------------------------------ | ---------------------------------------------------------------- | ----------------------------------- |
+| S1  | dB silence map                       | ffmpeg silencedetect (adaptive threshold, B9 method)             | dead zones                          |
+| S2  | Frame energies                       | `vad.go` (10 ms frames, 16k WAV)                                 | audible-vs-not, word backing        |
+| S3  | Loudness series                      | ebur128 momentary (already produced)                             | noise floor, energy arc             |
+| S4  | Confidence pair                      | Groq `no_speech_prob` + `avg_logprob` (already parsed)           | model ka doubt                      |
+| S5  | **30s-window detector (naya, free)** | segment duration ≈ 30.000 s + repetition-ratio + silence-overlap | confident loop hallucination (B7)   |
+| S6  | Second STT                           | **ElevenLabs Scribe** (11labs budget, M4)                        | independent model family ka verdict |
+| S7  | Script-ratio                         | local Unicode block count                                        | language mismatch (B4)              |
+| S8  | Lexicon/hooks                        | SQLite creator lexicon                                           | protected regions (Case 39/40)      |
+| S9  | Video variance                       | sparse thumbs (Case 37/38)                                       | overlay/watermark/scene             |
 
 ### Decision × voting rules
 
-| Decision | Tool A | Tool B | Tool C (optional) | Rule |
-|---|---|---|---|---|
-| Segment drop (hallucination) | S4 confidence | S2 word-backing | S5 window-detector | **2-of-3 drop**, 1 se kam = keep but flag |
-| Word drop (B3) | S2 word-backing | — | — | Single signal enough (local physical fact: awaaz nahi = word nahi) — ye T0-auto hai |
-| Cut-suggest (gap) | S1 silence | S2 no-audible | S8 not-hook/CTA | **teeno lock** = T0; koi disagree = T2 review |
-| Language | Whisper detect | S7 script-ratio | S6 (dispute par) | agree = pin, disagree = badge + override chip |
-| Music-project | S1 low speech | S4 high no_speech | S6 lyrics-disagreement | 2-of-3 = music mode (Case 16/17) |
-| Retake cluster | fuzzy text match (local) | word-timestamp overlap | S6 agreement | 2-of-3 = highlight (never auto-delete) |
-| Text finalization | Groq text | Scribe text | Gemini adjudicate sirf **disputed words** par | agree = final; dispute = surgical review list |
+| Decision                     | Tool A                   | Tool B                 | Tool C (optional)                             | Rule                                                                                |
+| ---------------------------- | ------------------------ | ---------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Segment drop (hallucination) | S4 confidence            | S2 word-backing        | S5 window-detector                            | **2-of-3 drop**, 1 se kam = keep but flag                                           |
+| Word drop (B3)               | S2 word-backing          | —                      | —                                             | Single signal enough (local physical fact: awaaz nahi = word nahi) — ye T0-auto hai |
+| Cut-suggest (gap)            | S1 silence               | S2 no-audible          | S8 not-hook/CTA                               | **teeno lock** = T0; koi disagree = T2 review                                       |
+| Language                     | Whisper detect           | S7 script-ratio        | S6 (dispute par)                              | agree = pin, disagree = badge + override chip                                       |
+| Music-project                | S1 low speech            | S4 high no_speech      | S6 lyrics-disagreement                        | 2-of-3 = music mode (Case 16/17)                                                    |
+| Retake cluster               | fuzzy text match (local) | word-timestamp overlap | S6 agreement                                  | 2-of-3 = highlight (never auto-delete)                                              |
+| Text finalization            | Groq text                | Scribe text            | Gemini adjudicate sirf **disputed words** par | agree = final; dispute = surgical review list                                       |
 
 ### Four-lock cut safety (har auto-suggest ke liye compulsory)
 
 Koi bhi cut-suggest **tabhi** T0 banega jab charo lock lagen:
+
 1. **Audio lock** — S1+S2 dono: ye gap me koi audible speech nahi (padding: reverb
    tail + 0.3 s, per-file from S3).
 2. **Content lock** — gap ke dono taraf ke segments S8 lexicon se protected nahi
@@ -1019,14 +1034,14 @@ milti hai.
 
 ### Budget math (aapke numbers par)
 
-| Item | Value |
-|---|---|
-| Accounts | 4 × ElevenLabs, har ek **10k credits/month** |
-| Naive full-dual | 10k = 3 videos → 4 accounts = **12 videos/month** (bahut kam) |
+| Item                           | Value                                                                                                                                                                                           |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Accounts                       | 4 × ElevenLabs, har ek **10k credits/month**                                                                                                                                                    |
+| Naive full-dual                | 10k = 3 videos → 4 accounts = **12 videos/month** (bahut kam)                                                                                                                                   |
 | **Proposed escalation policy** | Groq = hamesha primary. Scribe **sirf**: (a) low-confidence segments (S4 trigger), (b) cut-critical windows (retake clusters ±10 s, first 30 s, last 60 s, hook lines), (c) **5% random audit** |
-| Expected load | ~10–15% of audio → 10k ≈ 20–24 videos/account → **≈ 80–95 videos/month** (4 accounts) |
-| Gemini | Sirf Groq↔Scribe **word-level disputes** (<5% segments) + existing analyze/correct (redacted, B12) |
-| ETA | Groq ∥ Scribe parallel → **ETA ≈ max(groq, scribe)**, sum nahi |
+| Expected load                  | ~10–15% of audio → 10k ≈ 20–24 videos/account → **≈ 80–95 videos/month** (4 accounts)                                                                                                           |
+| Gemini                         | Sirf Groq↔Scribe **word-level disputes** (<5% segments) + existing analyze/correct (redacted, B12)                                                                                              |
+| ETA                            | Groq ∥ Scribe parallel → **ETA ≈ max(groq, scribe)**, sum nahi                                                                                                                                  |
 
 ### Flow
 
@@ -1047,7 +1062,7 @@ chunks (silence-aligned, span-map B1)
 
 - **Quota ledger** (SQLite): `key_id, source, month, used, limit, reset_at` —
   router **least-used key** chunta hai; Case 2 ka card dikhata hai
-  *"scribe 62% bachi · resets 1 Dec"* (honesty > magic).
+  _"scribe 62% bachi · resets 1 Dec"_ (honesty > magic).
 - **PII redaction** (B12) Gemini/text-pass se pehle — local regex, mapping SQLite
   me, display par restore.
 - **New provider, same shape:** repo me `GroqClient`/`GeminiClient` hain —
@@ -1061,7 +1076,8 @@ chunks (silence-aligned, span-map B1)
 > Original index (40) ko chhua nahi — ye cases yahan append hain, unka group
 > "H — MiMO V2.6 additions". Format same: Scene / Problem / Fix / Kyun.
 
-### Case 41: Dual-STT ensemble + Gemini adjudication *(M4 ka engine)*
+### Case 41: Dual-STT ensemble + Gemini adjudication _(M4 ka engine)_
+
 **Scene:** Groq Whisper ne Hinglish segment me "Retrive Argument Document General"
 likha; Scribe ne "Retrieval Augmented Generation" — dono free, dono alag.
 **Problem:** Ek STT ka phonetic error seedha transcript me chala jaata hai (Case 39
@@ -1075,6 +1091,7 @@ paid API ke; disagreement hi asli "yahan dekho" signal hai — editor ka review
 20–35 lines tak simat-ta hai (M3 math).
 
 ### Case 42: Multi-key quota router (4×11labs + Groq + Gemini)
+
 **Scene:** 4 ElevenLabs accounts hain, 10k/month each; Groq ka free TPD, Gemini ka
 RPM — teeno alag clocks par reset hote hain.
 **Problem:** Ek key par quota khatam → job beech me ruk jaati hai; user ko pata
@@ -1086,6 +1103,7 @@ per-source quota + reset time + pipeline selector (groq-only / +scribe / ensembl
 (Case 31 ka hissedar). Router ke bina 4 accounts ka faayda 1 account jaisa hai.
 
 ### Case 43: Span-map contract (concat ↔ original time)
+
 **Scene:** Case 1 ke speech spans jod kar ek chunk bheja gaya (274 gaps ka faayda).
 **Problem:** Daemon ek scalar `offset_secs` leta hai — concat-time vs original-time
 mismatch = **har span ke baad drift** (B1), cut points aage-peeche.
@@ -1096,6 +1114,7 @@ resume par reuse. Micro-batches (Case 7) bisi isi contract se.
 khulta hai. Drift free me khatam, koi extra API nahi.
 
 ### Case 44: Language bootstrap + section-wise re-pin
+
 **Scene:** Pehla chunk music/gibberish nikla, Whisper ne language=fr detect ki —
 poora job French me decode hua.
 **Problem:** First-chunk pin (B4) fragile; Hinglish me script wobble (Case 39)
@@ -1107,6 +1126,7 @@ re-pin + chip dikhao; override dropdown (Case 13) hamesha available.
 re-transcribe ka kharcha — prevention > cure.
 
 ### Case 45: Audio-hash dedupe + config-aware cache key
+
 **Scene:** User ne wahi video dobara InShot se export karke daali (naya container,
 wahi audio). Ya phir turbo se transcribe kiya, ab large maang raha hai.
 **Problem:** File-hash miss + stale cache = galat-confidence wala purana transcript
@@ -1118,6 +1138,7 @@ exact-dup fast path. Hash background me chale (import block na ho).
 Config-aware key ke bina model upgrade cache ko poison karta hai.
 
 ### Case 46: Medium-gap third disposition (113 gaps ka adhikar)
+
 **Scene:** Case 35 ke baad: 115 micro merge, 46 bade cut-card — aur **113 medium
 (1.5–5 s) kahin nahi** (B8).
 **Problem:** Ye hain asli decisions wale gaps (breathing pause vs section break) —
@@ -1129,6 +1150,7 @@ Four-lock (M3) medium gaps par bhi lagta hai.
 decision nahi deti (Case 40 ka yahi lesson).
 
 ### Case 47: Smart render — stream-copy vs frame-accurate (import par decide)
+
 **Scene:** 5.3 GB, 50-min render chahiye; i3 par full re-encode 15–30+ min.
 **Problem:** Ya to bahut slow (re-encode), ya generation loss (proxy chain), ya
 crash = sab bekaar (B10).
@@ -1141,6 +1163,7 @@ rename.
 generation loss + seconds = 90% cases ka answer; accurate path exception me.
 
 ### Case 48: PII redaction before cloud text passes
+
 **Scene:** Transcript me real UPI ID (2255 s evidence), phone, names — analyze/
 correct pass poora text Gemini ko bhejta hai.
 **Problem:** Privacy leak + (ag kabhi paid tier aaya) cost; aur docs ka Principle 3
@@ -1152,6 +1175,7 @@ raw transcript local hi. Redacted text par hi Gemini analyze/correct.
 apne evidence video me hi PII hai, ye theoretical nahi hai.
 
 ### Case 49: Word-level audio gate (segment gate ka upgrade)
+
 **Scene:** Segment 0.0–14.1 s ka 89% text silence par baitha hai, phir bhi gate
 pass (B3, live proof).
 **Problem:** Segment-level backing generous rule hallucination ko bacha leti hai;
@@ -1163,6 +1187,7 @@ rahe. Word timestamps **already free** me aa rahe (word granularity request).
 kyunki ye model ka verdict nahi, **audio ka fact** hai. Naya kuch kharcha nahi.
 
 ### Case 50: Prompt hygiene — tail sanitization
+
 **Scene:** Ek baar repetition loop gate se bach gaya, uska text next chunk ke prompt
 tail me gaya → loop aur bada (B5, evidence: 1078 s loop garbage zone ke baad).
 **Problem:** Prompt carryover (Case 12 ka Hinglish vocabulary bias) ka side-effect:
@@ -1174,6 +1199,7 @@ se nahi.
 bachi, loop khatam. Free string ops.
 
 ### Case 51: Edit-list / negative-CTS trap (A/V offset ka gehra ilaaj)
+
 **Scene:** Phone video import hui, `start_time = 0` dikha, offset 0 maana — par
 players me audio 0.4 s late.
 **Problem:** MP4 **edit lists (elst)** aur negative CTS presentation ko shift
@@ -1188,6 +1214,7 @@ metadata nahi maanta — metadata jhooth bole to bhi chalta hai. Free, ek sparse
 decode me.
 
 ### Case 52: Atomic render + disk-full + stray `.partial` cleanup
+
 **Scene:** Render 90% par crash / disk full — user ke paas adhoora file, ya kal
 purani `.partial` mili.
 **Problem:** Half-file = "app ne mera video kharab kiya" trust hit; disk-full beech
@@ -1241,22 +1268,23 @@ original file (sacred, read-only, byte-identical — Principle 3)
 
 ### SQLite tables (names + one-line columns)
 
-| Table | Columns (essentials) |
-|---|---|
-| `media_probe` | project_id, duration, codecs, vfr_flag, color_tags, track_list, elst_offset |
-| `audio_map` | project_id, noise_floor_db, threshold_db, gaps(start, end, tier), energy_series_ref |
-| `spans` | project_id, concat_start, concat_end, orig_start (B1 span-map) |
-| `chunks` | job_id, idx, path, offset, span_map_json, state |
-| `segments` | job_id, start, end, text, original_text, words_json, no_speech, avg_logprob, source |
-| `segment_votes` | segment_id, source(groq/scribe/gemini/human), text, verdict |
-| `lexicon` | channel, term, correction, hits |
-| `quota_ledger` | key_id, source, month, used, limit, reset_at |
-| `cut_edl` | project_id, cut(start, end, tier T0-T3, locks_mask, reason) |
-| `render_jobs` | project_id, mode(fast/accurate), state, out_path, verified |
-| `redaction_map` | project_id, placeholder, original (local only) |
-| `shape_strip` | project_id, zone(start, end, kind intro/teach/story/demo/outro/hook) |
+| Table           | Columns (essentials)                                                                |
+| --------------- | ----------------------------------------------------------------------------------- |
+| `media_probe`   | project_id, duration, codecs, vfr_flag, color_tags, track_list, elst_offset         |
+| `audio_map`     | project_id, noise_floor_db, threshold_db, gaps(start, end, tier), energy_series_ref |
+| `spans`         | project_id, concat_start, concat_end, orig_start (B1 span-map)                      |
+| `chunks`        | job_id, idx, path, offset, span_map_json, state                                     |
+| `segments`      | job_id, start, end, text, original_text, words_json, no_speech, avg_logprob, source |
+| `segment_votes` | segment_id, source(groq/scribe/gemini/human), text, verdict                         |
+| `lexicon`       | channel, term, correction, hits                                                     |
+| `quota_ledger`  | key_id, source, month, used, limit, reset_at                                        |
+| `cut_edl`       | project_id, cut(start, end, tier T0-T3, locks_mask, reason)                         |
+| `render_jobs`   | project_id, mode(fast/accurate), state, out_path, verified                          |
+| `redaction_map` | project_id, placeholder, original (local only)                                      |
+| `shape_strip`   | project_id, zone(start, end, kind intro/teach/story/demo/outro/hook)                |
 
 **Invariants (har agent ka non-negotiable):**
+
 1. Original byte-identical — koi bhi write original par nahi.
 2. Har derived file tmp + registry row; startup stray-sweep.
 3. **Ek measurement pass, sab consumers** (B2) — dobara mat naapo.
@@ -1268,19 +1296,19 @@ original file (sacred, read-only, byte-identical — Principle 3)
 
 ### Confidence tiers (UI contract)
 
-| Tier | Kya | Rule |
-|---|---|---|
-| **T0** auto-accept | text final / cut bulk-apply-able | 2-of-3 agree + four-lock |
-| **T1** suggest | dikhao, one-click | agree on text, cut uncertain |
-| **T2** flag-review | surgical list | koi signal disagree (M3) |
-| **T3** never-touch | protected | hook/CTA/crosstalk/disclaimer (S8/S9) |
+| Tier               | Kya                              | Rule                                  |
+| ------------------ | -------------------------------- | ------------------------------------- |
+| **T0** auto-accept | text final / cut bulk-apply-able | 2-of-3 agree + four-lock              |
+| **T1** suggest     | dikhao, one-click                | agree on text, cut uncertain          |
+| **T2** flag-review | surgical list                    | koi signal disagree (M3)              |
+| **T3** never-touch | protected                        | hook/CTA/crosstalk/disclaimer (S8/S9) |
 
 ### Build order (future agents ke liye)
 
 - **P0** (contract + safety, koi new provider nahi): B1 span-map (43) · B3
   word-gate (49) · B5 prompt hygiene (50) · B8 medium-tier (46) · B6 cache key
   (45) · B9 noise-floor method (19-fix) · S5 window-detector + 2-of-3 (B7).
-  *Har ek ka pehle failing test (TDD), phir fix.*
+  _Har ek ka pehle failing test (TDD), phir fix._
 - **P1** (ensemble + privacy + render): Scribe provider + quota router (41, 42) ·
   PII redaction (48) · smart render decision (47) · language re-pin (44) ·
   estimate card pipeline pricing (11-fix).
@@ -1293,6 +1321,7 @@ original file (sacred, read-only, byte-identical — Principle 3)
 npm run verify:fast        # prettier + svelte-check + node --test + cargo check
 cd go; gofmt -l . ; go vet ./... ; go test ./...   # Go side
 ```
+
 Plus case-specific: B3 ka test digest ke 0–14.1 s segment jaisa fixture (silence par
 word drop, real word survive) · B1 ka test multi-span chunk round-trip (drift = 0) ·
 B7 ka test exactly-30s-repetition fixture drop ho. Zero-RAM: koi bhi new path
@@ -1314,7 +1343,7 @@ batati hai **exactly kahan dekhna hai**. Sab kuch free, sab kuch local-measured,
 sab kuch disk par — Zero-RAM bana rahega.
 
 **— MiMO V2.6** (opencode / mimo-v2.6-flash-free) · 2026-11-12
-*Upstream: GLM 5.3 — 40 cases untouched. Ye part sirf addendum hai.*
+_Upstream: GLM 5.3 — 40 cases untouched. Ye part sirf addendum hai._
 
 ---
 
@@ -1527,18 +1556,18 @@ likha hai — chupana nahi hai.
 
 ## M1. Case-by-case — doc kya kehta tha, code me kya tha, ab kya hai
 
-| #   | Doc kya kehta tha                             | Code me kya tha (ground truth)                                                     | Ab kya hai                                                                             |
-| --- | --------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| 11  | Per-segment language badge, translate view, Hinglish romanization | `ChunkTranscript.Language` sirf **chunk** level par thi; UI me koi badge nahi; koi translate pass nahi | Badge **har line** par (`Segment.Language`), naya `/v1/translate` pass, UI me "Translate" button. Romanization ke liye naya pass nahi — autocorrect prompt pehle se Latin script maangta hai (§M6.1) |
-| 12  | Code-switch: pin per request, raw text safe | Pin **pehle chunk** se (`server.go`), jisko MiMO ne B4 bola — pehla chunk music hua to poori job galat | Naya `languagePin`: pin **do consecutive agree karne wale chunks** ke baad. Raw text `original_text` me safe (pehle se tha)                                   |
-| 13  | Accented English → `hi` galat detect; override dropdown | Koi override UI nahi; `req.Language` bhej sakta tha par app kabhi nahi bhejti thi | UI me **LANG dropdown** (24 bhashayein), daemon user pin ko kabhi nahi badalta, sirf **warn** karta hai                                                    |
-| 14  | Tofu boxes: font fallback + `dir="auto"` | `app.css` me sirf `'Segoe UI'` — Devanagari/Urdu/CJK tofu | `--font-sans` me **Nirmala UI + Noto family** (Windows par already installed), `dir="auto"` har line par, `dir="auto"` translation par bhi                |
-| 15  | Rare language: source primary, translation secondary + badge, re-run pinned | Koi translation path hi nahi tha | Naya `cloud/translate.go` (batch + guards), `TranslatedText` **alag field** — `Text` kabhi replace nahi hota, UI me niche + badge                 |
-| 16  | Do songs overlap: speech-ratio → music project, waveform-first | Kuch nahi — generic "no speech" hi milta tha | Naya **music verdict**: 2 consecutive wordless chunks + file mostly sound → job `music: true`, **baaki chunks upload nahi** (cost bachti hai), UI me music card |
-| 17  | Pure music: "no speech found" card, waveform-first mode | `succeedNoSpeech` tha (MiMO sahi bola) | Upar wala + alag card: "Ye ek music project hai" — retry button ki jagah waveform-first ka raasta                                       |
-| 18  | Loudness pre-pass: voice-to-music ratio + master level, filter sirf copy par | Koi measurement nahi; koi filter nahi | Profile me **noise floor / speech level / SNR / peak** (PCM se, free). ebur128 LUFS aur afftdn/loudnorm filter **nahi** banaye (§M6.2)              |
-| 19  | Per-file adaptive threshold: noise floor + margin, sensitivity slider | Fixed `-56 dB` **+** `peak/64` — fan ke saamne kuch nahi milta, studio me har saans kat-ta hai | **Peak-relative rule hata diya**, floor **p10 percentile** se maapa, threshold = `floor + margin`, margin **sensitivity dial** se (3/9/18 dB). Cut map ab measured threshold use karta hai |
-| 20  | Whisper/ASMR: sensitivity + tail padding + per-segment override | `absFloorDB = -56` — whisper **us se niche** hota hai, to poora file silence | Conservative dial **absolute floor bhi -70** karta hai (ASMR floor), + **protect pin** per line, auto-cut protected lines ko chhuta hai              |
+| #   | Doc kya kehta tha                                                            | Code me kya tha (ground truth)                                                                         | Ab kya hai                                                                                                                                                                                           |
+| --- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 11  | Per-segment language badge, translate view, Hinglish romanization            | `ChunkTranscript.Language` sirf **chunk** level par thi; UI me koi badge nahi; koi translate pass nahi | Badge **har line** par (`Segment.Language`), naya `/v1/translate` pass, UI me "Translate" button. Romanization ke liye naya pass nahi — autocorrect prompt pehle se Latin script maangta hai (§M6.1) |
+| 12  | Code-switch: pin per request, raw text safe                                  | Pin **pehle chunk** se (`server.go`), jisko MiMO ne B4 bola — pehla chunk music hua to poori job galat | Naya `languagePin`: pin **do consecutive agree karne wale chunks** ke baad. Raw text `original_text` me safe (pehle se tha)                                                                          |
+| 13  | Accented English → `hi` galat detect; override dropdown                      | Koi override UI nahi; `req.Language` bhej sakta tha par app kabhi nahi bhejti thi                      | UI me **LANG dropdown** (24 bhashayein), daemon user pin ko kabhi nahi badalta, sirf **warn** karta hai                                                                                              |
+| 14  | Tofu boxes: font fallback + `dir="auto"`                                     | `app.css` me sirf `'Segoe UI'` — Devanagari/Urdu/CJK tofu                                              | `--font-sans` me **Nirmala UI + Noto family** (Windows par already installed), `dir="auto"` har line par, `dir="auto"` translation par bhi                                                           |
+| 15  | Rare language: source primary, translation secondary + badge, re-run pinned  | Koi translation path hi nahi tha                                                                       | Naya `cloud/translate.go` (batch + guards), `TranslatedText` **alag field** — `Text` kabhi replace nahi hota, UI me niche + badge                                                                    |
+| 16  | Do songs overlap: speech-ratio → music project, waveform-first               | Kuch nahi — generic "no speech" hi milta tha                                                           | Naya **music verdict**: 2 consecutive wordless chunks + file mostly sound → job `music: true`, **baaki chunks upload nahi** (cost bachti hai), UI me music card                                      |
+| 17  | Pure music: "no speech found" card, waveform-first mode                      | `succeedNoSpeech` tha (MiMO sahi bola)                                                                 | Upar wala + alag card: "Ye ek music project hai" — retry button ki jagah waveform-first ka raasta                                                                                                    |
+| 18  | Loudness pre-pass: voice-to-music ratio + master level, filter sirf copy par | Koi measurement nahi; koi filter nahi                                                                  | Profile me **noise floor / speech level / SNR / peak** (PCM se, free). ebur128 LUFS aur afftdn/loudnorm filter **nahi** banaye (§M6.2)                                                               |
+| 19  | Per-file adaptive threshold: noise floor + margin, sensitivity slider        | Fixed `-56 dB` **+** `peak/64` — fan ke saamne kuch nahi milta, studio me har saans kat-ta hai         | **Peak-relative rule hata diya**, floor **p10 percentile** se maapa, threshold = `floor + margin`, margin **sensitivity dial** se (3/9/18 dB). Cut map ab measured threshold use karta hai           |
+| 20  | Whisper/ASMR: sensitivity + tail padding + per-segment override              | `absFloorDB = -56` — whisper **us se niche** hota hai, to poora file silence                           | Conservative dial **absolute floor bhi -70** karta hai (ASMR floor), + **protect pin** per line, auto-cut protected lines ko chhuta hai                                                              |
 
 ---
 
@@ -1715,11 +1744,11 @@ var sensitivityMargin = map[Sensitivity]float64{
 }
 ```
 
-| Dial           | Margin | Kya badalta hai                                             |
-| -------------- | ------ | ----------------------------------------------------------- |
-| Conservative   | 3 dB   | + absolute floor **−70 dB** (ASMR floor) — whisper bachta hai |
-| Balanced       | 9 dB   | sirf margin                                                  |
-| Aggressive     | 18 dB  | zyada dead air kat-ta hai, quiet speech ka risk             |
+| Dial         | Margin | Kya badalta hai                                               |
+| ------------ | ------ | ------------------------------------------------------------- |
+| Conservative | 3 dB   | + absolute floor **−70 dB** (ASMR floor) — whisper bachta hai |
+| Balanced     | 9 dB   | sirf margin                                                   |
+| Aggressive   | 18 dB  | zyada dead air kat-ta hai, quiet speech ka risk               |
 
 Naye accessors (jo profile banaate hain): `NoiseFloorDB()`, `SpeechDB()`,
 `SNRDB()`, `PeakDB()`, `ThresholdDB()`, `MarginDB()`, `SpeechRatio()`, aur
@@ -1915,8 +1944,8 @@ for i := range dst {
 }
 ```
 
-Prompt bhi ye kehta hai: *"Translate meaning, do not rewrite … a line that is
-already in English comes back unchanged."* — kyunki ek summariser se
+Prompt bhi ye kehta hai: _"Translate meaning, do not rewrite … a line that is
+already in English comes back unchanged."_ — kyunki ek summariser se
 translation nahi aata, aur aadha sentence gum hua hua translation user ko
 bataya nahi jaata.
 
@@ -1946,15 +1975,15 @@ Sensitivity string `json:"sensitivity,omitempty"`
 
 ## M4. Frontend — kya likha
 
-| File                                  | Kya badla                                                                          |
-| ------------------------------------- | ---------------------------------------------------------------------------------- |
-| `src/lib/audio-profile.ts` (naya)     | `AudioProfile` type, `fetchAudioProfile()`, `silenceThresholdDb()`, `describeProfile()`, `voiceIsBuried()`, `looksLikeMusic()` |
-| `src/lib/languages.ts` (naya)         | 24 bhashayein, `languageLabel()`, `isLanguageSwitch()`                              |
-| `src/lib/pipeline.ts`                 | `CloudSegment`/`CloudJob` ke naye fields, `sensitivity` option, naya `runTranslation()`, `NoSpeechError.music` |
-| `src/lib/types.ts`                    | `TranscriptLine.language` / `.translatedText` / `.protected`                        |
-| `src/lib/stores/project.svelte.ts`    | `audioProfile`, `language`, `languageOverride`, `languageWarning`, `sensitivity`, `music` state; measured threshold; protected lines; `translateTranscript()`; `toggleProtected()` |
-| `src/lib/components/cut/TranscriptPanel.svelte` | LANG dropdown, SILENCE dial, profile summary, Translate button, per-line language badge, translation line, protect pin, music card, `dir="auto"` |
-| `src/app.css`                         | `--font-sans` me Nirmala UI + Noto family (Case 14)                                  |
+| File                                            | Kya badla                                                                                                                                                                          |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/lib/audio-profile.ts` (naya)               | `AudioProfile` type, `fetchAudioProfile()`, `silenceThresholdDb()`, `describeProfile()`, `voiceIsBuried()`, `looksLikeMusic()`                                                     |
+| `src/lib/languages.ts` (naya)                   | 24 bhashayein, `languageLabel()`, `isLanguageSwitch()`                                                                                                                             |
+| `src/lib/pipeline.ts`                           | `CloudSegment`/`CloudJob` ke naye fields, `sensitivity` option, naya `runTranslation()`, `NoSpeechError.music`                                                                     |
+| `src/lib/types.ts`                              | `TranscriptLine.language` / `.translatedText` / `.protected`                                                                                                                       |
+| `src/lib/stores/project.svelte.ts`              | `audioProfile`, `language`, `languageOverride`, `languageWarning`, `sensitivity`, `music` state; measured threshold; protected lines; `translateTranscript()`; `toggleProtected()` |
+| `src/lib/components/cut/TranscriptPanel.svelte` | LANG dropdown, SILENCE dial, profile summary, Translate button, per-line language badge, translation line, protect pin, music card, `dir="auto"`                                   |
+| `src/app.css`                                   | `--font-sans` me Nirmala UI + Noto family (Case 14)                                                                                                                                |
 
 Cut map ab measured threshold use karta hai:
 
@@ -2037,17 +2066,17 @@ Ye hissa sabse zaroori hai. Ye kaam **poora nahi** hua, aur koi agent ise
 poora samjhega to galat plan banayega.
 
 1. **Case 11 ka "Hinglish → Roman" alag pass nahi bana.** Reason: repo ka
-   autocorrect prompt pehle se kehta hai *"The script. Roman/Latin letters
-   only. Never output Devanagari."* — yaani romanization **already** ho rahi
+   autocorrect prompt pehle se kehta hai _"The script. Roman/Latin letters
+   only. Never output Devanagari."_ — yaani romanization **already** ho rahi
    hai, sirf alag endpoint nahi hai. Jo bacha: per-segment language badge
-   (bana) aur romanization ka *trigger* (UI toggle — **nahi** bana).
+   (bana) aur romanization ka _trigger_ (UI toggle — **nahi** bana).
 2. **Case 18 ka ebur128/LUFS pass nahi bana.** Profile me dBFS numbers hain
    (floor, speech, peak, SNR) — PCM se, free. Lekin **integrated LUFS** aur
    **true peak** (ebur128) nahi, aur `afftdn`/`loudnorm` filters transcription
    copy par **nahi** chale. Ye teenon ek alag Rust module maangte hain
    (`src-tauri/src/audiometry.rs`), aur Rust me dusra agent kaam kar raha
    hai — maine jaan-boojh kar nahi chheda.
-3. **Case 18 ka "voice buried under BGM" sirf ek *hint* hai.** `snr_db < 8`
+3. **Case 18 ka "voice buried under BGM" sirf ek _hint_ hai.** `snr_db < 8`
    par UI warning dikhata hai; par uske baad koi automatic cleanup nahi.
 4. **Case 20 ka speech-tail padding (+0.4 s) cut map par nahi laga.** Cut
    geometry Rust me hai (`audio.rs`/`export.rs`); maine wo chhedi nahi. Jo
@@ -2066,8 +2095,8 @@ poora samjhega to galat plan banayega.
    to app purane fixed −30 dB par wapas aa jaata hai (honest fallback, par
    adaptive nahi).
 9. **Ek hi measurement pass, do consumers — aadha.** Daemon 16 kHz mono
-   *chunks* maapta hai; cut map source par `silencedetect` chalata hai. Dono
-   ek hi *rule* use karte hain, par alag *input* — perfect ekta nahi (§M7.5).
+   _chunks_ maapta hai; cut map source par `silencedetect` chalata hai. Dono
+   ek hi _rule_ use karte hain, par alag _input_ — perfect ekta nahi (§M7.5).
 
 ---
 
@@ -2088,8 +2117,8 @@ alag copy milegi — theek hai, par ek hi machine par theek hai.
 
 ### 7.2 `astats percentile` method exist nahi karta — doc ko patch karna chahiye
 
-Case 19 ka fix likhta hai: *"noise floor measure karo (quietest percentile
-astats se)"*. `astats` **whole-file** statistics deta hai, time-series
+Case 19 ka fix likhta hai: _"noise floor measure karo (quietest percentile
+astats se)"_. `astats` **whole-file** statistics deta hai, time-series
 percentile nahi — wo command waise chalegi hi nahi. MiMO ne ise B9 me
 pakda tha.
 
@@ -2109,7 +2138,7 @@ kyunki us 5.3 GB file ka path is machine par nahi hai.
 **Suggestion:** deploy ke baad wohi InShot file dobara import karke
 "AI ne kitne cut kiye" compare karein — pehle 274 raw gaps the, ab
 two-tier classification ke baad ~46 bade zones. Number bada matlab better
-nahi hai — *sahi* number hona chahiye.
+nahi hai — _sahi_ number hona chahiye.
 
 ### 7.4 Music probe me 2 API calls lagti hain
 
@@ -2154,7 +2183,7 @@ bhi isi "gap map" ka kaam hai (§7.5).
 
 ### 7.9 Case 15 ka "pinned language ke saath dobara" button nahi bana
 
-Doc kehta hai: *"re-run option pinned language ke saath"*. Maine **pin**
+Doc kehta hai: _"re-run option pinned language ke saath"_. Maine **pin**
 banaya, par transcript ko **re-transcribe** karne ka button nahi. Wajah:
 re-transcribe ka matlab hai **poore video ka dobara paisa** — jo ek line ke
 liye galat decision hai. Sahi design: sirf **un lines ko** dobara jise
@@ -2192,10 +2221,11 @@ nahi — auto-cut nahi, auto-translate nahi, auto-cleanup nahi. Doc ka
 ek **suggestion** hai jo user ke haath me hai.
 
 **— deepseek** (opencode / minimax-m3.1-flash-free) · 2026-11-12
-*Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) — dono untouched. Ye part
-sirf append hai.*
+_Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) — dono untouched. Ye part
+sirf append hai._
 
 ---
+
 ---
 
 ## M9. Deployment record — ye change desktop par hai
@@ -2204,17 +2234,17 @@ sirf append hai.*
 > proof. Iske liye MD me kuch bhi badla nahi gaya — upar ka sara analysis
 > waise hi hai.
 
-| Fact | Value |
-| --- | --- |
-| Commit | `9145bf0b35797f0d133fa8c3551b86b1ba45cb5e` (branch `main`) |
-| Build id | `ci-9145bf0` |
-| CI run | https://github.com/engrtarun/T9EditorLIT/actions/runs/43165171369 |
-| App SHA-256 | `9ba23a931bd133c4ca657cfda424fd7042427bcbf9732f99511905087284d516` |
+| Fact         | Value                                                                                              |
+| ------------ | -------------------------------------------------------------------------------------------------- |
+| Commit       | `9145bf0b35797f0d133fa8c3551b86b1ba45cb5e` (branch `main`)                                         |
+| Build id     | `ci-9145bf0`                                                                                       |
+| CI run       | https://github.com/engrtarun/T9EditorLIT/actions/runs/43165171369                                  |
+| App SHA-256  | `9ba23a931bd133c4ca657cfda424fd7042427bcbf9732f99511905087284d516`                                 |
 | Daemon build | `go-166ca7871c23d13c` (SHA-256 `f966a43267f59f553cd916cdca6c85b1d9afe3d132366987e2e3102ef1569719`) |
-| Work order | `SARKARI-20261112-113142-8A8B` |
-| Scope | `both` (app + daemon) |
-| Install dir | `%LOCALAPPDATA%\Programs\T9EditorLIT\` |
-| Marker | `build.json` → `mode: installed`, `buildId: ci-9145bf0` |
+| Work order   | `SARKARI-20261112-113142-8A8B`                                                                     |
+| Scope        | `both` (app + daemon)                                                                              |
+| Install dir  | `%LOCALAPPDATA%\Programs\T9EditorLIT\`                                                             |
+| Marker       | `build.json` → `mode: installed`, `buildId: ci-9145bf0`                                            |
 
 **Deploy ke do steps hue.** Pehle app chal raha tha, isliye naya binary
 `t9-editor-lit.new.exe` ke naam se **stage** hua aur user ke "Update" dabane
@@ -2246,16 +2276,17 @@ POST /v1/translate         → job id d9df5ca5…  kind=translate  state=queued
 ElevenLabs ensemble commit (`6171eb6`) ke **upar** rebase hua tha — dono ne
 `server.go`, `model.go`, `pipeline.ts` aur `app.css` chhede the. Do
 conflicts the, dono merge kiye: `model.go` me dono ke naye fields (`Engine`
-+ `Music`/`Language`/`AudioProfile`) saath rahe, aur `server.go` me **meri
-pin state machine** rahi (unka "pehla chunk pin kare" wala rule uske jagah
-gaya — wahi baat thi jo M2 me B15 me likhi thi). Rebase ke baad poora Go
-suite aur poora frontend suite **dono** green.
+
+- `Music`/`Language`/`AudioProfile`) saath rahe, aur `server.go` me **meri
+  pin state machine** rahi (unka "pehla chunk pin kare" wala rule uske jagah
+  gaya — wahi baat thi jo M2 me B15 me likhi thi). Rebase ke baad poora Go
+  suite aur poora frontend suite **dono** green.
 
 ---
 
 **— deepseek** (opencode / minimax-m3.1-flash-free) · 2026-11-12
-*Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) — dono untouched. Ye part
-sirf append hai. Deployment record: commit `9145bf0`, build `ci-9145bf0`.*
+_Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) — dono untouched. Ye part
+sirf append hai. Deployment record: commit `9145bf0`, build `ci-9145bf0`._
 
 ---
 
@@ -2274,36 +2305,36 @@ sirf append hai. Deployment record: commit `9145bf0`, build `ci-9145bf0`.*
 
 ### Browser — "site load hi nahi hoti / bahut slow"
 
-| Root cause | Fix | Kahan |
-| --- | --- | --- |
+| Root cause                                                                                                                                 | Fix                                                                                                                                                                             | Kahan                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | WebView2 tracking prevention **STRICT** third-party scripts/storage block kar raha tha (YouTube ka player/consent bootstrap isi me phansa) | **BALANCED** (Chromium default). Known cross-site trackers ab bhi block, par site ke apne login/player/comments/checkout kaam karte hain. Fine-grained blocking uBOL karta hai. | `Clipchamp_Bunny/src-tauri/src/browser.rs` (`configure_tab_webview`) |
-| Sirf active tab zinda tha — har tab switch par page dobara load | Active + **2 most-recent** tabs tak webview zinda (3 total), uske baad LRU destroy. Pinned tabs alag se Rust rakhta hai. | `src/lib/stores/browser.svelte.ts` (`recent()`) |
-| Hidden media flyout ka WebView2 renderer session bhar resident | Idle aur session-clear par `window.destroy()`; agla play `ping` se ~200 ms me recreate karta hai | `Clipchamp_Bunny/src-tauri/src/media_flyout.rs` |
-| Background tab par occlusion throttling | Pichhle round me shipped (`e6efab7`) | commit |
+| Sirf active tab zinda tha — har tab switch par page dobara load                                                                            | Active + **2 most-recent** tabs tak webview zinda (3 total), uske baad LRU destroy. Pinned tabs alag se Rust rakhta hai.                                                        | `src/lib/stores/browser.svelte.ts` (`recent()`)                      |
+| Hidden media flyout ka WebView2 renderer session bhar resident                                                                             | Idle aur session-clear par `window.destroy()`; agla play `ping` se ~200 ms me recreate karta hai                                                                                | `Clipchamp_Bunny/src-tauri/src/media_flyout.rs`                      |
+| Background tab par occlusion throttling                                                                                                    | Pichhle round me shipped (`e6efab7`)                                                                                                                                            | commit                                                               |
 
 ### Win+A / Windows media card — bina title/thumbnail "T9 Editor LIT"
 
-| Root cause | Fix | Kahan |
-| --- | --- | --- |
-| SMTC session install par `SetIsEnabled(true)` + `PlaybackStatus::Closed` ke saath ban jaata tha | Session **disabled** shuru hota hai; sirf titled live playback par enable, last stop par disable + `ClearAll` | `Clipchamp_Bunny/src-tauri/src/smtc.rs` |
-| Page `play()` ke baad `mediaSession.metadata` set karta tha, shim dobara report hi nahi karta tha | Shim metadata ko observe karta hai (title/artist/album/artwork aate hi re-report) | `src-tauri/src/browser_shim.js` |
-| Non-HTTP artwork URL SMTC ko de diya jaata tha (blank thumb) | Sirf `http(s)` artwork accept; title/channel ke honest fallbacks | `browser_shim.js`, `smtc.rs` |
-| "Kabhi play nahi hua" aur "paused" me farq nahi tha | Live report ki shart: `playing`/`paused` **aur** non-empty title. Preload/hover wala silent `<video>` card nahi banata. | `smtc.rs` (`update`) |
+| Root cause                                                                                        | Fix                                                                                                                     | Kahan                                   |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| SMTC session install par `SetIsEnabled(true)` + `PlaybackStatus::Closed` ke saath ban jaata tha   | Session **disabled** shuru hota hai; sirf titled live playback par enable, last stop par disable + `ClearAll`           | `Clipchamp_Bunny/src-tauri/src/smtc.rs` |
+| Page `play()` ke baad `mediaSession.metadata` set karta tha, shim dobara report hi nahi karta tha | Shim metadata ko observe karta hai (title/artist/album/artwork aate hi re-report)                                       | `src-tauri/src/browser_shim.js`         |
+| Non-HTTP artwork URL SMTC ko de diya jaata tha (blank thumb)                                      | Sirf `http(s)` artwork accept; title/channel ke honest fallbacks                                                        | `browser_shim.js`, `smtc.rs`            |
+| "Kabhi play nahi hua" aur "paused" me farq nahi tha                                               | Live report ki shart: `playing`/`paused` **aur** non-empty title. Preload/hover wala silent `<video>` card nahi banata. | `smtc.rs` (`update`)                    |
 
 ### Cases 1–10 — final status
 
-| Case | Status | Kya hua (code) |
-| --- | --- | --- |
-| 1 — speech-spans / silence na bheje | **fixed** | `audio.rs`: ek `silencedetect` pass, speech complement ke spans, leading/trailing silence trim, cut silence ke beech. `plan_spans` deterministic. |
-| 2 — cost pehle dikhe | **shipped (pehle)** | `estimateForDuration` / `planEstimate`; batch panel wahi helper use karta hai. |
-| 3 — renamed copy dobara transcribe | **fixed** | `media.rs::content_fingerprint` — size + first/last 256 KiB, dual FNV-1a, 32 KiB buffer (file RAM me nahi). `transcript.rs`: `source_fingerprints` table + `transcript_by_hash`; `lib.rs` ke 4 commands; `project.open`/batch hash-hit par lines naye path par copy. |
-| 4 — 30 files + Groq 429 | **fixed** | `batch-queue.ts` (pure model/estimate), `stores/batch.svelte.ts` (persisted queue, **sequential** worker, per-file status), `BatchQueuePanel.svelte` (3/30 position, per-file cost, stop after current, failed rows keep their reason), dashboard "Batch transcript". Ek waqt me ek file — 429 ka structural fix. |
-| 5 — 2 GB movie / vault | **fixed (app path)** | `MAX_SEGMENT_SECS = 760` (16 kHz mono ≈ 24.3 MB < Groq 25 MB), `plan_spans` target clamp, per-span FFmpeg extraction. Video bytes decode hote hi chhoot jaate hain (pehle se). Daemon-side 413 split future hardening hai, par 760 s cap usse pehle hi rok deta hai. |
-| 6 — studio WAV / tmp storage | **fixed (WAV path)** | Har chunk ka WAV transcript save hote hi `remove_audio_chunk` se delete (`project.transcribeSpan`, batch worker). Plan complete par poora chunk dir clean. FLAC variant abhi nahi — daemon reader change chahiye, isliye alag PR. |
-| 7 — 1 s se chhota clip | **shipped (pehle)** | `startTranscript` < 1 s par bina API call friendly error. Batch worker bhi wahi gate lagata hai. |
-| 8 — lambe files ka chunking | **fixed** | Same `plan_spans`: target ~300 s, silence boundary par cut, hard ceiling 760 s, deterministic. |
-| 9 — chunk boundary par word tear | **fixed** | Har span ke dono side **0.6 s overlap**; `reconcileBoundary` (Levenshtein ≤ 2 + timestamp overlap + normalized text) duplicate ko ek line karta hai, alag sentences dono rakhta hai. Rust + TS tests. |
-| 10 — network/power/API down | **fixed** | (a) Plan SQLite `kv` me — pending chunk wahin se retry. (b) `TranscriptPanel` footer me **evidence-based offline badge**: sirf `Failed to fetch`/ECONNREFUSED/ENOTFOUND jaisi connection failure par "Offline — N chunk pending"; 429/5xx/bad audio apni honest wording rakhte hain. (c) Naya setting `set.autoResumeTranscript` (default **off**, `t9-editor-lit.autoResumePlan`): project kholne par sirf wahi plan khud aage badhta hai jisme pehle se `done.length > 0` — jis project me transcript maanga hi nahi, wo chup rehta hai. |
+| Case                                | Status               | Kya hua (code)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1 — speech-spans / silence na bheje | **fixed**            | `audio.rs`: ek `silencedetect` pass, speech complement ke spans, leading/trailing silence trim, cut silence ke beech. `plan_spans` deterministic.                                                                                                                                                                                                                                                                                                                                                                                          |
+| 2 — cost pehle dikhe                | **shipped (pehle)**  | `estimateForDuration` / `planEstimate`; batch panel wahi helper use karta hai.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 3 — renamed copy dobara transcribe  | **fixed**            | `media.rs::content_fingerprint` — size + first/last 256 KiB, dual FNV-1a, 32 KiB buffer (file RAM me nahi). `transcript.rs`: `source_fingerprints` table + `transcript_by_hash`; `lib.rs` ke 4 commands; `project.open`/batch hash-hit par lines naye path par copy.                                                                                                                                                                                                                                                                       |
+| 4 — 30 files + Groq 429             | **fixed**            | `batch-queue.ts` (pure model/estimate), `stores/batch.svelte.ts` (persisted queue, **sequential** worker, per-file status), `BatchQueuePanel.svelte` (3/30 position, per-file cost, stop after current, failed rows keep their reason), dashboard "Batch transcript". Ek waqt me ek file — 429 ka structural fix.                                                                                                                                                                                                                          |
+| 5 — 2 GB movie / vault              | **fixed (app path)** | `MAX_SEGMENT_SECS = 760` (16 kHz mono ≈ 24.3 MB < Groq 25 MB), `plan_spans` target clamp, per-span FFmpeg extraction. Video bytes decode hote hi chhoot jaate hain (pehle se). Daemon-side 413 split future hardening hai, par 760 s cap usse pehle hi rok deta hai.                                                                                                                                                                                                                                                                       |
+| 6 — studio WAV / tmp storage        | **fixed (WAV path)** | Har chunk ka WAV transcript save hote hi `remove_audio_chunk` se delete (`project.transcribeSpan`, batch worker). Plan complete par poora chunk dir clean. FLAC variant abhi nahi — daemon reader change chahiye, isliye alag PR.                                                                                                                                                                                                                                                                                                          |
+| 7 — 1 s se chhota clip              | **shipped (pehle)**  | `startTranscript` < 1 s par bina API call friendly error. Batch worker bhi wahi gate lagata hai.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| 8 — lambe files ka chunking         | **fixed**            | Same `plan_spans`: target ~300 s, silence boundary par cut, hard ceiling 760 s, deterministic.                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 9 — chunk boundary par word tear    | **fixed**            | Har span ke dono side **0.6 s overlap**; `reconcileBoundary` (Levenshtein ≤ 2 + timestamp overlap + normalized text) duplicate ko ek line karta hai, alag sentences dono rakhta hai. Rust + TS tests.                                                                                                                                                                                                                                                                                                                                      |
+| 10 — network/power/API down         | **fixed**            | (a) Plan SQLite `kv` me — pending chunk wahin se retry. (b) `TranscriptPanel` footer me **evidence-based offline badge**: sirf `Failed to fetch`/ECONNREFUSED/ENOTFOUND jaisi connection failure par "Offline — N chunk pending"; 429/5xx/bad audio apni honest wording rakhte hain. (c) Naya setting `set.autoResumeTranscript` (default **off**, `t9-editor-lit.autoResumePlan`): project kholne par sirf wahi plan khud aage badhta hai jisme pehle se `done.length > 0` — jis project me transcript maanga hi nahi, wo chup rehta hai. |
 
 ### Tests / verification (local)
 
@@ -2398,28 +2429,28 @@ aasan hai; code me wo cheez na hona aur chup reh jaana — wo sabse bura hai.
 
 ## P1. Case-by-case — doc kya kehta tha, code me kya tha, ab kya hai
 
-| #   | Doc kya kehta tha | Code me kya tha (ground truth) | Ab kya hai |
-| --- | --- | --- | --- |
-| 21 | Reverb tail ko speech maano; <1 s gaps merge karo | `silencedetect` ka raw list seedha cut-list | `classifyGaps`: 1 s se kam bridge **tabhi** merge hota hai jab koi transcript line us strip ko cover na kare (warna asli shabd nigal jaata). Teen tier: micro <1.5 s, medium 1.5–5 s, big ≥5 s |
-| 22 | Overlap = crosstalk flag; auto-cut kabhi na chhue | Kuch nahi — detector "pause" ko silence samajhta tha | `MarkCrosstalk`: word timings hon to **0.3 s**, warna **0.5 s** overlap par dono lines `crosstalk` + `needs_confirm` + `keep`. Auto-cut in lines ko skip karta hai |
-| 23 | `[Music]`/`[Applause]` parse → icon, text se exclude | Text me waise hi pada tha | `Tags` (closed list: music/applause/laughter/silence/inaudible/cough/sigh/beep/noise + Devanagari `[संगीत]`), UI me icon, text **delete nahi** — tag data hai |
-| 24 | Repeated n-gram dedupe + "(repeated)" flag | Kuch nahi; hallucination loop transcript me 30 rows | `CollapseLoops`: ≥3 identical (stock phrase jaise "thank you for watching" **2** bhi), gap ≤45 s, run ≥2 s. Pehli line `RepeatCount=N`, baaki `Repeated` + cut |
-| 25 | Intro/outro music → placeholder, chunk skip | No-speech gate tha, par intro music par hallucination hi aata tha | Music verdict (Part 3) + shape ka intro/outro keep-zone; **naya**: intro window ab keep-zone hai, flat auto-cut usse nahi khata |
-| 26 | Highlight + one-click confirm; filler alag | `suggestions.ts` retake suggest karta tha, par apply par cut | `FlagRetakes`: 2+ token ka common prefix, ¾ line match, ≤2.5 s gap → **sirf suggestion**. `Keep` waise hi, `NeedsConfirm`, UI me `RETAKE?`/`STUTTER?` + **cut/keep** buttons. Auto-cut kabhi nahi |
-| 27 | Import gate: ffprobe + remux copy | Kuch nahi — file seedha khulti thi | `mediaprobe.Probe` (ek ffprobe pass) + `Remux` (`-map 0 -c copy +faststart`, **nayi file** user cache me). Report me `probe_failed`/`duration_split` + `action: remux` chip |
-| 28 | Audio-only = audio project mode | MP3 par bhi video preview ka blank stage | Report `audio_only`, layout pass skip, summary "audio only", `isAudioProject()`. Filmstrip/preview ka graceful grey card **nahi** banaya (P6.8) |
-| 29 | 4K60 5 GB: har layer apni chhoti copy | Audio extraction / chunks pehle se the (Part 3) | Gate ab `long_source` + `asr_copy_bytes` + bloat batata hai; layout 12 seeked frames (60 KB), koi full decode nahi |
-| 30 | A/V offset measure + timeline mapping me apply | Kuch nahi | `avOffsetSecs` measure hota hai (audio start − video start), UI me number dikhta hai. **Export spans me shift nahi** — P6.3 |
-| 31 | "50 min, 5.3 GB — InShot bloat" card | Kuch nahi | `Bloat` struct: actual vs target bitrate, target bytes, savings %, bytes/min. Report me `bloat` issue + detail |
-| 32 | VFR detect; PTS-based seek, frame-count math nahi | Seek pehle se time-based tha (theek), par detect koi nahi karta tha | `VFR` flag jab avg vs nominal rate rational match na kare; report me `vfr` issue + explainer. Naya frame-index math **kahin add nahi kiya** |
-| 33 | Colour metadata chip; proxy me BT.709 flags | Kuch nahi | `color_metadata` issue (range/space/transfer/primaries detail ke saath). Proxy transcode **nahi** — P6.1 |
-| 34 | 16k mono ASR copy; wahi waveform/chunks ka source | Pipeline audio chunks bhejti thi, par size ka koi honest number nahi | Report `asr_copy_bytes` = duration × 2000 B/s (16 kbps mono ka estimate). Asli copy banana Rust ka kaam hai — P6.7 |
-| 35 | 274 gaps ka two-tier map, "46 bade = 23:28" | Raw ranges = 274 decisions | `classifyGaps` + `gapStats` + `gapSummary`: "46 bade gaps = 23:28 · 113 medium · 115 micro". Auto-cut **sirf big**, medium opt-in, micro kabhi nahi |
-| 36 | Encode counter per project; 2+ par warn | Kuch nahi | `encode-count.ts`: per-source localStorage counter, export success par `noteExport()`, 2nd export se warning. SQLite nahi — P6.5 |
-| 37 | Static overlay detect (sparse frames) | Kuch nahi | `SampleGrid`: 12 fast seeks, 96×54 greyscale, 3×3 motion/detail grid → `static_overlay` (watermark-like) + `busy_corner` (face-cam-like) + advice. Filmstrip masking nahi — P6.2 |
-| 38 | Watermark learn-once, perceptual checks se exclude | Kuch nahi | Wahi ek pass static corner `bottom-left` etc. deta hai; UI "watermark bottom-left" dikhata hai. Exclusion wiring nahi — P6.2 |
-| 39 | Creator lexicon: ek baar seekho, har video par bias | `/v1/correct` tha, vocabulary nahi | `internal/lexicon` (JSON, atomic write, **7 default terms** live file se) + `ApplyLexicon` deterministic pass + `CorrectSegmentsWithLexicon` prompt bias + Settings me editor + `lexicon_hits` per line |
-| 40 | Shape strip: intro/teach/demo/story/outro; hooks suggest-keep | Kuch nahi; flat auto-cut intro/outro bhi kha jaata tha | `buildShape` (windowed density + pace + CTA vocabulary), `ShapeStrip` UI, aur auto-cut `subtractKeepZones` se intro/outro/CTA ko **chhodta hai** |
+| #   | Doc kya kehta tha                                             | Code me kya tha (ground truth)                                       | Ab kya hai                                                                                                                                                                                              |
+| --- | ------------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 21  | Reverb tail ko speech maano; <1 s gaps merge karo             | `silencedetect` ka raw list seedha cut-list                          | `classifyGaps`: 1 s se kam bridge **tabhi** merge hota hai jab koi transcript line us strip ko cover na kare (warna asli shabd nigal jaata). Teen tier: micro <1.5 s, medium 1.5–5 s, big ≥5 s          |
+| 22  | Overlap = crosstalk flag; auto-cut kabhi na chhue             | Kuch nahi — detector "pause" ko silence samajhta tha                 | `MarkCrosstalk`: word timings hon to **0.3 s**, warna **0.5 s** overlap par dono lines `crosstalk` + `needs_confirm` + `keep`. Auto-cut in lines ko skip karta hai                                      |
+| 23  | `[Music]`/`[Applause]` parse → icon, text se exclude          | Text me waise hi pada tha                                            | `Tags` (closed list: music/applause/laughter/silence/inaudible/cough/sigh/beep/noise + Devanagari `[संगीत]`), UI me icon, text **delete nahi** — tag data hai                                           |
+| 24  | Repeated n-gram dedupe + "(repeated)" flag                    | Kuch nahi; hallucination loop transcript me 30 rows                  | `CollapseLoops`: ≥3 identical (stock phrase jaise "thank you for watching" **2** bhi), gap ≤45 s, run ≥2 s. Pehli line `RepeatCount=N`, baaki `Repeated` + cut                                          |
+| 25  | Intro/outro music → placeholder, chunk skip                   | No-speech gate tha, par intro music par hallucination hi aata tha    | Music verdict (Part 3) + shape ka intro/outro keep-zone; **naya**: intro window ab keep-zone hai, flat auto-cut usse nahi khata                                                                         |
+| 26  | Highlight + one-click confirm; filler alag                    | `suggestions.ts` retake suggest karta tha, par apply par cut         | `FlagRetakes`: 2+ token ka common prefix, ¾ line match, ≤2.5 s gap → **sirf suggestion**. `Keep` waise hi, `NeedsConfirm`, UI me `RETAKE?`/`STUTTER?` + **cut/keep** buttons. Auto-cut kabhi nahi       |
+| 27  | Import gate: ffprobe + remux copy                             | Kuch nahi — file seedha khulti thi                                   | `mediaprobe.Probe` (ek ffprobe pass) + `Remux` (`-map 0 -c copy +faststart`, **nayi file** user cache me). Report me `probe_failed`/`duration_split` + `action: remux` chip                             |
+| 28  | Audio-only = audio project mode                               | MP3 par bhi video preview ka blank stage                             | Report `audio_only`, layout pass skip, summary "audio only", `isAudioProject()`. Filmstrip/preview ka graceful grey card **nahi** banaya (P6.8)                                                         |
+| 29  | 4K60 5 GB: har layer apni chhoti copy                         | Audio extraction / chunks pehle se the (Part 3)                      | Gate ab `long_source` + `asr_copy_bytes` + bloat batata hai; layout 12 seeked frames (60 KB), koi full decode nahi                                                                                      |
+| 30  | A/V offset measure + timeline mapping me apply                | Kuch nahi                                                            | `avOffsetSecs` measure hota hai (audio start − video start), UI me number dikhta hai. **Export spans me shift nahi** — P6.3                                                                             |
+| 31  | "50 min, 5.3 GB — InShot bloat" card                          | Kuch nahi                                                            | `Bloat` struct: actual vs target bitrate, target bytes, savings %, bytes/min. Report me `bloat` issue + detail                                                                                          |
+| 32  | VFR detect; PTS-based seek, frame-count math nahi             | Seek pehle se time-based tha (theek), par detect koi nahi karta tha  | `VFR` flag jab avg vs nominal rate rational match na kare; report me `vfr` issue + explainer. Naya frame-index math **kahin add nahi kiya**                                                             |
+| 33  | Colour metadata chip; proxy me BT.709 flags                   | Kuch nahi                                                            | `color_metadata` issue (range/space/transfer/primaries detail ke saath). Proxy transcode **nahi** — P6.1                                                                                                |
+| 34  | 16k mono ASR copy; wahi waveform/chunks ka source             | Pipeline audio chunks bhejti thi, par size ka koi honest number nahi | Report `asr_copy_bytes` = duration × 2000 B/s (16 kbps mono ka estimate). Asli copy banana Rust ka kaam hai — P6.7                                                                                      |
+| 35  | 274 gaps ka two-tier map, "46 bade = 23:28"                   | Raw ranges = 274 decisions                                           | `classifyGaps` + `gapStats` + `gapSummary`: "46 bade gaps = 23:28 · 113 medium · 115 micro". Auto-cut **sirf big**, medium opt-in, micro kabhi nahi                                                     |
+| 36  | Encode counter per project; 2+ par warn                       | Kuch nahi                                                            | `encode-count.ts`: per-source localStorage counter, export success par `noteExport()`, 2nd export se warning. SQLite nahi — P6.5                                                                        |
+| 37  | Static overlay detect (sparse frames)                         | Kuch nahi                                                            | `SampleGrid`: 12 fast seeks, 96×54 greyscale, 3×3 motion/detail grid → `static_overlay` (watermark-like) + `busy_corner` (face-cam-like) + advice. Filmstrip masking nahi — P6.2                        |
+| 38  | Watermark learn-once, perceptual checks se exclude            | Kuch nahi                                                            | Wahi ek pass static corner `bottom-left` etc. deta hai; UI "watermark bottom-left" dikhata hai. Exclusion wiring nahi — P6.2                                                                            |
+| 39  | Creator lexicon: ek baar seekho, har video par bias           | `/v1/correct` tha, vocabulary nahi                                   | `internal/lexicon` (JSON, atomic write, **7 default terms** live file se) + `ApplyLexicon` deterministic pass + `CorrectSegmentsWithLexicon` prompt bias + Settings me editor + `lexicon_hits` per line |
+| 40  | Shape strip: intro/teach/demo/story/outro; hooks suggest-keep | Kuch nahi; flat auto-cut intro/outro bhi kha jaata tha               | `buildShape` (windowed density + pace + CTA vocabulary), `ShapeStrip` UI, aur auto-cut `subtractKeepZones` se intro/outro/CTA ko **chhodta hai**                                                        |
 
 ---
 
@@ -2527,13 +2558,13 @@ func Process(segments []model.Segment, entries []Entry) Result {
 
 Rules jo code me hain (doc ke numbers se, guess nahi):
 
-| Pass | Rule | Result |
-| --- | --- | --- |
-| Brackets | `[Music]`, `(applause)`, bare `♪`; closed list + Devanagari cues | `Tags []string`, text untouched |
-| Crosstalk | word timings: 0.3 s overlap; warna 0.5 s; neighbour window 2 s | dono lines `Crosstalk` + `NeedsConfirm` + `Keep` |
-| Retakes | ≥2 token common prefix, ≥75% line match, ≤2.5 s gap; line ke andar 2–3 token repeat | `NeedsConfirm`, `Flag: fumble/retake`, **`Keep` sach me nahi badalta** (fumble line `Keep:true` hi rehti hai) |
-| Loops | ≥3 identical (stock phrase 2), gap ≤45 s, run ≥2 s, key ≥3 runes | pehli `RepeatCount=N`, baaki `Repeated` + `Keep:false` |
-| Lexicon | alias → term, case-insensitive, **whole word only**, Devanagari ke liye plain match | `Text` badalta hai, `OriginalText` me raw Whisper rehta hai, `LexiconHits` |
+| Pass      | Rule                                                                                | Result                                                                                                        |
+| --------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Brackets  | `[Music]`, `(applause)`, bare `♪`; closed list + Devanagari cues                    | `Tags []string`, text untouched                                                                               |
+| Crosstalk | word timings: 0.3 s overlap; warna 0.5 s; neighbour window 2 s                      | dono lines `Crosstalk` + `NeedsConfirm` + `Keep`                                                              |
+| Retakes   | ≥2 token common prefix, ≥75% line match, ≤2.5 s gap; line ke andar 2–3 token repeat | `NeedsConfirm`, `Flag: fumble/retake`, **`Keep` sach me nahi badalta** (fumble line `Keep:true` hi rehti hai) |
+| Loops     | ≥3 identical (stock phrase 2), gap ≤45 s, run ≥2 s, key ≥3 runes                    | pehli `RepeatCount=N`, baaki `Repeated` + `Keep:false`                                                        |
+| Lexicon   | alias → term, case-insensitive, **whole word only**, Devanagari ke liye plain match | `Text` badalta hai, `OriginalText` me raw Whisper rehta hai, `LexiconHits`                                    |
 
 Word-boundary wala hissa aasan nahi tha: pehla version `rapid api response` ko
 `rapid API response` bana deta tha. Test ne pakda
@@ -2569,12 +2600,12 @@ Default list **live file ke measured mistakes** se bhari hai, khaali nahi:
 
 ### P2.4 `internal/api` — chaar naye routes
 
-| Route | Kaam | Fail behaviour |
-| --- | --- | --- |
-| `POST /v1/media/probe` | sync: `{path}` → `Report` | 400 empty path, 404 missing, **200 + `probe_failed`** unreadable container |
-| `POST /v1/media/remux` | async: `{path}` → `202 Job` (`kind: remux`) | 404 missing; job fail par error + partial file delete |
-| `POST /v1/media/layout` | sync: `{path, duration_secs, samples}` → `Grid` | 400/404, 200 with empty grid on layout failure |
-| `GET/PUT /v1/lexicon` | list/replace vocabulary | PUT 503 jab store configured nahi (tests/daemon-only mode) |
+| Route                   | Kaam                                            | Fail behaviour                                                             |
+| ----------------------- | ----------------------------------------------- | -------------------------------------------------------------------------- |
+| `POST /v1/media/probe`  | sync: `{path}` → `Report`                       | 400 empty path, 404 missing, **200 + `probe_failed`** unreadable container |
+| `POST /v1/media/remux`  | async: `{path}` → `202 Job` (`kind: remux`)     | 404 missing; job fail par error + partial file delete                      |
+| `POST /v1/media/layout` | sync: `{path, duration_secs, samples}` → `Grid` | 400/404, 200 with empty grid on layout failure                             |
+| `GET/PUT /v1/lexicon`   | list/replace vocabulary                         | PUT 503 jab store configured nahi (tests/daemon-only mode)                 |
 
 Wiring:
 
@@ -2601,14 +2632,14 @@ contract hai, frontend `CloudSegment` isi naam se padhta hai.
 
 ### P3.1 Naye pure modules (sab tested, koi Svelte nahi)
 
-| Module | Kya deta hai | Case |
-| --- | --- | --- |
-| `media-report.ts` | `sortedIssues` (action→warn→info), `hasAction`, `sourceSummary`, `asrPercent`, `gateVerdict`, `layoutLabel`, `overlayAdvice`, `formatBytes`, `durationLabel` | 27–38 |
-| `silence-map.ts` | `classifyGaps` (merge + line veto), `gapStats`, `cutCandidates` (big only), `subtractKeepZones`, `gapSummary` | 21, 35, 40 |
-| `shape.ts` | `buildShape` (windowed density/pace/CTA), `keepZones`, `SHAPE_LABEL`, `SHAPE_CLASS`, `shapeSummary` | 40 |
-| `transcript-tags.ts` | `tagsOf`, `tagIcon`, `tagLabel`, `renderTaggedText` — Go ke list ka mirror | 23 |
-| `lexicon.ts` | `normalizeEntry`, `normalizeLexicon`, `mergeLexicon`, `countHits`, limits (60/80/12) | 39 |
-| `encode-count.ts` | `encodesFor`, `bumpEncodes`, `generationWarning` — per-source localStorage | 36 |
+| Module               | Kya deta hai                                                                                                                                                 | Case       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- |
+| `media-report.ts`    | `sortedIssues` (action→warn→info), `hasAction`, `sourceSummary`, `asrPercent`, `gateVerdict`, `layoutLabel`, `overlayAdvice`, `formatBytes`, `durationLabel` | 27–38      |
+| `silence-map.ts`     | `classifyGaps` (merge + line veto), `gapStats`, `cutCandidates` (big only), `subtractKeepZones`, `gapSummary`                                                | 21, 35, 40 |
+| `shape.ts`           | `buildShape` (windowed density/pace/CTA), `keepZones`, `SHAPE_LABEL`, `SHAPE_CLASS`, `shapeSummary`                                                          | 40         |
+| `transcript-tags.ts` | `tagsOf`, `tagIcon`, `tagLabel`, `renderTaggedText` — Go ke list ka mirror                                                                                   | 23         |
+| `lexicon.ts`         | `normalizeEntry`, `normalizeLexicon`, `mergeLexicon`, `countHits`, limits (60/80/12)                                                                         | 39         |
+| `encode-count.ts`    | `encodesFor`, `bumpEncodes`, `generationWarning` — per-source localStorage                                                                                   | 36         |
 
 ### P3.2 Store (`project.svelte.ts`)
 
@@ -2633,10 +2664,12 @@ Naye methods: `silenceCandidates(ranges)`, `refreshGate(path)`, `runRemux()`,
 
 ```ts
 for (const l of this.lines) {
-  if (l.protected) continue;                    // user ka pin
-  if (l.crosstalk || l.needsConfirm) continue;   // 22, 26
-  if (l.repeated) continue;                      // 24
-  for (const r of ranges) { /* overlap = cut */ }
+  if (l.protected) continue; // user ka pin
+  if (l.crosstalk || l.needsConfirm) continue; // 22, 26
+  if (l.repeated) continue; // 24
+  for (const r of ranges) {
+    /* overlap = cut */
+  }
 }
 ```
 
@@ -2644,7 +2677,7 @@ Aur auto-cut/suggest ka raasta:
 
 ```ts
 const gaps = classifyGaps(ranges, { lines: this.lines });
-const cut = cutCandidates(gaps);              // big only
+const cut = cutCandidates(gaps); // big only
 return subtractKeepZones(cut, this.keepZones); // intro/outro/CTA safe
 ```
 
@@ -2655,13 +2688,13 @@ icons dikhate hain.
 
 ### P3.3 UI
 
-| Component | Kahan | Kya |
-| --- | --- | --- |
+| Component              | Kahan                   | Kya                                                                                                                  |
+| ---------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `ProjectHealth.svelte` | TranscriptPanel ke upar | collapsible source card: summary, issues (severity colour), ASR copy %, remux button, layout regions, encode warning |
-| `ShapeStrip.svelte` | TranscriptPanel | 2 px shape bar (click = seek), gap summary, legend |
-| `LexiconCard.svelte` | Settings → General | term + "heard as" editor, add/remove, save/reload |
-| row badges | TranscriptPanel | `♪` tags, `×N` loop count, `2 VOICES`, `RETAKE?`/`STUTTER?` + **cut/keep** action strip me (nested button nahi) |
-| `noteExport()` | ExportMode success | har successful export counter badhata hai |
+| `ShapeStrip.svelte`    | TranscriptPanel         | 2 px shape bar (click = seek), gap summary, legend                                                                   |
+| `LexiconCard.svelte`   | Settings → General      | term + "heard as" editor, add/remove, save/reload                                                                    |
+| row badges             | TranscriptPanel         | `♪` tags, `×N` loop count, `2 VOICES`, `RETAKE?`/`STUTTER?` + **cut/keep** action strip me (nested button nahi)      |
+| `noteExport()`         | ExportMode success      | har successful export counter badhata hai                                                                            |
 
 ---
 
@@ -2680,18 +2713,18 @@ cd Clipchamp_Bunny; npm run check ; npm run lint ; npm test ; npm run build
 # → vite build ok
 ```
 
-| Package / module | Naye tests | Kya pin karte hain |
-| --- | --- | --- |
-| `mediaprobe` | 12 | issue codes, VFR ratio, colour tags, A/V offset, bloat math, duration split, remux args, layout grid, frozen guard |
-| `postpass` | 11 | bracket tags, arbitrary parentheses safe, loop collapse, stock phrase ×2, retake suggestion (Keep nahi badalta), crosstalk vs loop, lexicon word boundary |
-| `lexicon` | 6 | round-trip, atomic replace, sanitize, defaults, corrupt file |
-| `api` (media) | 6 | probe 400/404/200-broken, remux 404, lexicon round-trip, 503 without store, sanitize+order |
-| `silence-map` | 8 | tiers, reverb merge, line veto, big-only candidates, keep-zone subtraction, summary |
-| `shape` | 7 | intro/outro positional, demo detection, keep-zones, CTA Hinglish+Devanagari, coalesce |
-| `transcript-tags` | 6 | known tags, `(2024)` safe, Devanagari cue, dedupe, render |
-| `lexicon` (ts) | 7 | normalization, caps, duplicates, merge, hit preview |
-| `encode-count` | 5 | per-source count, corrupt storage, warning threshold, no storage |
-| `media-report` | 8 | ordering, action, summary, audio-only, ASR %, layout, verdict, formatters |
+| Package / module  | Naye tests | Kya pin karte hain                                                                                                                                        |
+| ----------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mediaprobe`      | 12         | issue codes, VFR ratio, colour tags, A/V offset, bloat math, duration split, remux args, layout grid, frozen guard                                        |
+| `postpass`        | 11         | bracket tags, arbitrary parentheses safe, loop collapse, stock phrase ×2, retake suggestion (Keep nahi badalta), crosstalk vs loop, lexicon word boundary |
+| `lexicon`         | 6          | round-trip, atomic replace, sanitize, defaults, corrupt file                                                                                              |
+| `api` (media)     | 6          | probe 400/404/200-broken, remux 404, lexicon round-trip, 503 without store, sanitize+order                                                                |
+| `silence-map`     | 8          | tiers, reverb merge, line veto, big-only candidates, keep-zone subtraction, summary                                                                       |
+| `shape`           | 7          | intro/outro positional, demo detection, keep-zones, CTA Hinglish+Devanagari, coalesce                                                                     |
+| `transcript-tags` | 6          | known tags, `(2024)` safe, Devanagari cue, dedupe, render                                                                                                 |
+| `lexicon` (ts)    | 7          | normalization, caps, duplicates, merge, hit preview                                                                                                       |
+| `encode-count`    | 5          | per-source count, corrupt storage, warning threshold, no storage                                                                                          |
+| `media-report`    | 8          | ordering, action, summary, audio-only, ASR %, layout, verdict, formatters                                                                                 |
 
 Do tests jo product ka **promise** hain, sirf implementation nahi:
 
@@ -2699,8 +2732,9 @@ Do tests jo product ka **promise** hain, sirf implementation nahi:
 // Case 22/26: auto-cut in lines ko chhoota hi nahi.
 // Case 24: repeated line cut hoti hai, pehli line rehti hai.
 // Case 40: intro/outro keep-zone auto-cut se bachta hai.
-assert.deepEqual(subtractKeepZones([{ start: 0, end: 12 }], [{ start: 0, end: 5 }]),
-                 [{ start: 5, end: 12 }]);
+assert.deepEqual(subtractKeepZones([{ start: 0, end: 12 }], [{ start: 0, end: 5 }]), [
+  { start: 5, end: 12 },
+]);
 ```
 
 ---
@@ -2710,18 +2744,18 @@ assert.deepEqual(subtractKeepZones([{ start: 0, end: 12 }], [{ start: 0, end: 5 
 Ye wo galtiyan hain jo **implementation ke dauraan** mile — kuch mere apne
 code me, kuch doc aur repo ke beech. Sab fix ho chuki hain.
 
-| # | Bug | Kahan | Fix |
-| --- | --- | --- | --- |
-| B21 | Silence detector ka **raw map** hi cut-list thi — 274 gaps = 274 decisions | `project.svelte.ts` (`autoCutSilence`, `suggestSilences`) | `classifyGaps` + `cutCandidates` (big only) + `subtractKeepZones` |
-| B22 | Auto-cut ka guard **sirf** `protected` tha; naye flags (`crosstalk`, `needsConfirm`, `repeated`) silently ignore hote | `cutSilences` | teenon guards add; test se pin |
-| B23 | Reopen par tags gayab — SQLite `transcripts` table me `tags` column hi nahi | `ensureTranscript` cached path | text se `tagsOf()` re-derive (purane project bhi icons dikhate hain) |
-| B24 | Remux job "succeed" hoke bhi `output_path` khali — job store me naya field set nahi hota tha | `api/store.go` | `succeedRemux(id, out)`; frontend missing path par saaf error |
-| B25 | Lexicon replace `rapid api` ke andar `api` badal deta tha | `postpass.replaceInsensitive` | ASCII word-boundary check; Devanagari ke liye plain match |
-| B26 | Retake pass `FlagNone` (`""`) ko none nahi maanta tha, isliye completed line par retake flag kabhi lagta hi nahi tha | `postpass.markFumble` | `FlagNone || ""` |
-| B27 | Loop test ka premise galat tha — representative line ko `Repeated` maan raha tha | `postpass_test.go` | semantic clarify: representative `RepeatCount`, baaki `Repeated` |
-| B28 | Colored/static synthetic frame par har corner "watermark" ban jaata tha (test fixture frozen tha) | `mediaprobe_test.go` | moving gradient + frozen-frame guard ka test; heuristic waise hi |
-| B29 | `durationLabel(59)` ka test `0m 59s` expect karta tha, code `59s` deta hai | `media-report.test.ts` | test fix (code sahi tha) |
-| B30 | Shape test 6 windows ke liye 1 block expect karta tha, jabki intro sirf start ke paas hota hai | `shape.test.ts` | window 5 s + intro block ka start/end assert |
+| #   | Bug                                                                                                                   | Kahan                                                     | Fix                                                                  |
+| --- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------- |
+| B21 | Silence detector ka **raw map** hi cut-list thi — 274 gaps = 274 decisions                                            | `project.svelte.ts` (`autoCutSilence`, `suggestSilences`) | `classifyGaps` + `cutCandidates` (big only) + `subtractKeepZones`    |
+| B22 | Auto-cut ka guard **sirf** `protected` tha; naye flags (`crosstalk`, `needsConfirm`, `repeated`) silently ignore hote | `cutSilences`                                             | teenon guards add; test se pin                                       |
+| B23 | Reopen par tags gayab — SQLite `transcripts` table me `tags` column hi nahi                                           | `ensureTranscript` cached path                            | text se `tagsOf()` re-derive (purane project bhi icons dikhate hain) |
+| B24 | Remux job "succeed" hoke bhi `output_path` khali — job store me naya field set nahi hota tha                          | `api/store.go`                                            | `succeedRemux(id, out)`; frontend missing path par saaf error        |
+| B25 | Lexicon replace `rapid api` ke andar `api` badal deta tha                                                             | `postpass.replaceInsensitive`                             | ASCII word-boundary check; Devanagari ke liye plain match            |
+| B26 | Retake pass `FlagNone` (`""`) ko none nahi maanta tha, isliye completed line par retake flag kabhi lagta hi nahi tha  | `postpass.markFumble`                                     | `FlagNone                                                            |     | ""` |
+| B27 | Loop test ka premise galat tha — representative line ko `Repeated` maan raha tha                                      | `postpass_test.go`                                        | semantic clarify: representative `RepeatCount`, baaki `Repeated`     |
+| B28 | Colored/static synthetic frame par har corner "watermark" ban jaata tha (test fixture frozen tha)                     | `mediaprobe_test.go`                                      | moving gradient + frozen-frame guard ka test; heuristic waise hi     |
+| B29 | `durationLabel(59)` ka test `0m 59s` expect karta tha, code `59s` deta hai                                            | `media-report.test.ts`                                    | test fix (code sahi tha)                                             |
+| B30 | Shape test 6 windows ke liye 1 block expect karta tha, jabki intro sirf start ke paas hota hai                        | `shape.test.ts`                                           | window 5 s + intro block ka start/end assert                         |
 
 Sabse zyada der B25 ne khayi: word-boundary ka test likhne ke baad hi pata
 chala ki `ReplaceAll` Devanagari par bhi waise hi chalta hai — wahan boundary
@@ -2840,25 +2874,25 @@ kar sakta hai — guess nahi karna padega.
 > Ye hissa sirf record hai: kaunsa commit, kaunsa build, aur "live" hone ka
 > proof. Upar ka analysis waise hi hai — is section ne kuch badla nahi.
 
-| Fact | Value |
-| --- | --- |
-| Commit | `a27eabde8b356e0212a176f0431b62deb022ec86` (branch `main`) |
-| Build id | `ci-a27eabd` |
-| CI run | https://github.com/engrtarun/T9EditorLIT/actions/runs/43376932973 |
-| App SHA-256 (staged) | `a0b954e939b147c8e6de80fcd346d719fde6a2a793a05c96c8539e4c88ffcbb9` |
-| Daemon build | `go-7a81d8959fe3dfa6` (SHA-256 `66757c632aed8c6b80d6464d25c0c1e973ac8c6cd036be839e70a87937036d23`) |
-| Work order | `SARKARI-20261113-114128-7206` |
-| Scope | `both` (app + daemon) |
-| Mode | **staged** — app chal raha tha, isliye `t9-editor-lit.new.exe` + `t9cloud.new.exe` |
-| Install dir | `%LOCALAPPDATA%\Programs\T9EditorLIT\` |
-| Apply | app ke top bar me **Update** button → helper swap + restart |
+| Fact                 | Value                                                                                              |
+| -------------------- | -------------------------------------------------------------------------------------------------- |
+| Commit               | `a27eabde8b356e0212a176f0431b62deb022ec86` (branch `main`)                                         |
+| Build id             | `ci-a27eabd`                                                                                       |
+| CI run               | https://github.com/engrtarun/T9EditorLIT/actions/runs/43376932973                                  |
+| App SHA-256 (staged) | `a0b954e939b147c8e6de80fcd346d719fde6a2a793a05c96c8539e4c88ffcbb9`                                 |
+| Daemon build         | `go-7a81d8959fe3dfa6` (SHA-256 `66757c632aed8c6b80d6464d25c0c1e973ac8c6cd036be839e70a87937036d23`) |
+| Work order           | `SARKARI-20261113-114128-7206`                                                                     |
+| Scope                | `both` (app + daemon)                                                                              |
+| Mode                 | **staged** — app chal raha tha, isliye `t9-editor-lit.new.exe` + `t9cloud.new.exe`                 |
+| Install dir          | `%LOCALAPPDATA%\Programs\T9EditorLIT\`                                                             |
+| Apply                | app ke top bar me **Update** button → helper swap + restart                                        |
 
 **Do deploys hue, aur doosra pehle ko supersede karta hai:**
 
-| # | Commit | Build | Work order | Result |
-| --- | --- | --- | --- | --- |
-| 1 | `8e3ae63` | `ci-8e3ae63` | `SARKARI-20261113-112550-17F4` | live install (11:35), app SHA `53c505be…` |
-| 2 | `a27eabd` | `ci-a27eabd` | `SARKARI-20261113-114128-7206` | **staged** (11:47), app SHA `a0b954e9…` |
+| #   | Commit    | Build        | Work order                     | Result                                    |
+| --- | --------- | ------------ | ------------------------------ | ----------------------------------------- |
+| 1   | `8e3ae63` | `ci-8e3ae63` | `SARKARI-20261113-112550-17F4` | live install (11:35), app SHA `53c505be…` |
+| 2   | `a27eabd` | `ci-a27eabd` | `SARKARI-20261113-114128-7206` | **staged** (11:47), app SHA `a0b954e9…`   |
 
 Doosra deploy zaroori tha kyunki pehle build ko **live probe** me ek bug mila
 (B31, neeche). App us waqt band tha, isliye pehla build seedha install hua;
@@ -2903,13 +2937,13 @@ jaayenge.
 
 ### B31. Layout ka motion 0..1 nahi tha (live probe ne pakda)
 
-| | |
-| --- | --- |
-| Kahan | `go/internal/mediaprobe/mediaprobe.go` (`AnalyzeFrames`) |
-| Kya | `g.Motion[c]` per-cell **sum** tha, divide sirf frame-pair count se hota tha — pixel count se nahi. 32×18 cell = 576 px, isliye live file `8.7` deti thi jahan contract `0..1` kehta hai |
-| Asar | Ratio-based decisions (watermark/face-cam vs median) bach gaye, par frozen-video guard (`medianMotion < 0.008`) asli file par kabhi fire hi nahi hota, aur API ka 0..1 promise jhooth tha |
-| Fix | `cellPairCounts[c]` — har cell ke pixel-pairs se divide; `TestAnalyzeFramesMotionIsAFraction` 0..1 range pin karta hai |
-| Proof | Wahi live file: pehle `8.7258`, ab `0.0151` |
+|       |                                                                                                                                                                                           |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kahan | `go/internal/mediaprobe/mediaprobe.go` (`AnalyzeFrames`)                                                                                                                                  |
+| Kya   | `g.Motion[c]` per-cell **sum** tha, divide sirf frame-pair count se hota tha — pixel count se nahi. 32×18 cell = 576 px, isliye live file `8.7` deti thi jahan contract `0..1` kehta hai  |
+| Asar  | Ratio-based decisions (watermark/face-cam vs median) bach gaye, par frozen-video guard (`medianMotion < 0.008`) asli file par kabhi fire hi nahi hota, aur API ka 0..1 promise jhooth tha |
+| Fix   | `cellPairCounts[c]` — har cell ke pixel-pairs se divide; `TestAnalyzeFramesMotionIsAFraction` 0..1 range pin karta hai                                                                    |
+| Proof | Wahi live file: pehle `8.7258`, ab `0.0151`                                                                                                                                               |
 
 Ye bug **sirf live probe se mila** — Go tests synthetic frames par ratio check
 karte the, isliye green the. Isi liye P9 me probe ka number likha hai, sirf
@@ -2930,13 +2964,13 @@ Do cheezein user ne live app me pakdi, dono fix hui aur install ho gayi.
 
 ### B32. Transcript row ka badge agli row par paint ho raha tha
 
-| | |
-| --- | --- |
-| Kahan | `Clipchamp_Bunny/src/lib/components/cut/TranscriptPanel.svelte` |
-| Kya | Row fixed `46px` thi, par text 2-line clamp (16+16) + language chip (13) = 45+ tha. Chip `clamp` ke baad block tha, isliye wo row se bahar nikal kar **agle row ke upar** paint hota tha |
-| Kab aaya | `9145bf0` (cases 11–20, language pin) — chip us waqt add hua, row height us waqt nahi badli |
-| Fix | Saare chips (flag, tag, `×N`, `2 VOICES`, `RETAKE?`, language) ek `flex-nowrap` row me, `overflow-hidden`; `ROW_H` 46 → 60. Virtual list ek hi constant use karti hai, isliye scroll math same |
-| Proof | `svelte-check` 0/0, prettier clean, 156/156 tests, live deploy `ci-13d07e4` |
+|          |                                                                                                                                                                                                |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kahan    | `Clipchamp_Bunny/src/lib/components/cut/TranscriptPanel.svelte`                                                                                                                                |
+| Kya      | Row fixed `46px` thi, par text 2-line clamp (16+16) + language chip (13) = 45+ tha. Chip `clamp` ke baad block tha, isliye wo row se bahar nikal kar **agle row ke upar** paint hota tha       |
+| Kab aaya | `9145bf0` (cases 11–20, language pin) — chip us waqt add hua, row height us waqt nahi badli                                                                                                    |
+| Fix      | Saare chips (flag, tag, `×N`, `2 VOICES`, `RETAKE?`, language) ek `flex-nowrap` row me, `overflow-hidden`; `ROW_H` 46 → 60. Virtual list ek hi constant use karti hai, isliye scroll math same |
+| Proof    | `svelte-check` 0/0, prettier clean, 156/156 tests, live deploy `ci-13d07e4`                                                                                                                    |
 
 ### Naya: "Sirf ye hissa" — range transcription
 
@@ -2954,14 +2988,14 @@ nahi tha (poora file, ya ek-ek chunk order me). Ab:
 - UI: `RangeTranscribe.svelte` — khaali panel me button ke neeche, aur partial
   plan ke footer me collapse hua.
 
-| Fact | Value |
-| --- | --- |
-| Commit | `d54e209001a3ce4dccd02cb5631fbfc4028b6626` |
-| Build | `ci-d54e209` · CI run https://github.com/engrtarun/T9EditorLIT/actions/runs/43379960994 |
-| App SHA-256 | `f62950be8489337f080a040ff83e6feae3c50be55bcec3db7ba3df308c0faa75` |
-| Work order | `SARKARI-20261113-120914-676F` · mode **live** |
-| Daemon | `go-7a81d8959fe3dfa6` (pehle se running, is deploy me app-only) |
-| Gates | svelte-check 0/0 · prettier clean · 157/157 tests |
+| Fact        | Value                                                                                   |
+| ----------- | --------------------------------------------------------------------------------------- |
+| Commit      | `d54e209001a3ce4dccd02cb5631fbfc4028b6626`                                              |
+| Build       | `ci-d54e209` · CI run https://github.com/engrtarun/T9EditorLIT/actions/runs/43379960994 |
+| App SHA-256 | `f62950be8489337f080a040ff83e6feae3c50be55bcec3db7ba3df308c0faa75`                      |
+| Work order  | `SARKARI-20261113-120914-676F` · mode **live**                                          |
+| Daemon      | `go-7a81d8959fe3dfa6` (pehle se running, is deploy me app-only)                         |
+| Gates       | svelte-check 0/0 · prettier clean · 157/157 tests                                       |
 
 Doctor: marker hash = installed exe hash, koi staged file nahi.
 
@@ -2975,13 +3009,13 @@ ab UI me likha hua hai.
 
 ### B33. Extra clip ke liye transcript ka button hi nahi tha — aur hona bhi nahi chahiye
 
-| | |
-| --- | --- |
-| Kahan | `Clipchamp_Bunny/src/lib/components/cut/TranscriptPanel.svelte` |
-| Kya | Preview kisi extra clip par ho to panel wahi purana transcript dikhata tha (ya khaali), bina ye bataye ki clip ka apna transcript kabhi nahi hoga |
-| Kyun design hai | Cut pipeline `project.sourcePath` par chalti hai — transcript, cut map, phantom cut, export sab ek hi file ke around hain. Doosri video ko weave karne ke liye multi-source renderer chahiye, jo abhi nahi hai |
-| Fix | `project.activeClip` par ek **EXTRA CLIP** banner: alag media hai, transcript sirf main source ka hota hai, ise trim/split se kaato; kisi bhi transcript line par click karne se preview main source par wapas aa jata hai |
-| Jhooth kyun nahi | Generate button dikhaya hota to wo aisa text promise karta jise renderer kahin rakh hi nahi sakta |
+|                  |                                                                                                                                                                                                                            |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kahan            | `Clipchamp_Bunny/src/lib/components/cut/TranscriptPanel.svelte`                                                                                                                                                            |
+| Kya              | Preview kisi extra clip par ho to panel wahi purana transcript dikhata tha (ya khaali), bina ye bataye ki clip ka apna transcript kabhi nahi hoga                                                                          |
+| Kyun design hai  | Cut pipeline `project.sourcePath` par chalti hai — transcript, cut map, phantom cut, export sab ek hi file ke around hain. Doosri video ko weave karne ke liye multi-source renderer chahiye, jo abhi nahi hai             |
+| Fix              | `project.activeClip` par ek **EXTRA CLIP** banner: alag media hai, transcript sirf main source ka hota hai, ise trim/split se kaato; kisi bhi transcript line par click karne se preview main source par wapas aa jata hai |
+| Jhooth kyun nahi | Generate button dikhaya hota to wo aisa text promise karta jise renderer kahin rakh hi nahi sakta                                                                                                                          |
 
 ### Naya: main source ka "Regenerate"
 
@@ -2997,14 +3031,14 @@ karta hai, isliye confirm karta hai aur naam leta hai ki kya ja raha hai:
 - Cut/keep marks jaate hain: purane marks naye text par lagana galat hota —
   "cut" us sentence ko point karta jo user ne kabhi dekha hi nahi.
 
-| Fact | Value |
-| --- | --- |
-| Commit | `24b27cfb05bebc5aac5bd0c6e122eae4abd2bacd` |
-| Build | `ci-24b27cf` → CI run https://github.com/engrtarun/T9EditorLIT/actions/runs/43383075391 |
-| App SHA-256 | `b12c571e0dc95043326da4049c85e98a9bf97d03868b4a4dd5e53bea287aeba7` |
-| Work order | `SARKARI-20261113-123426-0453` → mode **live** |
-| Daemon | `go-7a81d8959fe3dfa6` (app-only deploy, daemon untouched) |
-| Gates | svelte-check 0/0 → prettier clean → 157/157 tests |
+| Fact        | Value                                                                                   |
+| ----------- | --------------------------------------------------------------------------------------- |
+| Commit      | `24b27cfb05bebc5aac5bd0c6e122eae4abd2bacd`                                              |
+| Build       | `ci-24b27cf` → CI run https://github.com/engrtarun/T9EditorLIT/actions/runs/43383075391 |
+| App SHA-256 | `b12c571e0dc95043326da4049c85e98a9bf97d03868b4a4dd5e53bea287aeba7`                      |
+| Work order  | `SARKARI-20261113-123426-0453` → mode **live**                                          |
+| Daemon      | `go-7a81d8959fe3dfa6` (app-only deploy, daemon untouched)                               |
+| Gates       | svelte-check 0/0 → prettier clean → 157/157 tests                                       |
 
 Deploy ke waqt app band thi, isliye binary seedha install hui (`mode: live`) —
 koi staged `.new.exe` nahi, Update click ki zaroorat nahi.
@@ -3017,11 +3051,11 @@ P11 me maine likha tha "doosri video ko weave karne ke liye multi-source rendere
 chahiye, jo abhi nahi hai". **Ye galat tha.** Renderer pehle se multi-source
 sequence export karta hai:
 
-| Kahan | Kya |
-| --- | --- |
-| `Clipchamp_Bunny/src/lib/components/modes/ExportMode.svelte` | `multiClip = project.clips.length > 0` → part 0 = main cut, part 1..n = har clip (`inSec`–`outSec`), phir `concatParts()` |
-| `src-tauri/src/export.rs` | `options.canvas` — har part ek hi frame par letterbox + re-encode, taaki join stream copy ho; sequence part hamesha H.264 + AAC |
-| UI | "poora sequence ek MP4 me jayega. Main cut pehle, phir clips"; multi-clip ho to format MP4 par lock |
+| Kahan                                                        | Kya                                                                                                                             |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `Clipchamp_Bunny/src/lib/components/modes/ExportMode.svelte` | `multiClip = project.clips.length > 0` → part 0 = main cut, part 1..n = har clip (`inSec`–`outSec`), phir `concatParts()`       |
+| `src-tauri/src/export.rs`                                    | `options.canvas` — har part ek hi frame par letterbox + re-encode, taaki join stream copy ho; sequence part hamesha H.264 + AAC |
+| UI                                                           | "poora sequence ek MP4 me jayega. Main cut pehle, phir clips"; multi-clip ho to format MP4 par lock                             |
 
 Sahi baat sirf itni hai: clip ka **apna transcript nahi hota**, isliye clip ke
 andar ke words cut nahi kar sakte — clip poori `in`/`out` trim ke saath sequence
@@ -3036,5 +3070,5 @@ Isi jaanch me ek asli gap mila: clip ka mute/volume export me apply nahi hota
 ---
 
 **— deepseek** (opencode / deepseek-v4.1-flash-free) · 2026-11-13
-*Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) + deepseek Part 3
-(cases 11–20) — teeno untouched. Ye part sirf append hai.*
+_Upstream: GLM 5.3 (40 cases) + MiMO V2.6 (Part 2) + deepseek Part 3
+(cases 11–20) — teeno untouched. Ye part sirf append hai._

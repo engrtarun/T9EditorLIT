@@ -8,17 +8,17 @@ for the whole app now, and this document is the contract.
 
 ## What the user sees
 
-| Surface                            | What it shows / does                                          |
-| ---------------------------------- | ------------------------------------------------------------- |
-| Windows media flyout (Win + N)     | **T9 Editor LIT** + the video's artwork, title, channel name   |
-| Flyout transport row               | play/pause, stop, previous, next, −10 s, +10 s                 |
-| Flyout seek bar                    | the page's real position; dragging it seeks the page           |
-| **OSD flyout** (bottom-right)      | artwork, title/channel, `02:22 ──●── 18:11`, prev/play/next    |
-| Keyboard media keys                | same actions, whichever app window is focused                  |
-| Realme Buds T310 (and any earbud)  | single press = play/pause, double press = next, as configured  |
+| Surface                           | What it shows / does                                          |
+| --------------------------------- | ------------------------------------------------------------- |
+| Windows media flyout (Win + N)    | **T9 Editor LIT** + the video's artwork, title, channel name  |
+| Flyout transport row              | play/pause, stop, previous, next, −10 s, +10 s                |
+| Flyout seek bar                   | the page's real position; dragging it seeks the page          |
+| **OSD flyout** (bottom-right)     | artwork, title/channel, `02:22 ──●── 18:11`, prev/play/next   |
+| Keyboard media keys               | same actions, whichever app window is focused                 |
+| Realme Buds T310 (and any earbud) | single press = play/pause, double press = next, as configured |
 
 Windows' own card has no room for two time labels and its seek bar is not
-draggable on every build — the panel draws *no* time labels at all on this
+draggable on every build — the panel draws _no_ time labels at all on this
 machine (which is why Windhawk mods exist that inject a progress bar). The
 controllable timeline therefore lives in the app's own **OSD flyout**: a
 small undecorated window in the taskbar's corner that appears on play,
@@ -54,7 +54,7 @@ page (WebView2 child)
 - **Transitions show the OSD, heartbeats do not.** `smtc::update` calls
   `media_flyout::ping` only on play, play→pause, a fresh owner, or any
   transport/seek action (`media_flyout::ping` from `win::act`). A position
-  heartbeat every ~1.5 s must *not* bring it back, or the card would never
+  heartbeat every ~1.5 s must _not_ bring it back, or the card would never
   leave; `smtc::clear` hides it at once.
 
 - **One owner.** `SystemMediaTransportControls` is created for the main

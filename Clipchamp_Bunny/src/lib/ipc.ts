@@ -1501,6 +1501,12 @@ export function browserMediaAction(
   return invoke<void>('browser_media_action', { action, value: value ?? null }).catch(() => {});
 }
 
+/** The OSD card's X button: hide and destroy the flyout window now. */
+export function mediaFlyoutClose(): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('media_flyout_close').catch(() => {});
+}
+
 /**
  * Move the live webview onto the content rectangle the frontend measured
  * (`[data-focus="browser-content"]`). Keep this in an effect on the
