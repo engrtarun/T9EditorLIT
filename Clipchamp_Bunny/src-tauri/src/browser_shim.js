@@ -691,4 +691,18 @@
     },
     true
   );
+
+  /* ── uBlock Origin Lite control bridge ────────────────────────────────
+   * The T9 control bridge is a content script in the extension's isolated
+   * world (see go/internal/ublock/bridge.go). It answers control requests
+   * with window.postMessage({ __t9ublock: 1, dir: 'resp', id, ok, response }).
+   * Content scripts cannot call chrome.webview, so we — the main-world shim —
+   * are the hop from that isolated world to Rust. Requests are injected by
+   * Rust with eval(); only the replies travel through here.
+   */
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (!d || d.__t9ublock !== 1 || d.dir !== 'resp' || typeof d.id !== 'string') return;
+    send({ t9: 'ublock', id: d.id, ok: !!d.ok, response: d.response });
+  });
 })();

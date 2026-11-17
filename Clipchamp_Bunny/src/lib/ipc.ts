@@ -21,6 +21,7 @@ import type {
   AudioChunk,
   BackgroundState,
   BrowserExtensionsEvent,
+  BrowserUblockReply,
   DownloadSettings,
   MemoryStats,
   UsageDayRow,
@@ -1614,6 +1615,29 @@ export function onBrowserDownloadSaved(
  */
 export function onBrowserExtensions(cb: (p: BrowserExtensionsEvent) => void): Promise<() => void> {
   return listen<BrowserExtensionsEvent>('browser:extensions', (e) => cb(e.payload));
+}
+
+/**
+ * Ask the uBOL control bridge (a content script running inside the active
+ * tab) to run one action. Rust posts the request into the page shim and the
+ * bridge answers through `browser:ublock`. Returns the correlation id.
+ *
+ * This is the only path that talks to uBOL's service worker from the app
+ * shell, and it reuses the tab's existing webview — no second browser process.
+ */
+export function browserUblockCall(
+  what: string,
+  args: Record<string, unknown> = {}
+): Promise<string> {
+  if (!isTauri()) return Promise.reject(new Error('not tauri'));
+  return invoke<string>('browser_ublock_call', { what, args });
+}
+
+/**
+ * One reply from the uBOL control bridge, matched by `id`.
+ */
+export function onBrowserUblock(cb: (p: BrowserUblockReply) => void): Promise<() => void> {
+  return listen<BrowserUblockReply>('browser:ublock', (e) => cb(e.payload));
 }
 
 /* ------------------------------------------------- native webview-page keys */

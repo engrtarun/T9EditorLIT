@@ -20,8 +20,13 @@
  * presses the button.
  */
 
-import type { BrowserExtensionsEvent, UBlockStatus } from '../types';
-import { isTauri, onBrowserExtensions } from '../ipc';
+import type {
+  BrowserExtensionsEvent,
+  BrowserUblockReply,
+  UBlockStatus,
+  UBlockPanelData
+} from '../types';
+import { isTauri, onBrowserExtensions, browserUblockCall, onBrowserUblock } from '../ipc';
 
 const DAEMON = 'http://127.0.0.1:7878';
 /** While an update is being fetched, ask the daemon how it is going. */
@@ -34,6 +39,20 @@ class UBlockStore {
   status = $state<UBlockStatus | null>(null);
   /** Daemon reachable? The panel says so instead of showing stale numbers. */
   reachable = $state(true);
+
+  /**
+   * Per-site filtering-mode panel (real uBOL controls). `panelOpen` is the
+   * layout-sheet flag BrowserView parks the page on, exactly like settings.
+   */
+  panelOpen = $state(false);
+  site = $state('');
+  panel = $state<UBlockPanelData | null>(null);
+  level = $state(-1);
+  busy = $state(false);
+  error = $state<string | null>(null);
+
+  private pending = new Map<string, (ok: boolean, response: unknown) => void>();
+  private unlistenReply: (() => void) | undefined;
 
   /**
    * What WebView2 reported for the most recent visible tab. `unknown` until a
@@ -71,6 +90,15 @@ class UBlockStore {
         })
         .catch(() => {
           /* event plugin unavailable in a stripped build; disk truth stands */
+        });
+    }
+    if (!this.unlistenReply) {
+      void onBrowserUblock((p) => this.noteReply(p))
+        .then((off) => {
+          this.unlistenReply = off;
+        })
+        .catch(() => {
+          /* bridge reply channel unavailable; controls degrade honestly */
         });
     }
     void this.refresh();
@@ -130,9 +158,109 @@ class UBlockStore {
     this.runtime = on ? 'loaded' : 'missing';
   }
 
+  /** One reply from the uBOL control bridge, matched by id. */
+  noteReply(p: BrowserUblockReply): void {
+    const cb = this.pending.get(p.id);
+    if (cb) cb(p.ok, p.response);
+  }
+
+  private async call(
+    what: string,
+    args: Record<string, unknown>,
+    timeoutMs = 5000
+  ): Promise<unknown> {
+    const id = await browserUblockCall(what, args);
+    return await new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error('uBlock bridge ne jawab nahi diya (timeout)'));
+      }, timeoutMs);
+      this.pending.set(id, (ok, response) => {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        if (ok) resolve(response);
+        else reject(new Error(String(response ?? 'uBOL error')));
+      });
+    });
+  }
+
+  /** Open the real per-site control panel for the given hostname. */
+  async openPanel(hostname: string): Promise<void> {
+    this.site = hostname || '';
+    this.panel = null;
+    this.level = -1;
+    this.error = null;
+    this.panelOpen = true;
+    if (!hostname) {
+      this.error = 'Is page par uBlock controls nahi chal sakte';
+      return;
+    }
+    try {
+      const data = (await this.call('popupPanelData', { hostname })) as UBlockPanelData;
+      this.panel = data;
+      this.level = typeof data?.level === 'number' ? data.level : -1;
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /** Close the panel without touching uBOL state. */
+  closePanel(): void {
+    this.panelOpen = false;
+  }
+
+  /** Flip the per-site filtering mode (0 no filtering .. 3 complete). */
+  async setLevel(level: number): Promise<void> {
+    if (!this.site || this.busy) return;
+    this.busy = true;
+    this.error = null;
+    try {
+      const actual = await this.call('setFilteringMode', { hostname: this.site, level });
+      this.level = typeof actual === 'number' ? actual : level;
+      if (this.panel) this.panel.level = this.level;
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /**
+   * Inject one of uBOL's page tools (zapper / element picker / unpicker).
+   * The worker patch (PatchBackground) is what makes this work, because a
+   * content script has no chrome.scripting of its own.
+   */
+  async runTool(kind: 'zapper' | 'picker' | 'unpicker'): Promise<void> {
+    const files: Record<string, string[]> = {
+      zapper: ['/js/scripting/tool-overlay.js', '/js/scripting/zapper.js'],
+      picker: [
+        '/js/scripting/css-procedural-api.js',
+        '/js/scripting/tool-overlay.js',
+        '/js/scripting/picker.js'
+      ],
+      unpicker: [
+        '/js/scripting/css-procedural-api.js',
+        '/js/scripting/tool-overlay.js',
+        '/js/scripting/unpicker.js'
+      ]
+    };
+    this.busy = true;
+    this.error = null;
+    try {
+      await this.call('t9RunFiles', { files: files[kind] });
+      this.panelOpen = false;
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.busy = false;
+    }
+  }
+
   dispose(): void {
     this.unlisten?.();
     this.unlisten = undefined;
+    this.unlistenReply?.();
+    this.unlistenReply = undefined;
     for (const t of this.pollTimers) clearTimeout(t);
     this.pollTimers = [];
   }

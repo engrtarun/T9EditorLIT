@@ -140,6 +140,17 @@ func New(dir string, log *slog.Logger) *Updater {
 	}
 	u.st = u.readStatus()
 	u.dropLegacy()
+	// The T9 control bridge is our own small addition to the official uBOL
+	// unpack. Patch the current folder now (covers a daemon restart on an
+	// install made before the bridge existed); every fresh unpack patches too.
+	if manifestExists(u.ExtensionDir()) {
+		if err := PatchBridge(u.ExtensionDir()); err != nil {
+			u.log.Warn("uBlock control bridge patch failed", "err", err)
+		}
+		if err := PatchBackground(u.ExtensionDir()); err != nil {
+			u.log.Warn("uBlock worker bridge patch failed", "err", err)
+		}
+	}
 	return u
 }
 
@@ -319,6 +330,17 @@ func (u *Updater) checkAndInstall(ctx context.Context) error {
 	}
 	if !manifestExists(target) {
 		return errors.New("zip me manifest.json nahi hai - archive adhoora lagta hai")
+	}
+	// Add the control bridge BEFORE the swap so the live folder never exists
+	// without it (even for a moment) and a WebView2 reload cannot load uBOL
+	// with half the messaging path missing.
+	if err := PatchBridge(target); err != nil {
+		return fmt.Errorf("uBlock control bridge lagana fail: %w", err)
+	}
+	if err := PatchBackground(target); err != nil {
+		// The bridge still blocks without the worker patch; only zapper/picker
+		// need it. Log and keep the install rather than refuse an update.
+		u.log.Warn("uBlock worker bridge patch failed", "err", err)
 	}
 	if err := u.swap(target); err != nil {
 		return err

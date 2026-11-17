@@ -19,6 +19,7 @@
   import DownloadsPanel from './DownloadsPanel.svelte';
   import HistoryPanel from './HistoryPanel.svelte';
   import BrowserMenu from './BrowserMenu.svelte';
+  import UBlockPanel from './UBlockPanel.svelte';
   import { browser } from '../../stores/browser.svelte';
   import { downloads } from '../../stores/downloads.svelte';
   import { ublock } from '../../stores/ublock.svelte';
@@ -268,6 +269,7 @@
       layout.settingsOpen ||
       layout.helpOpen ||
       browser.searchPickerOpen ||
+      ublock.panelOpen ||
       !!menu.current;
     if (!isTauri()) return;
     const visible = !open;
@@ -284,6 +286,7 @@
         layout.settingsOpen && 'settings',
         layout.helpOpen && 'help',
         browser.searchPickerOpen && 'search-picker',
+        ublock.panelOpen && 'ublock',
         !!menu.current && 'menu'
       ]
         .filter(Boolean)
@@ -292,6 +295,24 @@
     }
     void browserSetVisible(visible);
   });
+  /**
+   * The shield button opens the real uBOL control panel for the active tab's
+   * host, not the generic browser menu. Host extraction is best-effort — a
+   * fresh dial has no URL, and the panel then says so honestly.
+   */
+  function currentHost(): string {
+    try {
+      const u = browser.active?.url;
+      return u ? new URL(u).hostname : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function toggleUblock(): void {
+    if (ublock.panelOpen) ublock.closePanel();
+    else void ublock.openPanel(currentHost());
+  }
 </script>
 
 <div class="flex min-h-0 min-w-0 flex-1 flex-col bg-nc-bg text-nc-txt">
@@ -409,7 +430,7 @@
       -->
       <button
         type="button"
-        onclick={() => browser.toggleSettings()}
+        onclick={() => toggleUblock()}
         class="relative grid h-8 w-8 place-items-center rounded-full transition-colors hover:bg-nc-panel-2
                {ublock.runtime === 'loaded'
           ? 'text-emerald-400'
@@ -417,7 +438,7 @@
             ? 'text-red-400'
             : 'text-nc-mut hover:text-nc-txt'}"
         title={ublock.runtime === 'loaded'
-          ? `uBlock Origin Lite active${ublock.version ? ` · v${ublock.version}` : ''}`
+          ? `uBlock Origin Lite active — click for controls${ublock.version ? ` · v${ublock.version}` : ''}`
           : ublock.runtime === 'missing'
             ? 'Ad blocker WebView2 me load nahi hua — menu me check karo'
             : 'Ad blocker status abhi pata nahi'}
@@ -508,6 +529,7 @@
   </div>
 
   <!-- ── the menu sheet (takes layout space, never floats over the page) ── -->
+  <UBlockPanel />
   <BrowserMenu />
 
   <!-- Page-load pulse: Brave's own cue that something is happening, even

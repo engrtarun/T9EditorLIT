@@ -227,6 +227,13 @@ struct ShimMessage {
     action: Option<String>,
     #[serde(default)]
     value: Option<i32>,
+    /// uBlock control bridge reply: correlation id, success flag, payload.
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    ok: Option<bool>,
+    #[serde(default)]
+    response: Option<serde_json::Value>,
 }
 
 /// The document-start script: new-window links → `browser:popup`, Firefox
@@ -696,6 +703,19 @@ fn handle_shim_message<R: Runtime>(app: &tauri::AppHandle<R>, id: &str, raw: &st
         return;
     };
     match msg.t9.as_str() {
+        "ublock" => {
+            // A reply from the uBOL control bridge. Forward it verbatim to the
+            // UI, which matches it to the pending request by `id`.
+            let Some(req_id) = msg.id else { return };
+            let _ = app.emit(
+                "browser:ublock",
+                serde_json::json!({
+                    "id": req_id,
+                    "ok": msg.ok.unwrap_or(false),
+                    "response": msg.response
+                }),
+            );
+        }
         "open" => {
             let Some(url) = msg.url else { return };
             if !(url.starts_with("http://") || url.starts_with("https://")) {
@@ -1764,6 +1784,52 @@ pub async fn browser_set_rect(
         }
     }
     Ok(())
+}
+
+/// Ask the uBOL control bridge (a content script in the extension) to run one
+/// action, by posting a request into the active tab's main world. The bridge
+/// answers with window.postMessage; our shim relays that to `browser:ublock`,
+/// and ipc.ts matches it to the caller by `id`. No new webview is created.
+#[tauri::command]
+pub async fn browser_ublock_call(app: tauri::AppHandle, what: String, args: serde_json::Value) -> Result<String, String> {
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "main window missing".to_string())?;
+    let active = app
+        .state::<BrowserState>()
+        .active
+        .lock()
+        .map_err(|_| "browser active lock poisoned".to_string())?
+        .clone();
+    if active.is_empty() {
+        return Err("Koi page khula nahi — pehle ek tab kholo".to_string());
+    }
+    let webview = find_tab(&window, &active)
+        .ok_or_else(|| "active page abhi available nahi hai".to_string())?;
+
+    let req_id = format!("u{}-{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos(), active);
+
+    let mut msg = args.clone();
+    if !msg.is_object() {
+        msg = serde_json::json!({});
+    }
+    msg["what"] = serde_json::Value::String(what.clone());
+    let payload = serde_json::json!({
+        "__t9ublock": 1,
+        "dir": "req",
+        "id": req_id,
+        "msg": msg
+    });
+    let script = format!(
+        "window.postMessage({}, '*');",
+        serde_json::to_string(&payload).map_err(|e| e.to_string())?
+    );
+    webview.eval(&script).map_err(|e| e.to_string())?;
+    diag(&format!("ublock call {req_id} -> {what}"));
+    Ok(req_id)
 }
 
 /// Hide the active page while a DOM overlay sits on top of it.

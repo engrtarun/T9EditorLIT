@@ -1840,6 +1840,7 @@ pub fn run() {
             browser::browser_focus_shell,
             browser::browser_set_rect,
             browser::browser_set_visible,
+            browser::browser_ublock_call,
             browser::browser_stop,
             browser::browser_media_action,
             browser::browser_media_state,

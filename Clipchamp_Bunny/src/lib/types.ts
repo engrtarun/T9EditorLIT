@@ -447,6 +447,31 @@ export interface BrowserExtensionsEvent {
   error: string | null;
 }
 
+/**
+ * One reply from the uBOL control bridge. `id` is the request id Rust handed
+ * back from `browser_ublock_call`, so replies are matched without guessing
+ * which tab or which click they belong to.
+ */
+export interface BrowserUblockReply {
+  id: string;
+  ok: boolean;
+  response: unknown;
+}
+
+/**
+ * uBOL's own `popupPanelData` answer, verbatim. `level` is the per-site
+ * filtering mode: 0 no filtering, 1 basic, 2 optimal, 3 complete.
+ */
+export interface UBlockPanelData {
+  level: number;
+  hasOmnipotence: boolean;
+  hasCustomFilters: boolean;
+  autoReload: boolean;
+  developerMode: boolean;
+  disabledFeatures?: string[];
+  isSideloaded?: boolean;
+}
+
 /** One ingested provider call, from telemetry.db (api_calls). */
 export interface ApiCallRow {
   id: number;
