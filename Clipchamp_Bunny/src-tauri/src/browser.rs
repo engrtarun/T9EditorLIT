@@ -1408,6 +1408,18 @@ pub fn browser_set_view_open(app: tauri::AppHandle, open: bool) {
     diag(&format!("view -> {}", if open { "open" } else { "closed" }));
 }
 
+/// One line from the UI, in the same log as the native side.
+///
+/// The mount chain lives in the frontend (open the view, restore the strip,
+/// measure the box, show the active tab). When it stopped halfway, the log
+/// showed a rect and then nothing - no `show id=` and no `refused`, so there
+/// was no way to tell which stage never returned. The UI now reports every
+/// stage here, with the reason a show was skipped.
+#[tauri::command]
+pub fn browser_ui_note(message: String) {
+    diag(&format!("ui -> {message}"));
+}
+
 /// Sweep every tab webview: the browser view unmounted (back to the
 /// editor). The ledger drops to zero live webviews — the zero-RAM rule
 /// applied to leaving the browser, kept ones included.

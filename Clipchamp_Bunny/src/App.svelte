@@ -31,6 +31,7 @@
     browserPrint,
     browserClearBrowsingData,
     onBrowserKey,
+    browserNote,
     browserFocusShell
   } from './lib/ipc';
   import { keys, type KeyAction } from './lib/stores/keys.svelte';
@@ -101,9 +102,18 @@
       const last = browser.tabs.length === 1;
       browser.close(active.id);
       // Firefox rule: closing the last tab closes the browser window.
-      if (last) app.closeBrowser();
+      if (last) {
+        void browserNote('screen -> close browser (last tab closed)');
+        app.closeBrowser();
+      }
     },
-    closeBrowserView: () => app.closeBrowser(),
+    closeBrowserView: () => {
+      // The screen decides which webviews exist, so every close is named. The
+      // log showed `view -> open` one second after a close with nobody
+      // pressing anything - this line is what will identify the caller.
+      void browserNote('screen -> close browser (keyboard/menu)');
+      app.closeBrowser();
+    },
     reopenClosedTab: () => {
       if (browser.reopenClosed()) toast.push('info', '↻ Tab wapas khul gaya');
       else toast.push('info', 'Band kiya hua tab nahi hai');
@@ -251,6 +261,7 @@
     // no-op: that view's own key map owns the keyboard.
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'b' && app.view !== 'browser') {
       e.preventDefault();
+      void browserNote(`screen -> open browser (Ctrl+Shift+B from ${app.view})`);
       app.openBrowser(app.view);
       return;
     }

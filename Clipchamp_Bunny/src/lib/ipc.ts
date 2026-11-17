@@ -1427,6 +1427,20 @@ export function browserSetViewOpen(open: boolean): Promise<void> {
 }
 
 /**
+ * Write one line into `browser-diag.log` from the UI.
+ *
+ * The "page khul raha hai…" stall was invisible: nothing is logged between the
+ * view mounting and Rust creating a webview, so a chain that stopped halfway
+ * looked exactly like a chain that never started. Each stage now says so, with
+ * the tab count and the reason a show was skipped. That is what turns "atak
+ * jaati hai" into a line with a timestamp in it.
+ */
+export function browserNote(message: string): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_ui_note', { message }).catch(() => {});
+}
+
+/**
  * The browser view unmounted (back to the editor): sweep every tab webview,
  * kept ones included — the zero-RAM rule applied to leaving the browser.
  */

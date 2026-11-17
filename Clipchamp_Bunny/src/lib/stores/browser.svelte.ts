@@ -25,6 +25,7 @@ import {
   onBrowserSpa,
   onBrowserTitle,
   isTauri,
+  browserNote,
   statsGet,
   statsSet
 } from '../ipc';
@@ -107,6 +108,23 @@ function loadPinnedTabs(): PinnedTab[] {
 }
 
 /**
+ * Wait for `task`, but never longer than `ms`.
+ *
+ * `statsGet` is an IPC call whose promise can stay pending while the Rust side
+ * is busy (it opens telemetry.db). A cold start's first browser open awaited
+ * it *before* `showActive()`, so no webview was ever created: the tab sat on
+ * "khul raha hai…" and only the reload button - which calls `nudge` directly -
+ * brought the page up. The strip is metadata; it may never hold the first
+ * page.
+ */
+function withDeadline<T>(task: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    task.catch(() => fallback),
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))
+  ]);
+}
+
+/**
  * The speed-dial sites on the new-tab page.
  *
  * These are the sites a T9 user actually opens: the editor's own neighbours
@@ -139,8 +157,17 @@ export function toUrl(input: string): string {
   return 'https://' + raw;
 }
 
-/** A stable-enough id for a tab: a counter is fine, the webview label just has to be unique. */
-let nextId = 1;
+/**
+ * A stable-enough id for a tab: a counter is fine, the webview label just has
+ * to be unique.
+ *
+ * The seed is time-based, not `1`. The shell document can reload on its own
+ * (the WebView2 process-failure reloader; a dev Ctrl+R) while Rust still holds
+ * `tab-N` webviews from before the reload. A counter that restarts at 1 would
+ * then hand out a label that is already live, and the strip's new tab would
+ * paint the previous owner's page - one id, two tabs.
+ */
+let nextId = 1 + (Date.now() % 900_000);
 
 function makeTab(url: string): BrowserTab {
   return {
@@ -859,7 +886,7 @@ class BrowserStore {
 
       let raw: string | null = null;
       try {
-        raw = await statsGet(SESSION_KEY);
+        raw = await withDeadline(statsGet(SESSION_KEY), 1500, null);
       } catch {
         /* no bridge */
       }
@@ -1109,12 +1136,26 @@ class BrowserStore {
    */
   showActive(): void {
     const tab = this.active;
-    if (!tab || !this.nudge) return;
-    if (!tab.url || tab.url === 'about:blank') return;
+    // Every skip says why. The log showed a rect and then nothing at all, so a
+    // page that never got a webview was indistinguishable from one whose show
+    // was refused - and that is what made "atak" so hard to pin down.
+    if (!tab) {
+      void browserNote('showActive -> skipped (no active tab)');
+      return;
+    }
+    if (!this.nudge) {
+      void browserNote(`showActive -> skipped (not wired), tab ${tab.id}`);
+      return;
+    }
+    if (!tab.url || tab.url === 'about:blank') {
+      void browserNote(`showActive -> skipped (blank), tab ${tab.id}`);
+      return;
+    }
     // Resume, never navigate: the browser view was unmounted and remounted,
     // and the tab's page may be further along than the store knows. This is
     // the pinned-YouTube case: leaving for the editor and coming back must
     // not reload the video.
+    void browserNote(`showActive -> resume ${tab.id} ${tab.url}`);
     this.nudge(tab.id, tab.url, this.recent(tab.id), false, true);
   }
 }

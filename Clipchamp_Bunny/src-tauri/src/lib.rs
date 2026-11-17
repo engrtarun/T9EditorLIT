@@ -1835,6 +1835,7 @@ pub fn run() {
             browser::browser_hide,
             browser::browser_view_closed,
             browser::browser_set_view_open,
+            browser::browser_ui_note,
             browser::browser_set_pinned,
             browser::browser_focus_shell,
             browser::browser_set_rect,

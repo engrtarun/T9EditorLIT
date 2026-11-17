@@ -31,6 +31,7 @@
     browserSetRect,
     browserSetVisible,
     browserSetViewOpen,
+    browserNote,
     onBrowserFullscreen
   } from '../../ipc';
   import { onMount } from 'svelte';
@@ -83,10 +84,26 @@
     void (async () => {
       await browserSetViewOpen(true);
       if (dead) return;
-      await browser.restoreSession();
+      // The strip is metadata; the page is the product. A storage read that
+      // never settles used to hold this chain forever: the tab sat on
+      // "khul raha hai…" and only the reload button (which calls `nudge`
+      // directly) brought it up. Race it - a late restore still lands, it just
+      // cannot gate the first paint.
+      const restored = await Promise.race([
+        browser.restoreSession().then(
+          () => 'done' as const,
+          (err) => {
+            browserNote(`mount -> restore failed: ${String(err)}`);
+            return 'failed' as const;
+          }
+        ),
+        new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 1500))
+      ]);
       if (dead) return;
+      browserNote(`mount -> restore ${restored} (tabs ${browser.tabs.length})`);
       await rectSent;
       if (dead) return;
+      browserNote('mount -> rect ready, showActive');
       browser.showActive();
     })();
     // One poll at mount: the daemon recovers unfinished downloads from their
@@ -136,6 +153,7 @@
     if (browser.tabs.length > 0) {
       hadTabs = true;
     } else if (hadTabs) {
+      void browserNote('screen -> close browser (tab strip emptied)');
       app.closeBrowser();
     }
   });
@@ -243,6 +261,21 @@
       browser.searchPickerOpen ||
       !!menu.current;
     if (!isTauri()) return;
+    // The log used to say only "parked"/"restored", so a page that flashed
+    // every second had no named cause. Say *which* overlay asked for it.
+    if (open) {
+      const which = [
+        layout.toolsOpen && 'tools',
+        layout.profileOpen && 'profile',
+        layout.settingsOpen && 'settings',
+        layout.helpOpen && 'help',
+        browser.searchPickerOpen && 'search-picker',
+        !!menu.current && 'menu'
+      ]
+        .filter(Boolean)
+        .join('+');
+      browserNote(`overlay -> park (${which})`);
+    }
     void browserSetVisible(!open);
   });
 </script>
