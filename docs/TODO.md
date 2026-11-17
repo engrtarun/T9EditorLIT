@@ -177,8 +177,10 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
 
 ## 12. Browser page paints over Home after a shell reload; app hangs on close
 
-- **Status:** `in-progress` — cause identified from the installed build's log,
-  two instrumentation fixes written, verification pending
+- **Status:** `done` — verified on the installed `ci-94dfbb1` (log evidence
+  below) and confirmed by the user's own manual test: pin a YouTube tab, go to
+  the editor, come back — the video keeps playing, and the app no longer hangs
+  on close.
 - **Evidence (installed `ci-fcf586b`, 13:09–13:17):** screenshot `now1.png`
   shows the Home dashboard's top bar (`Home / T9 Cloud / Trash`) with a
   YouTube **watch page painted below it**, not the browser chrome. The native
@@ -220,16 +222,27 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
   The first YouTube home load also stayed a skeleton until F5 — same freeze
   class. `browser.rs:785` already documents this trap for the fullscreen path
   and uses `std::thread::spawn`; the media path did not.
-- **Fix written (commit pending):** `media_flyout::ping` and `hide` now defer
-  every window operation to a worker thread; `smtc::win::update` logs
-  `media event <id> -> <state>` at entry. Verification must show
-  `media event … -> playing`, `media flyout -> ping (deferred to worker)`,
-  `media flyout -> created`, and a still-responsive native side (a back keypress
-  must write `ui -> screen -> close browser`).
-- **Next:** after deploy, open a page, reload the shell while the browser is
-  open, and assert (a) a second `shell -> attached`, (b) `view -> closed` +
-  `view closed -> swept all`, (c) a screenshot with NO page over Home. Then
-  repeat the pinned-YouTube cycle and assert the video keeps playing.
+- **Fix shipped:** `media_flyout::ping` and `hide` defer every window
+  operation to a worker thread; `smtc::win::update` logs
+  `media event <id> -> <state>` at entry. The fresh-shell sweep shipped in
+  `ffe3ccd`, the deadlock fix in `94dfbb1`.
+- **Verified on `ci-94dfbb1` (installed, live):**
+  - `media event 195207 -> paused`, then `media event 195207 -> playing`
+    (`"MALA (feat. Anuel Aa)"`), followed by
+    `media flyout -> ping (deferred to worker)` — the exact call that used to
+    deadlock. The native side stayed alive afterwards.
+  - `pin request 195207 -> true` / `pin 195207 -> true`.
+  - `show id=195207 url=https://www.youtube.com/ keep=Some([])
+    force=Some(false) resume=Some(true)` — a resume, not a navigation.
+  - Address-bar navigation still worked *after* media played
+    (`show id=704509 … resume=Some(true)`), which used to be impossible: the
+    UI thread was frozen.
+  - Every launch writes `view closed -> swept all` + `ui -> shell -> attached
+    (home, stale pages swept)`, so a stale page can no longer paint over Home.
+  - User's manual test: pin → editor → return, playback continues; close works.
+- **Remaining known-issue (separate, smaller):** the first YouTube document
+  sometimes paints only its skeleton until F5 (same in this session at
+  1794913853; F5 at 1794913869 made it paint). Not the freeze any more.
 
 ## Next actions
 
