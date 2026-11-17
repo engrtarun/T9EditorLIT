@@ -40,8 +40,8 @@
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use tauri::webview::{
@@ -156,7 +156,9 @@ fn ad_request(url: &str) -> bool {
     let host = &rest[..host_end];
 
     if (host == "youtube.com" || host.ends_with(".youtube.com"))
-        && AD_PATHS.iter().any(|path| rest[host_end..].starts_with(path))
+        && AD_PATHS
+            .iter()
+            .any(|path| rest[host_end..].starts_with(path))
     {
         return true;
     }
@@ -406,7 +408,10 @@ fn tabs_profile_dir<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<std::path:
 #[cfg(target_os = "windows")]
 fn extensions_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
     let base = app.path().local_data_dir().ok()?;
-    let dir = base.join("T9EditorLIT").join("ublock").join("extensions-mv3");
+    let dir = base
+        .join("T9EditorLIT")
+        .join("ublock")
+        .join("extensions-mv3");
     if dir.join("uBOLite.chromium").join("manifest.json").is_file() {
         Some(dir)
     } else {
@@ -472,10 +477,10 @@ struct ExtensionsPayload {
 #[cfg(target_os = "windows")]
 fn extension_list<R: Runtime>(webview: &Webview<R>) -> Result<Vec<(String, bool)>, String> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2BrowserExtensionList, ICoreWebView2Profile7, ICoreWebView2_13,
+        ICoreWebView2_13, ICoreWebView2BrowserExtensionList, ICoreWebView2Profile7,
     };
-    use webview2_com::{take_pwstr, ProfileGetBrowserExtensionsCompletedHandler};
-    use windows::core::{Interface, BOOL, PWSTR};
+    use webview2_com::{ProfileGetBrowserExtensionsCompletedHandler, take_pwstr};
+    use windows::core::{BOOL, Interface, PWSTR};
 
     let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<(String, bool)>, String>>();
 
@@ -484,10 +489,7 @@ fn extension_list<R: Runtime>(webview: &Webview<R>) -> Result<Vec<(String, bool)
             let _ = tx.send(Err("CoreWebView2 unavailable".into()));
             return;
         };
-        let Ok(profile) = core
-            .cast::<ICoreWebView2_13>()
-            .and_then(|c| c.Profile())
-        else {
+        let Ok(profile) = core.cast::<ICoreWebView2_13>().and_then(|c| c.Profile()) else {
             let _ = tx.send(Err("profile unavailable".into()));
             return;
         };
@@ -640,6 +642,13 @@ fn park_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>) {
     if webview.set_size(LogicalSize::new(1.0, 1.0)).is_err() {
         return;
     }
+    // A 1x1 child still exists as its own HWND, and it paints on top of the
+    // main webview until Windows gets around to the resize. That one frame was
+    // the "pin, then T9 Editor LIT" glitch: a slice of YouTube sitting over the
+    // dashboard. Hiding it for real takes it out of the compositor, so it
+    // cannot cover anything; Chromium keeps the page (and its audio) alive, so
+    // a pinned video keeps playing, which is exactly what pinning is for.
+    let _ = webview.hide();
     let label = webview.label().to_string();
     let first = app
         .state::<BrowserState>()
@@ -657,6 +666,9 @@ fn park_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>) {
 /// Forcing NORMAL on every show was a synchronous COM call per switch — and
 /// for a parked pinned page that was already at NORMAL, a call for nothing.
 fn wake_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>) {
+    // Parked pages are hidden, not just small, so every show must undo that
+    // before it is given its rect. Harmless on a page that was never parked.
+    let _ = webview.show();
     let label = webview.label().to_string();
     let was_dimmed = app
         .state::<BrowserState>()
@@ -804,8 +816,6 @@ fn handle_shim_message<R: Runtime>(app: &tauri::AppHandle<R>, id: &str, raw: &st
 #[cfg(target_os = "windows")]
 fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>, id: &str) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2PermissionRequestedEventArgs2, ICoreWebView2Profile3, ICoreWebView2Settings3,
-        ICoreWebView2_13, ICoreWebView2_2, ICoreWebView2_24,
         COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
         COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
         COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
@@ -815,13 +825,16 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
         COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
         COREWEBVIEW2_PROCESS_FAILED_KIND_UTILITY_PROCESS_EXITED,
         COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_BALANCED, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        ICoreWebView2_2, ICoreWebView2_13, ICoreWebView2_24,
+        ICoreWebView2PermissionRequestedEventArgs2, ICoreWebView2Profile3, ICoreWebView2Settings3,
     };
     use webview2_com::{
-        take_pwstr, NotificationReceivedEventHandler, PermissionRequestedEventHandler,
-        ProcessFailedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler,
+        NotificationReceivedEventHandler, PermissionRequestedEventHandler,
+        ProcessFailedEventHandler, WebMessageReceivedEventHandler,
+        WebResourceRequestedEventHandler, take_pwstr,
     };
-    use windows::core::{Interface, PCWSTR, PWSTR};
     use windows::Win32::System::Com::IStream;
+    use windows::core::{Interface, PCWSTR, PWSTR};
 
     let label = webview.label().to_string();
     let msg_app = app.clone();
@@ -1077,7 +1090,8 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
 }
 
 #[cfg(not(target_os = "windows"))]
-fn configure_tab_webview<R: Runtime>(_app: &tauri::AppHandle<R>, _webview: &Webview<R>, _id: &str) {}
+fn configure_tab_webview<R: Runtime>(_app: &tauri::AppHandle<R>, _webview: &Webview<R>, _id: &str) {
+}
 
 /// Ctrl+L from inside a page: move WebView2's focus back to the shell, so the
 /// address-bar input the frontend focuses actually receives the typing. The
@@ -1306,12 +1320,10 @@ pub async fn browser_show(
                 }
             }
             diag("show -> navigate existing");
-            webview
-                .navigate(parsed)
-                .map_err(|e| {
-                    diag(&format!("navigate ERR {e}"));
-                    e.to_string()
-                })?;
+            webview.navigate(parsed).map_err(|e| {
+                diag(&format!("navigate ERR {e}"));
+                e.to_string()
+            })?;
         }
         None => {
             diag("show -> creating child webview");
@@ -1435,10 +1447,10 @@ fn attach_exit_accelerator<R: Runtime>(
     app: &tauri::AppHandle<R>,
     controller: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller,
 ) {
+    use webview2_com::AcceleratorKeyPressedEventHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN, COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
     };
-    use webview2_com::AcceleratorKeyPressedEventHandler;
 
     let close_app = app.clone();
     let handler = AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
@@ -1490,7 +1502,6 @@ pub fn install_exit_accelerator<R: Runtime>(app: &tauri::AppHandle<R>) {
 #[cfg(not(target_os = "windows"))]
 pub fn install_exit_accelerator<R: Runtime>(_app: &tauri::AppHandle<R>) {}
 
-
 /// The content box the shell last measured, waiting briefly for the first
 /// measurement when a tab is shown in the same tick it is created.
 ///
@@ -1537,6 +1548,10 @@ pub async fn browser_set_pinned(
     id: String,
     pinned: bool,
 ) -> Result<(), String> {
+    // Logged before any native work: a pin click used to leave no line at all
+    // when a webview call stalled, which made "pin did nothing" impossible to
+    // tell apart from "the click never arrived".
+    diag(&format!("pin request {id} -> {pinned}"));
     if let Ok(mut set) = app.state::<BrowserState>().pinned.lock() {
         if pinned {
             set.insert(id.clone());
@@ -1583,7 +1598,12 @@ pub async fn browser_set_rect(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    let rect = ContentRect { x, y, width, height };
+    let rect = ContentRect {
+        x,
+        y,
+        width,
+        height,
+    };
 
     // A zero-sized rect means the browser view is unmounting: keep the
     // stored value (it re-measures on the next mount) but do not stack a
@@ -1612,10 +1632,7 @@ pub async fn browser_set_rect(
         }
         *stored = rect;
     }
-    diag(&format!(
-        "set_rect {}x{} @ ({x},{y})",
-        width, height
-    ));
+    diag(&format!("set_rect {}x{} @ ({x},{y})", width, height));
 
     // Parked for an overlay: the rect is remembered (above) but the page must
     // stay at 1×1 until `browser_set_visible(true)` restores it.
@@ -1682,6 +1699,23 @@ pub async fn browser_set_visible(app: tauri::AppHandle, visible: bool) -> Result
         .rect
         .lock()
         .map_err(|_| "browser rect lock poisoned".to_string())?;
+    // Hiding is the teardown path: the browser view is leaving the screen, or
+    // an overlay (a right-click menu, a panel) sits above the page. Park EVERY
+    // tab, not only the active one - a kept-but-forgotten page at full size is
+    // exactly the ghost that keeps painting over the dashboard after "pin,
+    // then T9 Editor LIT". A 1x1 resize is cheap and needs no COM, so it can
+    // never stall the way `close()` can.
+    if !visible {
+        let mut parked = 0usize;
+        for page in window.webviews() {
+            if page.label().starts_with("tab-") {
+                park_visual(&page);
+                parked += 1;
+            }
+        }
+        diag(&format!("overlay -> parked {parked} page(s) (visual)"));
+        return Ok(());
+    }
     let active = state
         .active
         .lock()
@@ -1693,46 +1727,33 @@ pub async fn browser_set_visible(app: tauri::AppHandle, visible: bool) -> Result
     let Some(webview) = find_tab(&window, &active) else {
         return Ok(());
     };
-    if visible {
-        // A fullscreen page was grown to the window; putting it back on the
-        // content rect would throw the user out of the video. Same box, then.
-        let fullscreen = state
-            .fullscreen
-            .lock()
-            .map(|set| set.contains(&active))
-            .unwrap_or(false);
-        if fullscreen {
-            let scale = window.scale_factor().unwrap_or(1.0);
-            let size = window.inner_size().unwrap_or_default();
-            let _ = webview.set_position(LogicalPosition::new(0.0, 0.0));
-            let _ = webview.set_size(LogicalSize::new(
-                f64::from(size.width) / scale,
-                f64::from(size.height) / scale,
-            ));
-        } else if rect.width >= 2.0 && rect.height >= 2.0 {
-            let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
-            let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
-        }
-        wake_webview(&app, &webview);
-        diag("overlay -> page restored");
-    } else {
-        // Visual hide only: an overlay is on screen for a moment, and the
-        // pin action lives *inside* a context menu. Trimming the page to LOW
-        // for that moment meant two synchronous COM calls on the UI thread
-        // and a swap-out of a page that was about to be shown again - which
-        // is exactly the hitch the pin menu used to cause on a playing video.
-        park_visual(&webview);
-        diag("overlay -> page parked (visual)");
+    // A fullscreen page was grown to the window; putting it back on the
+    // content rect would throw the user out of the video. Same box, then.
+    let fullscreen = state
+        .fullscreen
+        .lock()
+        .map(|set| set.contains(&active))
+        .unwrap_or(false);
+    if fullscreen {
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let size = window.inner_size().unwrap_or_default();
+        let _ = webview.set_position(LogicalPosition::new(0.0, 0.0));
+        let _ = webview.set_size(LogicalSize::new(
+            f64::from(size.width) / scale,
+            f64::from(size.height) / scale,
+        ));
+    } else if rect.width >= 2.0 && rect.height >= 2.0 {
+        let _ = webview.set_position(LogicalPosition::new(rect.x, rect.y));
+        let _ = webview.set_size(LogicalSize::new(rect.width, rect.height));
     }
+    wake_webview(&app, &webview);
+    diag("overlay -> page restored");
     Ok(())
 }
 
 /// Find a child webview by its exact label among the window's children.
 fn find_tab<R: Runtime>(window: &Window<R>, label: &str) -> Option<Webview<R>> {
-    window
-        .webviews()
-        .into_iter()
-        .find(|w| w.label() == label)
+    window.webviews().into_iter().find(|w| w.label() == label)
 }
 
 /// Destroy every `tab-*` child webview not in `keep` (empty = sweep all),
@@ -1803,7 +1824,11 @@ fn build_tab_webview<R: Runtime>(
     let page_id = id.to_string();
     let builder = builder.on_page_load(move |webview, payload| {
         if matches!(payload.event(), PageLoadEvent::Finished) {
-            diag(&format!("event page finished {} -> {}", page_id, payload.url()));
+            diag(&format!(
+                "event page finished {} -> {}",
+                page_id,
+                payload.url()
+            ));
             let _ = webview.emit(
                 "browser:page",
                 NavPayload {
@@ -1922,11 +1947,7 @@ fn build_tab_webview<R: Runtime>(
             // false = cancel WebView2's download; the daemon owns the bytes now.
             false
         }
-        DownloadEvent::Finished {
-            url,
-            path,
-            success,
-        } => {
+        DownloadEvent::Finished { url, path, success } => {
             let scheme = url.scheme();
             if scheme == "blob" || scheme == "data" {
                 let saved = path.as_ref().map(|p| p.to_string_lossy().into_owned());
@@ -1972,11 +1993,7 @@ fn create_tab_webview<R: Runtime>(
     // nothing and is filtered out of the store's navigation feed.
     let blank = Url::parse("about:blank").map_err(|e| e.to_string())?;
 
-    match window.add_child(
-        build_tab_webview(app, id, blank.clone()),
-        position,
-        size,
-    ) {
+    match window.add_child(build_tab_webview(app, id, blank.clone()), position, size) {
         Ok(webview) => {
             diag("create ok");
             configure_tab_webview(app, &webview, id);
@@ -2154,7 +2171,9 @@ mod tests {
         assert!(!ad_request("https://notdoubleclick.net/x"));
         assert!(!ad_request("https://example.com/ad"));
         assert!(!ad_request("https://www.youtube.com/watch?v=ad"));
-        assert!(!ad_request("https://www.youtube.com/api/stats/playback?x=1"));
+        assert!(!ad_request(
+            "https://www.youtube.com/api/stats/playback?x=1"
+        ));
         assert!(!ad_request(
             "https://rr3---sn-abc.googlevideo.com/videoplayback?x=1"
         ));

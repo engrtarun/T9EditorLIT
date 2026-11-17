@@ -279,7 +279,7 @@ class BrowserStore {
    * The Ctrl+Shift+T stack: closed tabs newest-first (`plain`, private — no
    * UI reads it). Bounded like every state in this store.
    */
-  private closed: { url: string; title: string; index: number }[] = [];
+  private closed: { url: string; title: string; index: number; pinned?: boolean }[] = [];
 
   /** One new line in the Ctrl+H log — consecutive duplicates collapse. */
   private logVisit(url: string, title: string): void {
@@ -460,8 +460,14 @@ class BrowserStore {
     if (!last) return false;
     const tab = makeTab(last.url);
     tab.title = last.title;
+    // A pin is part of what the tab *is*, so a restore brings it back pinned.
+    // Without this, closing and reopening a pinned YouTube lost the pin and
+    // the next "back to the dashboard" swept the page it was meant to keep.
+    tab.pinned = last.pinned === true;
+    if (tab.pinned && isTauri()) void browserSetPinned(tab.id, true);
     const i = Math.min(last.index, this.tabs.length);
     this.tabs.splice(i, 0, tab);
+    if (tab.pinned) this.persistPins();
     this.activeId = tab.id;
     if (isTauri()) this.nudge?.(tab.id, tab.url);
     return true;
@@ -644,7 +650,7 @@ class BrowserStore {
     const dying = this.tabs[i];
     // Ctrl+Shift+T must be able to bring this back — real pages only.
     if (dying.url && dying.url !== 'about:blank') {
-      this.closed.push({ url: dying.url, title: dying.title, index: i });
+      this.closed.push({ url: dying.url, title: dying.title, index: i, pinned: dying.pinned });
       if (this.closed.length > CLOSED_CAP) this.closed.shift();
     }
     const wasActive = this.activeId === id;
@@ -881,16 +887,17 @@ class BrowserStore {
         return;
       }
 
-      const saved: { url: string; title: string; index: number }[] = [];
+      const saved: { url: string; title: string; index: number; pinned?: boolean }[] = [];
       for (const entry of stored.tabs) {
         if (saved.length >= MAX_TABS) break;
         if (!entry || typeof entry !== 'object') continue;
-        const { url, title } = entry as Record<string, unknown>;
+        const { url, title, pinned } = entry as Record<string, unknown>;
         if (typeof url !== 'string' || !url || url === 'about:blank') continue;
         saved.push({
           url,
           title: typeof title === 'string' && title ? title : hostOf(url),
-          index: saved.length
+          index: saved.length,
+          pinned: pinned === true
         });
       }
       if (saved.length === 0) {

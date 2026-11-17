@@ -104,7 +104,42 @@ Status values: `done` · `shipped-unverified` · `in-progress` · `open` · `blo
 - **Still unproven:** `Ctrl+Shift+T` bringing the saved tab back. The app was
   closed before that half could be observed.
 
----
+## 10. Browser — pin, phir "T9 Editor LIT" → page dashboard ke upar
+
+- **Status:** `shipped-unverified` (fix in this build)
+- **Seen (user report):** a site pinned, then the back button to the dashboard —
+  the page did not disappear cleanly.
+- **Cause in code:** `destroy_others` parked a pinned tab by resizing it to
+  1×1 and nothing else. A 1×1 child HWND still exists and still paints until
+  Windows processes the resize, so a slice of the page can sit over the
+  dashboard; `browser_set_visible(false)` had the same hole and only ever
+  parked the *active* tab, so any other live page stayed full size.
+- **Fix:** `park_webview` now calls `webview.hide()` after the resize (out of
+  the compositor, still playing — Chromium keeps a hidden page's audio), and
+  `browser_set_visible(false)` parks **every** `tab-*` webview, not just the
+  active one. `wake_webview` calls `show()` before the rect is applied, so a
+  parked page comes back on the next show.
+- **Done when:** pin → back → dashboard is clean (screenshot), then return to
+  the browser → the pinned tab is visible again and still playing.
+
+## 11. Browser — heavy site load atak jata hai, refresh karna padta hai
+
+- **Status:** `in-progress` — measured cause, not yet fixed
+- **Measured:** the log shows the whole webview being thrown away and rebuilt
+  on the way to a new site:
+  `show id=1 url=about:blank … show blank -> swept (kept [])` immediately
+  followed by `show -> creating child webview` / `create ok`. Every such
+  navigation is a cold WebView2 start (profile + uBlock unpack) that took
+  **3–6 s** in the log, with a blank surface until the first paint.
+- **Also measured:** `event page finished` fires 3–6 s after `event nav`, so the
+  network is *not* stalling — the visible "atka hua" page is a surface that has
+  no first paint yet, not a slow download.
+- **Not yet ruled out:** renderer death (row 2 instrumentation is installed but
+  no `process failed` line has been produced yet), and RAM starvation (the box
+  runs at 80–96 % used).
+- **Next:** stop the blank-tab sweep from destroying the page the user is about
+  to navigate (reuse the webview, navigate it), and prove a paint after
+  `page finished`.
 
 ## Next actions
 
