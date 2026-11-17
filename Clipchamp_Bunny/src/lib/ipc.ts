@@ -1413,6 +1413,20 @@ export function browserStop(id: string): Promise<void> {
 }
 
 /**
+ * Tell the native side whether the browser view is mounted.
+ *
+ * `showActive()` lives in an async chain (SQLite restore + a measured rect),
+ * and that chain can resolve *after* the user left the browser. The leaked
+ * call used to place a pinned YouTube page at the full content rect over the
+ * Home dashboard. Rust refuses `browser_show` while this flag is false, so no
+ * late caller can paint a page on a screen that is not the browser.
+ */
+export function browserSetViewOpen(open: boolean): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_set_view_open', { open }).catch(() => {});
+}
+
+/**
  * The browser view unmounted (back to the editor): sweep every tab webview,
  * kept ones included — the zero-RAM rule applied to leaving the browser.
  */

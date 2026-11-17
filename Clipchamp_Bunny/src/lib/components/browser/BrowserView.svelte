@@ -30,6 +30,7 @@
     browserViewClosed,
     browserSetRect,
     browserSetVisible,
+    browserSetViewOpen,
     onBrowserFullscreen
   } from '../../ipc';
   import { onMount } from 'svelte';
@@ -64,6 +65,9 @@
     rectReady = resolve;
   });
 
+  /** The view is gone; every async continuation must stop touching the page. */
+  let dead = false;
+
   onMount(() => {
     browser.wireTauri();
     // The strip comes back from SQLite (localStorage mirror, then the old pin
@@ -71,10 +75,20 @@
     // YouTube tab must not start playing behind the dashboard. Only metadata
     // is restored, and the first show waits for the content box to be
     // measured, so `browser_show` can never race a 0x0 rect.
-    void browser
-      .restoreSession()
-      .then(() => rectSent)
-      .then(() => browser.showActive());
+    //
+    // Every step checks `dead`. The chain is async (SQLite + a measured rect),
+    // and the user can leave the browser before it resolves - that leaked
+    // `showActive()` is what put a pinned YouTube page full-screen over the
+    // Home tab two seconds *after* the view had closed.
+    void (async () => {
+      await browserSetViewOpen(true);
+      if (dead) return;
+      await browser.restoreSession();
+      if (dead) return;
+      await rectSent;
+      if (dead) return;
+      browser.showActive();
+    })();
     // One poll at mount: the daemon recovers unfinished downloads from their
     // sidecars, and the toolbar badge must show them without opening the panel.
     downloads.boot();
@@ -84,7 +98,6 @@
     // Fullscreen: the chrome's rows are covered by the grown webview anyway,
     // so they only need to stop painting (no layout change — a layout change
     // here would feed a new rect back to Rust mid-fullscreen).
-    let dead = false;
     let offFullscreen: (() => void) | null = null;
     void onBrowserFullscreen(({ id, on }) => {
       if (browser.activeId !== id) return;
@@ -107,6 +120,9 @@
       // the editor is open. Nothing page-live survives the view. The Ctrl+H
       // panel starts closed next time, like Firefox's own history sidebar.
       browser.historyOpen = false;
+      // Tell Rust first, then sweep: a queued `browser_show` from the mount
+      // chain must be refused, not turned into a page over the dashboard.
+      void browserSetViewOpen(false);
       void browserViewClosed();
     };
   });

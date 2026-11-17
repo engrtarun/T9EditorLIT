@@ -40,8 +40,8 @@
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::webview::{
@@ -287,6 +287,11 @@ pub struct BrowserState {
     /// Rect updates still arrive (the window can be resized behind a modal);
     /// none of them may un-park the page or the overlay loses its lower half.
     parked: AtomicBool,
+    /// The browser view is mounted. `browser_show` is refused while it is
+    /// false, because a superseded `showActive()` (the mount chain resolves
+    /// after unmount) otherwise put a pinned page full-size over the Home
+    /// dashboard - the "pin, phir T9 Editor LIT" overlap.
+    view_open: AtomicBool,
     /// Labels currently at WebView2's LOW memory target. `SetMemoryUsageTarget-
     /// Level` is a synchronous COM call that runs on the UI thread, so it is
     /// only issued when the level actually changes - never on every tab
@@ -303,6 +308,7 @@ impl Default for BrowserState {
             pinned: Mutex::new(HashSet::new()),
             fullscreen: Mutex::new(HashSet::new()),
             parked: AtomicBool::new(false),
+            view_open: AtomicBool::new(false),
             dimmed: Mutex::new(HashSet::new()),
         }
     }
@@ -432,8 +438,8 @@ fn set_memory_target<R: Runtime>(webview: &Webview<R>, low: bool) {
     let label = webview.label().to_string();
     let _ = webview.with_webview(move |pw| unsafe {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
-            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
-            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL, ICoreWebView2_19,
+            ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
         };
         use windows::core::Interface;
         let Ok(core) = pw.controller().CoreWebView2() else {
@@ -477,10 +483,10 @@ struct ExtensionsPayload {
 #[cfg(target_os = "windows")]
 fn extension_list<R: Runtime>(webview: &Webview<R>) -> Result<Vec<(String, bool)>, String> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2_13, ICoreWebView2BrowserExtensionList, ICoreWebView2Profile7,
+        ICoreWebView2BrowserExtensionList, ICoreWebView2Profile7, ICoreWebView2_13,
     };
-    use webview2_com::{ProfileGetBrowserExtensionsCompletedHandler, take_pwstr};
-    use windows::core::{BOOL, Interface, PWSTR};
+    use webview2_com::{take_pwstr, ProfileGetBrowserExtensionsCompletedHandler};
+    use windows::core::{Interface, BOOL, PWSTR};
 
     let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<(String, bool)>, String>>();
 
@@ -816,6 +822,8 @@ fn handle_shim_message<R: Runtime>(app: &tauri::AppHandle<R>, id: &str, raw: &st
 #[cfg(target_os = "windows")]
 fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webview<R>, id: &str) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2PermissionRequestedEventArgs2, ICoreWebView2Profile3, ICoreWebView2Settings3,
+        ICoreWebView2_13, ICoreWebView2_2, ICoreWebView2_24,
         COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
         COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
         COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
@@ -825,16 +833,14 @@ fn configure_tab_webview<R: Runtime>(app: &tauri::AppHandle<R>, webview: &Webvie
         COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
         COREWEBVIEW2_PROCESS_FAILED_KIND_UTILITY_PROCESS_EXITED,
         COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_BALANCED, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
-        ICoreWebView2_2, ICoreWebView2_13, ICoreWebView2_24,
-        ICoreWebView2PermissionRequestedEventArgs2, ICoreWebView2Profile3, ICoreWebView2Settings3,
     };
     use webview2_com::{
-        NotificationReceivedEventHandler, PermissionRequestedEventHandler,
+        take_pwstr, NotificationReceivedEventHandler, PermissionRequestedEventHandler,
         ProcessFailedEventHandler, WebMessageReceivedEventHandler,
-        WebResourceRequestedEventHandler, take_pwstr,
+        WebResourceRequestedEventHandler,
     };
-    use windows::Win32::System::Com::IStream;
     use windows::core::{Interface, PCWSTR, PWSTR};
+    use windows::Win32::System::Com::IStream;
 
     let label = webview.label().to_string();
     let msg_app = app.clone();
@@ -1189,6 +1195,20 @@ pub async fn browser_show(
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
+    // The view is what makes a page belong on screen. `showActive()` runs
+    // inside an async chain that can resolve after the user already left the
+    // browser; that leaked call is what put a pinned YouTube page over the
+    // Home dashboard. Refuse it and say so in the log.
+    if !app
+        .state::<BrowserState>()
+        .view_open
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        diag(&format!(
+            "show id={id} url={url} -> refused (browser view is closed)"
+        ));
+        return Ok(());
+    }
     let rect = measured_rect(&app)?;
     diag(&format!(
         "show id={id} url={url} keep={keep:?} force={force:?} resume={resume:?} rect={rect:?}"
@@ -1381,7 +1401,27 @@ pub async fn browser_hide(app: tauri::AppHandle, id: String) -> Result<(), Strin
 /// Async for the same reason as [`browser_show`] — `close()`/`set_size()`
 /// on child webviews marshal onto the main thread internally.
 #[tauri::command]
+pub fn browser_set_view_open(app: tauri::AppHandle, open: bool) {
+    app.state::<BrowserState>()
+        .view_open
+        .store(open, std::sync::atomic::Ordering::Relaxed);
+    diag(&format!("view -> {}", if open { "open" } else { "closed" }));
+}
+
+/// Sweep every tab webview: the browser view unmounted (back to the
+/// editor). The ledger drops to zero live webviews — the zero-RAM rule
+/// applied to leaving the browser, kept ones included.
+/// The browser UI is unmounting: sweep every tab webview.
+///
+/// Async for the same reason as [`browser_show`] — `close()`/`set_size()`
+/// on child webviews marshal onto the main thread internally.
+#[tauri::command]
 pub async fn browser_view_closed(app: tauri::AppHandle) -> Result<(), String> {
+    // Belt and braces: even if the frontend's "view closed" call is lost or
+    // arrives out of order, nothing may be shown from here on.
+    app.state::<BrowserState>()
+        .view_open
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
@@ -1714,6 +1754,13 @@ pub async fn browser_set_visible(app: tauri::AppHandle, visible: bool) -> Result
             }
         }
         diag(&format!("overlay -> parked {parked} page(s) (visual)"));
+        return Ok(());
+    }
+    // Nothing may be put back on screen while the browser view is gone: an
+    // overlay effect can still fire during teardown, and restoring a page
+    // there is the same overlap from the other direction.
+    if !state.view_open.load(std::sync::atomic::Ordering::Relaxed) {
+        diag("overlay -> refused (browser view is closed)");
         return Ok(());
     }
     let active = state
