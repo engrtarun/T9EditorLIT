@@ -11,7 +11,8 @@ import {
   orderLines,
   orderSegments,
   sourceAt,
-  timelineDuration
+  timelineDuration,
+  timelineSpansForSource
 } from './segments.ts';
 import type { TranscriptLine } from './types.ts';
 
@@ -73,6 +74,36 @@ test('source time maps into timeline time and back', () => {
   // timeline 15 s is the middle of the cut block: source 20 + 5
   assert.equal(sourceAt(segs, off, 15), 25);
   assert.equal(sourceAt(segs, off, 99), null);
+});
+
+test('a selected source range becomes timeline spans, cut blocks included', () => {
+  seq = 0;
+  // 0-5 keep, 5-8 cut, 8-12 keep: the timeline is unbroken but the middle
+  // block is red. A word selection inside the first line must land at its own
+  // source offset, not at the start of the strip.
+  const segs = buildSegments([
+    line(0, 5, 'keep', 'a'),
+    line(5, 8, 'cut', 'b'),
+    line(8, 12, 'keep', 'c')
+  ]);
+  const off = computeOffsets(segs);
+  const inside = timelineSpansForSource(segs, off, 1.5, 3);
+  assert.deepEqual(inside, [{ start: 1.5, end: 3, state: 'keep' }]);
+
+  // A range that crosses the cut boundary keeps every slice, so the highlight
+  // has no hole and still reports which part is already cut.
+  const across = timelineSpansForSource(segs, off, 4, 9);
+  assert.deepEqual(across, [
+    { start: 4, end: 5, state: 'keep' },
+    { start: 5, end: 8, state: 'cut' },
+    { start: 8, end: 9, state: 'keep' }
+  ]);
+
+  // Reversed drags and empty ranges are normalised / ignored.
+  assert.deepEqual(timelineSpansForSource(segs, off, 3, 1.5), [
+    { start: 1.5, end: 3, state: 'keep' }
+  ]);
+  assert.deepEqual(timelineSpansForSource(segs, off, 2, 2), []);
 });
 
 test('reordering segments reorders the transcript rows', () => {

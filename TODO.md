@@ -4,10 +4,12 @@ _Last updated: 2026-11-18_
 
 ## 🔴 High Priority
 
-- [ ] Split key: word selection pending ho to S/Delete global cut/keep na chale - sirf selection Cut (added: 2026-11-18)
-- [ ] Selection UX: drag ke time transcript virtualization freeze + toolbar anchor stable (screen jitter) (added: 2026-11-18)
 - [ ] Word cut: multi-line text selection cut (abhi ek row ke bahar selection par toolbar hi nahi aata) + duplicate take hint (added: 2026-11-18)
-- [ ] Word cut: imported ElevenLabs JSON ke nested words drop ho rahe hain - exact timings import + purane project ke liye backfill (added: 2026-11-18)
+- [x] Word cut: split ki 0.25/0.35/0.5 s floor hatayi - 10 ms tak split, zero-length part drop, hybrid export chhote kept piece ko drop nahi karta (encode karta hai) (done: 2026-11-18)
+- [x] Word cut: bottom timeline par sirf selected range ke upar blue band (minimap tick + CUT chip) (done: 2026-11-18)
+- [x] Word cut: imported ElevenLabs JSON ke nested words + purane project ka backfill - SHORT6 me 33/35 rows, 441 words exact; 7-1a/7-2a jaan-boojh kar approx (manual splits se text duplicate) (done: 2026-11-18)
+- [x] Split key: word selection pending ho to S/Delete global cut/keep na chale - sirf selection Cut (done: 2026-11-18)
+- [x] Selection UX: drag ke time transcript virtualization freeze + toolbar anchor stable (screen jitter) (done: 2026-11-18)
 
 - [ ] Browser: architecture decide - per-tab webview vs ek hi webview (added: 2026-11-16)
 - [ ] Browser: renderer crash/unresponsive ko log karo + auto-reload (instrument first) (added: 2026-11-16) — auto-reload shipped `22e7e57`, abhi tak koi `process failed` line nahi aayi, isliye open

@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  attachWordsToLines,
   buildTranscriptLines,
+  collectImportWords,
   describeFormat,
   importLabel,
   parseTimeToken,
-  parseTranscript
+  parseTranscript,
+  type TimedWord
 } from './transcript-import.ts';
+import type { TranscriptLine } from './types.ts';
 
 /* ------------------------------------------------------------------- times */
 
@@ -136,6 +140,230 @@ test('ElevenLabs words split at a long pause or a long run', () => {
   const doc = parseTranscript(JSON.stringify({ words }), { durationSecs: 30 });
   assert.ok(doc.cues.length >= 2, 'a 30-word run must not be one row');
   for (const cue of doc.cues) assert.ok(cue.words!.length <= 18);
+});
+
+test('ElevenLabs segments keep their nested word timings', () => {
+  // This is the real SHORT6 export shape: the words live inside each segment
+  // and use `start_time` / `end_time`. Dropping them turned every word cut
+  // into a character-count guess.
+  const json = JSON.stringify({
+    language_code: 'hin',
+    segments: [
+      {
+        text: 'PowerPoint का speech coach है। हाँ।',
+        start_time: 75.42,
+        end_time: 77.74,
+        words: [
+          { text: 'PowerPoint', start_time: 75.42, end_time: 75.92 },
+          { text: ' ', start_time: 75.92, end_time: 75.98 },
+          { text: 'का', start_time: 75.98, end_time: 76.08 },
+          { text: ' ', start_time: 76.08, end_time: 76.3 },
+          { text: 'speech', start_time: 76.3, end_time: 76.6 },
+          { text: ' ', start_time: 76.6, end_time: 76.68 },
+          { text: 'coach', start_time: 76.68, end_time: 77.02 },
+          { text: ' ', start_time: 77.02, end_time: 77.14 },
+          { text: 'है।', start_time: 77.14, end_time: 77.54 },
+          { text: ' ', start_time: 77.54, end_time: 77.56 },
+          { text: 'हाँ।', start_time: 77.56, end_time: 77.74 }
+        ]
+      },
+      {
+        text: 'PowerPoint का speech coach.',
+        start_time: 78.4,
+        end_time: 79.74,
+        words: [
+          { text: 'PowerPoint', start_time: 78.4, end_time: 78.9 },
+          { text: ' ', start_time: 78.9, end_time: 78.96 },
+          { text: 'का', start_time: 78.96, end_time: 79.1 },
+          { text: ' ', start_time: 79.1, end_time: 79.2 },
+          { text: 'speech', start_time: 79.2, end_time: 79.46 },
+          { text: ' ', start_time: 79.46, end_time: 79.52 },
+          { text: 'coach.', start_time: 79.52, end_time: 79.74 }
+        ]
+      }
+    ]
+  });
+
+  const doc = parseTranscript(json, { durationSecs: 278 });
+  assert.equal(doc.format, 'json');
+  assert.equal(doc.cues.length, 2);
+  assert.equal(doc.cues[0].words?.length, 6); // spacing entries dropped
+  assert.equal(doc.cues[0].words?.[0].start, 75.42);
+  assert.equal(doc.cues[0].words?.[5].end, 77.74);
+
+  const built = buildTranscriptLines(doc, 278, 'el');
+  assert.equal(built.lines[0].words?.length, 6);
+  assert.equal(built.lines[1].words?.[0].start, 78.4);
+});
+
+test('a root words array using start_time is still recognised', () => {
+  const json = JSON.stringify({
+    words: [
+      { text: 'Namaste', start_time: 0, end_time: 0.5 },
+      { text: 'doston', start_time: 0.5, end_time: 0.9 }
+    ]
+  });
+  const doc = parseTranscript(json, { durationSecs: 3 });
+  assert.equal(doc.cues.length, 1);
+  assert.equal(doc.cues[0].words?.length, 2);
+  assert.equal(doc.cues[0].words?.[1].start, 0.5);
+});
+
+/* -------------------------------------------------------------- backfill */
+
+/** The two-take line from the real SHORT6 export, flattened into one list. */
+function short6Words(): TimedWord[] {
+  return [
+    { word: 'PowerPoint', start: 75.42, end: 75.92 },
+    { word: 'का', start: 75.98, end: 76.08 },
+    { word: 'speech', start: 76.3, end: 76.6 },
+    { word: 'coach', start: 76.68, end: 77.02 },
+    { word: 'है।', start: 77.14, end: 77.54 },
+    { word: 'हाँ।', start: 77.56, end: 77.74 },
+    { word: 'PowerPoint', start: 78.4, end: 78.9 },
+    { word: 'का', start: 78.96, end: 79.1 },
+    { word: 'speech', start: 79.2, end: 79.46 },
+    { word: 'coach.', start: 79.52, end: 79.74 },
+    { word: 'अपने', start: 79.9, end: 80.04 },
+    { word: 'best', start: 80.06, end: 80.24 },
+    { word: 'project', start: 80.28, end: 80.58 },
+    { word: 'को,', start: 80.62, end: 80.82 }
+  ];
+}
+
+function row(
+  id: string,
+  startSec: number,
+  endSec: number,
+  text: string,
+  words?: TranscriptLine['words']
+): TranscriptLine {
+  return { id, startSec, endSec, text, words, keep: 'keep', flag: 'none', confidence: 1 };
+}
+
+test('backfill re-attaches nested timings and skips the repeated take', () => {
+  // Both rows lost their words in the old importer. Row 2's bracket covers
+  // *two* takes of "PowerPoint का speech" — the one before the boundary and
+  // the real one at 78.4 — so a text-only matcher would attach the first.
+  const lines = [
+    row('a', 75.42, 77.977, 'PowerPoint का speech coach है। हाँ।'),
+    row('b', 77.977, 80.02, 'PowerPoint का speech coach.')
+  ];
+  const res = attachWordsToLines(lines, short6Words());
+  assert.equal(res.attached, 2);
+  assert.equal(res.wordCount, 10);
+  assert.equal(res.lines[0].words?.length, 6);
+  assert.equal(res.lines[1].words?.length, 4);
+  // The second take, not the first: 78.4 is the real PowerPoint of row b.
+  assert.equal(res.lines[1].words?.[0].start, 78.4);
+  assert.equal(res.lines[1].words?.[3].end, 79.74);
+});
+
+test('backfill falls back to the token sequence and still skips a used take', () => {
+  // The row's own bracket drifts slightly from the audio (a split made before
+  // timings existed), so time alone cannot place it. The first "hello world"
+  // is already consumed by row a, so row b must take the second take instead
+  // of reusing the same two words.
+  const words: TimedWord[] = [
+    { word: 'hello', start: 0.5, end: 0.7 },
+    { word: 'world', start: 0.8, end: 1.1 },
+    { word: 'hello', start: 3.5, end: 3.7 },
+    { word: 'world', start: 3.8, end: 4.1 }
+  ];
+  const lines = [row('a', 0, 2, 'hello world'), row('b', 3.3, 5.6, 'hello world')];
+  const res = attachWordsToLines(lines, words);
+  assert.equal(res.attached, 2);
+  assert.equal(res.lines[1].words?.[0].start, 3.5);
+});
+
+test('backfill will not claim words that belong to a later row', () => {
+  // A row split before timings existed can still carry the whole sentence in
+  // its text while its bracket only covers the head. The fallback must not
+  // walk past the bracket and steal the repeated tail from the row that owns
+  // it — that left row 8 of SHORT6 with no words at all.
+  const words: TimedWord[] = [
+    { word: 'और', start: 37.94, end: 38.06 },
+    { word: 'कुछ', start: 38.1, end: 38.4 },
+    { word: 'और', start: 42.0, end: 42.2 },
+    { word: 'कुछ', start: 42.3, end: 42.6 }
+  ];
+  const lines = [row('head', 36.12, 37.56, 'और कुछ'), row('tail', 42.0, 43.0, 'और कुछ')];
+  const res = attachWordsToLines(lines, words);
+  assert.equal(res.attached, 1, 'only the row whose bracket owns the take');
+  assert.equal(res.lines[0].words, undefined);
+  assert.equal(res.lines[1].words?.[0].start, 42.0);
+});
+
+test('backfill never overwrites a row that already has word timings', () => {
+  const kept = row('a', 0, 1, 'namaste doston', [
+    { word: 'namaste', start: 0, end: 0.4 },
+    { word: 'doston', start: 0.4, end: 0.9 }
+  ]);
+  const res = attachWordsToLines([kept], [{ word: 'namaste', start: 10, end: 10.4 }]);
+  assert.equal(res.attached, 0);
+  assert.equal(res.lines[0], kept, 'the same object is passed through');
+  assert.equal(res.lines[0].words?.[0].start, 0);
+});
+
+test('backfill leaves rows alone when the text is not in the file', () => {
+  const lines = [row('a', 0, 2, 'kuch aur hi baat')];
+  const res = attachWordsToLines(lines, short6Words());
+  assert.equal(res.attached, 0);
+  assert.equal(res.lines, lines, 'no change means the original array');
+  assert.equal(res.lines[0].words, undefined);
+});
+
+test('backfill compares Devanagari matras with their letter, not as separators', () => {
+  // The real SHORT6 rows that stayed unmatched: their bracket ends before the
+  // repeated tail, so only the sequential fallback can place them. With the
+  // old key "कुछ" became ["क", "छ"] and "किए" became ["क", "ए"], so the token
+  // count could never agree with the file and the fallback matched nothing.
+  const words: TimedWord[] = [
+    { word: 'कुछ', start: 36.12, end: 36.28 },
+    { word: 'तरीके', start: 36.32, end: 36.56 },
+    { word: 'किए', start: 37.42, end: 37.6 },
+    { word: 'हैं', start: 37.62, end: 37.88 },
+    { word: 'और', start: 37.94, end: 38.06 },
+    { word: 'कुछ...', start: 38.1, end: 38.4 }
+  ];
+  const lines = [row('a', 36.12, 37.9, 'कुछ तरीके किए हैं और कुछ...')];
+  const res = attachWordsToLines(lines, words);
+  assert.equal(res.attached, 1);
+  assert.equal(res.lines[0].words?.length, 6);
+  // The first word keeps its matras instead of collapsing to a bare "क".
+  assert.equal(res.lines[0].words?.[0].word, 'कुछ');
+  assert.equal(res.lines[0].words?.[5].end, 38.4);
+});
+
+test('collectImportWords flattens nested segment words in clock order', () => {
+  const json = JSON.stringify({
+    segments: [
+      {
+        text: 'PowerPoint का',
+        start_time: 75.42,
+        end_time: 76.08,
+        words: [
+          { text: 'PowerPoint', start_time: 75.42, end_time: 75.92 },
+          { text: ' ', start_time: 75.92, end_time: 75.98 },
+          { text: 'का', start_time: 75.98, end_time: 76.08 }
+        ]
+      },
+      {
+        text: 'coach',
+        start_time: 76.3,
+        end_time: 76.6,
+        words: [{ text: 'coach', start_time: 76.3, end_time: 76.6 }]
+      }
+    ]
+  });
+  const doc = parseTranscript(json, { durationSecs: 100 });
+  const words = collectImportWords(doc);
+  assert.equal(words.length, 3);
+  assert.deepEqual(
+    words.map((w) => w.word),
+    ['PowerPoint', 'का', 'coach']
+  );
+  assert.equal(words[2].start, 76.3);
 });
 
 test('generic JSON segments in milliseconds are detected from the media length', () => {

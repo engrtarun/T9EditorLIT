@@ -235,7 +235,8 @@ pub struct ExportProgress {
 const WEIGHT_CUT: f64 = 85.0;
 const WEIGHT_CONCAT: f64 = 15.0;
 
-/// A piece shorter than this is a sliver, not a piece of work.
+/// A piece shorter than this is not worth a stream copy — it is encoded
+/// exactly instead. Kept material is never dropped for being small.
 const MIN_PIECE: f64 = 0.05;
 /// Two doubles from the same keyframe list must not differ by rounding noise.
 const SNAP_EPS: f64 = 1e-6;
@@ -367,6 +368,13 @@ pub fn plan_pieces(segments: &[Segment], kfs: &[f64], opts: &ExportOptions) -> P
                         .max((end - seg.end).abs());
                     if end - start > MIN_PIECE {
                         vec![(start, end, PieceKind::Copy)]
+                    } else if seg.end - seg.start > SNAP_EPS {
+                        // Too short to hand to the copy path, but still kept
+                        // material: encode it exactly. Dropping it here used to
+                        // delete a word that survived a cut (the "clip is too
+                        // small" loss) with no warning, because hybrid mode
+                        // never counted it as dropped.
+                        vec![(seg.start, seg.end, PieceKind::Encode)]
                     } else {
                         vec![]
                     }
@@ -1829,6 +1837,29 @@ mod tests {
         let out = plan_pieces(&seg, &kfs(), &opts("copy"));
         assert!(out.pieces.is_empty());
         assert_eq!(out.dropped_segments, 1);
+    }
+
+    #[test]
+    fn hybrid_encodes_a_kept_sliver_instead_of_losing_it() {
+        // A 30 ms kept piece that starts on a keyframe. The copy path cannot
+        // represent a piece shorter than MIN_PIECE, and hybrid used to emit
+        // nothing here — a word the user kept vanished from the export with no
+        // warning. It must become a tiny exact encode instead.
+        let seg = [Segment {
+            start: 4.0,
+            end: 4.03,
+            gain: 1.0,
+        }];
+        let out = plan_pieces(&seg, &kfs(), &opts("hybrid"));
+        assert_eq!(
+            out.pieces.len(),
+            1,
+            "kept material must not disappear: {out:#?}"
+        );
+        assert_eq!(out.pieces[0].kind, PieceKind::Encode);
+        assert_eq!(out.pieces[0].start, 4.0);
+        assert_eq!(out.pieces[0].end, 4.03);
+        assert_eq!(out.dropped_segments, 0);
     }
 
     #[test]

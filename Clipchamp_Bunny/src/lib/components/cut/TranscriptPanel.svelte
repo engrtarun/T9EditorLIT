@@ -17,6 +17,7 @@
   import WordCutToolbar from './WordCutToolbar.svelte';
   import { toast } from '../../stores/toast.svelte';
   import { watchWordSelection, wordCount, type WordSelection } from '../../word-selection';
+  import { wordCutPreview } from '../../stores/wordCutPreview.svelte';
 
   /** The import dialog is mounted only while it is open (zero-RAM isolation). */
   let importing = $state(false);
@@ -139,6 +140,13 @@
   let scrollTop = $state(0);
   let viewportH = $state(640);
   let scroller: HTMLDivElement | null = $state(null);
+  /**
+   * The rendered window is pinned while a word selection is being dragged.
+   * Auto-scroll during a drag changes `scrollTop`; letting the virtual slice
+   * follow it swaps the rows under the pointer mid-gesture, which is what made
+   * the screen "jump" and the toolbar flip sides. Cleared with the selection.
+   */
+  let frozenRows = $state<{ start: number; end: number } | null>(null);
 
   /**
    * The words the user dragged over inside one line.
@@ -169,19 +177,30 @@
    * grows. `project.previewWordCut` is the same call the commit uses, which is
    * why the range shown here is the range that gets cut.
    */
-  $effect(() =>
-    watchWordSelection(
+  $effect(() => {
+    const stop = watchWordSelection(
       () => scroller,
       (hit) => {
         if (!hit) {
           if (selCut) selCut = null;
+          frozenRows = null;
+          wordCutPreview.clear('transcript');
           return;
         }
         const plan = project.previewWordCut(hit.lineId, hit.from, hit.to);
         if (!plan) {
           if (selCut) selCut = null;
+          frozenRows = null;
+          wordCutPreview.clear('transcript');
           return;
         }
+        // Freeze the virtual window for the duration of the drag. The
+        // selection's own auto-scroll changes `scrollTop`, which would
+        // otherwise rebuild the rendered slice under the pointer and make the
+        // toolbar jump between rows ("screen hilti hai"). The frozen range is
+        // exactly what is mounted now — no new row mounts, so nothing reflows
+        // and no measured height can nudge `scrollTop` mid-drag.
+        if (!frozenRows) frozenRows = { start: startIdx, end: endIdx };
         selCut = {
           lineId: hit.lineId,
           from: hit.from,
@@ -193,9 +212,25 @@
           snapped: plan.snapped,
           words: wordCount(hit.text)
         };
+        // Publish the range for the timeline. Same plan the commit uses, so
+        // the blue band and the removed audio cannot disagree.
+        wordCutPreview.set(
+          'transcript',
+          [{ fromSec: plan.fromSec, toSec: plan.toSec }],
+          hit.text,
+          plan.approx,
+          plan.snapped
+        );
       }
-    )
-  );
+    );
+    return () => {
+      stop();
+      // A mode switch or a project close tears the panel down mid-selection.
+      // The band belongs to this selection, so it goes with it.
+      wordCutPreview.clear('transcript');
+      frozenRows = null;
+    };
+  });
 
   function applySelCut() {
     const picked = selCut;
@@ -206,6 +241,8 @@
       return;
     }
     selCut = null;
+    frozenRows = null;
+    wordCutPreview.clear();
     window.getSelection()?.removeAllRanges();
     const tail = res.snapped ? ' · audio gap par snap' : '';
     toast.push(
@@ -218,6 +255,8 @@
 
   function dismissSelCut() {
     selCut = null;
+    frozenRows = null;
+    wordCutPreview.clear();
     window.getSelection()?.removeAllRanges();
   }
 
@@ -237,8 +276,14 @@
     return i >= 0 ? i : 0;
   });
 
-  const startIdx = $derived(Math.max(0, indexAt(scrollTop) - OVERSCAN));
-  const endIdx = $derived(Math.min(view.length, indexAt(scrollTop + viewportH) + OVERSCAN + 1));
+  const startIdx = $derived(
+    frozenRows ? frozenRows.start : Math.max(0, indexAt(scrollTop) - OVERSCAN)
+  );
+  const endIdx = $derived(
+    frozenRows
+      ? frozenRows.end
+      : Math.min(view.length, indexAt(scrollTop + viewportH) + OVERSCAN + 1)
+  );
   const slice = $derived(view.slice(startIdx, endIdx));
   const padTop = $derived(geometry.offsets[startIdx] ?? 0);
   const padBottom = $derived(

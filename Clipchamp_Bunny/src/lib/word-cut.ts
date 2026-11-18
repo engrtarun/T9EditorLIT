@@ -68,9 +68,19 @@ export interface WordCutPlan {
   suffix: WordCutPart | null;
 }
 
-/** Compare words the way a listener would: case and punctuation do not count. */
+/**
+ * Compare words the way a listener would: case and punctuation do not count.
+ *
+ * Combining marks stay. Devanagari matras, the virama and the anusvara are
+ * `\p{M}`, not `\p{L}`: dropping them made "कल" and "काल" the same word (both
+ * reduced to "कल"), so a look-ahead could pair a token with the wrong take.
+ * NFC first so the same word typed two ways compares equal.
+ */
 function normalize(word: string): string {
-  return word.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  return word
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, '');
 }
 
 /**
@@ -203,35 +213,44 @@ export function planWordCut(
 
   const whole = first === 0 && last === tokens.length - 1;
 
+  // A part that starts and ends on the same millisecond is not a clip. It
+  // happens when the first selected word starts exactly on the line boundary
+  // (or the last one ends on it); pushing it would create an empty row and an
+  // empty block on the timeline ("clip is too small"), so it is not a part at
+  // all.
+  const EPS = 1e-3;
+  const prefix: WordCutPart | null =
+    first > 0
+      ? {
+          text: textOf(0, first - 1),
+          fromSec: line.startSec,
+          toSec: fromSec,
+          words: wordsOf(0, first - 1)
+        }
+      : null;
+  const suffix: WordCutPart | null =
+    last < tokens.length - 1
+      ? {
+          text: textOf(last + 1, tokens.length - 1),
+          fromSec: toSec,
+          toSec: line.endSec,
+          words: wordsOf(last + 1, tokens.length - 1)
+        }
+      : null;
+
   return {
     approx: tokens[first].approx,
     snapped: false,
     whole,
     fromSec,
     toSec,
-    prefix:
-      first > 0
-        ? {
-            text: textOf(0, first - 1),
-            fromSec: line.startSec,
-            toSec: fromSec,
-            words: wordsOf(0, first - 1)
-          }
-        : null,
+    prefix: prefix && prefix.toSec - prefix.fromSec > EPS ? prefix : null,
     cut: {
       text: textOf(first, last),
       fromSec,
       toSec,
       words: wordsOf(first, last)
     },
-    suffix:
-      last < tokens.length - 1
-        ? {
-            text: textOf(last + 1, tokens.length - 1),
-            fromSec: toSec,
-            toSec: line.endSec,
-            words: wordsOf(last + 1, tokens.length - 1)
-          }
-        : null
+    suffix: suffix && suffix.toSec - suffix.fromSec > EPS ? suffix : null
   };
 }

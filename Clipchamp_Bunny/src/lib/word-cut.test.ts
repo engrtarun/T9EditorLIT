@@ -129,6 +129,57 @@ test('without word timings the cut is marked approximate and still covers the li
   assert.ok(plan.cut.fromSec >= 20 && plan.cut.toSec <= 23);
 });
 
+test('Devanagari matras keep words distinct when pairing timings', () => {
+  // "कल" and "काल" differ only by a matra. Stripping marks compared them as
+  // the same word, so the first token could take the *wrong* take's clock — a
+  // word cut then removed the wrong audio. Marks are part of the word.
+  const line: TranscriptLine = {
+    id: 'hi',
+    startSec: 1,
+    endSec: 1.8,
+    text: 'काल कल',
+    flag: 'none',
+    keep: 'keep',
+    confidence: 1,
+    words: [
+      // The file's order is the opposite of the text on purpose: only a real
+      // word comparison can pick the second entry for "काल".
+      { word: 'कल', start: 1, end: 1.3 },
+      { word: 'काल', start: 1.4, end: 1.7 }
+    ]
+  };
+  const tokens = tokenizeLine(line.text, line.words, line.startSec, line.endSec);
+  assert.equal(tokens[0].text, 'काल');
+  assert.equal(tokens[0].startSec, 1.4, 'काल must not pair with कल');
+  assert.equal(tokens[0].wordFrom, 1);
+});
+
+test('a part that would last zero seconds is not created', () => {
+  // Word timings can overlap: here the second word starts on the same
+  // millisecond as the line. A "prefix" from 10.0 to 10.0 would be an empty row
+  // on the timeline, so it must not be a part at all — that is the
+  // "clip is too small" case.
+  const line: TranscriptLine = {
+    id: 'l3',
+    startSec: 10,
+    endSec: 10.6,
+    text: 'machli jal',
+    flag: 'none',
+    keep: 'keep',
+    confidence: 1,
+    words: [
+      { word: 'machli', start: 10, end: 10.3 },
+      { word: 'jal', start: 10, end: 10.6 }
+    ]
+  };
+  const plan = planWordCut(line, 7, 9);
+  assert.ok(plan);
+  assert.equal(plan.prefix, null);
+  assert.equal(plan.suffix, null);
+  assert.equal(plan.cut.fromSec, 10);
+  assert.equal(plan.cut.toSec, 10.6);
+});
+
 test('a click or a whitespace drag selects no word and does nothing', () => {
   assert.equal(planWordCut(machli(), 6, 7), null);
   assert.equal(planWordCut(machli(), 3, 3), null);

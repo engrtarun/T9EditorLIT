@@ -344,6 +344,44 @@ export function editTimeAt(
   return null;
 }
 
+/**
+ * Map a **source range** onto the timeline axis.
+ *
+ * `editTimeAt` answers for one instant; a highlight needs every slice the
+ * range covers, because a selection can cross a clip boundary and a cut block
+ * still owns its width on the timeline. The returned offsets are already in
+ * timeline seconds (the same axis as `computeOffsets`), so a caller that
+ * draws the lanes only has to multiply by zoom.
+ *
+ * Cut segments are included on purpose: dragging over words that are already
+ * cut must still paint the range the user is pointing at instead of leaving a
+ * hole in the highlight.
+ */
+export function timelineSpansForSource(
+  segs: Segment[],
+  offsets: Map<string, { start: number; end: number }>,
+  fromSec: number,
+  toSec: number
+): Array<{ start: number; end: number; state: SegmentState }> {
+  const a = Math.min(fromSec, toSec);
+  const b = Math.max(fromSec, toSec);
+  if (!(b > a)) return [];
+  const out: Array<{ start: number; end: number; state: SegmentState }> = [];
+  for (const s of segs) {
+    const off = offsets.get(s.id);
+    if (!off) continue;
+    const lo = Math.max(a, s.startSec);
+    const hi = Math.min(b, s.endSec);
+    if (hi - lo <= 1e-6) continue;
+    out.push({
+      start: off.start + (lo - s.startSec),
+      end: off.start + (hi - s.startSec),
+      state: s.state
+    });
+  }
+  return out;
+}
+
 /** Timeline position → source time. */
 export function sourceAt(
   segs: Segment[],

@@ -65,6 +65,7 @@
 
       if (e.key === 'Escape') {
         e.preventDefault();
+        e.stopImmediatePropagation();
         oncancel();
         return;
       }
@@ -72,6 +73,9 @@
       // because the two keys are muscle memory for the same action.
       if ((e.key === 'Delete' || e.key === 'Backspace') && !typing) {
         e.preventDefault();
+        // The editor's own Delete/Keep handlers are global too: without this
+        // the same keypress would cut the selection *and* the whole line.
+        e.stopImmediatePropagation();
         oncut();
         return;
       }
@@ -79,6 +83,8 @@
       // other focus means "confirm the words".
       if (e.key === 'Enter' && !typing && !el?.matches('[role="toolbar"] button')) {
         e.preventDefault();
+        // Same reason as Delete: Enter must not also fire another shortcut.
+        e.stopImmediatePropagation();
         oncut();
       }
     };

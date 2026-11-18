@@ -290,6 +290,36 @@ const START_KEYS = ['start', 'startSec', 'start_secs', 'startTime', 'start_time'
 const END_KEYS = ['end', 'endSec', 'end_secs', 'endTime', 'end_time', 'to', 'stop'];
 const TEXT_KEYS = ['text', 'content', 'transcript', 'caption', 'sentence', 'value', 'line'];
 
+/**
+ * Read a cue's own `words` array.
+ *
+ * ElevenLabs' JSON puts the timings **inside each segment**
+ * (`segments[].words[].start_time`), not at the document root. The old parser
+ * only looked for a top-level `words` array and therefore threw those timings
+ * away: every line arrived without `line.words`, so every word cut fell back
+ * to a character-count guess. That is exactly the "selected word, wrong audio"
+ * bug — the guess can land a syllable early or late.
+ *
+ * Spacing/silence entries carry no letters and are dropped; the rest keep
+ * their own start/end, so the cut is as exact as the file's own stamps.
+ */
+function wordsFromObject(obj: LooseObject): ImportCue['words'] | undefined {
+  if (!Array.isArray(obj.words)) return undefined;
+  const out: Array<{ word: string; start: number; end: number }> = [];
+  for (const entry of obj.words) {
+    if (!isObject(entry)) continue;
+    const type = stringAt(entry, ['type']).toLowerCase();
+    if (type === 'spacing' || type === 'silence') continue;
+    const word = stringAt(entry, ['word', 'text', 'content', 'value']);
+    if (!word.trim()) continue;
+    const start = numberAt(entry, START_KEYS);
+    const end = numberAt(entry, END_KEYS);
+    if (start === null || end === null || end <= start) continue;
+    out.push({ word: word.trim(), start, end });
+  }
+  return out.length ? out : undefined;
+}
+
 function cueFromObject(obj: LooseObject): ImportCue | null {
   const text = stringAt(obj, TEXT_KEYS);
   if (!text && !Array.isArray(obj.words)) return null;
@@ -310,6 +340,7 @@ function cueFromObject(obj: LooseObject): ImportCue | null {
       startSec: start,
       endSec: end,
       text: cleanText(joined),
+      words: wordsFromObject(obj),
       ...speakerFromObject(obj)
     };
   }
@@ -317,6 +348,7 @@ function cueFromObject(obj: LooseObject): ImportCue | null {
     startSec: start,
     endSec: end,
     text: cleanText(text),
+    words: wordsFromObject(obj),
     ...speakerFromObject(obj)
   };
 }
@@ -366,11 +398,23 @@ function findWordArray(value: unknown, depth = 0): LooseObject[] | null {
   const words = value.words;
   if (Array.isArray(words) && words.length) {
     const first = words[0];
-    if (isObject(first) && numberAt(first, ['start', 'start_secs', 'startSec']) !== null) {
+    // ElevenLabs calls the fields `start_time` / `end_time`, AssemblyAI uses
+    // `start` / `end`, and the app's own wire format uses `start_secs`. All
+    // three are word arrays; only looking for the last one discarded the
+    // timings of the most common export.
+    if (
+      isObject(first) &&
+      numberAt(first, ['start', 'start_time', 'startTime', 'start_secs', 'startSec']) !== null &&
+      numberAt(first, ['end', 'end_time', 'endTime', 'end_secs', 'endSec']) !== null
+    ) {
       return words.filter(isObject);
     }
   }
-  for (const child of Object.values(value)) {
+  for (const [key, child] of Object.entries(value)) {
+    // Never descend into a cue array: its `words` belong to one segment, and
+    // treating the first one as the whole document would drop every other
+    // line. Per-cue words are read by `cueFromObject` instead.
+    if (CUE_KEYS.includes(key)) continue;
     const found = findWordArray(child, depth + 1);
     if (found) return found;
   }
@@ -408,8 +452,8 @@ function cuesFromWords(words: LooseObject[]): ImportCue[] {
     const raw = stringAt(entry, TEXT_KEYS) || stringAt(entry, ['word']);
     if (!raw.trim()) continue;
     if (type === 'spacing' || type === 'silence') continue;
-    const start = numberAt(entry, ['start', 'start_secs', 'startSec']) ?? 0;
-    const end = numberAt(entry, ['end', 'end_secs', 'endSec']) ?? start;
+    const start = numberAt(entry, START_KEYS) ?? 0;
+    const end = numberAt(entry, END_KEYS) ?? start;
     const speaker = speakerFromObject(entry).speaker;
     const word = raw.trim();
     const gap = current ? start - current.end : 0;
@@ -772,6 +816,168 @@ export function buildTranscriptLines(
     coveredSec: covered,
     dropped
   };
+}
+
+/** One timed word from any import shape, flattened into clock order. */
+export interface TimedWord {
+  word: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * Every word timing the imported document carries.
+ *
+ * Used to repair projects imported before nested `segments[].words` were read:
+ * the rows are still there, and the same JSON file is still on disk, so the
+ * exact timings can be re-attached without re-importing (and losing) the cuts.
+ */
+export function collectImportWords(doc: ImportDoc): TimedWord[] {
+  const out: TimedWord[] = [];
+  for (const cue of doc.cues) {
+    if (!cue.words?.length) continue;
+    for (const w of cue.words) {
+      if (!w.word.trim() || !(w.end > w.start)) continue;
+      out.push({ word: w.word.trim(), start: w.start, end: w.end });
+    }
+  }
+  out.sort((a, b) => a.start - b.start || a.end - b.end);
+  return out;
+}
+
+/**
+ * Lowercase letters/numbers only — the same comparison a listener makes.
+ *
+ * Combining marks (`\p{M}`) belong to the letter they sit on. Devanagari
+ * matras, the virama and the anusvara are marks, not letters: leaving them out
+ * split "कुछ" into `["क", "छ"]` and "किए" into `["क", "ए"]`, which made every
+ * Hindi token match every other one (and left two real SHORT6 rows unmatched,
+ * because their token count could never agree with the file). NFC first so the
+ * same word typed two ways compares equal.
+ */
+function wordKey(text: string): string[] {
+  return text
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t && /[\p{L}\p{N}]/u.test(t));
+}
+
+/**
+ * Attach imported word timings to rows that lost them.
+ *
+ * The rows are matched by **time first** (their own start/end already bracket
+ * the words) and the text must agree, so a mis-timed neighbour cannot steal a
+ * word. When the row's times drift too far from the file, a sequential token
+ * match is tried: the row text is the file's own words in order, so the
+ * sequence is unambiguous and a retake is skipped rather than reused.
+ *
+ * Rows that already carry `words` are never touched. Returns a new array (the
+ * store's `$state.raw` sees one assignment) and how many rows were repaired.
+ */
+export function attachWordsToLines(
+  lines: TranscriptLine[],
+  words: TimedWord[]
+): { lines: TranscriptLine[]; attached: number; wordCount: number } {
+  if (!words.length || !lines.length) return { lines, attached: 0, wordCount: 0 };
+
+  const claimed = new Uint8Array(words.length);
+  let attached = 0;
+  let used = 0;
+  let cursor = 0;
+
+  const out = lines.map((line) => {
+    if (line.words?.length) {
+      // Keep the cursor past the words this row already owns.
+      const last = line.words[line.words.length - 1];
+      while (cursor < words.length && words[cursor].end <= last.end + 0.001) cursor++;
+      return line;
+    }
+    const want = wordKey(line.text);
+    if (!want.length) return line;
+
+    const take = (indexes: number[]): TimedWord[] | null => {
+      if (!indexes.length) return null;
+      if (indexes.some((i) => claimed[i])) return null;
+      const picked = indexes.map((i) => words[i]);
+      const got = picked.flatMap((w) => wordKey(w.word));
+      if (got.length !== want.length) return null;
+      for (let i = 0; i < want.length; i++) if (got[i] !== want[i]) return null;
+      return picked;
+    };
+
+    // 1 — time window: a row's own bracket is the strongest signal.
+    const inWindow: number[] = [];
+    for (let i = 0; i < words.length; i++) {
+      if (claimed[i]) continue;
+      const mid = (words[i].start + words[i].end) / 2;
+      if (mid >= line.startSec - 0.2 && mid <= line.endSec + 0.2) inWindow.push(i);
+    }
+    let picked = take(inWindow);
+    let pickedAt: number[] = inWindow;
+
+    // 2 — sequential fallback: find the row's first word at/after the cursor,
+    // then require every token to follow in order. This is what skips a retake.
+    //
+    // Every matched word must also start near the row's own bracket. Without
+    // that guard a row whose text covers a *later* repeated take (a split made
+    // before word timings existed keeps the whole sentence in both halves)
+    // would claim words seconds past its end and leave the row that really
+    // owns them with nothing — exactly what happened to SHORT6's "और कुछ…".
+    //
+    // The check is on the word's **start**, not its midpoint: a row boundary
+    // can legitimately fall inside the last word (`cut at 80.02`, the word
+    // runs to 80.82), and those words still belong to this row. Half a second
+    // is the widest drift such a boundary can have and still be the same
+    // words.
+    if (!picked) {
+      const nearRow = (w: TimedWord) =>
+        w.start >= line.startSec - 0.5 && w.start <= line.endSec + 0.5;
+      const first = want[0];
+      for (let start = cursor; start < words.length && !picked; start++) {
+        if (!wordKey(words[start].word).includes(first)) continue;
+        const indexes: number[] = [];
+        let wi = start;
+        let ok = true;
+        for (const token of want) {
+          let found = -1;
+          for (let probe = wi; probe < Math.min(words.length, wi + 4); probe++) {
+            if (wordKey(words[probe].word).includes(token)) {
+              found = probe;
+              break;
+            }
+          }
+          if (found < 0) {
+            ok = false;
+            break;
+          }
+          indexes.push(found);
+          wi = found + 1;
+        }
+        if (!ok) continue;
+        if (!indexes.every((i) => nearRow(words[i]))) continue;
+        const candidate = take(indexes);
+        if (candidate) {
+          picked = candidate;
+          pickedAt = indexes;
+        }
+      }
+    }
+
+    if (!picked) return line;
+    for (const i of pickedAt) claimed[i] = 1;
+    for (const i of pickedAt) cursor = Math.max(cursor, i + 1);
+    attached++;
+    used += picked.length;
+    return {
+      ...line,
+      words: picked.map((w) => ({ word: w.word, start: w.start, end: w.end }))
+    };
+  });
+
+  return { lines: attached ? out : lines, attached, wordCount: used };
 }
 
 /** What the modal shows under the textarea. */

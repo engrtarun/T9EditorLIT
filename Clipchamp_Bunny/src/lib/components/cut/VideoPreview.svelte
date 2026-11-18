@@ -6,6 +6,7 @@
   import { fmtShort, fmtTime } from '../../utils';
   import { framePreset } from '../../project-frame';
   import { watchWordSelection, wordCount, type WordSelection } from '../../word-selection';
+  import { wordCutPreview } from '../../stores/wordCutPreview.svelte';
   import { toast } from '../../stores/toast.svelte';
   import AmbientGlow from './AmbientGlow.svelte';
   import WordCutToolbar from './WordCutToolbar.svelte';
@@ -297,17 +298,19 @@
 
   // Live selection, exactly like the transcript panel: the toolbar is already
   // there on the first dragged word instead of waiting for `mouseup`.
-  $effect(() =>
-    watchWordSelection(
+  $effect(() => {
+    const stop = watchWordSelection(
       () => stripText,
       (hit) => {
         if (!hit) {
           if (stripSel) stripSel = null;
+          wordCutPreview.clear('strip');
           return;
         }
         const plan = project.previewWordCut(hit.lineId, hit.from, hit.to);
         if (!plan) {
           if (stripSel) stripSel = null;
+          wordCutPreview.clear('strip');
           return;
         }
         stripSel = {
@@ -321,9 +324,20 @@
           snapped: plan.snapped,
           words: wordCount(hit.text)
         };
+        wordCutPreview.set(
+          'strip',
+          [{ fromSec: plan.fromSec, toSec: plan.toSec }],
+          hit.text,
+          plan.approx,
+          plan.snapped
+        );
       }
-    )
-  );
+    );
+    return () => {
+      stop();
+      wordCutPreview.clear('strip');
+    };
+  });
 
   function applyStripCut() {
     const picked = stripSel;
@@ -334,6 +348,7 @@
       return;
     }
     stripSel = null;
+    wordCutPreview.clear();
     window.getSelection()?.removeAllRanges();
     const tail = res.snapped ? ' · audio gap par snap' : '';
     toast.push(
@@ -346,15 +361,21 @@
 
   function dismissStripCut() {
     stripSel = null;
+    wordCutPreview.clear();
     window.getSelection()?.removeAllRanges();
   }
 
   // The strip follows the playhead: a pending selection belongs to the line it
   // was drawn on, so moving to another line must not leave a stale toolbar.
+  // The timeline band is cleared with it, otherwise it would keep pointing at
+  // words the user is no longer looking at.
   $effect(() => {
     const id = curLine?.id;
     untrack(() => {
-      if (stripSel && stripSel.lineId !== id) stripSel = null;
+      if (stripSel && stripSel.lineId !== id) {
+        stripSel = null;
+        wordCutPreview.clear();
+      }
     });
   });
 

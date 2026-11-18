@@ -29,7 +29,13 @@ import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
 import { detectQualitySuggestions, type QualitySuggestion } from '../suggestions';
 import { chunkSourceKey } from '../cloud-contract';
 import type { LayoutReport, MediaReport } from '../media-report';
-import type { BuiltImport, ImportFormat } from '../transcript-import';
+import {
+  attachWordsToLines,
+  collectImportWords,
+  parseTranscript,
+  type BuiltImport,
+  type ImportFormat
+} from '../transcript-import';
 import { tagIcon, tagsOf } from '../transcript-tags';
 import { planWordCut, type WordCutPlan } from '../word-cut';
 import { snapPlanToAudio } from '../wave-snap';
@@ -130,6 +136,7 @@ import {
   logEditAction,
   onTranscriptProgress,
   probeMedia,
+  readTranscriptFile,
   rememberSourceFingerprint,
   removeAudioChunk,
   resumeProject,
@@ -165,6 +172,18 @@ interface Snapshot {
 }
 
 export type TrackId = 'video' | 'audio';
+
+/**
+ * Smallest clip a split may create, in seconds.
+ *
+ * This used to be 0.25 s for a transcript row (0.35 s for a block), which
+ * turned a legitimate word cut into "Split nahi hua — line bahut chhoti hai":
+ * the export *can* carry a 40 ms piece — it re-encodes anything shorter than a
+ * GOP — so the editor must not refuse to make one. 10 ms is one audio frame at
+ * 100 Hz, small enough for the shortest word a speaker utters and still
+ * non-zero, so a split never makes an empty row.
+ */
+const MIN_SPLIT_SEC = 0.01;
 
 /**
  * Splitting produces `ln-012-1a` / `ln-012-1b`; undo must still find the parent.
@@ -930,6 +949,13 @@ class ProjectStore {
 
     this.ready = true;
 
+    // Older imports stored ElevenLabs' words only as text (the timings lived
+    // inside `segments[]` and the parser missed them). Repair that in the
+    // background: the transcript is usable meanwhile and the first pass that
+    // finds timings saves them, so this costs one file read per project at
+    // most. Not awaited - opening the editor must not wait on a JSON parse.
+    void this.backfillWordTimings();
+
     // Case 10: a half-done transcript can pick itself up after a dead network
     // or a power cut — but only when the user has switched that on, and only
     // when the plan has already bought a chunk. A project the user never
@@ -1255,6 +1281,48 @@ class ProjectStore {
       };
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Re-attach word timings to rows imported before nested words were read.
+   *
+   * The SHORT6 project is the reason this exists: 35 rows landed with empty
+   * `words`, so every word cut was a character-count guess on the waveform.
+   * The source JSON is still on disk (the import record keeps its path), so
+   * the exact timings can be restored **without** re-importing — which would
+   * throw away the user's cuts and splits.
+   *
+   * Runs in the background after a project opens. Nothing is visible except
+   * the next word cut landing on the millisecond it should; failures are
+   * silent because a moved file must not turn a working project into an error.
+   */
+  async backfillWordTimings(): Promise<{ attached: number; wordCount: number }> {
+    const info = this.importedTranscript;
+    // Only a JSON import can carry word timings; an SRT/VTT row has none.
+    if (!info?.path || info.format !== 'json') return { attached: 0, wordCount: 0 };
+    if (!this.lines.some((l) => !l.words?.length)) return { attached: 0, wordCount: 0 };
+    try {
+      const file = await readTranscriptFile(info.path);
+      const doc = parseTranscript(file.text, {
+        fileName: file.name,
+        durationSecs: this.durationSec
+      });
+      const words = collectImportWords(doc);
+      if (!words.length) return { attached: 0, wordCount: 0 };
+      // Read the live rows *after* the await: the user may have cut or split
+      // while the file was being read, and the new rows are what must be
+      // matched. `attachWordsToLines` never touches a row that has timings.
+      const res = attachWordsToLines(this.lines, words);
+      if (!res.attached) return { attached: 0, wordCount: 0 };
+      this.lines = res.lines;
+      this.refreshShape();
+      // Persist the repair. No `commit()`: this is not an edit the user made,
+      // so it must not push an undo step they never asked for.
+      this.scheduleAutosave();
+      return { attached: res.attached, wordCount: res.wordCount };
+    } catch {
+      return { attached: 0, wordCount: 0 };
     }
   }
 
@@ -3943,16 +4011,18 @@ class ProjectStore {
   splitAt(sec: number): boolean {
     let idx = this.lineAt(sec);
     const under = idx >= 0 ? this.lines[idx] : null;
-    const strictlyInside = (l: TranscriptLine) => sec > l.startSec + 0.25 && sec < l.endSec - 0.25;
+    const strictlyInside = (l: TranscriptLine) =>
+      sec > l.startSec + MIN_SPLIT_SEC && sec < l.endSec - MIN_SPLIT_SEC;
 
     if (!under || !strictlyInside(under)) {
       // The playhead is over a *block*, not a transcript row — a red cut, a
       // grey silence, or the gap between two kept rows. The timeline is the
       // master, so the split cuts the block in two instead of silently
-      // splitting whichever row the cursor happened to be on. 0.35 s keeps
-      // the halves usable (a 0.1 s sliver is not a clip).
+      // splitting whichever row the cursor happened to be on. Even a very
+      // small block may be split: the export re-encodes short pieces, so a
+      // 10 ms sliver is still real material.
       const seg = this.orderedSegments.find(
-        (s) => sec > s.startSec + 0.35 && sec < s.endSec - 0.35
+        (s) => sec > s.startSec + MIN_SPLIT_SEC && sec < s.endSec - MIN_SPLIT_SEC
       );
       if (seg) {
         this.commit();
@@ -3964,7 +4034,8 @@ class ProjectStore {
         // the mark becomes a hard clip boundary and the split lands as two
         // blocks instead of doing nothing.
         const dur = this.durationSec;
-        if (dur <= 0.5 || sec <= 0.25 || sec >= dur - 0.25) return false;
+        if (dur <= 2 * MIN_SPLIT_SEC || sec <= MIN_SPLIT_SEC || sec >= dur - MIN_SPLIT_SEC)
+          return false;
         this.commit();
         this.splitMarks = [...this.splitMarks, sec].sort((a, b) => a - b);
         return true;
@@ -3973,10 +4044,21 @@ class ProjectStore {
     }
 
     const line = this.lines[idx];
-    // Clipchamp's AI auto-cut treats 3 s+ as a cuttable silence; for a manual
-    // split we only need a usable sliver, so 0.25 s is the floor.
-    if (line.endSec - line.startSec < 0.5) return false;
-    const at = Math.max(line.startSec + 0.25, Math.min(line.endSec - 0.25, sec));
+    // A row shorter than two minimum pieces cannot be split without making an
+    // empty half. Everything else can — word cuts routinely leave rows of a
+    // few hundred milliseconds.
+    const span = line.endSec - line.startSec;
+    if (span <= 2 * MIN_SPLIT_SEC) return false;
+    // A playhead the user actually parked inside the row splits exactly where
+    // it is, however close to the edge that is. The clamp only applies to the
+    // "click a row, then press S" gesture, where the playhead sits *on* the
+    // row's start: there a 10 ms head would be an accident, so the old 0.25 s
+    // default is kept.
+    const edge = Math.min(0.25, span / 2);
+    const at =
+      sec > line.startSec + MIN_SPLIT_SEC && sec < line.endSec - MIN_SPLIT_SEC
+        ? sec
+        : Math.max(line.startSec + edge, Math.min(line.endSec - edge, sec));
 
     this.commit();
     const base = baseId(line.id);
@@ -4111,8 +4193,8 @@ class ProjectStore {
     const i = this.clips.findIndex((c) => c.id === clipId);
     if (i < 0) return false;
     const c = this.clips[i];
-    const at = Math.max(c.inSec + 0.2, Math.min(c.outSec - 0.2, localSec));
-    if (at - c.inSec < 0.2 || c.outSec - at < 0.2) return false;
+    const at = Math.max(c.inSec + MIN_SPLIT_SEC, Math.min(c.outSec - MIN_SPLIT_SEC, localSec));
+    if (at - c.inSec < MIN_SPLIT_SEC || c.outSec - at < MIN_SPLIT_SEC) return false;
     const left: ProjectClip = { ...c, id: crypto.randomUUID(), outSec: at };
     const right: ProjectClip = { ...c, id: crypto.randomUUID(), inSec: at };
     this.clips = [...this.clips.slice(0, i), left, right, ...this.clips.slice(i + 1)];
@@ -4149,7 +4231,8 @@ class ProjectStore {
     const idx = this.lineAt(sec);
     if (idx < 0) return false;
     const line = this.lines[idx];
-    if (sec <= line.startSec + 0.15 || sec >= line.endSec - 0.15) return false;
+    // A 10 ms piece is still material, so only an empty half is refused here.
+    if (sec <= line.startSec + MIN_SPLIT_SEC || sec >= line.endSec - MIN_SPLIT_SEC) return false;
 
     this.commit();
     const base = baseId(line.id);
