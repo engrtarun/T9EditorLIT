@@ -7,6 +7,21 @@ export function fmtTime(sec: number): string {
 }
 
 /**
+ * `0:01.486` — the form a cut boundary is shown in.
+ *
+ * A word cut is judged by where it lands, so the toolbar prints milliseconds.
+ * `fmtTime` is for the playhead (centiseconds are plenty there) and would
+ * round 1.486 to 1.49, which reads as a different edit.
+ */
+export function fmtMs(sec: number): string {
+  const ms = Math.max(0, Math.round(sec * 1000));
+  const m = Math.floor(ms / 60000);
+  const rest = ms - m * 60000;
+  const s = Math.floor(rest / 1000);
+  return `${m}:${String(s).padStart(2, '0')}.${String(rest - s * 1000).padStart(3, '0')}`;
+}
+
+/**
  * How the playhead time is written. `auto` is the app's historical form
  * (`m:ss.cc`), with hours only when the project is long enough to need them.
  */

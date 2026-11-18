@@ -87,6 +87,9 @@ const B = (
 export const BINDINGS: Entry[] = [
   // ── tabs ────────────────────────────────────────────────────────────────
   B('newTab', ['ctrl+t'], true),
+  // The app-wide "browser, anywhere" chord (src/lib/browser-hotkey.ts). Inside
+  // the browser it means a new tab, exactly like Ctrl+T.
+  B('newTab', ['ctrl+shift+b'], true),
   B('closeTab', ['ctrl+w', 'ctrl+f4'], true),
   B('reopenClosedTab', ['ctrl+shift+t'], true),
   B('newTab', ['ctrl+n'], true), // Firefox "new window" — one-window app: a tab

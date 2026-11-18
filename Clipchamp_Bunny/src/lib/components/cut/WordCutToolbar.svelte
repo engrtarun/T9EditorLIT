@@ -11,30 +11,33 @@
    * It is fixed-position because it must escape the transcript's scroll
    * container; `above` flips it over the words when the selection is low on the
    * screen, and the horizontal clamp keeps it inside a narrow window.
+   *
+   * The range is printed to the millisecond on purpose. "0.9s" hides whether
+   * the cut starts on the pause or 80 ms into the previous word; `0:01.240 →
+   * 0:02.980` is a claim the user can check against the audio, and it is the
+   * exact range `cutWords` will use.
    */
-  import { onMount } from 'svelte';
+  import { fmtMs } from '../../utils';
 
   interface Props {
     /** The exact words that will be cut, as they appear in the line. */
     text: string;
-    /** True when the line has no word timings — the time is a character-count guess. */
-    approx: boolean;
+    /** Clock range `cutWords` will remove, after the audio snap. */
+    fromSec: number;
+    toSec: number;
+    /** True when the boundaries were pulled onto a real pause in the audio. */
+    snapped: boolean;
     words: number;
-    /** Length of the range that will be removed, in seconds. */
-    seconds: number;
     /** Viewport box of the selected words (see `readWordSelection`). */
     rect: { left: number; top: number; bottom: number; width: number };
     oncancel: () => void;
     oncut: () => void;
   }
 
-  let { text, approx, words, seconds, rect, oncancel, oncut }: Props = $props();
-
-  let card: HTMLDivElement | null = $state(null);
-  let cutBtn: HTMLButtonElement | null = $state(null);
+  let { text, fromSec, toSec, snapped, words, rect, oncancel, oncut }: Props = $props();
 
   /** Half the card width: the clamp keeps both edges on screen. */
-  const HALF = 182;
+  const HALF = 190;
 
   const above = $derived(rect.top > 150);
   const centerX = $derived(
@@ -42,16 +45,18 @@
   );
   const top = $derived(above ? Math.max(8, rect.top - 10) : rect.bottom + 10);
 
-  const span = $derived(
-    seconds >= 10 ? `${Math.round(seconds)}s` : `${Math.max(0.1, seconds).toFixed(1)}s`
-  );
+  const span = $derived(Math.max(0, toSec - fromSec));
+  const length = $derived(span >= 10 ? `${span.toFixed(2)}s` : `${span.toFixed(3)}s`);
 
-  onMount(() => {
-    // Focus the primary action, so Enter confirms and the selection can still
-    // be cancelled with Esc without hunting for the card.
-    cutBtn?.focus({ preventScroll: true });
-  });
-
+  /**
+   * The keyboard lives on `window` and the card never steals focus.
+   *
+   * Focusing the Cut button here would be the obvious accessibility move, but
+   * this toolbar appears **while the mouse is still dragging** — a programmatic
+   * focus in the middle of a text-selection drag can end the drag, and the
+   * whole point of the live watcher is that the selection keeps growing under
+   * the pointer. Enter / Delete / Esc are handled globally instead.
+   */
   $effect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = document.activeElement as HTMLElement | null;
@@ -70,7 +75,9 @@
         oncut();
         return;
       }
-      if (e.key === 'Enter' && document.activeElement !== cutBtn) {
+      // A focused toolbar button owns its own Enter (it clicks itself); every
+      // other focus means "confirm the words".
+      if (e.key === 'Enter' && !typing && !el?.matches('[role="toolbar"] button')) {
         e.preventDefault();
         oncut();
       }
@@ -81,12 +88,11 @@
 </script>
 
 <div
-  bind:this={card}
   role="toolbar"
   aria-label="Selected words — cut or cancel"
   aria-orientation="horizontal"
   tabindex="-1"
-  class="fixed z-50 w-[364px] max-w-[calc(100vw-16px)] rounded-xl border border-nc-line-2
+  class="fixed z-50 w-[380px] max-w-[calc(100vw-16px)] rounded-xl border border-nc-line-2
          bg-nc-panel/95 p-2.5 shadow-2xl shadow-black/50 backdrop-blur-md"
   style="left:{centerX}px; top:{top}px; transform:translate(-50%, {above ? '-100%' : '0'});"
   onmousedown={(e) => e.preventDefault()}
@@ -111,23 +117,36 @@
     <p class="line-clamp-2 min-w-0 flex-1 text-[11.5px] leading-snug text-nc-txt" title={text}>
       “{text}”
     </p>
-    {#if approx}
-      <span
-        class="mt-[1px] shrink-0 rounded border border-amber-400/40 bg-amber-400/10 px-1 text-[8px]
-               font-bold tracking-wider text-amber-300"
-        title="Is line me word timings nahi hain — cut words ke character count se baanta jayega"
-      >
-        APPROX
-      </span>
-    {/if}
   </div>
 
-  <div class="mt-2 flex items-center gap-1.5">
-    <span class="min-w-0 truncate font-mono text-[9.5px] text-nc-mut-2">
-      {span} · {words}
+  <div class="mt-1.5 pl-7">
+    <div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10px] leading-4">
+      <span class="font-semibold text-nc-txt">{fmtMs(fromSec)}</span>
+      <span class="text-nc-mut-2" aria-hidden="true">→</span>
+      <span class="font-semibold text-nc-txt">{fmtMs(toSec)}</span>
+      {#if snapped}
+        <span
+          class="ml-0.5 inline-flex items-center gap-0.5 rounded bg-nc-brand/12 px-1 py-px
+                 font-sans text-[8px] font-semibold tracking-wide text-nc-brand"
+          title="Boundaries audio ke asli quiet gap par snap hui hain — yahi millisecond cut hoga"
+        >
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect x="2" y="9" width="2.4" height="6" rx="1" />
+            <rect x="7" y="5" width="2.4" height="14" rx="1" />
+            <rect x="12" y="7" width="2.4" height="10" rx="1" />
+            <rect x="17" y="3" width="2.4" height="18" rx="1" />
+          </svg>
+          AUDIO SNAP
+        </span>
+      {/if}
+    </div>
+    <p class="mt-0.5 font-mono text-[9.5px] text-nc-mut-2">
+      {length} · {words}
       {words === 1 ? 'word' : 'words'}
-    </span>
-    <span class="flex-1"></span>
+    </p>
+  </div>
+
+  <div class="mt-2 flex items-center justify-end gap-1.5">
     <button
       onclick={oncancel}
       class="rounded-md px-2 py-1 text-[10.5px] font-medium text-nc-mut transition-colors
@@ -137,7 +156,6 @@
       Cancel
     </button>
     <button
-      bind:this={cutBtn}
       onclick={oncut}
       class="flex items-center gap-1.5 rounded-md bg-nc-red px-2.5 py-1 text-[10.5px] font-semibold
              text-white transition-[filter] duration-150 hover:brightness-110"

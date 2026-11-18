@@ -48,6 +48,13 @@ export interface WordCutPart {
 export interface WordCutPlan {
   /** True when any time came from the character-count fallback. */
   approx: boolean;
+  /**
+   * True once `snapPlanToAudio` moved a boundary onto a real pause in the
+   * waveform. The toolbar uses it to say *why* the milliseconds can be
+   * trusted, instead of showing an "approx" badge for every line that lacks
+   * word timings.
+   */
+  snapped: boolean;
   /** The selection covered every word: this is a whole-line cut. */
   whole: boolean;
   /** Clock range of the removed words. */
@@ -198,6 +205,7 @@ export function planWordCut(
 
   return {
     approx: tokens[first].approx,
+    snapped: false,
     whole,
     fromSec,
     toSec,

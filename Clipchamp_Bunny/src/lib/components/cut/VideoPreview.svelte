@@ -5,8 +5,7 @@
   import { thumbUrl } from '../../media';
   import { fmtShort, fmtTime } from '../../utils';
   import { framePreset } from '../../project-frame';
-  import { planWordCut } from '../../word-cut';
-  import { readWordSelection, wordCount, type WordSelection } from '../../word-selection';
+  import { watchWordSelection, wordCount, type WordSelection } from '../../word-selection';
   import { toast } from '../../stores/toast.svelte';
   import AmbientGlow from './AmbientGlow.svelte';
   import WordCutToolbar from './WordCutToolbar.svelte';
@@ -286,32 +285,45 @@
   let stripSel = $state<
     | ({
         lineId: string;
-        approx: boolean;
+        fromSec: number;
+        toSec: number;
+        snapped: boolean;
         words: number;
-        seconds: number;
       } & Pick<WordSelection, 'from' | 'to' | 'text' | 'rect'>)
     | null
   >(null);
 
   const shorten = (s: string) => (s.length > 48 ? `${s.slice(0, 48).trimEnd()}…` : s);
 
-  function readStripCut() {
-    if (!curLine) return;
-    const picked = readWordSelection(stripText);
-    if (!picked) return;
-    const plan = planWordCut(curLine, picked.from, picked.to);
-    if (!plan) return;
-    stripSel = {
-      lineId: curLine.id,
-      from: picked.from,
-      to: picked.to,
-      text: picked.text,
-      rect: picked.rect,
-      approx: plan.approx,
-      words: wordCount(picked.text),
-      seconds: plan.toSec - plan.fromSec
-    };
-  }
+  // Live selection, exactly like the transcript panel: the toolbar is already
+  // there on the first dragged word instead of waiting for `mouseup`.
+  $effect(() =>
+    watchWordSelection(
+      () => stripText,
+      (hit) => {
+        if (!hit) {
+          if (stripSel) stripSel = null;
+          return;
+        }
+        const plan = project.previewWordCut(hit.lineId, hit.from, hit.to);
+        if (!plan) {
+          if (stripSel) stripSel = null;
+          return;
+        }
+        stripSel = {
+          lineId: hit.lineId,
+          from: hit.from,
+          to: hit.to,
+          text: hit.text,
+          rect: hit.rect,
+          fromSec: plan.fromSec,
+          toSec: plan.toSec,
+          snapped: plan.snapped,
+          words: wordCount(hit.text)
+        };
+      }
+    )
+  );
 
   function applyStripCut() {
     const picked = stripSel;
@@ -323,7 +335,7 @@
     }
     stripSel = null;
     window.getSelection()?.removeAllRanges();
-    const tail = res.approx ? ' · word timings nahi thin, andaazan' : '';
+    const tail = res.snapped ? ' · audio gap par snap' : '';
     toast.push(
       'cut',
       res.rows > 1
@@ -545,11 +557,12 @@
             <!-- Full line: wraps, never truncates. An unusually long imported
                  line scrolls inside a capped box instead of eating the video.
                  This is a text-selection surface, not a click control: the
-                 mouseup only reads the drag, nothing activates. -->
+                 selection watcher reads the drag, nothing activates. -->
             <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
             <p
               bind:this={stripText}
               data-line-text
+              data-line-id={curLine.id}
               class="nc-scroll max-h-[5.5rem] min-h-4 min-w-0 flex-1 select-text overflow-y-auto text-xs
                      leading-5
                      {curLine.keep === 'cut'
@@ -557,7 +570,6 @@
                 : 'text-nc-txt'}"
               dir="auto"
               title="Words drag karke cut karo — Enter ya Delete se confirm"
-              onmouseup={readStripCut}
             >
               {curLine.text}
             </p>
@@ -654,9 +666,10 @@
     {#if stripSel}
       <WordCutToolbar
         text={stripSel.text}
-        approx={stripSel.approx}
+        fromSec={stripSel.fromSec}
+        toSec={stripSel.toSec}
+        snapped={stripSel.snapped}
         words={stripSel.words}
-        seconds={stripSel.seconds}
         rect={stripSel.rect}
         oncancel={dismissStripCut}
         oncut={applyStripCut}

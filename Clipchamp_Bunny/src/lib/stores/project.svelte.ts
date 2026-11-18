@@ -31,7 +31,8 @@ import { chunkSourceKey } from '../cloud-contract';
 import type { LayoutReport, MediaReport } from '../media-report';
 import type { BuiltImport, ImportFormat } from '../transcript-import';
 import { tagIcon, tagsOf } from '../transcript-tags';
-import { planWordCut } from '../word-cut';
+import { planWordCut, type WordCutPlan } from '../word-cut';
+import { snapPlanToAudio } from '../wave-snap';
 import {
   classifyGaps,
   cutCandidates,
@@ -3990,6 +3991,22 @@ class ProjectStore {
   }
 
   /**
+   * The plan a word cut would run — the same one the toolbar shows.
+   *
+   * Both the preview and the commit come through here, so the milliseconds on
+   * the button are the milliseconds that are cut. Snapping to the waveform
+   * happens once, in `snapPlanToAudio`; a caller that recomputed the plan
+   * differently would make the toolbar lie.
+   */
+  previewWordCut(lineId: string, selectionFrom: number, selectionTo: number): WordCutPlan | null {
+    const line = this.lines.find((l) => l.id === lineId);
+    if (!line) return null;
+    const plan = planWordCut(line, selectionFrom, selectionTo);
+    if (!plan) return null;
+    return snapPlanToAudio(plan, this.waveform, line.startSec, line.endSec);
+  }
+
+  /**
    * Cut **part of one line** — the words the user selected in the transcript.
    *
    * "machli jal ki rani h" with "jal ki rani" selected becomes three rows:
@@ -4000,20 +4017,21 @@ class ProjectStore {
    * user would see one clip with a hole instead of the three they asked for.
    *
    * The mapping from a browser selection (character offsets) to seconds lives
-   * in `lib/word-cut.ts` and is unit-tested. Without word timings the cut is
-   * spread over the line by character count and `approx` comes back true — the
-   * panel says so before the user commits.
+   * in `lib/word-cut.ts` and is unit-tested. When the line has no word timings
+   * the character-count estimate is pulled onto the quiet gap in the waveform
+   * (`lib/wave-snap.ts`), which is what makes a pasted SRT cut on the pause
+   * instead of halfway through a word.
    */
   cutWords(
     lineId: string,
     selectionFrom: number,
     selectionTo: number
-  ): { ok: boolean; approx: boolean; rows: number; text: string } {
+  ): { ok: boolean; approx: boolean; snapped: boolean; rows: number; text: string } {
     const idx = this.lines.findIndex((l) => l.id === lineId);
-    if (idx < 0) return { ok: false, approx: false, rows: 0, text: '' };
+    if (idx < 0) return { ok: false, approx: false, snapped: false, rows: 0, text: '' };
     const line = this.lines[idx];
-    const plan = planWordCut(line, selectionFrom, selectionTo);
-    if (!plan) return { ok: false, approx: false, rows: 0, text: '' };
+    const plan = this.previewWordCut(lineId, selectionFrom, selectionTo);
+    if (!plan) return { ok: false, approx: false, snapped: false, rows: 0, text: '' };
 
     this.commit();
 
@@ -4022,7 +4040,7 @@ class ProjectStore {
     if (plan.whole || (!plan.prefix && !plan.suffix)) {
       this.lines = this.lines.map((l) => (l.id === lineId ? { ...l, keep: 'cut' } : l));
       this.cursor = idx;
-      return { ok: true, approx: plan.approx, rows: 1, text: plan.cut.text };
+      return { ok: true, approx: plan.approx, snapped: plan.snapped, rows: 1, text: plan.cut.text };
     }
 
     const base = baseId(line.id);
@@ -4072,7 +4090,13 @@ class ProjectStore {
     this.refreshShape();
     // Rows + split marks are an edit: write them (and the UI state) to disk.
     this.scheduleAutosave();
-    return { ok: true, approx: plan.approx, rows: parts.length, text: plan.cut.text };
+    return {
+      ok: true,
+      approx: plan.approx,
+      snapped: plan.snapped,
+      rows: parts.length,
+      text: plan.cut.text
+    };
   }
 
   /**

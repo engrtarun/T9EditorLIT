@@ -12,6 +12,7 @@ import { cloud } from './lib/stores/cloud.svelte';
 import { app } from './lib/stores/app.svelte';
 import { mode } from './lib/stores/mode.svelte';
 import { project } from './lib/stores/project.svelte';
+import { installBrowserHotkey } from './lib/browser-hotkey';
 import { isTauri, logAppEvent, takePendingOpens, onOpenFiles } from './lib/ipc';
 
 const target = document.getElementById('app');
@@ -44,6 +45,9 @@ if (isTauri()) {
 
 // `?help=1` opens the shortcut sheet straight away — handy for a shareable link.
 if (new URLSearchParams(location.search).has('help')) layout.helpOpen = true;
+
+// Ctrl+Shift+B works on every screen, not only inside the browser view.
+installBrowserHotkey();
 
 export default mount(App, { target });
 

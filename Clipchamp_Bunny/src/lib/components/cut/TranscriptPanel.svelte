@@ -16,8 +16,7 @@
   import TranscriptImport from './TranscriptImport.svelte';
   import WordCutToolbar from './WordCutToolbar.svelte';
   import { toast } from '../../stores/toast.svelte';
-  import { planWordCut } from '../../word-cut';
-  import { readWordSelection, wordCount, type WordSelection } from '../../word-selection';
+  import { watchWordSelection, wordCount, type WordSelection } from '../../word-selection';
 
   /** The import dialog is mounted only while it is open (zero-RAM isolation). */
   let importing = $state(false);
@@ -147,14 +146,15 @@
    * A cut that only exists in the audio would be invisible here, so this is a
    * deliberate two-step: drag the words, check the toolbar anchored to them,
    * then press Cut. Nothing changes until that click, and the toolbar names the
-   * exact words and duration that will go.
+   * exact words and the millisecond range that will go.
    */
   let selCut = $state<
     | ({
         lineId: string;
-        approx: boolean;
+        fromSec: number;
+        toSec: number;
+        snapped: boolean;
         words: number;
-        seconds: number;
       } & Pick<WordSelection, 'from' | 'to' | 'text' | 'rect'>)
     | null
   >(null);
@@ -162,31 +162,40 @@
   const shorten = (s: string) => (s.length > 48 ? `${s.slice(0, 48).trimEnd()}…` : s);
 
   /**
-   * Read a mouse-drag selection that lives inside one line's text node.
+   * Follow the live selection, not the mouse release.
    *
-   * Character offsets — not pixels — because that is what the word timings are
-   * indexed by. Anything outside the host span (a drag across two rows, a
-   * click) is ignored: a word cut belongs to exactly one line. The plan is
-   * computed here, before the toolbar opens, so the duration on the button is
-   * the duration that will actually be cut.
+   * `watchWordSelection` reads `selectionchange`, so the toolbar appears on
+   * the first word of the drag and its milliseconds update as the selection
+   * grows. `project.previewWordCut` is the same call the commit uses, which is
+   * why the range shown here is the range that gets cut.
    */
-  function readSelection(e: MouseEvent, line: TranscriptLine) {
-    const row = e.currentTarget as HTMLElement | null;
-    const picked = readWordSelection(row?.querySelector<HTMLElement>('[data-line-text]'));
-    if (!picked) return;
-    const plan = planWordCut(line, picked.from, picked.to);
-    if (!plan) return;
-    selCut = {
-      lineId: line.id,
-      from: picked.from,
-      to: picked.to,
-      text: picked.text,
-      rect: picked.rect,
-      approx: plan.approx,
-      words: wordCount(picked.text),
-      seconds: plan.toSec - plan.fromSec
-    };
-  }
+  $effect(() =>
+    watchWordSelection(
+      () => scroller,
+      (hit) => {
+        if (!hit) {
+          if (selCut) selCut = null;
+          return;
+        }
+        const plan = project.previewWordCut(hit.lineId, hit.from, hit.to);
+        if (!plan) {
+          if (selCut) selCut = null;
+          return;
+        }
+        selCut = {
+          lineId: hit.lineId,
+          from: hit.from,
+          to: hit.to,
+          text: hit.text,
+          rect: hit.rect,
+          fromSec: plan.fromSec,
+          toSec: plan.toSec,
+          snapped: plan.snapped,
+          words: wordCount(hit.text)
+        };
+      }
+    )
+  );
 
   function applySelCut() {
     const picked = selCut;
@@ -198,7 +207,7 @@
     }
     selCut = null;
     window.getSelection()?.removeAllRanges();
-    const tail = res.approx ? ' · word timings nahi thin, andaazan' : '';
+    const tail = res.snapped ? ' · audio gap par snap' : '';
     toast.push(
       'cut',
       res.rows > 1
@@ -774,6 +783,7 @@
         {/if}
 
         <button
+          data-line-id={line.id}
           onclick={(e) => {
             if (e.ctrlKey || e.metaKey) {
               e.preventDefault();
@@ -787,7 +797,6 @@
           }}
           class="flex min-w-0 flex-1 items-start gap-2 text-left"
           title="Jump preview here · Ctrl+click to multi-select · drag text to cut just those words"
-          onmouseup={(e) => readSelection(e, line)}
         >
           <span class="mt-[2px] w-[66px] shrink-0 font-mono text-[9px] leading-4 text-nc-mut-2">
             <span class="block">{fmtShort(line.startSec)}</span>
@@ -1178,9 +1187,10 @@
     -->
     <WordCutToolbar
       text={selCut.text}
-      approx={selCut.approx}
+      fromSec={selCut.fromSec}
+      toSec={selCut.toSec}
+      snapped={selCut.snapped}
       words={selCut.words}
-      seconds={selCut.seconds}
       rect={selCut.rect}
       oncancel={dismissSelCut}
       oncut={applySelCut}

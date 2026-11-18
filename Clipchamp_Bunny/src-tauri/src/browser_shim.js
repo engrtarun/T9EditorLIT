@@ -585,6 +585,7 @@
    */
   const KEYS = [
     ['ctrl+t', 'newTab', 0, true],
+    ['ctrl+shift+b', 'newTab', 0, true],
     ['ctrl+w', 'closeTab', 0, true],
     ['ctrl+f4', 'closeTab', 0, true],
     ['ctrl+n', 'newTab', 0, true],
