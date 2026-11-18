@@ -692,6 +692,60 @@
     true
   );
 
+  /* ── two-finger horizontal swipe → prev/next tab (Firefox's gesture) ────
+   * "firefox ki tarah 2unglis se left right se previous or next tab me jaya
+   * ja sake". This document-start shim is the ONLY place the wheel over page
+   * content can be heard: the page is a native child HWND, so the shell's
+   * own listener (BrowserView) never sees it. The gesture is accumulated
+   * exactly like src/lib/browser-swipe.ts — horizontal-dominant events add
+   * up, any vertical scroll cancels, ±120 px fires once, then a 300 ms
+   * cooldown swallows the momentum. Mirrored rather than imported: this file
+   * is a standalone script compiled into the binary. Report through the key
+   * bridge so the existing `browser:key` → runBrowserAction path (with its
+   * "browser view must be open" gate) does the rest.
+   */
+  let swipePx = 0;
+  let swipeUntil = 0;
+  window.addEventListener(
+    'wheel',
+    (e) => {
+      if (e.ctrlKey) return; // pinch-zoom is Chromium's own gesture
+      let dx = e.deltaX;
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) {
+        dx *= 16;
+        dy *= 16;
+      } else if (e.deltaMode === 2) {
+        dx *= window.innerWidth;
+        dy *= window.innerHeight;
+      }
+      if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) >= 4) {
+        const now = Date.now();
+        if (now < swipeUntil) return; // one swipe, one switch
+        // A page that scrolls sideways owns its horizontal wheel — a
+        // carousel or a wide table must keep its own scrolling.
+        const root = document.scrollingElement || document.documentElement;
+        if (root.scrollWidth > root.clientWidth + 4) {
+          swipePx = 0;
+          return;
+        }
+        swipePx += dx;
+        if (swipePx <= -120) {
+          swipePx = 0;
+          swipeUntil = now + 300;
+          send({ t9: 'key', action: 'nextTab', value: 0 }); // fingers left
+        } else if (swipePx >= 120) {
+          swipePx = 0;
+          swipeUntil = now + 300;
+          send({ t9: 'key', action: 'prevTab', value: 0 }); // fingers right
+        }
+        return;
+      }
+      if (dy !== 0) swipePx = 0; // a vertical scroll cancels the gesture
+    },
+    true
+  );
+
   /* ── uBlock Origin Lite control bridge ────────────────────────────────
    * The T9 control bridge is a content script in the extension's isolated
    * world (see go/internal/ublock/bridge.go). It answers control requests

@@ -213,6 +213,17 @@
     // back once at the root. A list that vanished on restart was the whole
     // complaint behind "30 files, kisi ka pata nahi chala".
     void batch.hydrate();
+    // Tab chips now live in EVERY top bar (Home, Studio, browser), so the
+    // strip has to exist before the browser is ever opened: restore the
+    // metadata at shell attach. This only reads SQLite and writes tab
+    // metadata — no webview is created, nothing can play behind the
+    // dashboard (the dial state, `activeId = null`, is what it lands on).
+    void browser.restoreSession().catch(() => {
+      /* dev preview without the command bridge */
+    });
+    void browser.hydrateBookmarks().catch(() => {
+      /* same */
+    });
     let off: (() => void) | null = null;
     let dead = false;
     void onBrowserKey(({ action, value }) => {

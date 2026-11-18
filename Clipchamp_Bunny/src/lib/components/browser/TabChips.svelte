@@ -14,6 +14,17 @@
    * moment you switch away. Hard-capped at nine, exactly as before: `+` sits
    * next to this row in TopBar and explains the cap instead of doing nothing.
    *
+   * One refinement on top of that ("title tab ka tabhi dikhe jab wo khuli
+   * ho"): the stretch only happens for a tab that has a REAL page in it.
+   * The Home/new-tab is the browser's own dial, not a site — it stays a 28
+   * px icon whether or not it is the selected one, wearing only the brand
+   * ring so the selection still reads.
+   *
+   * The row is mounted in ALL THREE headers (dashboard, studio, browser) —
+   * "jagah badhne se matlab hai ki kuch jagah jaise home page of app ya
+   * studio me nahi dikhte fix karo" — and a click from outside the browser
+   * opens the view on that tab, which makes the chips a screen switcher too.
+   *
    * A tab whose page owns the media session wears Firefox's speaker badge
    * over its favicon ("agar is tab me koi video play ho rahi hoti to wo icon
    * like firefox dikhe — icon + png"), so a video playing in a background tab
@@ -24,7 +35,20 @@
    * a nested `<button>` is invalid HTML and screen readers mangle it.
    */
   import { browser, MAX_TABS, hostOf } from '../../stores/browser.svelte';
+  import { app } from '../../stores/app.svelte';
   import SiteIcon from './SiteIcon.svelte';
+
+  /**
+   * The chips live in every top bar (Home, Studio, browser), so a click has
+   * to work from any of them: pick the tab first, then bring the browser up
+   * on it when the view is not open yet. The mount chain does the first
+   * `show` — a `nudge` fired while the view is closed is refused by Rust
+   * (diag only, no toast), so the order is safe either way.
+   */
+  function pick(id: string): void {
+    browser.select(id);
+    if (app.view !== 'browser') app.openBrowser(app.view);
+  }
 
   /** The tab's page URL, or `null` for the new-tab page (globe, no icon). */
   function pageUrl(url: string): string | null {
@@ -35,7 +59,7 @@
   function onKey(e: KeyboardEvent, id: string) {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      browser.select(id);
+      pick(id);
       return;
     }
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
@@ -51,20 +75,25 @@
     {@const icon = pageUrl(tab.url)}
     {@const active = tab.id === browser.activeId}
     {@const playing = tab.id === browser.playingId}
+    <!-- Selected ≠ titled: a real page stretches open with its title, the
+         dial stays an icon. `active` alone still drives the ring, the
+         roving tabindex and aria-selected. -->
+    {@const titled = active && icon !== null}
     <div
       id={'tab-chip-' + tab.id}
       role="tab"
       aria-selected={active}
       aria-busy={tab.loading}
       tabindex={active ? 0 : -1}
-      onclick={() => browser.select(tab.id)}
+      onclick={() => pick(tab.id)}
       onkeydown={(e) => onKey(e, tab.id)}
       class="group relative flex h-7 shrink-0 cursor-pointer items-center rounded-lg
              transition-colors duration-150
              {active
-        ? 'w-auto max-w-[190px] bg-nc-panel-2 px-1.5 text-nc-txt ring-1 ring-nc-brand/55'
-        : 'w-7 justify-center px-0 text-nc-mut ring-1 ring-transparent hover:bg-nc-panel-2/70 hover:text-nc-txt'}"
-      title={active ? undefined : tab.title || (icon ? hostOf(icon) : 'Home')}
+        ? 'bg-nc-panel-2 text-nc-txt ring-1 ring-nc-brand/55'
+        : 'text-nc-mut ring-1 ring-transparent hover:bg-nc-panel-2/70 hover:text-nc-txt'}
+             {titled ? 'w-auto max-w-[190px] px-1.5' : 'w-7 justify-center px-0'}"
+      title={titled ? undefined : tab.title || (icon ? hostOf(icon) : 'Home')}
     >
       <!-- favicon (or the home mark) + a spinner while the page loads.
            The wrapper stays overflow-visible so the speaker badge below can
@@ -127,11 +156,12 @@
         {/if}
       </span>
 
-      <!-- the title: only the active chip carries it, and it collapses back
-           to zero width on switch — the icon-only row returns instantly. -->
+      <!-- the title: only a titled chip (active AND a real page) carries it,
+           and it collapses back to zero width on switch — the icon-only row
+           returns instantly. The dial never gets one. -->
       <span
         class="overflow-hidden text-[11px] leading-none whitespace-nowrap transition-all duration-150
-               {active ? 'max-w-[140px] opacity-100' : 'max-w-0 opacity-0'}"
+               {titled ? 'max-w-[140px] opacity-100' : 'max-w-0 opacity-0'}"
       >
         {tab.title || (icon ? hostOf(icon) : 'Home')}
       </span>
@@ -152,8 +182,8 @@
         </svg>
       {/if}
 
-      <!-- close: inside the chip on the active tab (Firefox's position), a
-           corner ✕ on hover for the rest -->
+      <!-- close: inside a titled chip (Firefox's position), a corner ✕ on
+           hover for everything else — the dial included -->
       <button
         type="button"
         onclick={(e) => {
@@ -161,7 +191,7 @@
           browser.close(tab.id);
         }}
         aria-label="Close tab"
-        class={active
+        class={titled
           ? 'relative ml-1 grid h-4 w-4 shrink-0 place-items-center rounded-full text-nc-mut hover:bg-nc-line hover:text-nc-txt'
           : 'absolute -top-1 -right-1 grid h-4 w-4 place-items-center rounded-full border border-nc-line bg-nc-panel text-nc-txt transition-opacity duration-150 opacity-0 group-hover:opacity-100'}
       >

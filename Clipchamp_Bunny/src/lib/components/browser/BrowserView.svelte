@@ -16,11 +16,13 @@
    */
   import UrlBar from './UrlBar.svelte';
   import SpeedDial from './SpeedDial.svelte';
+  import OfflineHint from './OfflineHint.svelte';
   import DownloadsPanel from './DownloadsPanel.svelte';
   import HistoryPanel from './HistoryPanel.svelte';
   import BrowserMenu from './BrowserMenu.svelte';
   import UBlockPanel from './UBlockPanel.svelte';
   import { browser } from '../../stores/browser.svelte';
+  import { newSwipe, swipeFeed } from '../../browser-swipe';
   import { downloads } from '../../stores/downloads.svelte';
   import { ublock } from '../../stores/ublock.svelte';
   import { app } from '../../stores/app.svelte';
@@ -113,6 +115,27 @@
     // uBlock: disk status from the daemon, runtime truth from WebView2. The
     // folder is already unpacked by the time a tab exists; this only reports.
     ublock.boot();
+    // Two-finger swipe → prev/next tab over THIS window's own chrome (the
+    // dial, the toolbars). Page content lives in a native child HWND and
+    // never reaches this listener — `browser_shim.js` carries the same
+    // gesture for that half. Passive on purpose: a gesture must never block
+    // a real scroll.
+    const swipe = newSwipe();
+    const onSwipeWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) return; // pinch-zoom belongs to Chromium
+      let dx = e.deltaX;
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) {
+        dx *= 16;
+        dy *= 16;
+      } else if (e.deltaMode === 2) {
+        dx *= window.innerWidth;
+        dy *= window.innerHeight;
+      }
+      const go = swipeFeed(swipe, Date.now(), dx, dy);
+      if (go) browser.cycle(go);
+    };
+    window.addEventListener('wheel', onSwipeWheel, { passive: true });
     // Fullscreen: the chrome's rows are covered by the grown webview anyway,
     // so they only need to stop painting (no layout change — a layout change
     // here would feed a new rect back to Rust mid-fullscreen).
@@ -132,6 +155,7 @@
       dead = true;
       offFullscreen?.();
       fullscreen = false;
+      window.removeEventListener('wheel', onSwipeWheel);
       ublock.dispose();
       // The whole browser tree unmounts (App.svelte's {#if}): sweep EVERY
       // tab webview (kept ones included) so the 500 MB budget holds while
@@ -547,6 +571,9 @@
   <div bind:this={contentEl} class="relative min-h-0 flex-1" data-focus="browser-content">
     {#if !tab || tab.url === 'about:blank'}
       <SpeedDial />
+      <!-- "net band hai" — bottom-right of the dial, no text, only while the
+           platform says the machine is offline -->
+      <OfflineHint />
     {:else if !isTauri()}
       <!--
         Dev preview only: an iframe stands in for the native webview so the

@@ -21,6 +21,7 @@
   import UpdateButton from '../UpdateButton.svelte';
   import BrandMark from './BrandMark.svelte';
   import WindowControls from '../WindowControls.svelte';
+  import TabChips from '../browser/TabChips.svelte';
 
   /** `trashCount` comes down from the dashboard, which already holds the bin. */
   let { trashCount = 0 }: { trashCount?: number } = $props();
@@ -136,9 +137,14 @@
       </button>
     {/each}
 
+    <!-- the browser's tab chips: they live in every header (home, studio,
+         browser) so the strip is never somewhere you cannot see it. A click
+         here opens the browser on that tab. -->
+    <TabChips />
+
     <!-- + : the in-built browser, one click from home as well. Same button the
-         editor bar carries; here it is always "open" (there is no tab strip on
-         the dashboard), and the close button lands back where it started. -->
+         editor bar carries; here it always opens (there is no page under the
+         dashboard), and the back button in the browser bar lands here again. -->
     <button
       type="button"
       onclick={() => app.openBrowser('home')}

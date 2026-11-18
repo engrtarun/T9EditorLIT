@@ -1,6 +1,6 @@
 # TODO - Scratch Pad
 
-_Last updated: 2026-11-17_
+_Last updated: 2026-11-18_
 
 ## 🔴 High Priority
 
@@ -20,6 +20,15 @@ _Last updated: 2026-11-17_
 ## 🟢 Nice to Have
 
 ## ✅ Done
+
+- [x] Browser home: bottom-right no-internet animation, no text, size ~330px (dial 660px ka aadha), bottom se chipka hua (done: 2026-11-18)
+- [x] Browser se wapas (home/studio) ka visible back button TopBar me (done: 2026-11-18)
+- [x] Firefox-style 2-finger horizontal swipe -> previous/next tab (shim wheel + BrowserView window listener + browser-swipe.ts test) (done: 2026-11-18)
+- [x] Bookmark/pin app close par bhool jata hai - bookmarks+pins ko SQLite (statsSet/statsGet) me persist karo, session success path me pinned tabs restore karo (done: 2026-11-18)
+- [x] Tab chips: home dashboard header + editor studio TopBar me bhi dikhao (gate hatao, DashboardTopBar me mount karo) (done: 2026-11-18)
+- [x] Persist per-project UI state (zoom, applied preview, loop, both tracks, snap) in SQLite not localStorage (done: 2026-11-18)
+- [x] Remove caption over video, move current line + pin/keep/wrong controls below the video (full text wrap) (done: 2026-11-18)
+- [x] Word-level cut: select 'jal ki rani' inside a line -> 3 rows (keep/cut/keep) + 3 timeline clips (done: 2026-11-18)
 
 - [x] Browser: page-shim shortcuts installed build par prove karo — `event key 1 -> pinTab`, `event key 1 -> closeBrowserView` live log me (build `ci-1fbadef`, 2026-11-17)
 - [x] Browser: pin/unpin round installed build par — pin → back (`swept all, 1 pinned kept`, page hidden) → wapas (`resume=Some(true)`, memory normal). Commit `1fbadef`, docs/TODO.md §10

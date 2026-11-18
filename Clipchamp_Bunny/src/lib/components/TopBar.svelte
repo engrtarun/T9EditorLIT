@@ -120,14 +120,13 @@
   <!-- cloud / local toggle → backup & AI providers -->
   <CloudMenu />
 
-  <!-- The browser's tabs — icon chips, only while the browser view is open.
-       They used to own a 40 px strip of their own above the address bar; the
-       spec for this update is that the strip goes and the tabs live here, in
-       the header, as favicons. The `+` right after them is the new-tab button
-       in both states. -->
-  {#if app.view === 'browser'}
-    <TabChips />
-  {/if}
+  <!-- The browser's tabs — icon chips, in EVERY state of this bar (studio
+       and browser): they used to own a 40 px strip of their own above the
+       address bar; the spec for this update is that the strip goes and the
+       tabs live here, in the header, as favicons. From the studio a click
+       opens the browser on that tab. The `+` right after them is the
+       new-tab button in both states. -->
+  <TabChips />
 
   <!-- + : the in-built browser. From the editor it opens the browser view;
        already inside it, the same button is the familiar "new tab" (capped
@@ -157,6 +156,35 @@
       <path d="M12 5v14M5 12h14" />
     </svg>
   </button>
+
+  <!-- the way back: browser → wherever it was opened from. The hamburger's
+       "Close browser" and Ctrl+Shift+W do the same job, but a mode switch
+       needs a visible door, not a shortcut — "browser se yaha kasie?". -->
+  {#if app.view === 'browser'}
+    <button
+      type="button"
+      onclick={() => app.closeBrowser()}
+      class="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-nc-mut
+             transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
+      title="Wapas {app.browserFrom === 'editor' ? 'Studio' : 'Home'} (Ctrl+Shift+W)"
+      aria-label={app.browserFrom === 'editor' ? 'Back to studio' : 'Back to home'}
+    >
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M19 12H5M12 19l-7-7 7-7" />
+      </svg>
+      {app.browserFrom === 'editor' ? 'Studio' : 'Home'}
+    </button>
+  {/if}
 
   <div class="flex-1" data-tauri-drag-region></div>
 

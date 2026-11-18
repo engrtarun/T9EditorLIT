@@ -250,6 +250,10 @@ class BrowserStore {
   /** Bookmarks (Ctrl+D) — persisted on this machine, shown on the dial. */
   bookmarks = $state<Bookmark[]>([]);
   private bookmarksLoaded = false;
+  /** SQLite hydration ran once; localStorage is only the mirror from here. */
+  private bookmarksHydrated = false;
+  /** A bookmark changed while hydration was in flight — merge, never clobber. */
+  private bookmarksDirty = false;
 
   /**
    * The bounded visit log behind the Ctrl+H panel; Ctrl+Shift+Del empties it.
@@ -548,11 +552,63 @@ class BrowserStore {
   }
 
   private persistBookmarks(): void {
+    this.bookmarksDirty = true;
+    const payload = JSON.stringify(this.bookmarks);
     try {
-      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(this.bookmarks));
+      localStorage.setItem(BOOKMARKS_KEY, payload);
     } catch {
-      /* private mode — the dial keeps working, pins just don't persist */
+      /* private mode — the SQLite copy below still wins */
     }
+    // SQLite is the durable half (the same kv table the tab session uses).
+    // localStorage alone forgot every bookmark on an app close — "koi tab
+    // bookmark kari so wo app close per bhool jata h".
+    void statsSet(BOOKMARKS_KEY, payload);
+  }
+
+  /**
+   * Read the bookmarks back from SQLite once per launch. Asked at shell
+   * attach (App.svelte), before the dial can ever render. localStorage is
+   * read first as the synchronous mirror, then SQLite wins when it answers —
+   * unless a bookmark was written while the read was in flight, which merges
+   * instead of clobbering.
+   */
+  async hydrateBookmarks(): Promise<void> {
+    if (this.bookmarksHydrated) return;
+    this.bookmarksHydrated = true;
+    this.loadBookmarks();
+    let raw: string | null = null;
+    try {
+      raw = await withDeadline(statsGet(BOOKMARKS_KEY), 1500, null);
+    } catch {
+      return; /* no bridge — the mirror is all there is */
+    }
+    if (raw == null) {
+      // Fresh profile: push an existing mirror up so the next boot finds it.
+      try {
+        const mirror = localStorage.getItem(BOOKMARKS_KEY);
+        if (mirror) void statsSet(BOOKMARKS_KEY, mirror);
+      } catch {
+        /* blocked storage */
+      }
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return; /* corrupt row — the mirror stands */
+    }
+    if (!Array.isArray(parsed)) return;
+    const stored = parsed.filter(
+      (b): b is Bookmark => !!b && typeof (b as Bookmark).url === 'string'
+    );
+    if (this.bookmarksDirty) {
+      for (const b of stored) {
+        if (!this.bookmarks.some((x) => x.url === b.url)) this.bookmarks.push(b);
+      }
+      return;
+    }
+    this.bookmarks = stored;
   }
 
   isBookmarked(url: string): boolean {
@@ -801,14 +857,16 @@ class BrowserStore {
   }
 
   private persistPins(): void {
+    const pins = this.tabs
+      .filter((t) => t.pinned && t.url && t.url !== 'about:blank')
+      .map((t) => ({ url: t.url, title: t.title }));
+    const payload = JSON.stringify(pins);
     try {
-      const pins = this.tabs
-        .filter((t) => t.pinned && t.url && t.url !== 'about:blank')
-        .map((t) => ({ url: t.url, title: t.title }));
-      localStorage.setItem(PINS_KEY, JSON.stringify(pins));
+      localStorage.setItem(PINS_KEY, payload);
     } catch {
-      /* private mode / quota — the pins still live for this session */
+      /* private mode / quota — the SQLite copy below still wins */
     }
+    void statsSet(PINS_KEY, payload);
   }
 
   /**
@@ -816,13 +874,30 @@ class BrowserStore {
    * after `wireTauri`, before the first `showActive`: a browser that boots
    * with zero tabs is the only moment restoring makes sense.
    *
+   * SQLite is asked first (localStorage is only the mirror), so a pin
+   * survives an app close even when the webview's storage does not.
+   *
    * Restored tabs are marked pinned in Rust too, so the first tab switch
    * parks them awake instead of treating them as ordinary background tabs.
    */
-  restorePinned(): void {
+  async restorePinned(): Promise<void> {
     if (this.tabs.length > 0) return;
-    const pins = loadPinnedTabs();
-    if (pins.length === 0) return;
+    let pins = loadPinnedTabs();
+    try {
+      const raw = await withDeadline(statsGet(PINS_KEY), 1500, null);
+      if (raw != null) {
+        const parsed: unknown = JSON.parse(raw);
+        pins = (Array.isArray(parsed) ? parsed : []).filter(
+          (p): p is PinnedTab => !!p && typeof (p as PinnedTab).url === 'string'
+        );
+      } else if (pins.length) {
+        // An older install wrote only the mirror — bring it forward.
+        void statsSet(PINS_KEY, JSON.stringify(pins));
+      }
+    } catch {
+      /* no bridge / corrupt row — the mirror stands */
+    }
+    if (this.tabs.length > 0 || pins.length === 0) return;
     for (const pin of pins) {
       const tab = makeTab(pin.url);
       tab.title = pin.title || hostOf(pin.url);
@@ -925,7 +1000,7 @@ class BrowserStore {
         }
       }
       if (!raw) {
-        this.restorePinned();
+        await this.restorePinned();
         return;
       }
 
@@ -933,11 +1008,11 @@ class BrowserStore {
       try {
         stored = JSON.parse(raw) as { tabs?: unknown; active?: unknown };
       } catch {
-        this.restorePinned();
+        await this.restorePinned();
         return;
       }
       if (!Array.isArray(stored.tabs)) {
-        this.restorePinned();
+        await this.restorePinned();
         return;
       }
 
@@ -955,16 +1030,25 @@ class BrowserStore {
         });
       }
       if (saved.length === 0) {
-        this.restorePinned();
+        await this.restorePinned();
         return;
       }
-      // `reopenClosed` pops the last entry, so the tab that was active last
-      // is pushed last and comes back first on Ctrl+Shift+T.
-      const wanted = typeof stored.active === 'number' ? stored.active : 0;
-      const activeAt = Math.max(0, Math.min(saved.length - 1, wanted));
-      const [wasActive] = saved.splice(activeAt, 1);
-      saved.push(wasActive);
-      for (const entry of saved) this.closed.push(entry);
+      // Every saved entry comes back AS A TAB. The strip has to be visible
+      // everywhere — the chips sit in the Home and Studio headers too, and a
+      // dashboard with an empty row ("? tabs icon") is a lie about what is
+      // saved. `activeId` stays NULL all the same, so the browser still
+      // opens on the dial: no page is created here and nothing autoplays on
+      // boot (the whole reason this used to park entries in the Ctrl+Shift+T
+      // stack instead — a stuck YouTube tab must not start playing before
+      // the user has even opened the browser).
+      for (const entry of saved) {
+        const tab = makeTab(entry.url);
+        tab.title = entry.title;
+        tab.pinned = entry.pinned === true;
+        this.tabs.push(tab);
+        this.push(tab.id, entry.url);
+        if (tab.pinned && isTauri()) void browserSetPinned(tab.id, true);
+      }
     } finally {
       // Only now may `persistSession` write: the mount effect fires while the
       // `statsGet` above is still in flight, and an empty strip would erase
