@@ -2,6 +2,7 @@
   import { project } from '../../stores/project.svelte';
   import { player } from '../../stores/player.svelte';
   import { layout } from '../../stores/layout.svelte';
+  import { untrack } from 'svelte';
   import { isTauri } from '../../ipc';
   import { estimateForDuration } from '../../transcript-plan';
   import { fmtShort } from '../../utils';
@@ -21,6 +22,114 @@
      Only ~30 rows ever exist in the DOM, so RAM stays flat. */
   const ROW_H = 60;
   const OVERSCAN = 6;
+
+  /*
+   * Word wrap changes the row height, so the 60px grid only holds while wrap
+   * is off. In wrap mode the rows that are actually rendered are measured and
+   * just those heights are kept: a 20k-line transcript stores ~40 numbers, not
+   * 20k laid-out rows. Everything else is estimated from its character count.
+   */
+  let measured = new Map<string, number>();
+  let measuredTick = $state(0);
+
+  /** Width the words get: panel minus timestamps, action strip and gaps. */
+  const wordWidth = $derived(Math.max(120, layout.transcriptWidth - 66 - 16 - 104));
+
+  function estimateRow(line: TranscriptLine): number {
+    if (!layout.transcriptWrap) return ROW_H;
+    const cols = Math.max(10, Math.floor(wordWidth / 6.1));
+    const rows =
+      Math.ceil(line.text.length / cols) +
+      (line.translatedText ? Math.ceil(line.translatedText.length / cols) : 0);
+    // 16px per text line, plus the badge line and the row's padding/border.
+    return Math.max(44, rows * 16 + 18);
+  }
+
+  /** Cumulative row offsets for the current view (the scrollbar's truth). */
+  const geometry = $derived.by(() => {
+    const n = view.length;
+    const offsets = new Array<number>(n + 1);
+    void measuredTick; // a fresh measurement invalidates the offsets
+    const wrap = layout.transcriptWrap;
+    let y = 0;
+    for (let i = 0; i < n; i++) {
+      offsets[i] = y;
+      y += wrap ? (measured.get(view[i].id) ?? estimateRow(view[i])) : ROW_H;
+    }
+    offsets[n] = y;
+    return { offsets, total: y };
+  });
+
+  /** Index of the row that owns `y` — the last row whose top is at or above it. */
+  function indexAt(y: number): number {
+    const offsets = geometry.offsets;
+    let lo = 0;
+    let hi = offsets.length - 2;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (offsets[mid] <= y) lo = mid;
+      else hi = mid - 1;
+    }
+    return Math.max(0, lo);
+  }
+
+  /**
+   * A rendered row reports its real height. Only rows in the DOM are measured,
+   * so the map never outgrows the virtual window. A row that grew above the
+   * viewport would push the text under the pointer down a frame later, so the
+   * delta is paid back into `scrollTop` immediately.
+   */
+  function measureRow(
+    node: HTMLElement,
+    params: { id: string; est: number }
+  ): { update: (next: { id: string; est: number }) => void; destroy: () => void } {
+    let est = params.est;
+    let last = -1;
+
+    const record = () => {
+      if (!layout.transcriptWrap) return;
+      const h = Math.round(node.offsetHeight);
+      if (h <= 0) return;
+      if (last >= 0 && Math.abs(last - h) <= 1) return;
+      const prev = measured.get(params.id) ?? est;
+      const el = scroller;
+      if (el && node.offsetTop < el.scrollTop) {
+        el.scrollTop = Math.max(0, el.scrollTop + (h - prev));
+      }
+      last = h;
+      measured.set(params.id, h);
+      measuredTick++;
+    };
+
+    const observer = new ResizeObserver(record);
+    observer.observe(node);
+    record();
+    return {
+      update(next) {
+        params = next;
+        est = next.est;
+        record();
+      },
+      destroy() {
+        observer.disconnect();
+      }
+    };
+  }
+
+  /* A narrower/wider panel re-wraps every row, so heights measured for the old
+     column are not valid for the new one. */
+  let lastWordWidth: number | null = null;
+  $effect(() => {
+    const w = wordWidth;
+    if (lastWordWidth === null) {
+      lastWordWidth = w;
+      return;
+    }
+    if (w === lastWordWidth) return;
+    lastWordWidth = w;
+    measured = new Map();
+    measuredTick++;
+  });
 
   type Filter = 'all' | 'flagged' | 'cut';
   let filter = $state<Filter>('all');
@@ -44,13 +153,13 @@
     return i >= 0 ? i : 0;
   });
 
-  const startIdx = $derived(Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN));
-  const endIdx = $derived(
-    Math.min(view.length, startIdx + Math.ceil(viewportH / ROW_H) + OVERSCAN * 2)
-  );
+  const startIdx = $derived(Math.max(0, indexAt(scrollTop) - OVERSCAN));
+  const endIdx = $derived(Math.min(view.length, indexAt(scrollTop + viewportH) + OVERSCAN + 1));
   const slice = $derived(view.slice(startIdx, endIdx));
-  const padTop = $derived(startIdx * ROW_H);
-  const padBottom = $derived(Math.max(0, (view.length - endIdx) * ROW_H));
+  const padTop = $derived(geometry.offsets[startIdx] ?? 0);
+  const padBottom = $derived(
+    Math.max(0, geometry.total - (geometry.offsets[endIdx] ?? geometry.total))
+  );
 
   const FILTERS: Array<{ id: Filter; label: string }> = [
     { id: 'all', label: 'All' },
@@ -122,6 +231,23 @@
    */
   const preClickEstimate = $derived(estimateForDuration(project.media?.durationSecs ?? 0));
 
+  /**
+   * Where an imported transcript's words stop. A transcript made from a
+   * shorter take is legitimate — it simply cannot describe the rest of the
+   * video — but then the banner must say so instead of letting the tail look
+   * as if nothing was said there.
+   */
+  const importCovered = $derived.by(() => {
+    const info = project.importedTranscript;
+    if (!info || info.estimated) return 0;
+    let end = 0;
+    for (const line of project.lines) end = Math.max(end, line.endSec);
+    return end;
+  });
+  const importGap = $derived(
+    project.durationSec > 0 && importCovered > 0 ? project.durationSec - importCovered : 0
+  );
+
   function jump(line: TranscriptLine) {
     // A transcript line belongs to the main source: previewing an extra clip
     // would seek the wrong video, so jump back to the main cut first.
@@ -133,14 +259,21 @@
     project.toggleLine(line.id);
   }
 
+  /** Top and height of one row, without subscribing to unrelated measurements. */
+  function rowSpan(i: number): { top: number; height: number } {
+    const { offsets } = untrack(() => geometry);
+    const top = offsets[i] ?? 0;
+    return { top, height: (offsets[i + 1] ?? top) - top };
+  }
+
   // Keep the keyboard cursor visible without the user scrolling.
   $effect(() => {
     const p = cursorPos;
     const el = scroller;
     if (!el) return;
-    const y = p * ROW_H;
-    if (y < el.scrollTop + ROW_H || y > el.scrollTop + el.clientHeight - ROW_H * 2) {
-      el.scrollTo({ top: Math.max(0, y - el.clientHeight / 2), behavior: 'smooth' });
+    const { top, height } = rowSpan(p);
+    if (top < el.scrollTop + height || top > el.scrollTop + el.clientHeight - height * 2) {
+      el.scrollTo({ top: Math.max(0, top - el.clientHeight / 2), behavior: 'smooth' });
     }
   });
 
@@ -149,9 +282,9 @@
     const p = cursorPos;
     const el = scroller;
     if (!el) return;
-    const y = p * ROW_H;
-    if (y >= el.scrollTop && y <= el.scrollTop + el.clientHeight - ROW_H * 2) return;
-    el.scrollTo({ top: Math.max(0, y - el.clientHeight / 2), behavior: 'smooth' });
+    const { top, height } = rowSpan(p);
+    if (top >= el.scrollTop && top <= el.scrollTop + el.clientHeight - height * 2) return;
+    el.scrollTo({ top: Math.max(0, top - el.clientHeight / 2), behavior: 'smooth' });
   });
 </script>
 
@@ -178,6 +311,36 @@
         >{project.selectedIds.length} selected</span
       >
     {/if}
+    <div class="flex-1"></div>
+    <!--
+      VS Code's Alt+Z, as a visible control. The header has the room; the
+      filter row already carries three filters, Import and Regenerate.
+    -->
+    <button
+      onclick={() => layout.toggleTranscriptWrap()}
+      aria-pressed={layout.transcriptWrap}
+      class="flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[9.5px]
+             font-medium transition-colors
+             {layout.transcriptWrap
+        ? 'border-nc-brand/50 bg-nc-brand/15 text-nc-brand'
+        : 'border-nc-line-2 text-nc-mut hover:border-nc-brand hover:text-nc-brand'}"
+      title="Word wrap on/off — Alt+Z. Lambi lines poori dikhengi, row badi hogi."
+    >
+      <svg
+        width="10"
+        height="10"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M3 6h18M3 12h15a3 3 0 1 1 0 6h-4" />
+        <path d="M16 16l-2 2 2 2M3 18h7" />
+      </svg>
+      Wrap
+    </button>
   </div>
 
   <div class="flex h-8 shrink-0 items-center gap-1 border-b border-nc-line px-2">
@@ -363,6 +526,24 @@
             Timings file me nahi the — har line ka time words ke hisaab se baanta gaya hai
             (estimated). Exact cuts ke liye SRT/VTT/JSON import karo.
           </p>
+        {:else if importGap > 2}
+          <!--
+            The user's question, answered where the words are: an imported file
+            made from a shorter take is valid, but the rest of the video then
+            has no rows — and no row means the auto-cutter leaves it alone.
+          -->
+          <p class="mt-0.5 text-[9.5px] leading-snug text-amber-300/90">
+            Words {fmtShort(importCovered)} tak hain, video {fmtShort(project.durationSec)} ki hai — aage
+            ke hisse bina transcript ke rahenge, wahan kuch auto-cut nahi hoga.
+          </p>
+        {/if}
+        {#if project.importedTranscript.dropped > 0}
+          <p class="mt-0.5 text-[9.5px] leading-snug text-nc-mut">
+            {project.importedTranscript.dropped}
+            {project.importedTranscript.dropped === 1 ? 'line' : 'lines'} video ke end ke baad ki
+            {project.importedTranscript.dropped === 1 ? 'thi' : 'thin'} — chhod di
+            {project.importedTranscript.dropped === 1 ? 'gayi' : 'gayin'}.
+          </p>
         {/if}
       </div>
       <button
@@ -454,7 +635,7 @@
     bind:this={scroller}
     bind:clientHeight={viewportH}
     onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
-    class="nc-scroll min-h-0 flex-1"
+    class="nc-scroll relative min-h-0 flex-1"
   >
     <div style="height:{padTop}px"></div>
 
@@ -506,8 +687,10 @@
       {@const isCursor = idx === cursorPos}
       {@const cut = line.keep === 'cut'}
       <div
-        style="height:{ROW_H}px"
-        class="group relative flex items-center gap-2 overflow-hidden border-b border-nc-line/60 px-2 transition-colors
+        use:measureRow={{ id: line.id, est: estimateRow(line) }}
+        style={layout.transcriptWrap ? '' : `height:${ROW_H}px`}
+        class="group relative flex gap-2 border-b border-nc-line/60 px-2 transition-colors
+               {layout.transcriptWrap ? 'items-start py-1.5' : 'items-center overflow-hidden'}
                {isCursor ? 'bg-nc-brand/8' : 'hover:bg-nc-panel-2'}
                {project.isSelected(line.id) ? 'bg-nc-brand/12' : ''}"
       >
@@ -540,7 +723,7 @@
               Devanagari, Arabic and CJK never render as tofu boxes.
             -->
             <span
-              class="line-clamp-2 text-xs leading-4 {cut
+              class="text-xs leading-4 {layout.transcriptWrap ? 'break-words' : 'line-clamp-2'} {cut
                 ? 'nc-slash text-nc-mut line-through decoration-nc-red/70'
                 : 'text-nc-txt'}"
               dir="auto"
@@ -554,7 +737,9 @@
                 translation is a second reading of the same line.
               -->
               <span
-                class="mt-0.5 block truncate text-[10.5px] leading-4 italic text-nc-mut"
+                class="mt-0.5 block text-[10.5px] leading-4 italic text-nc-mut {layout.transcriptWrap
+                  ? 'break-words'
+                  : 'truncate'}"
                 dir="auto"
                 title="Translation — source text neeche, original upar"
               >

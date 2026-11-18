@@ -18,6 +18,14 @@ class LayoutStore {
   timelineCollapsed = $state(false);
   /** "My media" panel collapsed to its icon strip. */
   sourcePanelCollapsed = $state(false);
+  /**
+   * Transcript word wrap — VS Code's `Alt+Z`.
+   *
+   * Off by default: a fixed 60px row keeps the virtual list's scrollbar exact.
+   * On, rows grow to fit the words and the list measures the rows it renders
+   * (never the whole transcript), so a 20k-line file stays flat in RAM.
+   */
+  transcriptWrap = $state(false);
   /** Clipchamp's `Ctrl+Alt+F` — collapse both. */
   get bothCollapsed() {
     return this.timelineCollapsed && this.sourcePanelCollapsed;
@@ -86,6 +94,16 @@ class LayoutStore {
     this.sourcePanelCollapsed = next;
   }
 
+  /** Word wrap is a reading preference — remember it like the panel sizes. */
+  toggleTranscriptWrap() {
+    this.transcriptWrap = !this.transcriptWrap;
+    try {
+      localStorage.setItem('t9-editor-lit.wrap', this.transcriptWrap ? '1' : '0');
+    } catch {
+      /* private mode */
+    }
+  }
+
   /** Panel collapse + drag-resize sizes are a user choice — remember them. */
   setSourcePanelCollapsed(v: boolean) {
     this.sourcePanelCollapsed = v;
@@ -112,6 +130,7 @@ class LayoutStore {
       if (mw) this.mediaWidth = Math.max(180, Math.min(420, Math.round(mw)));
       const th = Number(localStorage.getItem('t9-editor-lit.tlheight'));
       if (th) this.timelineHeight = Math.max(150, Math.min(560, Math.round(th)));
+      if (localStorage.getItem('t9-editor-lit.wrap') === '1') this.transcriptWrap = true;
     } catch {
       /* private mode */
     }

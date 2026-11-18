@@ -239,7 +239,7 @@
     if (!file) return;
     const ext = file.name.toLowerCase().split('.').pop() ?? '';
     if (AUDIO_EXTENSIONS.has(ext)) {
-      error = `${ext.toUpperCase()} file padhne ke liye desktop app chahiye. Abhi Text, SRT, VTT, JSON ya HTML use karo.`;
+      error = `${ext.toUpperCase()} file padhne ke liye desktop app chahiye. Abhi JSON (recommended), SRT, VTT, Text ya HTML use karo.`;
       return;
     }
     error = null;
@@ -488,9 +488,30 @@
             <p class="mt-3 text-[12px] font-medium text-nc-txt">
               {reading ? 'File padh rahe hain…' : 'Transcript file yahan chuno'}
             </p>
-            <p class="mt-1 text-[10.5px] leading-snug text-nc-mut">
-              SRT · VTT · JSON · HTML · TXT · DOCX · PDF
-            </p>
+            <!--
+              JSON is the export that keeps word-level timings, so it is the
+              one worth recommending. The tag sits above the chip, light enough
+              to read as a hint rather than a second headline.
+            -->
+            <div class="mt-4 flex flex-wrap items-center justify-center gap-1.5">
+              <span class="relative inline-flex">
+                <span
+                  class="absolute -top-3.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-nc-brand/35 bg-nc-brand/15 px-1.5 text-[7.5px] font-bold uppercase tracking-[0.08em] text-nc-brand"
+                >
+                  Recommended
+                </span>
+                <span
+                  class="rounded border border-nc-brand/50 bg-nc-brand/10 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-nc-brand"
+                  >JSON</span
+                >
+              </span>
+              {#each ['SRT', 'VTT', 'HTML', 'TXT', 'DOCX', 'PDF'] as format (format)}
+                <span
+                  class="rounded border border-nc-line-2 bg-nc-panel px-1.5 py-0.5 font-mono text-[9px] text-nc-mut"
+                  >{format}</span
+                >
+              {/each}
+            </div>
             <span
               class="mt-3 rounded-md border border-nc-line-2 bg-nc-panel px-3 py-1.5 text-[11px] font-medium text-nc-txt"
             >
@@ -521,7 +542,7 @@
             oninput={onTextInput}
             spellcheck="false"
             aria-label="Transcript text"
-            placeholder={'Yahan paste karo — SRT, VTT, JSON, HTML ya plain text.\\n\\n00:00:01,000 --> 00:00:03,500\\nNamaste doston, aaj hum…'}
+            placeholder={'Yahan paste karo — JSON (recommended), SRT, VTT, HTML ya plain text.\\n\\n00:00:01,000 --> 00:00:03,500\\nNamaste doston, aaj hum…'}
             class="h-[186px] w-full resize-none rounded-xl border border-nc-line-2 bg-nc-bg/40 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-nc-txt outline-none transition-colors placeholder:text-nc-mut-2/70 focus:border-nc-brand/70"
           ></textarea>
           <!-- Actions live below the box, never on top of the words being checked. -->
@@ -579,7 +600,7 @@
         {#if preview.estimated}
           <p class="mt-1 text-[10px] leading-snug text-amber-300/85">
             File me timestamps nahi the — har line ka time words ke hisaab se baanta gaya hai. Exact
-            cuts ke liye SRT, VTT ya JSON export karo.
+            cuts ke liye JSON (recommended), SRT ya VTT export karo.
           </p>
         {/if}
         {#if preview.dropped > 0}
@@ -636,8 +657,8 @@
             <li>1. ElevenLabs par audio upload karo — ya mic se record karo.</li>
             <li>2. Transcribe dabao; language auto-detect rehne do.</li>
             <li>
-              3. Download menu se SRT, JSON ya Text chuno. Wapas yahan aao — file ka button khud
-              dikhega.
+              3. Download menu se <span class="font-semibold text-nc-brand">JSON</span> chuno (recommended
+              — exact word timings), ya SRT / Text. Wapas yahan aao — file ka button khud dikhega.
             </li>
           </ol>
           <p class="mt-1.5 pl-[19px] text-[9.5px] leading-snug text-nc-mut-2">

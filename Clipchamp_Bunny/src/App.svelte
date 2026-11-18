@@ -255,6 +255,9 @@
     // own Escape. Nothing here may steal an Arrow key from it.
     if (layout.profileOpen) return;
     if (layout.helpOpen && e.key !== 'Escape') return;
+    // The import sheet owns the keyboard (its own comment says so): X/V typed
+    // while it is open must never cut a line behind the overlay.
+    if (layout.importOpen) return;
     if (layout.settingsOpen && e.key !== 'Escape') return;
     if (layout.settingsOpen && e.key === 'Escape') {
       layout.settingsOpen = false;
@@ -426,6 +429,12 @@
         case 'e':
           e.preventDefault();
           mode.set('export');
+          return;
+        case 'z':
+          // VS Code's word-wrap toggle. The transcript panel is the only long
+          // text surface in the editor, so it owns this shortcut.
+          e.preventDefault();
+          layout.toggleTranscriptWrap();
           return;
         case 'r':
           e.preventDefault();
