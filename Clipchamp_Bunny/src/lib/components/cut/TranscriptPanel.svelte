@@ -336,7 +336,10 @@
         {project.importedTranscript.label}
       </span>
       <div class="min-w-0 flex-1">
-        <p class="truncate text-[10.5px] leading-snug text-nc-mut">
+        <p
+          class="truncate text-[10.5px] leading-snug text-nc-mut"
+          title={project.importedTranscript.source}
+        >
           Import: <span class="text-nc-txt">{project.importedTranscript.source}</span>
           <span class="font-mono">
             · {project.importedTranscript.lines}
@@ -345,15 +348,20 @@
           {#if project.importedTranscript.speakers > 1}
             <span class="font-mono">· {project.importedTranscript.speakers} speakers</span>
           {/if}
+          {#if !project.importedTranscript.estimated}
+            <span class="text-nc-mut-2">· exact timings</span>
+          {/if}
         </p>
         {#if project.importedTranscript.estimated}
+          <!--
+            Only the defect gets a second line. "Timings exact hain" is
+            reassurance, not information — it can live in the row's tooltip,
+            while an estimated timing is a real risk to the cuts and must be
+            read before the user trusts a single frame boundary.
+          -->
           <p class="mt-0.5 text-[9.5px] leading-snug text-amber-300/90">
             Timings file me nahi the — har line ka time words ke hisaab se baanta gaya hai
             (estimated). Exact cuts ke liye SRT/VTT/JSON import karo.
-          </p>
-        {:else}
-          <p class="mt-0.5 text-[9.5px] leading-snug text-nc-mut-2">
-            Timings file se aaye hain — cuts exact hain.
           </p>
         {/if}
       </div>

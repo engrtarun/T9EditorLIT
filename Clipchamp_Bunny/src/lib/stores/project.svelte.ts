@@ -618,6 +618,10 @@ class ProjectStore {
     this.waveform = waveform;
     this.thumbnails = thumbnails;
     this.lines = scaleLines(MOCK_LINES, baked.durationSecs);
+    // The desktop builds the shape right after the transcript lands; without
+    // the same call here the browser preview never showed the SHAPE strip at
+    // all, so a UI change to it could not be seen on localhost.
+    this.refreshShape();
     // The library shows the media this project is made of. The desktop does
     // this in `loadFromBackend`; without it the browser's "My media" panel
     // was empty while the timeline showed the very same recording.

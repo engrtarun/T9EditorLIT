@@ -26,7 +26,15 @@
   } from '../../media-report';
   import { generationWarning } from '../../encode-count';
 
-  let open = $state(true);
+  /**
+   * Collapsed by default — progressive disclosure (NN/g): the panel's job is
+   * the transcript rows, and the full issue list is secondary reading. The
+   * one exception is an `action` severity issue (the remux repair): that
+   * stays open until the user closes it themselves, so a machine fix can
+   * never hide behind a chevron.
+   */
+  let open = $state(false);
+  let touched = $state(false);
   let repairing = $state(false);
   let repaired = $state('');
 
@@ -36,6 +44,11 @@
   const asrShare = $derived(asrPercent(report));
   const layout = $derived(project.layout);
   const warning = $derived(generationWarning(project.encodes));
+
+  $effect(() => {
+    if (touched || !issues.some((i) => i.severity === 'action')) return;
+    open = true;
+  });
 
   async function repair() {
     if (repairing) return;
@@ -57,13 +70,18 @@
 {#if report || warning}
   <section class="shrink-0 border-b border-nc-line bg-nc-panel-2/40">
     <button
-      onclick={() => (open = !open)}
+      onclick={() => {
+        open = !open;
+        touched = true;
+      }}
       class="flex w-full items-center gap-2 px-3 py-1.5 text-left"
       aria-expanded={open}
+      title={open ? 'Band karo' : 'Source ki poori report kholo'}
     >
       <span class="text-[9px] font-bold tracking-widest text-nc-mut-2">SOURCE</span>
       <span class="min-w-0 flex-1 truncate font-mono text-[10px] text-nc-mut">
-        {summary || 'measured'}
+        {summary || 'measured'}{#if !open && issues.length}
+          · {issues[0].title}{/if}
       </span>
       {#if issues.length}
         <span

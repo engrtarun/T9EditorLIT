@@ -20,6 +20,14 @@
   const gaps = $derived(project.gapStats);
   const legend = $derived(shapeSummary(shape));
 
+  /**
+   * Collapsed by default — the bar and legend are secondary reading, and every
+   * pixel they take is a transcript row the user loses (NN/g progressive
+   * disclosure). The summary line stays visible either way, so the shape is
+   * never silent, only deferred.
+   */
+  let open = $state(false);
+
   function seek(start: number) {
     player.seek(Math.max(0, start));
   }
@@ -28,8 +36,17 @@
 {#if shape.length}
   <section class="shrink-0 border-b border-nc-line bg-nc-panel-2/30 px-3 py-1.5">
     <div class="flex items-center gap-2">
-      <span class="text-[9px] font-bold tracking-widest text-nc-mut-2">SHAPE</span>
-      <span class="min-w-0 flex-1 truncate text-[9.5px] text-nc-mut" title={legend}>{legend}</span>
+      <button
+        onclick={() => (open = !open)}
+        class="flex min-w-0 flex-1 items-center gap-2 text-left"
+        aria-expanded={open}
+        title={open ? 'Band karo' : 'Shape bar aur legend kholo'}
+      >
+        <span class="text-[9px] font-bold tracking-widest text-nc-mut-2">SHAPE</span>
+        <span class="min-w-0 flex-1 truncate text-[9.5px] text-nc-mut" title={legend}>{legend}</span
+        >
+        <span class="text-[9px] text-nc-mut-2">{open ? '▾' : '▸'}</span>
+      </button>
       {#if gaps}
         <span class="shrink-0 font-mono text-[9px] text-nc-mut-2" title="Silence tiers">
           {gapSummary(gaps)}
@@ -37,29 +54,33 @@
       {/if}
     </div>
 
-    <div class="mt-1 flex h-2 w-full overflow-hidden rounded-full bg-nc-bg">
-      {#each shape as block (block.start)}
-        <button
-          onclick={() => seek(block.start)}
-          class="h-full min-w-[2px] transition-[filter] hover:brightness-125 {SHAPE_CLASS[
-            block.kind
-          ]}"
-          style="width:{Math.max(0.4, ((block.end - block.start) / total) * 100)}%"
-          title="{SHAPE_LABEL[block.kind]} · {Math.round(block.start)}s–{Math.round(block.end)}s ·
+    {#if open}
+      <div class="mt-1 flex h-2 w-full overflow-hidden rounded-full bg-nc-bg">
+        {#each shape as block (block.start)}
+          <button
+            onclick={() => seek(block.start)}
+            class="h-full min-w-[2px] transition-[filter] hover:brightness-125 {SHAPE_CLASS[
+              block.kind
+            ]}"
+            style="width:{Math.max(0.4, ((block.end - block.start) / total) * 100)}%"
+            title="{SHAPE_LABEL[block.kind]} · {Math.round(block.start)}s–{Math.round(block.end)}s ·
             {Math.round(block.density * 100)}% speech"
-        ></button>
-      {/each}
-    </div>
+          ></button>
+        {/each}
+      </div>
+    {/if}
 
-    <div class="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[8.5px] text-nc-mut-2">
-      {#each KINDS as kind (kind)}
-        {#if shape.some((s) => s.kind === kind)}
-          <span class="inline-flex items-center gap-1">
-            <span class="inline-block h-1.5 w-1.5 rounded-full {SHAPE_CLASS[kind]}"></span>
-            {SHAPE_LABEL[kind]}
-          </span>
-        {/if}
-      {/each}
-    </div>
+    {#if open}
+      <div class="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[8.5px] text-nc-mut-2">
+        {#each KINDS as kind (kind)}
+          {#if shape.some((s) => s.kind === kind)}
+            <span class="inline-flex items-center gap-1">
+              <span class="inline-block h-1.5 w-1.5 rounded-full {SHAPE_CLASS[kind]}"></span>
+              {SHAPE_LABEL[kind]}
+            </span>
+          {/if}
+        {/each}
+      </div>
+    {/if}
   </section>
 {/if}
