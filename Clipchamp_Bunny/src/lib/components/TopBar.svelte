@@ -10,6 +10,7 @@
   import { mode } from '../stores/mode.svelte';
   import { menu } from '../stores/menu.svelte';
   import { browser } from '../stores/browser.svelte';
+  import TabChips from './browser/TabChips.svelte';
   import { applyStagedUpdate, installedBuild, isTauri, revealSource } from '../ipc';
   import { toast } from '../stores/toast.svelte';
   import UpdateButton from './UpdateButton.svelte';
@@ -118,6 +119,15 @@
 
   <!-- cloud / local toggle → backup & AI providers -->
   <CloudMenu />
+
+  <!-- The browser's tabs — icon chips, only while the browser view is open.
+       They used to own a 40 px strip of their own above the address bar; the
+       spec for this update is that the strip goes and the tabs live here, in
+       the header, as favicons. The `+` right after them is the new-tab button
+       in both states. -->
+  {#if app.view === 'browser'}
+    <TabChips />
+  {/if}
 
   <!-- + : the in-built browser. From the editor it opens the browser view;
        already inside it, the same button is the familiar "new tab" (capped

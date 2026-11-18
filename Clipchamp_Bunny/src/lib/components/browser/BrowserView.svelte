@@ -2,18 +2,18 @@
   /**
    * The browser view — Firefox's window, inside T9.
    *
-   * Firefox 157's toolbar shape: the **tab strip sits on top** of the address
-   * bar, both on one chrome surface, with round buttons and a pill-shaped
-   * address bar. The content area below is an exact rectangle the native child
-   * webview is positioned over (`browser_set_rect` gets this element's bounding
-   * box). While no page webview exists — new tab, or the dev preview — the area
-   * renders the speed dial / an iframe itself.
+   * Firefox 157's toolbar shape: round buttons and a pill-shaped address bar
+   * on one chrome surface. The tabs do NOT get a strip of their own any more —
+   * they are icon chips in the top bar (TopBar → TabChips), which gives every
+   * page 40 px of height back. The content area below is an exact rectangle
+   * the native child webview is positioned over (`browser_set_rect` gets this
+   * element's bounding box). While no page webview exists — new tab, or the
+   * dev preview — the area renders the speed dial / an iframe itself.
    *
    * Switching back to the editor unmounts this whole tree (App.svelte's
    * `{#if}`), which is also when the Rust side suspends every tab webview:
    * the zero-RAM rule, applied to browsing.
    */
-  import TabStrip from './TabStrip.svelte';
   import UrlBar from './UrlBar.svelte';
   import SpeedDial from './SpeedDial.svelte';
   import DownloadsPanel from './DownloadsPanel.svelte';
@@ -316,10 +316,8 @@
 </script>
 
 <div class="flex min-h-0 min-w-0 flex-1 flex-col bg-nc-bg text-nc-txt">
-  <!-- ── chrome: tabs on top, address bar under, one surface ────────────── -->
+  <!-- ── chrome: address bar only; the tabs live up in the top bar ───────── -->
   <div class="shrink-0 border-b border-nc-line bg-nc-panel" class:invisible={fullscreen}>
-    <TabStrip />
-
     <div class="flex h-10 items-center gap-0.5 px-2 pb-1.5">
       <button
         type="button"

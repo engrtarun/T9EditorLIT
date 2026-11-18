@@ -1,0 +1,2081 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>T9 · tab-strip motion prototype</title>
+    <style>
+      :root {
+        --nc-bg: #15171b;
+        --nc-panel: #1a1d24;
+        --nc-panel-2: #212530;
+        --nc-line: #2b3040;
+        --nc-line-2: #3a4152;
+        --nc-brand: #4d8dff;
+        --nc-red: #e5484d;
+        --nc-green: #3dd68c;
+        --nc-amber: #e0a94f;
+        --nc-txt: #f5f7fa;
+        --nc-mut: #9aa3b5;
+        --nc-mut-2: #6f7787;
+        --ui: 'Segoe UI', 'Nirmala UI', system-ui, -apple-system, sans-serif;
+        --brand: 'Agency FB', 'Bahnschrift', 'Segoe UI', system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html,
+      body {
+        width: 1440px;
+        height: 900px;
+        overflow: hidden;
+      }
+      body {
+        background: radial-gradient(1200px 700px at 50% 0%, #14161c 0%, #07080a 70%);
+        font-family: var(--ui);
+        color: var(--nc-txt);
+        -webkit-font-smoothing: antialiased;
+      }
+      #stage {
+        position: relative;
+        width: 1440px;
+        height: 900px;
+      }
+
+      /* ------------------------------------------------ the app window */
+      #win {
+        position: absolute;
+        left: 24px;
+        top: 24px;
+        right: 24px;
+        bottom: 24px;
+        border-radius: 13px;
+        overflow: hidden;
+        background: var(--nc-bg);
+        border: 1px solid #262b36;
+        box-shadow:
+          0 30px 90px rgba(0, 0, 0, 0.75),
+          0 2px 0 rgba(255, 255, 255, 0.04) inset;
+        display: flex;
+        flex-direction: column;
+        isolation: isolate;
+      }
+      #win::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
+        background:
+          radial-gradient(900px 420px at 12% -10%, rgba(77, 141, 255, 0.1), transparent 60%),
+          radial-gradient(700px 400px at 92% 4%, rgba(77, 141, 255, 0.05), transparent 60%);
+      }
+
+      /* ------------------------------------------------ header */
+      #hdr {
+        position: relative;
+        z-index: 3;
+        height: 48px;
+        flex: 0 0 48px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 0 0 10px;
+        background: linear-gradient(180deg, rgba(26, 29, 36, 0.92), rgba(21, 23, 27, 0.72));
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      #brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding-right: 6px;
+        flex: 0 0 auto;
+      }
+      #brandmark {
+        width: 26px;
+        height: 26px;
+        display: block;
+        flex: 0 0 26px;
+      }
+      #brandfallback {
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        display: none;
+        place-items: center;
+        font-family: var(--brand);
+        font-size: 15px;
+        letter-spacing: 0.04em;
+        background: linear-gradient(135deg, #9ec8ff, #4d8dff 45%, #1e45a0);
+        color: #0a1220;
+      }
+      #wordmark {
+        font-family: var(--brand);
+        font-size: 17px;
+        letter-spacing: 0.02em;
+        line-height: 1;
+      }
+      #wordmark b {
+        color: var(--nc-brand);
+        font-weight: 400;
+      }
+
+      /* nav = icon chips (the "after" state) */
+      #nav {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        flex: 0 0 auto;
+      }
+      .navbtn {
+        position: relative;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 9px;
+        border-radius: 8px;
+        border: 0;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.72);
+        font: 500 13px/1 var(--ui);
+        cursor: default;
+        white-space: nowrap;
+      }
+      .navbtn svg {
+        flex: 0 0 auto;
+      }
+      .navbtn.on {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.07);
+      }
+      .navbtn .lbl {
+        display: inline-block;
+        max-width: 220px;
+        overflow: hidden;
+      }
+      .navbtn .badge {
+        margin-left: 2px;
+        padding: 1px 5px;
+        border-radius: 99px;
+        background: rgba(229, 72, 77, 0.45);
+        font: 700 10px/1.4 var(--ui);
+        color: #fff;
+      }
+      #navUnderline {
+        position: absolute;
+        height: 2px;
+        border-radius: 2px;
+        background: var(--nc-brand);
+        bottom: 6px;
+        opacity: 0;
+      }
+
+      /* divider between nav and tab chips */
+      #hdiv {
+        width: 1px;
+        height: 20px;
+        background: rgba(255, 255, 255, 0.1);
+        flex: 0 0 1px;
+      }
+
+      /* the tab chips — the whole new idea */
+      #chips {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex: 0 0 auto;
+      }
+      .slot {
+        width: 28px;
+        height: 28px;
+        flex: 0 0 28px;
+        position: relative;
+      }
+      .chip {
+        position: absolute;
+        inset: 0;
+        border-radius: 8px;
+        border: 1px solid transparent;
+        display: grid;
+        place-items: center;
+        background: rgba(255, 255, 255, 0.05);
+        transform-origin: 50% 50%;
+      }
+      .chip.pinned {
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .chip.active {
+        background: var(--nc-panel-2);
+        border-color: rgba(77, 141, 255, 0.55);
+        box-shadow:
+          0 0 0 1px rgba(77, 141, 255, 0.18),
+          0 6px 14px rgba(0, 0, 0, 0.45);
+      }
+      .chip .fav {
+        width: 16px;
+        height: 16px;
+        display: block;
+      }
+      .chip .tabx {
+        position: absolute;
+        right: -4px;
+        top: -4px;
+        width: 13px;
+        height: 13px;
+        border-radius: 99px;
+        background: #2a3040;
+        border: 1px solid #414a5e;
+        display: grid;
+        place-items: center;
+        opacity: 0;
+        transform: scale(0.6);
+      }
+      .chip .tabx svg {
+        width: 6px;
+        height: 6px;
+      }
+      .chip .tabcount {
+        position: absolute;
+        right: -5px;
+        bottom: -5px;
+        min-width: 12px;
+        height: 12px;
+        border-radius: 99px;
+        background: var(--nc-brand);
+        color: #08111f;
+        font: 700 8px/12px var(--ui);
+        text-align: center;
+        padding: 0 3px;
+      }
+      #newtab {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        border: 1px dashed rgba(255, 255, 255, 0.16);
+        background: transparent;
+        display: grid;
+        place-items: center;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      #tabmeter {
+        font: 600 10px/1 var(--ui);
+        color: var(--nc-mut-2);
+        padding-left: 4px;
+        letter-spacing: 0.04em;
+      }
+
+      #spacer {
+        flex: 1 1 auto;
+        height: 100%;
+      }
+
+      /* right side of header */
+      #ram {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        height: 26px;
+        padding: 0 9px;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        font: 500 11px/1 var(--ui);
+        color: var(--nc-mut);
+        white-space: nowrap;
+      }
+      #ram i {
+        width: 5px;
+        height: 5px;
+        border-radius: 99px;
+        background: var(--nc-brand);
+        display: block;
+      }
+      #ram .v {
+        color: var(--nc-txt);
+      }
+      #rambar {
+        width: 46px;
+        height: 4px;
+        border-radius: 99px;
+        background: #2b3040;
+        overflow: hidden;
+      }
+      #rambar span {
+        display: block;
+        height: 100%;
+        width: 62%;
+        background: var(--nc-brand);
+        border-radius: 99px;
+      }
+      .hbtn {
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        display: grid;
+        place-items: center;
+        color: var(--nc-mut);
+        background: transparent;
+        border: 0;
+      }
+      #avatar {
+        width: 26px;
+        height: 26px;
+        border-radius: 99px;
+        margin-right: 10px;
+        background: linear-gradient(135deg, #3a4152, #22262f);
+        border: 1px solid #4a5468;
+        display: grid;
+        place-items: center;
+        font: 600 10px/1 var(--ui);
+        color: #aab3c4;
+      }
+
+      /* ------------------------------------------------ the strip that dies */
+      #strip {
+        position: relative;
+        z-index: 2;
+        height: 40px;
+        flex: 0 0 auto;
+        overflow: hidden;
+        background: rgba(20, 22, 27, 0.92);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 8px;
+      }
+      .tab {
+        height: 30px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 0 8px;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--nc-mut);
+        font: 500 12px/1 var(--ui);
+        white-space: nowrap;
+        max-width: 184px;
+      }
+      .tab .fav {
+        width: 15px;
+        height: 15px;
+        flex: 0 0 15px;
+      }
+      .tab .ttl {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .tab.on {
+        background: var(--nc-panel-2);
+        color: var(--nc-txt);
+        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset;
+      }
+      .tab .tabx {
+        width: 14px;
+        height: 14px;
+        display: grid;
+        place-items: center;
+        opacity: 0;
+      }
+      .tab.on .tabx,
+      .tab.hover .tabx {
+        opacity: 0.85;
+      }
+      .tab .tabx svg {
+        width: 7px;
+        height: 7px;
+      }
+      #stripPlus {
+        width: 26px;
+        height: 26px;
+        border-radius: 99px;
+        display: grid;
+        place-items: center;
+        color: var(--nc-mut-2);
+      }
+
+      #dim {
+        position: absolute;
+        left: 8px;
+        top: 6px;
+        bottom: 6px;
+        right: 8px;
+        border: 1px dashed rgba(77, 141, 255, 0.85);
+        border-radius: 9px;
+        pointer-events: none;
+        opacity: 0;
+      }
+      #dimtag {
+        position: absolute;
+        right: 6px;
+        top: 50%;
+        transform: translateY(-50%);
+        background: var(--nc-brand);
+        color: #06101f;
+        font: 700 10px/1 var(--ui);
+        padding: 4px 7px;
+        border-radius: 5px;
+        letter-spacing: 0.05em;
+      }
+      #kill {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 50%;
+        height: 2px;
+        background: var(--nc-red);
+        transform-origin: left center;
+        opacity: 0;
+        box-shadow: 0 0 12px rgba(229, 72, 77, 0.9);
+      }
+      #killtag {
+        position: absolute;
+        right: 10px;
+        top: 50%;
+        transform: translateY(-50%) rotate(-3deg);
+        font: 800 10px/1 var(--ui);
+        letter-spacing: 0.18em;
+        color: #fff;
+        background: var(--nc-red);
+        padding: 4px 8px;
+        border-radius: 4px;
+        opacity: 0;
+      }
+
+      /* ------------------------------------------------ browser toolbar */
+      #toolbar {
+        position: relative;
+        z-index: 2;
+        height: 54px;
+        flex: 0 0 54px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0 8px;
+        background: rgba(21, 23, 27, 0.94);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+      }
+      .tb {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        color: var(--nc-mut);
+        flex: 0 0 32px;
+      }
+      .tb:hover {
+        background: rgba(255, 255, 255, 0.06);
+      }
+      #urlwrap {
+        position: relative;
+        flex: 1 1 auto;
+        margin-left: 6px;
+        z-index: 4;
+      }
+      #url {
+        height: 34px;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.055);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 10px 0 8px;
+      }
+      #url.focus {
+        border-color: rgba(77, 141, 255, 0.65);
+        background: rgba(77, 141, 255, 0.07);
+      }
+      #prov {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding-right: 7px;
+        border-right: 1px solid rgba(255, 255, 255, 0.09);
+      }
+      #provlabel {
+        font: 500 11px/1 var(--ui);
+        color: var(--nc-mut);
+      }
+      #urltext {
+        font: 400 12.5px/1 var(--ui);
+        color: var(--nc-mut-2);
+        flex: 1 1 auto;
+      }
+      #url.focus #urltext {
+        color: var(--nc-txt);
+      }
+      #caret {
+        width: 1px;
+        height: 14px;
+        background: var(--nc-brand);
+        opacity: 0;
+      }
+      #url .uicons {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: var(--nc-mut-2);
+      }
+
+      #provmenu {
+        position: absolute;
+        left: 0;
+        top: 40px;
+        width: 236px;
+        padding: 5px;
+        border-radius: 11px;
+        background: #1d212a;
+        border: 1px solid var(--nc-line-2);
+        box-shadow: 0 22px 50px rgba(0, 0, 0, 0.7);
+        opacity: 0;
+        transform: translateY(-6px);
+      }
+      .provrow {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 7px 8px;
+        border-radius: 7px;
+        font: 500 12px/1 var(--ui);
+        color: var(--nc-mut);
+      }
+      .provrow.sel {
+        background: rgba(77, 141, 255, 0.16);
+        color: var(--nc-txt);
+      }
+      .provrow .k {
+        margin-left: auto;
+        font: 600 9px/1 var(--ui);
+        color: var(--nc-mut-2);
+        letter-spacing: 0.08em;
+      }
+
+      /* ------------------------------------------------ page */
+      #page {
+        position: relative;
+        z-index: 1;
+        flex: 1 1 auto;
+        overflow: hidden;
+        padding: 34px 60px 0;
+        background:
+          radial-gradient(620px 300px at 18% 12%, rgba(77, 141, 255, 0.08), transparent 65%),
+          radial-gradient(520px 280px at 82% 6%, rgba(77, 141, 255, 0.05), transparent 65%), #15171b;
+      }
+      #greet {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+      }
+      #date {
+        font: 600 10.5px/1 var(--ui);
+        letter-spacing: 0.19em;
+        color: var(--nc-mut-2);
+      }
+      #hello {
+        font: 600 34px/1.05 var(--ui);
+        letter-spacing: -0.02em;
+        margin-top: 11px;
+      }
+      #sub {
+        margin-top: 7px;
+        font: 400 12.5px/1 var(--ui);
+        color: var(--nc-mut);
+      }
+      #clock {
+        text-align: right;
+      }
+      #clock .t {
+        font: 600 30px/1 var(--ui);
+        letter-spacing: -0.01em;
+      }
+      #clock .l {
+        margin-top: 5px;
+        font: 600 9.5px/1 var(--ui);
+        letter-spacing: 0.2em;
+        color: var(--nc-mut-2);
+      }
+
+      #search {
+        margin: 30px auto 0;
+        width: 100%;
+        max-width: 760px;
+        height: 50px;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.045);
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 8px 0 15px;
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+      }
+      #search .sp {
+        font: 400 13px/1 var(--ui);
+        color: var(--nc-mut-2);
+        flex: 1 1 auto;
+      }
+      #go {
+        width: 36px;
+        height: 36px;
+        border-radius: 99px;
+        background: var(--nc-brand);
+        display: grid;
+        place-items: center;
+      }
+
+      #tabpill {
+        margin: 14px auto 0;
+        width: max-content;
+        padding: 4px 10px;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        font: 600 10.5px/1 var(--ui);
+        color: var(--nc-mut);
+      }
+      #dial {
+        margin: 40px auto 0;
+        display: flex;
+        gap: 26px;
+        justify-content: center;
+      }
+      .tile {
+        width: 74px;
+        text-align: center;
+      }
+      .tile .box {
+        width: 60px;
+        height: 60px;
+        border-radius: 16px;
+        display: grid;
+        place-items: center;
+        background: #fff;
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+      }
+      .tile .nm {
+        margin-top: 9px;
+        font: 500 11.5px/1 var(--ui);
+        color: var(--nc-mut);
+      }
+      .tile.hot .box {
+        box-shadow:
+          0 0 0 2px var(--nc-brand),
+          0 14px 30px rgba(0, 0, 0, 0.5);
+      }
+      #devprev {
+        margin: 46px auto 0;
+        width: max-content;
+        font: 600 9.5px/1 var(--ui);
+        letter-spacing: 0.22em;
+        color: #3f4759;
+      }
+
+      /* ------------------------------------------------ overlays */
+      #cap {
+        position: absolute;
+        left: 46px;
+        bottom: 40px;
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        opacity: 0;
+        padding: 13px 17px 14px 15px;
+        border-radius: 12px;
+        background: rgba(10, 12, 16, 0.82);
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(10px);
+        border-left: 3px solid var(--nc-brand);
+      }
+      #capKick {
+        font: 700 10px/1 var(--ui);
+        letter-spacing: 0.2em;
+        color: var(--nc-brand);
+      }
+      #capTitle {
+        font: 500 14px/1.35 var(--ui);
+        color: var(--nc-txt);
+        max-width: 420px;
+      }
+      #capTitle b {
+        color: #fff;
+        font-weight: 700;
+      }
+
+      #toast {
+        position: absolute;
+        left: 50%;
+        bottom: 46px;
+        transform: translateX(-50%);
+        z-index: 22;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 9px 14px;
+        border-radius: 99px;
+        opacity: 0;
+        background: rgba(15, 18, 23, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.11);
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+        font: 500 12px/1 var(--ui);
+        color: var(--nc-txt);
+      }
+      #toast .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 99px;
+        background: var(--nc-green);
+      }
+      #toast .dot.red {
+        background: var(--nc-red);
+      }
+
+      #cursor {
+        position: absolute;
+        z-index: 30;
+        width: 22px;
+        height: 28px;
+        opacity: 0;
+      }
+      #ripple {
+        position: absolute;
+        z-index: 29;
+        width: 34px;
+        height: 34px;
+        border-radius: 99px;
+        border: 2px solid var(--nc-brand);
+        opacity: 0;
+        transform: translate(-50%, -50%);
+      }
+
+      /* measurement callouts */
+      #bracket {
+        position: absolute;
+        right: 26px;
+        z-index: 18;
+        width: 132px;
+        opacity: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      #bracket .br {
+        flex: 1 1 auto;
+        height: 1px;
+        background: var(--nc-brand);
+        position: relative;
+      }
+      #bracket .br::before,
+      #bracket .br::after {
+        content: '';
+        position: absolute;
+        width: 1px;
+        height: 7px;
+        background: var(--nc-brand);
+        top: -3px;
+      }
+      #bracket .br::before {
+        left: 0;
+      }
+      #bracket .br::after {
+        right: 0;
+      }
+      #bracket .tx {
+        font: 700 10px/1 var(--ui);
+        color: var(--nc-brand);
+        letter-spacing: 0.1em;
+        white-space: nowrap;
+      }
+
+      #saved {
+        position: absolute;
+        left: 50%;
+        top: 120px;
+        transform: translateX(-50%);
+        z-index: 18;
+        padding: 8px 14px;
+        border-radius: 99px;
+        opacity: 0;
+        background: rgba(61, 214, 140, 0.12);
+        border: 1px solid rgba(61, 214, 140, 0.4);
+        font: 600 11.5px/1 var(--ui);
+        color: #b8f2d2;
+      }
+
+      /* final card */
+      #final {
+        position: absolute;
+        inset: 0;
+        z-index: 25;
+        display: grid;
+        place-items: center;
+        background: rgba(6, 7, 9, 0.72);
+        backdrop-filter: blur(3px);
+        opacity: 0;
+      }
+      #card {
+        width: 620px;
+        padding: 30px 32px 28px;
+        border-radius: 18px;
+        background: linear-gradient(180deg, #1b1f27, #15181e);
+        border: 1px solid #333b4b;
+        box-shadow: 0 40px 100px rgba(0, 0, 0, 0.8);
+      }
+      #card .k {
+        font: 700 10.5px/1 var(--ui);
+        letter-spacing: 0.22em;
+        color: var(--nc-brand);
+      }
+      #card h2 {
+        font: 600 26px/1.2 var(--ui);
+        letter-spacing: -0.02em;
+        margin-top: 11px;
+      }
+      #card h2 span {
+        color: var(--nc-brand);
+      }
+      #card ul {
+        margin-top: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        list-style: none;
+      }
+      #card li {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font: 400 13.5px/1.3 var(--ui);
+        color: #c8cfdc;
+      }
+      #card li b {
+        color: #fff;
+        font-weight: 600;
+      }
+      #card li .tick {
+        width: 17px;
+        height: 17px;
+        border-radius: 99px;
+        flex: 0 0 17px;
+        background: rgba(61, 214, 140, 0.16);
+        border: 1px solid rgba(61, 214, 140, 0.5);
+        display: grid;
+        place-items: center;
+        color: #6ee7a8;
+      }
+      #card li .q {
+        width: 17px;
+        height: 17px;
+        border-radius: 99px;
+        flex: 0 0 17px;
+        background: rgba(224, 169, 79, 0.15);
+        border: 1px solid rgba(224, 169, 79, 0.5);
+        display: grid;
+        place-items: center;
+        color: var(--nc-amber);
+        font: 700 10px/1 var(--ui);
+      }
+      #card .ask {
+        margin-top: 22px;
+        padding-top: 17px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        font: 500 13px/1 var(--ui);
+        color: var(--nc-mut);
+      }
+      #card .ask b {
+        color: var(--nc-brand);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <div id="win">
+        <!-- ======================= HEADER ======================= -->
+        <header id="hdr">
+          <div id="brand">
+            <svg id="brandmark" viewBox="119.5 21.29 344.15 234.21" fill="none" aria-label="T9">
+              <defs>
+                <linearGradient id="t9g" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#EEF6FF"></stop>
+                  <stop offset="0.22" stop-color="#9EC8FF"></stop>
+                  <stop offset="0.45" stop-color="#4D8DFF"></stop>
+                  <stop offset="0.72" stop-color="#1E45A0"></stop>
+                  <stop offset="1" stop-color="#0A2A66"></stop>
+                </linearGradient>
+              </defs>
+              <path id="brandpath" d="" fill="url(#t9g)"></path>
+            </svg>
+            <div id="brandfallback">T9</div>
+            <span id="wordmark">T9 Editor <b>LIT</b></span>
+          </div>
+
+          <nav id="nav">
+            <button class="navbtn on" id="nav-home">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M3.5 10.8 12 4l8.5 6.8"></path>
+                <path d="M5.7 9.6V20h12.6V9.6"></path>
+                <path d="M9.8 20v-5h4.4v5"></path>
+              </svg>
+              <span class="lbl">Home</span>
+            </button>
+            <button class="navbtn" id="nav-cloud">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M7 18a4 4 0 0 1 .6-7.96A5.5 5.5 0 0 1 18 10.5a3.75 3.75 0 0 1-.4 7.5H7z"
+                ></path>
+              </svg>
+              <span class="lbl">T9 Cloud</span>
+            </button>
+            <button class="navbtn" id="nav-api">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5z"></path>
+              </svg>
+              <span class="lbl">AI APIs</span>
+            </button>
+            <button class="navbtn" id="nav-conn">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M9.5 14.5 14.5 9.5"></path>
+                <path d="M7 12 4.8 14.2a3.6 3.6 0 0 0 5.1 5.1L12 17"></path>
+                <path d="M17 12l2.2-2.2a3.6 3.6 0 0 0-5.1-5.1L12 7"></path>
+              </svg>
+              <span class="lbl">T9 Connections</span>
+            </button>
+            <button class="navbtn" id="nav-setup">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="12" cy="12" r="3.2"></circle>
+                <path
+                  d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M18.7 5.3l-1.8 1.8M7.1 16.9l-1.8 1.8"
+                ></path>
+              </svg>
+              <span class="lbl">Fast Setup</span>
+            </button>
+            <button class="navbtn" id="nav-trash">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M4 7h16M9.5 7V4.6h5V7M6.5 7l.9 13h9.2l.9-13"></path>
+                <path d="M10.5 11v5M13.5 11v5"></path>
+              </svg>
+              <span class="lbl">Trash</span>
+              <span class="badge">3</span>
+            </button>
+            <span id="navUnderline"></span>
+          </nav>
+
+          <div id="hdiv"></div>
+
+          <!-- the tab chips -->
+          <div id="chips">
+            <div class="slot" id="slot-home">
+              <div class="chip pinned" id="chip-home">
+                <svg
+                  class="fav"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#9aa3b5"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M3.5 10.8 12 4l8.5 6.8"></path>
+                  <path d="M5.7 9.6V20h12.6V9.6"></path>
+                  <path d="M9.8 20v-5h4.4v5"></path>
+                </svg>
+              </div>
+            </div>
+            <div class="slot" id="slot-cloud">
+              <div class="chip pinned" id="chip-cloud">
+                <svg
+                  class="fav"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#9aa3b5"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path
+                    d="M7 18a4 4 0 0 1 .6-7.96A5.5 5.5 0 0 1 18 10.5a3.75 3.75 0 0 1-.4 7.5H7z"
+                  ></path>
+                </svg>
+              </div>
+            </div>
+            <div class="slot" id="slot-yt">
+              <div class="chip" id="chip-yt">
+                <svg class="fav" viewBox="0 0 24 24">
+                  <rect x="1.5" y="4.5" width="21" height="15" rx="4.4" fill="#FF0033"></rect>
+                  <path d="M10 9.2v5.6l4.8-2.8z" fill="#fff"></path>
+                </svg>
+                <span class="tabx" id="chip-yt-x"
+                  ><svg viewBox="0 0 12 12" fill="none" stroke="#dbe2ef" stroke-width="2">
+                    <path d="M2 2l8 8M10 2l-8 8"></path></svg
+                ></span>
+              </div>
+            </div>
+            <div class="slot" id="slot-ig">
+              <div class="chip" id="chip-ig">
+                <svg class="fav" viewBox="0 0 24 24">
+                  <defs>
+                    <radialGradient id="igg" cx="0.3" cy="1" r="1.2">
+                      <stop offset="0" stop-color="#FFD600"></stop>
+                      <stop offset=".45" stop-color="#FF7A00"></stop>
+                      <stop offset=".72" stop-color="#FF0069"></stop>
+                      <stop offset="1" stop-color="#D300C5"></stop>
+                    </radialGradient>
+                  </defs>
+                  <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="url(#igg)"></rect>
+                  <rect
+                    x="6.2"
+                    y="6.2"
+                    width="11.6"
+                    height="11.6"
+                    rx="3.6"
+                    fill="none"
+                    stroke="#fff"
+                    stroke-width="1.7"
+                  ></rect>
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="2.7"
+                    fill="none"
+                    stroke="#fff"
+                    stroke-width="1.7"
+                  ></circle>
+                  <circle cx="16.6" cy="7.4" r="1.1" fill="#fff"></circle>
+                </svg>
+                <span class="tabx"
+                  ><svg viewBox="0 0 12 12" fill="none" stroke="#dbe2ef" stroke-width="2">
+                    <path d="M2 2l8 8M10 2l-8 8"></path></svg
+                ></span>
+              </div>
+            </div>
+            <div class="slot" id="slot-x">
+              <div class="chip" id="chip-x">
+                <svg class="fav" viewBox="0 0 24 24">
+                  <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="#0d0f13"></rect>
+                  <path
+                    d="M7 6.5h3.1l3.2 4.3 3.6-4.3H19l-5.3 6.2L19.4 18h-3.1l-3.5-4.7L8.6 18H7l5.6-6.6z"
+                    fill="#fff"
+                  ></path>
+                </svg>
+                <span class="tabx"
+                  ><svg viewBox="0 0 12 12" fill="none" stroke="#dbe2ef" stroke-width="2">
+                    <path d="M2 2l8 8M10 2l-8 8"></path></svg
+                ></span>
+              </div>
+            </div>
+            <div class="slot" id="slot-sc">
+              <div class="chip" id="chip-sc">
+                <svg class="fav" viewBox="0 0 24 24">
+                  <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="#FFFC00"></rect>
+                  <path
+                    d="M12 5.4c2 0 3.4 1.5 3.4 3.5 0 .7-.1 1.3 0 1.7.2.6 1 .9 1.5 1 .4.1.6.3.5.7-.1.4-.9.6-1.3.9-.3.2-.2.6-.4 1-.2.4-.7.5-1.2.5-.4 0-.8.4-1.2.7-.5.4-1 .5-1.5.5s-1-.1-1.5-.5c-.4-.3-.8-.7-1.2-.7-.5 0-1-.1-1.2-.5-.2-.4-.1-.8-.4-1-.4-.3-1.2-.5-1.3-.9-.1-.4.1-.6.5-.7.5-.1 1.3-.4 1.5-1 .1-.4 0-1 0-1.7 0-2 1.4-3.5 3.4-3.5z"
+                    fill="#111"
+                  ></path>
+                </svg>
+                <span class="tabx"
+                  ><svg viewBox="0 0 12 12" fill="none" stroke="#dbe2ef" stroke-width="2">
+                    <path d="M2 2l8 8M10 2l-8 8"></path></svg
+                ></span>
+              </div>
+            </div>
+            <div class="slot" id="slot-wa">
+              <div class="chip" id="chip-wa">
+                <svg class="fav" viewBox="0 0 24 24">
+                  <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="#25D366"></rect>
+                  <path
+                    d="M12 5.6a6.4 6.4 0 0 0-5.5 9.7L5.6 18.4l3.2-.8A6.4 6.4 0 1 0 12 5.6z"
+                    fill="#fff"
+                  ></path>
+                  <path
+                    d="M9.9 9.1c-.2-.4-.4-.4-.6-.4h-.5c-.2 0-.5.1-.7.4-.3.3-.9.9-.9 2.1s.9 2.4 1 2.6c.1.2 1.7 2.7 4.2 3.6 2 .8 2.4.6 2.9.6.4 0 1.4-.5 1.6-1.1.2-.5.2-1 .1-1.1-.1-.1-.3-.2-.6-.3l-1.6-.8c-.2-.1-.4-.1-.5.1l-.7.9c-.1.2-.3.2-.5.1-.2-.1-1-.4-1.9-1.2-.7-.6-1.2-1.4-1.3-1.6-.1-.2 0-.3.1-.4l.4-.5c.1-.2.2-.3.3-.5.1-.2 0-.3 0-.5l-.7-1.6z"
+                    fill="#25D366"
+                  ></path>
+                </svg>
+                <span class="tabx"
+                  ><svg viewBox="0 0 12 12" fill="none" stroke="#dbe2ef" stroke-width="2">
+                    <path d="M2 2l8 8M10 2l-8 8"></path></svg
+                ></span>
+              </div>
+            </div>
+            <div class="slot" id="slot-gh">
+              <div class="chip" id="chip-gh">
+                <svg class="fav" viewBox="0 0 24 24">
+                  <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="#f5f5f5"></rect>
+                  <path
+                    d="M12 5.8a4.6 4.6 0 0 0-4.6 4.7c0 3.4-1 4.6-1.7 5.1-.2.1-.1.4.1.4.8.1 1.6-.1 2 .2.2.2.1.6.3.8.3.3.9.2 1.2.5.2.2.4.6.7.6.4 0 .6-.4.8-.6.3-.3.9-.2 1.2-.5.2-.2.1-.6.3-.8.4-.3 1.2-.1 2-.2.2 0 .3-.3.1-.4-.7-.5-1.7-1.7-1.7-5.1A4.6 4.6 0 0 0 12 5.8z"
+                    fill="#111"
+                  ></path>
+                </svg>
+                <span class="tabx"
+                  ><svg viewBox="0 0 12 12" fill="none" stroke="#dbe2ef" stroke-width="2">
+                    <path d="M2 2l8 8M10 2l-8 8"></path></svg
+                ></span>
+              </div>
+            </div>
+            <button id="newtab">
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M12 5v14M5 12h14"></path>
+              </svg>
+            </button>
+            <span id="tabmeter">0/9</span>
+          </div>
+
+          <div id="spacer"></div>
+
+          <div id="ram">
+            <i></i><span>RAM</span>
+            <div id="rambar"><span></span></div>
+            <span class="v">17</span><span style="color: #4c5466">/8G</span>
+            <span class="v">17 MB</span><span style="color: #4c5466">2.4 MB/s</span>
+          </div>
+          <button class="hbtn" title="Help">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.9"
+              stroke-linecap="round"
+            >
+              <path d="M9.5 9a2.6 2.6 0 1 1 3.4 2.5c-.6.2-.9.7-.9 1.3v.7"></path>
+              <circle cx="12" cy="17.4" r=".9" fill="currentColor" stroke="none"></circle>
+            </svg>
+          </button>
+          <div id="avatar">A</div>
+        </header>
+
+        <!-- ======================= THE STRIP ======================= -->
+        <div id="strip">
+          <div id="dim"><div id="dimtag">40 px</div></div>
+          <div id="kill"></div>
+          <div id="killtag">HATEGI</div>
+        </div>
+
+        <!-- ======================= TOOLBAR ======================= -->
+        <div id="toolbar">
+          <button class="tb">
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M15 5l-7 7 7 7"></path>
+            </svg>
+          </button>
+          <button class="tb" style="opacity: 0.4">
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M9 5l7 7-7 7"></path>
+            </svg>
+          </button>
+          <button class="tb">
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M20 11a8 8 0 1 0-2.6 5.9"></path>
+              <path d="M20 5v6h-6"></path>
+            </svg>
+          </button>
+          <button class="tb">
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.9"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M3.5 10.8 12 4l8.5 6.8"></path>
+              <path d="M5.7 9.6V20h12.6V9.6"></path>
+            </svg>
+          </button>
+
+          <div id="urlwrap">
+            <div id="url">
+              <div id="prov">
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#9aa3b5"
+                  stroke-width="1.8"
+                >
+                  <path d="M12 3l7 3v5.5c0 4.3-2.9 7.7-7 9.5-4.1-1.8-7-5.2-7-9.5V6l7-3z"></path>
+                  <path d="M9.2 12.1l2 2 3.6-3.9"></path>
+                </svg>
+                <span id="provlabel">Google</span>
+                <svg
+                  width="8"
+                  height="8"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#6f7787"
+                  stroke-width="3"
+                  stroke-linecap="round"
+                >
+                  <path d="M6 9l6 6 6-6"></path>
+                </svg>
+              </div>
+              <span id="urltext">Search ya address likho…</span>
+              <span id="caret"></span>
+              <div class="uicons">
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                >
+                  <path d="M4 6h16M4 12h10M4 18h7"></path>
+                </svg>
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                  stroke-linejoin="round"
+                >
+                  <path
+                    d="M12 3.6l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.8l5.9-.9z"
+                  ></path>
+                </svg>
+              </div>
+            </div>
+
+            <div id="provmenu">
+              <div class="provrow sel" id="pr-google">
+                <svg width="14" height="14" viewBox="0 0 24 24">
+                  <path
+                    d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.4z"
+                    fill="#4285F4"
+                  />
+                  <path
+                    d="M12 22c2.7 0 4.9-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.7-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z"
+                    fill="#34A853"
+                  />
+                  <path
+                    d="M6.4 14a6 6 0 0 1 0-3.8V7.6H3.1a10 10 0 0 0 0 8.9L6.4 14z"
+                    fill="#FBBC05"
+                  />
+                  <path
+                    d="M12 6.1c1.5 0 2.8.5 3.8 1.5l2.8-2.8A10 10 0 0 0 3.1 7.6l3.3 2.6C7.2 7.8 9.4 6.1 12 6.1z"
+                    fill="#EA4335"
+                  />
+                </svg>
+                <span>Google</span><span class="k">DEFAULT</span>
+              </div>
+              <div class="provrow" id="pr-ddg">
+                <svg width="14" height="14" viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="9" fill="#DE5833"></circle>
+                  <path
+                    d="M12 5.8v8.4c0 2.1-1.4 3.4-3.3 3.4-1 0-1.8-.4-2.3-1"
+                    stroke="#fff"
+                    stroke-width="1.8"
+                    fill="none"
+                    stroke-linecap="round"
+                  ></path>
+                  <circle cx="14.6" cy="8.1" r="1.2" fill="#fff"></circle>
+                </svg>
+                <span>DuckDuckGo</span>
+              </div>
+              <div class="provrow" id="pr-bing">
+                <svg width="14" height="14" viewBox="0 0 24 24">
+                  <path
+                    d="M6 3.5l3 1v11.2l4.6-1.6-2.3-1.2-1.4-3.6 6.7 2.1v4.7l-7.4 3.9L6 18.6z"
+                    fill="#008373"
+                  ></path>
+                </svg>
+                <span>Bing</span>
+              </div>
+              <div class="provrow" id="pr-brave">
+                <svg width="14" height="14" viewBox="0 0 24 24">
+                  <path
+                    d="M12 3l5 2.2 2.6 4.3-1.4 6.7L12 21l-6.2-4.8L4.4 9.5 7 5.2z"
+                    fill="#FB542B"
+                  ></path>
+                </svg>
+                <span>Brave</span>
+              </div>
+            </div>
+          </div>
+
+          <button class="tb">
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+            >
+              <path d="M12 4v11M8 11.5l4 4 4-4M5 19.5h14"></path>
+            </svg>
+          </button>
+          <button class="tb">
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.9"
+              stroke-linecap="round"
+            >
+              <path d="M4 7h16M4 12h16M4 17h16"></path>
+            </svg>
+          </button>
+        </div>
+
+        <!-- ======================= PAGE ======================= -->
+        <div id="page">
+          <div id="greet">
+            <div>
+              <div id="date">WEDNESDAY, 18 NOVEMBER</div>
+              <div id="hello">Suprabhat</div>
+              <div id="sub">Koi login nahi, koi telemetry nahi — bas apna kaam karo.</div>
+            </div>
+            <div id="clock">
+              <div class="t">9:42 AM</div>
+              <div class="l">LOCAL TIME</div>
+            </div>
+          </div>
+
+          <div id="search">
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#4d8dff"
+              stroke-width="1.9"
+              stroke-linecap="round"
+            >
+              <circle cx="11" cy="11" r="6.4"></circle>
+              <path d="M16 16l4.5 4.5"></path>
+            </svg>
+            <span class="sp">AI se pooch, ya website ka address likho…</span>
+            <div id="go">
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#08111f"
+                stroke-width="2.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 19V5M6 11l6-6 6 6"></path>
+              </svg>
+            </div>
+          </div>
+
+          <div id="tabpill">0 / 9 tabs</div>
+
+          <div id="dial">
+            <div class="tile" id="tile-yt">
+              <div class="box">
+                <svg width="34" height="34" viewBox="0 0 24 24">
+                  <rect x="1.5" y="4.5" width="21" height="15" rx="4.4" fill="#FF0033"></rect>
+                  <path d="M10 9.2v5.6l4.8-2.8z" fill="#fff"></path>
+                </svg>
+              </div>
+              <div class="nm">YouTube</div>
+            </div>
+            <div class="tile" id="tile-ig">
+              <div class="box">
+                <svg width="34" height="34" viewBox="0 0 24 24">
+                  <defs>
+                    <radialGradient id="igg2" cx="0.3" cy="1" r="1.2">
+                      <stop offset="0" stop-color="#FFD600"></stop>
+                      <stop offset=".45" stop-color="#FF7A00"></stop>
+                      <stop offset=".72" stop-color="#FF0069"></stop>
+                      <stop offset="1" stop-color="#D300C5"></stop>
+                    </radialGradient>
+                  </defs>
+                  <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="url(#igg2)"></rect>
+                  <rect
+                    x="6.2"
+                    y="6.2"
+                    width="11.6"
+                    height="11.6"
+                    rx="3.6"
+                    fill="none"
+                    stroke="#fff"
+                    stroke-width="1.7"
+                  ></rect>
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="2.7"
+                    fill="none"
+                    stroke="#fff"
+                    stroke-width="1.7"
+                  ></circle>
+                  <circle cx="16.6" cy="7.4" r="1.1" fill="#fff"></circle>
+                </svg>
+              </div>
+              <div class="nm">Instagram</div>
+            </div>
+            <div class="tile" id="tile-x">
+              <div class="box">
+                <svg width="34" height="34" viewBox="0 0 24 24">
+                  <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="#0d0f13"></rect>
+                  <path
+                    d="M7 6.5h3.1l3.2 4.3 3.6-4.3H19l-5.3 6.2L19.4 18h-3.1l-3.5-4.7L8.6 18H7l5.6-6.6z"
+                    fill="#fff"
+                  ></path>
+                </svg>
+              </div>
+              <div class="nm">X</div>
+            </div>
+            <div class="tile" id="tile-sc">
+              <div class="box">
+                <svg width="34" height="34" viewBox="0 0 24 24">
+                  <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="#FFFC00"></rect>
+                  <path
+                    d="M12 5.4c2 0 3.4 1.5 3.4 3.5 0 .7-.1 1.3 0 1.7.2.6 1 .9 1.5 1 .4.1.6.3.5.7-.1.4-.9.6-1.3.9-.3.2-.2.6-.4 1-.2.4-.7.5-1.2.5-.4 0-.8.4-1.2.7-.5.4-1 .5-1.5.5s-1-.1-1.5-.5c-.4-.3-.8-.7-1.2-.7-.5 0-1-.1-1.2-.5-.2-.4-.1-.8-.4-1-.4-.3-1.2-.5-1.3-.9-.1-.4.1-.6.5-.7.5-.1 1.3-.4 1.5-1 .1-.4 0-1 0-1.7 0-2 1.4-3.5 3.4-3.5z"
+                    fill="#111"
+                  ></path>
+                </svg>
+              </div>
+              <div class="nm">Snapchat</div>
+            </div>
+            <div class="tile" id="tile-wa">
+              <div class="box">
+                <svg width="34" height="34" viewBox="0 0 24 24">
+                  <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="#25D366"></rect>
+                  <path
+                    d="M12 5.6a6.4 6.4 0 0 0-5.5 9.7L5.6 18.4l3.2-.8A6.4 6.4 0 1 0 12 5.6z"
+                    fill="#fff"
+                  ></path>
+                  <path
+                    d="M9.9 9.1c-.2-.4-.4-.4-.6-.4h-.5c-.2 0-.5.1-.7.4-.3.3-.9.9-.9 2.1s.9 2.4 1 2.6c.1.2 1.7 2.7 4.2 3.6 2 .8 2.4.6 2.9.6.4 0 1.4-.5 1.6-1.1.2-.5.2-1 .1-1.1-.1-.1-.3-.2-.6-.3l-1.6-.8c-.2-.1-.4-.1-.5.1l-.7.9c-.1.2-.3.2-.5.1-.2-.1-1-.4-1.9-1.2-.7-.6-1.2-1.4-1.3-1.6-.1-.2 0-.3.1-.4l.4-.5c.1-.2.2-.3.3-.5.1-.2 0-.3 0-.5l-.7-1.6z"
+                    fill="#25D366"
+                  ></path>
+                </svg>
+              </div>
+              <div class="nm">WhatsApp</div>
+            </div>
+            <div class="tile" id="tile-gh">
+              <div class="box">
+                <svg width="34" height="34" viewBox="0 0 24 24">
+                  <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="#f5f5f5"></rect>
+                  <path
+                    d="M12 5.8a4.6 4.6 0 0 0-4.6 4.7c0 3.4-1 4.6-1.7 5.1-.2.1-.1.4.1.4.8.1 1.6-.1 2 .2.2.2.1.6.3.8.3.3.9.2 1.2.5.2.2.4.6.7.6.4 0 .6-.4.8-.6.3-.3.9-.2 1.2-.5.2-.2.1-.6.3-.8.4-.3 1.2-.1 2-.2.2 0 .3-.3.1-.4-.7-.5-1.7-1.7-1.7-5.1A4.6 4.6 0 0 0 12 5.8z"
+                    fill="#111"
+                  ></path>
+                </svg>
+              </div>
+              <div class="nm">GitHub</div>
+            </div>
+          </div>
+
+          <div id="devprev">DEV PREVIEW · EVERYTHING OPENS IN-APP</div>
+        </div>
+      </div>
+
+      <div id="bracket">
+        <div class="br"></div>
+        <div class="tx">40 px</div>
+      </div>
+      <div id="saved">+40 px video area wapas</div>
+
+      <div id="cap">
+        <div id="capKick">AAJ</div>
+        <div id="capTitle"></div>
+      </div>
+      <div id="toast"><span class="dot"></span><span id="toastMsg"></span></div>
+      <div id="ripple"></div>
+      <div id="cursor">
+        <svg width="22" height="28" viewBox="0 0 22 28">
+          <path
+            d="M2 2l17 10.5-7.2 1.4 4.2 8.6-3.4 1.7-4.2-8.6L3.6 21z"
+            fill="#fff"
+            stroke="#0b0d11"
+            stroke-width="1.4"
+            stroke-linejoin="round"
+          ></path>
+        </svg>
+      </div>
+
+      <div id="final">
+        <div id="card">
+          <div class="k">NAYA LAYOUT · PROPOSAL</div>
+          <h2>Tab strip khatam.<br /><span>Tabs header me, sirf icon.</span></h2>
+          <ul>
+            <li>
+              <span class="tick">✓</span
+              ><span><b>40 px</b> wapas — strip gayi, video/editing area bada</span>
+            </li>
+            <li>
+              <span class="tick">✓</span
+              ><span><b>Home · Cloud</b> chips + web tabs, ek hi row me</span>
+            </li>
+            <li>
+              <span class="tick">✓</span><span><b>Close ×</b> → tab band, session auto-clear</span>
+            </li>
+            <li>
+              <span class="tick">✓</span
+              ><span><b>Cap 9</b>, <b>+</b> disabled, meter header me</span>
+            </li>
+            <li>
+              <span class="q">?</span
+              ><span><b>2 tabs</b> ka matlab — split ya stack? (sketch me sawal)</span>
+            </li>
+          </ul>
+          <div class="ask">
+            Batao — <b>sahi hai?</b> tabhi code karunga. App me abhi kuch nahi badla.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      /* ------------------------------------------------------------------
+         Deterministic timeline. No CSS transitions: every visual value is
+         computed from `t` (ms), so a frame captured at t is always the same.
+         ------------------------------------------------------------------ */
+      const $ = (id) => document.getElementById(id);
+      const clamp = (v, a = 0, b = 1) => (v < a ? a : v > b ? b : v);
+      const seg = (t, a, b) => clamp((t - a) / (b - a));
+      const io = (x) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
+      const out = (x) => 1 - Math.pow(1 - x, 3);
+      const inn = (x) => x * x * x;
+      const back = (x) => {
+        const c1 = 1.9,
+          c3 = c1 + 1;
+        return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+      };
+
+      const el = {
+        strip: $('strip'),
+        hdr: $('hdr'),
+        page: $('page'),
+        toolbar: $('toolbar'),
+        dim: $('dim'),
+        kill: $('kill'),
+        killtag: $('killtag'),
+        chips: ['home', 'cloud', 'yt', 'ig', 'x', 'sc', 'wa', 'gh'].reduce((a, k) => {
+          a[k] = { slot: $('slot-' + k), chip: $('chip-' + k) };
+          return a;
+        }, {}),
+        xyt: $('chip-yt-x'),
+        nav: ['home', 'cloud', 'api', 'conn', 'setup', 'trash'].reduce((a, k) => {
+          a[k] = $('nav-' + k);
+          return a;
+        }, {}),
+        tabmeter: $('tabmeter'),
+        newtab: $('newtab'),
+        cap: $('cap'),
+        capKick: $('capKick'),
+        capTitle: $('capTitle'),
+        toast: $('toast'),
+        toastMsg: $('toastMsg'),
+        cursor: $('cursor'),
+        ripple: $('ripple'),
+        bracket: $('bracket'),
+        saved: $('saved'),
+        final: $('final'),
+        url: $('url'),
+        urltext: $('urltext'),
+        provlabel: $('provlabel'),
+        provmenu: $('provmenu'),
+        caret: $('caret'),
+        tabpill: $('tabpill'),
+        tileYt: $('tile-yt'),
+        tileIg: $('tile-ig'),
+        tileX: $('tile-x'),
+        tileSc: $('tile-sc'),
+        tileWa: $('tile-wa'),
+        tileGh: $('tile-gh')
+      };
+
+      /* the two tabs that live in the strip before it dies */
+      const stripTabs = [
+        { id: 'yt', title: 'YouTube', fav: 'yt' },
+        { id: 'ig', title: 'Instagram', fav: 'ig' }
+      ];
+      const MAX_TABS = 9;
+      const CLOSABLE = ['yt', 'ig', 'x', 'sc', 'wa', 'gh'];
+
+      let R = {};
+      function rect(sel) {
+        const r = document.querySelector(sel).getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
+      function measure() {
+        R = {
+          yt: rect('#tile-yt .box'),
+          ig: rect('#tile-ig .box'),
+          chipYt: rect('#slot-yt'),
+          chipIg: rect('#slot-ig'),
+          chipYtX: rect('#chip-yt-x'),
+          url: rect('#url')
+        };
+      }
+
+      /* ---------- strip tabs, rebuilt each frame (cheap: max 2 nodes) ---- */
+      function renderStripTabs(count, collapse) {
+        const host = el.strip;
+        // remove old tab nodes but keep overlays
+        [...host.querySelectorAll('.tab')].forEach((n) => n.remove());
+        for (let i = 0; i < count; i++) {
+          const d = stripTabs[i];
+          const n = document.createElement('div');
+          n.className = 'tab' + (i === count - 1 ? ' on' : '');
+          n.style.opacity = String(1 - collapse);
+          n.style.transform = `translateY(${-16 * collapse}px) scale(${1 - 0.85 * collapse})`;
+          n.innerHTML =
+            `<span class="fv">${favSvg(d.fav, 15)}</span><span class="ttl">${d.title}</span>` +
+            `<span class="tabx"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 2l8 8M10 2l-8 8"/></svg></span>`;
+          n.style.display = 'flex';
+          n.style.flex = '0 0 auto';
+          host.appendChild(n);
+        }
+      }
+      function favSvg(kind, size) {
+        const src = el.chips[kind]?.chip?.querySelector('svg');
+        if (!src) return '';
+        const s = src.cloneNode(true);
+        s.setAttribute('width', size);
+        s.setAttribute('height', size);
+        s.classList.remove('fav');
+        return s.outerHTML;
+      }
+
+      /* ------------------------------- the timeline ---------------------- */
+      const T = {
+        dimIn: 900,
+        dimOut: 2450,
+        cur1: 2500,
+        click1: 3050,
+        tab1: 3150,
+        cur2: 3550,
+        click2: 4100,
+        tab2: 4200,
+        killIn: 5000,
+        killDraw: 5000,
+        killOut: 5900,
+        collapse: 6100,
+        collapseEnd: 6850,
+        chip1: 6760,
+        chip2: 6860,
+        hover1: 8300,
+        unhover1: 9600,
+        close1: 9600,
+        closed1: 9950,
+        iconify: 10600,
+        iconifyEnd: 11500,
+        fill: 12000,
+        fillEnd: 13300,
+        provOpen: 13800,
+        provPick: 14700,
+        provClose: 15400,
+        closeAll: 15800,
+        cleared: 16100,
+        measure: 16400,
+        final: 18100
+      };
+      const TOTAL = 21500;
+
+      const CAPS = [
+        {
+          a: 0,
+          b: T.dimOut,
+          k: 'AAJ',
+          t: 'T9 browser — <b>tab strip alag patti</b> hai. 40 px, hamesha.'
+        },
+        {
+          a: 2200,
+          b: T.killIn,
+          k: 'WOHI PROBLEM',
+          t: 'Har naya tab <b>patti me</b> — video ke liye jagah kam.'
+        },
+        {
+          a: T.killIn,
+          b: T.collapse,
+          k: 'FAISLA',
+          t: 'Update me <b>ye patti poori hat jayegi</b>.'
+        },
+        {
+          a: T.collapse,
+          b: T.hover1,
+          k: 'NAYA',
+          t: 'Tabs <b>header me chips</b> — sirf favicon, hover pe title.'
+        },
+        {
+          a: T.hover1,
+          b: T.iconify,
+          k: 'CLOSE',
+          t: '<b>×</b> dabao → tab band, session <b>auto-clear</b>.'
+        },
+        {
+          a: T.iconify,
+          b: T.fill,
+          k: 'NAV',
+          t: 'Dashboard nav bhi <b>icon tabs</b> — Home · Cloud · APIs · Trash.'
+        },
+        {
+          a: T.fill,
+          b: T.provOpen,
+          k: 'LIMIT',
+          t: '<b>9 tabs</b> cap — <b>+</b> disabled, meter header me.'
+        },
+        {
+          a: T.provOpen,
+          b: T.closeAll,
+          k: 'SEARCH',
+          t: '<b>Search provider</b> chuno — Google / DDG / Bing.'
+        },
+        {
+          a: T.closeAll,
+          b: T.measure,
+          k: 'CLEAN',
+          t: 'Sab tabs band → <b>kuch nahi bacha</b>, memory saaf.'
+        },
+        { a: T.measure, b: T.final, k: 'NATEEJA', t: '<b>40 px</b> video area wapas. Strip zero.' }
+      ];
+
+      function setCaption(t) {
+        const c = CAPS.find((x) => t >= x.a && t < x.b);
+        if (!c) {
+          el.cap.style.opacity = '0';
+          return;
+        }
+        const fadeIn = out(seg(t, c.a, c.a + 220));
+        const fadeOut = 1 - io(seg(t, c.b - 200, c.b));
+        el.cap.style.opacity = String(Math.min(fadeIn, fadeOut));
+        el.capKick.textContent = c.k;
+        el.capTitle.innerHTML = c.t;
+      }
+
+      function moveCursor(t, points) {
+        // points: [{t,x,y}]
+        let a = points[0],
+          b = points[points.length - 1];
+        for (let i = 0; i < points.length - 1; i++) {
+          if (t >= points[i].t && t <= points[i + 1].t) {
+            a = points[i];
+            b = points[i + 1];
+            break;
+          }
+        }
+        if (t <= points[0].t) {
+          a = b = points[0];
+        }
+        if (t >= points[points.length - 1].t) {
+          a = b = points[points.length - 1];
+        }
+        const p = io(seg(t, a.t, b.t));
+        el.cursor.style.left = a.x + (b.x - a.x) * p - 4 + 'px';
+        el.cursor.style.top = a.y + (b.y - a.y) * p - 2 + 'px';
+      }
+
+      function toast(t, a, b, msg, red) {
+        const o = Math.min(out(seg(t, a, a + 200)), 1 - io(seg(t, b - 180, b)));
+        el.toast.style.opacity = String(o);
+        el.toast.style.transform = `translateX(-50%) translateY(${(1 - out(seg(t, a, a + 260))) * 10}px)`;
+        el.toastMsg.textContent = msg;
+        el.toast.querySelector('.dot').className = 'dot' + (red ? ' red' : '');
+      }
+
+      function renderAt(t) {
+        /* ---------- 1. the strip's life ---------- */
+        const collapse = io(seg(t, T.collapse, T.collapseEnd));
+        const stripH = 40 * (1 - collapse);
+        el.strip.style.height = stripH + 'px';
+        el.strip.style.flexBasis = stripH + 'px';
+        el.strip.style.opacity = String(1 - 0.15 * collapse);
+        el.strip.style.borderBottomColor = `rgba(255,255,255,${0.04 * (1 - collapse)})`;
+
+        const tabCount = t >= T.tab2 ? 2 : t >= T.tab1 ? 1 : 0;
+        renderStripTabs(tabCount, collapse);
+
+        el.dim.style.opacity = String(
+          Math.min(out(seg(t, T.dimIn, T.dimIn + 260)), 1 - io(seg(t, T.dimOut - 260, T.dimOut))) *
+            (1 - collapse)
+        );
+        el.dim.style.borderColor = `rgba(77,141,255,${0.85 * (1 - collapse)})`;
+
+        const draw = io(seg(t, T.killDraw, T.killDraw + 320));
+        const killFade = 1 - io(seg(t, T.killOut, T.killOut + 220));
+        el.kill.style.opacity = String(draw * killFade * (1 - collapse));
+        el.kill.style.transform = `scaleX(${draw})`;
+        el.killtag.style.opacity = String(
+          out(seg(t, T.killDraw + 200, T.killDraw + 520)) * killFade
+        );
+
+        /* ---------- 2. header chips ---------- */
+        // The chips are the *new* design: nothing in the header until the strip
+        // dies, then they grow in one by one, each on its own spring.
+        const APPEAR = {
+          home: T.collapseEnd - 120,
+          cloud: T.collapseEnd - 60,
+          yt: T.chip1,
+          ig: T.chip2,
+          x: T.fill,
+          sc: T.fill + 150,
+          wa: T.fill + 300,
+          gh: T.fill + 450
+        };
+
+        for (const k of Object.keys(el.chips)) {
+          const { slot, chip } = el.chips[k];
+          if (!chip) continue;
+
+          let p = seg(t, APPEAR[k], APPEAR[k] + 280);
+          // closing the YouTube tab shrinks that one chip back to nothing
+          if (k === 'yt') p *= 1 - io(seg(t, T.close1, T.closed1));
+
+          const e = Math.max(0, back(p));
+          const pop = out(clamp(p * 1.6));
+          chip.style.transform = `scale(${e}) rotate(${k === 'yt' ? (1 - p) * -10 : 0}deg)`;
+          chip.style.opacity = String(pop);
+          slot.style.display = p > 0.001 ? 'block' : 'none';
+
+          const on =
+            (k === 'yt' && t >= T.chip1 && t < T.close1) ||
+            (k === 'ig' && t >= T.close1 && t < T.fill) ||
+            (k === 'gh' && t >= T.fillEnd - 120 && t < T.closeAll);
+          chip.classList.toggle('active', on);
+        }
+
+        // the new-design furniture only exists once the strip is gone
+        const newUI = out(seg(t, T.collapseEnd - 160, T.collapseEnd + 120));
+        $('hdiv').style.opacity = String(newUI);
+        el.newtab.style.opacity = String(newUI * (t >= T.fillEnd && t < T.closeAll ? 0.35 : 1));
+        el.tabmeter.style.opacity = String(newUI);
+
+        // close × badge visibility on the active web chip
+        const xOn = t >= T.hover1 - 120 && t < T.close1 + 60;
+        el.xyt.style.opacity = String(xOn ? 1 : 0);
+        el.xyt.style.transform = `scale(${xOn ? 1 : 0.6})`;
+
+        // tab meter
+        const extraOpen = ['x', 'sc', 'wa', 'gh'].filter((k) => t >= APPEAR[k] + 260).length;
+        const tabCountNow =
+          t >= T.closeAll ? 2 : Math.max(0, 2 + extraOpen - (t >= T.close1 ? 1 : 0));
+        el.tabmeter.textContent = tabCountNow + '/9';
+        const atCap = t >= T.fillEnd - 200 && t < T.closeAll;
+        el.newtab.style.borderColor = atCap ? 'rgba(229,72,77,.45)' : 'rgba(255,255,255,.16)';
+
+        /* ---------- 3. nav iconify ---------- */
+        const iconP = io(seg(t, T.iconify, T.iconifyEnd));
+        const navKeys = ['home', 'cloud', 'api', 'conn', 'setup', 'trash'];
+        navKeys.forEach((k, i) => {
+          const b = el.nav[k];
+          const lbl = b.querySelector('.lbl');
+          const local = clamp(iconP * 1.35 - i * 0.06);
+          lbl.style.maxWidth = 220 * (1 - local) + 'px';
+          lbl.style.opacity = String(1 - local);
+          b.style.gap = 6 * (1 - local) + 'px';
+          b.style.paddingLeft = 9 - 6 * local + 'px';
+          b.style.paddingRight = 9 - 3 * local + 'px';
+        });
+
+        // active nav pill slides home -> trash -> home
+        let navSel = 'home';
+        if (t >= T.iconifyEnd + 400) navSel = 'trash';
+        if (t >= T.iconifyEnd + 1200) navSel = 'home';
+        navKeys.forEach((k) => el.nav[k].classList.toggle('on', k === navSel));
+
+        /* ---------- 4. url bar provider ---------- */
+        const pOpen = Math.min(
+          out(seg(t, T.provOpen, T.provOpen + 240)),
+          1 - io(seg(t, T.provClose - 180, T.provClose))
+        );
+        el.provmenu.style.opacity = String(pOpen);
+        el.provmenu.style.transform = `translateY(${-6 * (1 - pOpen)}px)`;
+        const picked = t >= T.provPick;
+        el.provlabel.textContent = picked ? 'DuckDuckGo' : 'Google';
+        $('pr-google').classList.toggle('sel', !picked);
+        $('pr-ddg').classList.toggle('sel', picked);
+        el.url.classList.toggle('focus', t >= T.provOpen && t < T.provClose);
+        el.caret.style.opacity = String(t >= T.provOpen && t < T.provClose ? 1 : 0);
+
+        /* ---------- 5. cursor ---------- */
+        const cy = -(40 - stripH); // page content shifts up with the strip
+        const cIn = seg(t, 2400, 2600);
+        const cOut = 1 - io(seg(t, T.close1 + 900, T.close1 + 1200));
+        el.cursor.style.opacity = String(Math.min(out(cIn), cOut, t < T.final ? 1 : 0));
+        const chipYt = { x: R.chipYt.x + 10, y: R.chipYt.y + 6 };
+        moveCursor(t, [
+          { t: 2400, x: R.yt.x + 70, y: R.yt.y + 90 },
+          { t: T.click1, x: R.yt.x, y: R.yt.y },
+          { t: T.click1 + 380, x: R.yt.x + 6, y: R.yt.y + 8 },
+          { t: T.click2, x: R.ig.x, y: R.ig.y },
+          { t: T.click2 + 420, x: R.ig.x + 8, y: R.ig.y + 10 },
+          { t: 5000, x: R.ig.x + 120, y: R.ig.y + 150 },
+          { t: T.hover1, x: chipYt.x, y: chipYt.y },
+          { t: T.hover1 + 500, x: R.chipYtX.x, y: R.chipYtX.y },
+          { t: T.close1 + 900, x: R.chipYtX.x + 60, y: R.chipYtX.y + 80 }
+        ]);
+        // tile hover ring
+        el.tileYt.classList.toggle('hot', t > 2650 && t < 3600);
+        el.tileIg.classList.toggle('hot', t > 3700 && t < 4700);
+
+        // click ripple
+        const rp = (start) => {
+          const p = seg(t, start, start + 420);
+          return p > 0 && p < 1 ? { o: 1 - p, s: 0.4 + p * 1.5, x: 0, y: 0 } : null;
+        };
+        let r = null,
+          rx = 0,
+          ry = 0;
+        if ((r = rp(T.click1))) {
+          rx = R.yt.x;
+          ry = R.yt.y;
+        } else if ((r = rp(T.click2))) {
+          rx = R.ig.x;
+          ry = R.ig.y;
+        }
+        if (r) {
+          el.ripple.style.opacity = String(r.o);
+          el.ripple.style.transform = `translate(${rx}px,${ry}px) translate(-50%,-50%) scale(${r.s})`;
+        } else el.ripple.style.opacity = '0';
+
+        /* ---------- 6. captions, toasts, callouts ---------- */
+        setCaption(t);
+        toast(t, T.closed1 + 120, T.closed1 + 1500, 'Tab band · session clear', false);
+        if (t >= T.cleared)
+          toast(t, T.cleared, T.cleared + 1700, 'Saari tabs band · memory saaf', false);
+        if (t >= T.closeAll) el.tabpill.textContent = '0 / 9 tabs';
+
+        const brO = Math.min(
+          out(seg(t, T.measure, T.measure + 260)),
+          1 - io(seg(t, T.final - 200, T.final))
+        );
+        el.bracket.style.opacity = String(brO);
+        el.bracket.style.top = 96 + 'px';
+        el.saved.style.opacity = String(brO);
+
+        // final card
+        const fp = io(seg(t, T.final, T.final + 520));
+        el.final.style.opacity = String(fp);
+
+        // strip tab count pill in page
+        if (t < T.tab1) el.tabpill.textContent = '0 / 9 tabs';
+        else if (t < T.tab2) el.tabpill.textContent = '1 / 9 tabs';
+        else if (t < T.close1) el.tabpill.textContent = '2 / 9 tabs';
+        else el.tabpill.textContent = '1 / 9 tabs';
+      }
+
+      /* ------------------------------------------------------------------ */
+      window.renderAt = renderAt;
+      window.TOTAL_MS = TOTAL;
+      window.setBrandPath = (d) => {
+        const p = $('brandpath');
+        if (!d) return;
+        p.setAttribute('d', d);
+        $('brandmark').style.display = 'block';
+        $('brandfallback').style.display = 'none';
+      };
+      window.ready = () => {
+        const p = $('brandpath');
+        if (!p.getAttribute('d')) {
+          $('brandmark').style.display = 'none';
+          $('brandfallback').style.display = 'grid';
+        }
+        measure();
+        renderAt(0);
+        return { total: TOTAL, rects: R };
+      };
+    </script>
+  </body>
+</html>

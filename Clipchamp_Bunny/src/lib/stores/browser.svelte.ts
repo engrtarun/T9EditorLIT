@@ -24,6 +24,8 @@ import {
   onBrowserPopup,
   onBrowserSpa,
   onBrowserTitle,
+  onBrowserMedia,
+  browserMediaState,
   isTauri,
   browserNote,
   statsGet,
@@ -237,6 +239,13 @@ export function faviconSrc(pageUrl: string): string | null {
 class BrowserStore {
   tabs = $state<BrowserTab[]>([]);
   activeId = $state<string | null>(null);
+  /**
+   * The tab whose page is making noise right now — the `browser:media`
+   * heartbeat Rust forwards from the page that owns the media session.
+   * Its chip wears Firefox's speaker badge, so a video playing in a
+   * background tab is findable without scanning every favicon.
+   */
+  playingId = $state<string | null>(null);
 
   /** Bookmarks (Ctrl+D) — persisted on this machine, shown on the dial. */
   bookmarks = $state<Bookmark[]>([]);
@@ -687,6 +696,7 @@ class BrowserStore {
     }
     const wasActive = this.activeId === id;
     this.tabs.splice(i, 1);
+    if (this.playingId === id) this.playingId = null;
     if (dying.pinned) this.persistPins();
     if (wasActive) {
       // The active tab owned the only uncollapsed webview — closing it
@@ -1089,6 +1099,16 @@ class BrowserStore {
       if (!tab || !title) return;
       tab.title = title;
       if (tab.pinned) this.persistPins();
+    });
+
+    // The page's media session — which tab is playing, and whether it still
+    // is. `none`/`paused` both take the badge away; a tab id we no longer
+    // have (closed during playback) simply never matches.
+    void onBrowserMedia((snap) => {
+      this.playingId = snap.state === 'playing' ? snap.tab : null;
+    });
+    void browserMediaState().then((snap) => {
+      if (snap && snap.state === 'playing') this.playingId = snap.tab;
     });
 
     // A page asked for a new window — target=_blank (search results use it),
