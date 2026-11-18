@@ -118,8 +118,13 @@
             BROWSER VIEW — FIREFOX KEYS
           </h3>
           <p class="mb-3 text-[10px] text-nc-mut-2">
-            Sirf browser view me. Editor apni keymap ke saath alag rehta hai. (Ctrl + Shift + Del
-            jaisi destructive keys yahan listed hain — panel ke andar bhi kaam karti hain.)
+            Ye keys sirf browser view me chalti hain — editor apni keymap ke saath alag rehta hai.
+            <span class="text-nc-txt/80">
+              Ctrl + K har jagah Command Palette kholta hai (browser me bhi) — address bar ke liye
+              Ctrl + L ya Alt + D dabao.
+            </span>
+            Swipe ← →, header ka + aur &lt;- Studio neeche alag se listed hain. (Ctrl + Shift + Del jaisi
+            destructive keys yahan listed hain — panel ke andar bhi kaam karti hain.)
           </p>
           <div class="grid gap-5 sm:grid-cols-2">
             {#each BROWSER_GROUPS as g (g.title)}

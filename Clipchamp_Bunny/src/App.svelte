@@ -27,6 +27,7 @@
   import { menu } from './lib/stores/menu.svelte';
   import { downloads } from './lib/stores/downloads.svelte';
   import { batch } from './lib/stores/batch.svelte';
+  import { wordCutPreview } from './lib/stores/wordCutPreview.svelte';
   import { dispatchBrowserKey, runBrowserAction, type BrowserKeyDeps } from './lib/browser-keys';
   import {
     browserPrint,
@@ -77,12 +78,27 @@
     return true;
   }
 
-  /** Put the caret in the address bar (Ctrl+L, Ctrl+K, a new tab). */
+  /** Put the caret in the address bar (Ctrl+L / Alt+D — a new tab focuses it too). */
   function focusUrlbar() {
     const bar = document.querySelector<HTMLInputElement>('[data-urlbar-input]');
     bar?.focus();
     bar?.select();
   }
+
+  /* --------------------------------------------------- leaving the browser
+   * Four untouched speed-dial tabs are not four decisions — they are one
+   * decision made four times — so the strip collapses them back to one the
+   * moment the browser is left. Only tabs the user never acted on go: a real
+   * URL, a pin or playing media keeps its own ("make sure ki user ne koi
+   * action perform na kiya ho waha").
+   */
+  let wasBrowserOpen = false;
+  $effect(() => {
+    const open = app.view === 'browser';
+    const left = wasBrowserOpen && !open;
+    wasBrowserOpen = open;
+    if (left) browser.pruneIdleTabs();
+  });
 
   /**
    * The in-built browser owns Firefox's key map (src/lib/browser-keys.ts).
@@ -292,15 +308,12 @@
     // typing rules (it stands down for editing chords).
     if (browserOpen && dispatchBrowserKey(e, browserDeps)) return;
 
-    // Command palette — Ctrl+K from anywhere outside the browser. Inside the
-    // browser Ctrl+K keeps its Firefox meaning (focus the address bar).
-    if (
-      e.ctrlKey &&
-      !e.shiftKey &&
-      !e.altKey &&
-      e.key.toLowerCase() === 'k' &&
-      app.view !== 'browser'
-    ) {
+    // Command palette — Ctrl+K EVERYWHERE. It used to mean "focus the address
+    // bar" inside the browser, which is exactly the inconsistency reported
+    // ("ctrl + k not work aal jagah … ctrl+k ux not good"): the same chord
+    // did a different thing depending on the screen. Firefox's own address
+    // bar keys (Ctrl+L, Alt+D) keep their meaning in the map above.
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
       e.preventDefault();
       layout.commandPaletteOpen = !layout.commandPaletteOpen;
       return;
@@ -321,6 +334,14 @@
 
     const inCut = mode.current === 'cut';
     const shift = e.shiftKey;
+
+    // A pending word selection owns the keyboard. `WordCutToolbar` handles
+    // Enter / Delete / Backspace / Esc in the capture phase; every other editor
+    // shortcut must stand down, because S used to split the line underneath a
+    // selection and V/X flipped the whole row while the user was aiming at
+    // three words. The selection is an edit gesture in progress, not an idle
+    // state.
+    if (wordCutPreview.active) return;
 
     // ---- chord continuation: Z / C / Shift+X then an arrow
     if (chord && e.key.startsWith('Arrow')) {

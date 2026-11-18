@@ -15,6 +15,7 @@
    * the eye already is.
    */
   import { app } from '../../stores/app.svelte';
+  import { browser } from '../../stores/browser.svelte';
   import { i18n } from '../../stores/i18n.svelte';
   import { appearance } from '../../stores/appearance.svelte';
   import ProfileMenu from '../ProfileMenu.svelte';
@@ -142,15 +143,19 @@
          here opens the browser on that tab. -->
     <TabChips />
 
-    <!-- + : the in-built browser, one click from home as well. Same button the
-         editor bar carries; here it always opens (there is no page under the
-         dashboard), and the back button in the browser bar lands here again. -->
+    <!-- + : a NEW TAB, from home too — "+ icon per click se hamesha new tab
+         khulni chaiye". It opens the browser and lands on a fresh dial
+         rather than whatever was last open. The logo is the way back from
+         here (there is deliberately no <- Home button). -->
     <button
       type="button"
-      onclick={() => app.openBrowser('home')}
+      onclick={() => {
+        app.openBrowser('home');
+        browser.open();
+      }}
       class="ml-1 grid h-8 w-8 place-items-center rounded-md text-white/70 transition-colors duration-150 hover:bg-white/10 hover:text-white"
-      title="Browser kholo (9 tabs, fast download)"
-      aria-label="Open browser"
+      title={browser.atCap ? '9 tabs ki limit hai — pehle ek band karo' : 'Naya tab'}
+      aria-label="New browser tab"
     >
       <svg
         width="15"

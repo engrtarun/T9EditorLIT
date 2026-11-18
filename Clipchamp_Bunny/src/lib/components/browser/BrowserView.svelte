@@ -569,6 +569,18 @@
 
   <!-- ── content: the exact rect the native webview covers ───────────── -->
   <div bind:this={contentEl} class="relative min-h-0 flex-1" data-focus="browser-content">
+    <!-- Tab-switch wipe: a brand streak that travels the way the finger went.
+         `{#key}` remounts it so every switch replays it. It sits over OUR own
+         DOM (the dial, the dev iframe) — the native page webview is a child
+         HWND and cannot be slid, which is why the header chips carry the same
+         motion in every state. -->
+    {#key browser.switchSeq}
+      {#if browser.switchSeq > 0}
+        <div class="pointer-events-none absolute inset-0 z-10 overflow-hidden" aria-hidden="true">
+          <div class="t9-switch-wipe" style="--dir: {browser.switchDir}"></div>
+        </div>
+      {/if}
+    {/key}
     {#if !tab || tab.url === 'about:blank'}
       <SpeedDial />
       <!-- "net band hai" — bottom-right of the dial, no text, only while the
@@ -639,9 +651,35 @@
     }
   }
 
+  /* One sweep per tab switch, in `switchDir`'s direction: +1 enters from the
+     right and leaves left (next tab), −1 the mirror. `--dir` is a plain
+     number, so calc() can multiply it into a percentage. */
+  .t9-switch-wipe {
+    position: absolute;
+    inset: -12% 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(77, 141, 255, 0.15) 45%,
+      rgba(245, 247, 250, 0.1) 55%,
+      transparent 100%
+    );
+    transform: translateX(calc(var(--dir, 1) * 110%));
+    animation: t9-switch-wipe 280ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  }
+
+  @keyframes t9-switch-wipe {
+    to {
+      transform: translateX(calc(var(--dir, 1) * -110%));
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .t9-loadbar {
       animation-duration: 2.6s;
+    }
+    .t9-switch-wipe {
+      display: none;
     }
   }
 </style>

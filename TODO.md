@@ -4,6 +4,11 @@ _Last updated: 2026-11-18_
 
 ## 🔴 High Priority
 
+- [ ] Split key: word selection pending ho to S/Delete global cut/keep na chale - sirf selection Cut (added: 2026-11-18)
+- [ ] Selection UX: drag ke time transcript virtualization freeze + toolbar anchor stable (screen jitter) (added: 2026-11-18)
+- [ ] Word cut: multi-line text selection cut (abhi ek row ke bahar selection par toolbar hi nahi aata) + duplicate take hint (added: 2026-11-18)
+- [ ] Word cut: imported ElevenLabs JSON ke nested words drop ho rahe hain - exact timings import + purane project ke liye backfill (added: 2026-11-18)
+
 - [ ] Browser: architecture decide - per-tab webview vs ek hi webview (added: 2026-11-16)
 - [ ] Browser: renderer crash/unresponsive ko log karo + auto-reload (instrument first) (added: 2026-11-16) — auto-reload shipped `22e7e57`, abhi tak koi `process failed` line nahi aayi, isliye open
 - [ ] Browser: heavy site load atak jata hai, refresh karna padta hai — asli chain `view -> open` → `set_rect` → **kuch nahi** (koi `show`, koi `refused`): `restoreSession()` ke `stats_kv_get` par mount chain ruk jata thi. Fix `1e1400c` (1.5 s deadline + har stage ka `ui ->` log) install + verify hona baaki (docs/TODO.md §11)
@@ -20,6 +25,9 @@ _Last updated: 2026-11-18_
 ## 🟢 Nice to Have
 
 ## ✅ Done
+
+- [x] Ctrl+Shift+B: open in-built browser + a new tab from any screen (home/editor/browser, incl. page shim) (done: 2026-11-18)
+- [x] Word cut: toolbar on selectionchange (no mouseup wait), no APPROX, audio-snapped ms boundaries (wave-snap) (done: 2026-11-18)
 
 - [x] Browser home: bottom-right no-internet animation, no text, size ~330px (dial 660px ka aadha), bottom se chipka hua (done: 2026-11-18)
 - [x] Browser se wapas (home/studio) ka visible back button TopBar me (done: 2026-11-18)

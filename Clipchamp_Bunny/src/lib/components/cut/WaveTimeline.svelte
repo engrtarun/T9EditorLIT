@@ -7,8 +7,9 @@
   import { settings } from '../../stores/settings.svelte';
   import { appearance } from '../../stores/appearance.svelte';
   import { toast } from '../../stores/toast.svelte';
+  import { wordCutPreview } from '../../stores/wordCutPreview.svelte';
   import { thumbUrl } from '../../media';
-  import { dropIndex, moveInOrder } from '../../segments';
+  import { dropIndex, moveInOrder, timelineSpansForSource } from '../../segments';
   import { clamp, fmtShort, fmtTime, formatTimecode, niceStep, parseTimecode } from '../../utils';
   import ContextMenu from '../ContextMenu.svelte';
   import MenuIcon from '../MenuIcon.svelte';
@@ -326,12 +327,17 @@
    * pauses the follow for a moment, so inspecting another part of the timeline
    * is not yanked back by the next timeupdate.
    */
-  let followPauseUntil = 0;
+  let followPauseUntil = $state(0);
   $effect(() => {
+    // Read the playhead FIRST so this effect always tracks it — even while a
+    // manual scroll is pausing the follow. Otherwise, once the pause check
+    // returns early the effect stops depending on `editPlayhead` and follow
+    // never resumes (\"folow playhead not work\"). `followPauseUntil` is now
+    // reactive too, so the pause window itself is observed.
+    const t = editPlayhead;
     if (!settings.followPlayhead) return;
     if (performance.now() < followPauseUntil) return;
     const el = wrap;
-    const t = editPlayhead;
     if (!el || t == null) return;
     const x = t * zoom;
     const edge = 56;
@@ -350,6 +356,31 @@
 
   const segments = $derived(project.orderedSegments);
   const offsets = $derived(project.segmentOffsets);
+
+  /**
+   * The word cut that is pending, mapped onto the timeline axis.
+   *
+   * This is the promise the user asked for: once words are selected, the lane
+   * under the video shows the exact range that would disappear. The mapping is
+   * per segment (`timelineSpansForSource`), so a selection that crosses a clip
+   * boundary paints every slice instead of stretching across a gap, and a
+   * range over an already-cut block still shows where it is.
+   */
+  const wordCutSpans = $derived.by(() => {
+    const ranges = wordCutPreview.ranges;
+    if (!ranges.length) return [] as Array<{ left: number; width: number; cut: boolean }>;
+    const out: Array<{ left: number; width: number; cut: boolean }> = [];
+    for (const r of ranges) {
+      for (const s of timelineSpansForSource(segments, offsets, r.fromSec, r.toSec)) {
+        out.push({
+          left: s.start * zoom,
+          width: Math.max(2, (s.end - s.start) * zoom),
+          cut: s.state === 'cut'
+        });
+      }
+    }
+    return out;
+  });
   /** The main source is a picture: it owns no audio lane, so never explain one. */
   const imageSource = $derived(/\.(png|jpe?g|webp|bmp|gif)$/i.test(project.media?.name ?? ''));
   /**
@@ -643,6 +674,12 @@
       if (l.keep === 'keep') continue;
       ctx.fillRect(l.startSec * scale, 0, Math.max(1, (l.endSec - l.startSec) * scale), MINIMAP_H);
     }
+    // The pending word cut, in the same blue as the lane band: a 3-word cut is
+    // a sliver in an overview, but a sliver the user can still find.
+    ctx.fillStyle = 'rgba(77, 141, 255, 0.95)';
+    for (const r of wordCutPreview.ranges) {
+      ctx.fillRect(r.fromSec * scale, 0, Math.max(1, (r.toSec - r.fromSec) * scale), MINIMAP_H);
+    }
   }
 
   $effect(() => {
@@ -662,6 +699,7 @@
     void project.suggestions; // green preview repaints the moment it changes
     void project.qualitySuggestions; // and so does the amber one
     void project.durationSec; // and when the loaded source length changes
+    void wordCutPreview.ranges; // pending cut band / minimap tick
     void LANES_H; // lane heights are drag-resizable — redraw on resize
     drawWave();
     drawVideoLane();
@@ -2128,6 +2166,35 @@
             >
           {/if}
         </div>
+
+        <!-- PENDING WORD CUT — the range the selected words will remove.
+             Sits above both media lanes, below the playhead and the clip
+             handles, so it explains the cut without eating a gesture. Blue is
+             the selection colour; the edge hairlines make a 3-word cut visible
+             even when the band is only a few pixels wide. -->
+        {#if wordCutSpans.length}
+          <div
+            class="pointer-events-none absolute left-0 z-10"
+            style="top:{MINIMAP_H + RULER_H}px;height:{LANES_H}px;width:{contentW}px"
+            aria-hidden="true"
+          >
+            {#each wordCutSpans as b, i (i)}
+              <div
+                data-word-cut-band
+                class="absolute inset-y-0 border-x-2 border-nc-brand bg-nc-brand/25 shadow-[inset_0_0_0_1px_rgba(77,141,255,0.25)]"
+                style="left:{b.left}px;width:{b.width}px"
+              >
+                {#if b.width >= 46}
+                  <span
+                    class="absolute top-1 left-1/2 -translate-x-1/2 rounded bg-nc-brand px-1
+                           font-sans text-[8px] font-bold tracking-wider text-white shadow-sm"
+                    >CUT</span
+                  >
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
 
         <!-- playhead -->
         {#if editPlayhead != null}

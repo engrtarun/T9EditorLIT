@@ -68,17 +68,47 @@
     const next = browser.activeId;
     if (next) document.getElementById('tab-chip-' + next)?.focus();
   }
+
+  /* ------------------------------------------------------ the switch slide
+   * "jab 2ungli se tab switch hoti h so koi animation nahi aata" — every
+   * switch now nudges the row in the direction of travel and lets it settle.
+   * Web Animations API on purpose: remounting the row to restart a CSS class
+   * would drop keyboard focus and re-fetch every favicon.
+   */
+  let row: HTMLDivElement | null = $state(null);
+  $effect(() => {
+    const seq = browser.switchSeq;
+    const el = row;
+    if (!el || seq === 0) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const dir = browser.switchDir;
+    el.animate(
+      [
+        { transform: `translateX(${16 * dir}px)`, opacity: 0.55 },
+        { transform: 'translateX(0)', opacity: 1 }
+      ],
+      { duration: 240, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' }
+    );
+  });
 </script>
 
-<div class="flex shrink-0 items-center gap-1" role="tablist" aria-label="Browser tabs">
+<div
+  bind:this={row}
+  class="flex shrink-0 items-center gap-1"
+  role="tablist"
+  aria-label="Browser tabs"
+>
   {#each browser.tabs as tab (tab.id)}
     {@const icon = pageUrl(tab.url)}
     {@const active = tab.id === browser.activeId}
     {@const playing = tab.id === browser.playingId}
-    <!-- Selected ≠ titled: a real page stretches open with its title, the
-         dial stays an icon. `active` alone still drives the ring, the
-         roving tabindex and aria-selected. -->
-    {@const titled = active && icon !== null}
+    <!-- Selected ≠ titled: only the tab you are ON **while its page is on
+         screen** stretches open with a title ("title tab ka tabhi dikhe jab
+         wo khuli ho"). On the app's Home and in the Studio the browser is
+         closed, so every chip there is an icon — a title over a tab that is
+         not open is a claim about something you cannot see. `active` alone
+         still drives the ring, the roving tabindex and aria-selected. -->
+    {@const titled = active && icon !== null && app.view === 'browser'}
     <div
       id={'tab-chip-' + tab.id}
       role="tab"
@@ -108,22 +138,31 @@
           {:else if icon}
             <SiteIcon url={icon} label={tab.title || hostOf(icon)} size={16} />
           {:else}
-            <!-- Firefox's home mark: roof, walls, door — one stroke, reads at 14 px. -->
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.6"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
+            <!-- Firefox's home mark: roof, walls, door — one stroke, reads at
+                 14 px. It rides on a frosted disc ("home tab ka icon circule
+                 + transparent sa ho halka blur taki bg per na chamke"): the
+                 glyph itself is dimmed so it sits into the wallpaper instead
+                 of glaring off it. -->
+            <span
+              class="grid h-4 w-4 place-items-center rounded-full bg-nc-txt/[0.06] ring-1 ring-nc-txt/10 backdrop-blur-[2px]"
             >
-              <path d="M3.5 10.8 12 4l8.5 6.8" />
-              <path d="M5.7 9.6V20h12.6V9.6" />
-              <path d="M9.8 20v-5h4.4v5" />
-            </svg>
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                class="opacity-70"
+                aria-hidden="true"
+              >
+                <path d="M3.5 10.8 12 4l8.5 6.8" />
+                <path d="M5.7 9.6V20h12.6V9.6" />
+                <path d="M9.8 20v-5h4.4v5" />
+              </svg>
+            </span>
           {/if}
         </span>
 

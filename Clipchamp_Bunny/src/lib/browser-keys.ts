@@ -114,7 +114,7 @@ export const BINDINGS: Entry[] = [
   B('reload', ['ctrl+f5', 'ctrl+shift+r'], true), // force reload (same nudge, force anyway)
   B('stopLoading', ['escape']),
   B('goHome', ['alt+home']),
-  B('focusUrlbar', ['ctrl+l', 'alt+d', 'ctrl+k'], true),
+  B('focusUrlbar', ['ctrl+l', 'alt+d'], true),
   // ── page & panels ───────────────────────────────────────────────────────
   B('downloads', ['ctrl+j'], true),
   B('history', ['ctrl+h']),
@@ -256,7 +256,17 @@ export const BROWSER_GROUPS: Array<{ title: string; rows: BrowserSheetRow[] }> =
         action: 'Tab pin / unpin',
         note: 'pinned tab background me chalta rehta hai'
       },
-      { keys: 'Ctrl + Shift + W', action: 'Browser band — editor pe wapas' }
+      { keys: 'Ctrl + Shift + W', action: 'Browser band — editor pe wapas' },
+      // Controls that are UI, not keyboard — listed here because "? ko bhi
+      // update kar do jaha se user samjh sake ki kya hai kya nahi".
+      { keys: '2 ungli swipe ← →', action: 'Pichla / agla tab', note: 'page ki side-scroll nahi' },
+      { keys: '+ (header)', action: 'Hamesha naya tab' },
+      {
+        keys: '<- Studio',
+        action: 'Browser → studio wapas',
+        note: 'Home se khola toh wapas ka raasta logo hai'
+      },
+      { keys: 'Chip icon click', action: 'Us tab ko kholo — kahin se bhi' }
     ]
   },
   {
@@ -268,7 +278,10 @@ export const BROWSER_GROUPS: Array<{ title: string; rows: BrowserSheetRow[] }> =
       { keys: 'Ctrl + F5  /  Ctrl + Shift + R', action: 'Cache ke bina reload' },
       { keys: 'Esc', action: 'Stop — loading spinner roko' },
       { keys: 'Alt + Home', action: 'Speed dial (home page)' },
-      { keys: 'Ctrl + L  /  Alt + D  /  Ctrl + K', action: 'Address bar fokus' }
+      // Ctrl+K deliberately ABSENT: it is the command palette on every
+      // screen now, so listing it here would be a promise the browser does
+      // not keep ("jaha se user samjh sake ki kya hai kya nahi").
+      { keys: 'Ctrl + L  /  Alt + D', action: 'Address bar fokus' }
     ]
   },
   {

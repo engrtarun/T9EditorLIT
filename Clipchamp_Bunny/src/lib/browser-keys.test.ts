@@ -162,14 +162,17 @@ describe('browser keys — the Firefox map', () => {
     assert.equal(calls.at(-1)!.action, 'stopLoading');
     dispatchBrowserKey(asEvt(ev('Home', { altKey: true })), deps);
     assert.equal(calls.at(-1)!.action, 'goHome');
-    for (const combo of [
-      ev('l', { ctrlKey: true }),
-      ev('d', { altKey: true }),
-      ev('k', { ctrlKey: true })
-    ]) {
+    for (const combo of [ev('l', { ctrlKey: true }), ev('d', { altKey: true })]) {
       dispatchBrowserKey(asEvt(combo), deps);
       assert.equal(calls.at(-1)!.action, 'focusUrlbar');
     }
+    // Ctrl+K is the command palette EVERYWHERE now: the browser map must not
+    // claim it, or the shell's palette branch could never run inside the
+    // browser ("ctrl + k not work aal jagah"). Ctrl+L / Alt+D keep the
+    // address bar, which is Firefox's own pair.
+    const before = calls.length;
+    assert.equal(dispatchBrowserKey(asEvt(ev('k', { ctrlKey: true })), deps), false);
+    assert.equal(calls.length, before, 'Ctrl+K must not resolve to a browser action');
   });
 
   it('page: bookmark, panels, save, print, source, zoom', () => {

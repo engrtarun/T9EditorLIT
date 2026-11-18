@@ -619,7 +619,6 @@
     ['alt+home', 'goHome', 0, false],
     ['ctrl+l', 'focusUrlbar', 0, true],
     ['alt+d', 'focusUrlbar', 0, true],
-    ['ctrl+k', 'focusUrlbar', 0, true],
     ['ctrl+j', 'downloads', 0, true],
     ['ctrl+h', 'history', 0, false],
     ['ctrl+shift+delete', 'clearHistory', 0, false],

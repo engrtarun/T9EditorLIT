@@ -247,6 +247,16 @@ class BrowserStore {
    */
   playingId = $state<string | null>(null);
 
+  /**
+   * The last tab switch, as a direction (+1 next, −1 previous) and a counter
+   * that goes up on every switch. The header chips and the browser chrome
+   * key a short slide off `switchSeq` — "jab 2ungli se tab switch hoti h so
+   * koi animation nahi aata" — and `dir` is what says which way it should
+   * travel (a wrap-around still knows it was `next`, not `previous`).
+   */
+  switchDir = $state<1 | -1>(1);
+  switchSeq = $state(0);
+
   /** Bookmarks (Ctrl+D) — persisted on this machine, shown on the dial. */
   bookmarks = $state<Bookmark[]>([]);
   private bookmarksLoaded = false;
@@ -481,7 +491,10 @@ class BrowserStore {
       0,
       this.tabs.findIndex((t) => t.id === this.activeId)
     );
-    this.select(this.tabs[(i + dir + n) % n].id);
+    this.select(
+      this.tabs[(i + dir + n) % n].id,
+      dir // the wrap still counts as next/previous, for the slide
+    );
   }
 
   /** Ctrl+Shift+PageUp / PageDown — move the active tab within the strip. */
@@ -727,9 +740,17 @@ class BrowserStore {
     return true;
   }
 
-  select(id: string): void {
+  select(id: string, dir?: -1 | 1): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return;
+    if (this.activeId !== id) {
+      const from = this.tabs.findIndex((t) => t.id === this.activeId);
+      const to = this.tabs.findIndex((t) => t.id === id);
+      // `dir` is authoritative (cycle knows it even across the wrap); a plain
+      // click derives it from the strip, which is the honest answer there.
+      this.switchDir = dir ?? (from >= 0 && to > from ? 1 : -1);
+      this.switchSeq++;
+    }
     this.activeId = id;
     tab.lastActive = Date.now();
     // Selecting a tab brings its page on screen. The most recently used tabs
@@ -764,6 +785,42 @@ class BrowserStore {
       // went blank until the user clicked something. It is resumed, not
       // re-navigated: its page may have moved with pushState while hidden.
       if (next) this.nudge?.(next.id, next.url, this.recent(next.id), false, true);
+      // The keys must never be left on the webview that just died. The diag
+      // log caught exactly that: `closeTab` fired once, then NOTHING for 58
+      // seconds — every later Ctrl+W landed on a destroyed child HWND, Windows
+      // played its default beep and the tab stayed open ("sirf ek tab hi
+      // band hui, baki pe win11 ka tudunn sa bgm baja"). Hand focus back to
+      // the shell so the next chord is heard here, whatever the state below.
+      if (typeof window !== 'undefined') window.focus();
+    }
+  }
+
+  /**
+   * Leaving the browser: collapse the blank tabs nobody touched into one.
+   *
+   * "if user open multi home pages on browser toh jab wo studio ya app home
+   * per jaye toh sirf ek hi reh jaye" — four identical speed-dial tabs are
+   * not four decisions, they are one decision made four times. A tab counts
+   * as TOUCHED when it has a real page, is pinned, or is playing: that is
+   * the set the user named ("url likhna etc etc ya pin"). The survivor is
+   * the active tab when it is itself an untouched blank, otherwise the first
+   * one. Nothing here creates or navigates anything — this only trims.
+   */
+  pruneIdleTabs(): void {
+    const blank = (t: BrowserTab): boolean => !t.url || t.url === 'about:blank';
+    const idle = this.tabs.filter((t) => !t.pinned && blank(t));
+    if (idle.length <= 1) return;
+    const active = this.active;
+    const keep = active && !active.pinned && blank(active) ? active : idle[0];
+    for (const tab of idle) {
+      if (tab.id === keep.id) continue;
+      const i = this.tabs.findIndex((t) => t.id === tab.id);
+      if (i < 0) continue;
+      // Spliced, not `close()`: an untouched blank has no webview to hide and
+      // must not move the selection — the browser is already off screen and
+      // the next open should land exactly where the user left it.
+      this.tabs.splice(i, 1);
+      if (this.playingId === tab.id) this.playingId = null;
     }
   }
 
@@ -1033,22 +1090,22 @@ class BrowserStore {
         await this.restorePinned();
         return;
       }
-      // Every saved entry comes back AS A TAB. The strip has to be visible
-      // everywhere — the chips sit in the Home and Studio headers too, and a
-      // dashboard with an empty row ("? tabs icon") is a lie about what is
-      // saved. `activeId` stays NULL all the same, so the browser still
-      // opens on the dial: no page is created here and nothing autoplays on
-      // boot (the whole reason this used to park entries in the Ctrl+Shift+T
-      // stack instead — a stuck YouTube tab must not start playing before
-      // the user has even opened the browser).
+      // App band karke kholne par purane tab WAPAS NAHI AATE — "jab mene app
+      // band karke khola so old tab close kyo nahi hue?". Sirf PINNED entries
+      // strip me wapas aati hain (pin = user ka action, wahi durable rehna
+      // chahiye; `restorePinned` neeche unhe tab banaati hai). Baaki sab
+      // entries Ctrl+Shift+T ke closed-stack me chali jaati hain: strip me
+      // kuch nahi dikhta, aur phir bhi wapas layi ja sakti hain. `activeId`
+      // NULL rehti hai, so the browser opens on the dial with nothing
+      // autoplaying — a fresh start that still remembers.
       for (const entry of saved) {
-        const tab = makeTab(entry.url);
-        tab.title = entry.title;
-        tab.pinned = entry.pinned === true;
-        this.tabs.push(tab);
-        this.push(tab.id, entry.url);
-        if (tab.pinned && isTauri()) void browserSetPinned(tab.id, true);
+        if (entry.pinned) continue;
+        this.closed.push({ url: entry.url, title: entry.title, index: entry.index, pinned: false });
       }
+      if (this.closed.length > CLOSED_CAP) {
+        this.closed.splice(0, this.closed.length - CLOSED_CAP);
+      }
+      await this.restorePinned();
     } finally {
       // Only now may `persistSession` write: the mount effect fires while the
       // `statsGet` above is still in flight, and an empty strip would erase

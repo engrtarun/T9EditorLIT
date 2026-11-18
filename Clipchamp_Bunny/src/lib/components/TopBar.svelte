@@ -24,6 +24,17 @@
   let draft = $state('');
 
   /**
+   * Which screen this bar is speaking for: the studio itself, or the browser
+   * the studio opened. That is what the wordmark's light "Studio" suffix
+   * reports ("LIT ke baad halka sa light font me studio bhi likha aaaye") —
+   * the dashboard has its own bar, and a browser opened on Home has the logo
+   * as its way back, so neither of them says it.
+   */
+  const studioHere = $derived(
+    app.view === 'editor' || (app.view === 'browser' && app.browserFrom === 'editor')
+  );
+
+  /**
    * Commit the rename from the top bar.
    *
    * It must reach SQLite, not just the store: the dashboard reloads its cards
@@ -73,7 +84,9 @@
   <ToolsPanel />
 
   <!-- brand: the traced T9 mark from the brand board, plus the wordmark.
-       Click it to go Home — it is the way back to the dashboard. -->
+       Click it to go Home — it is the way back to the dashboard. The mark
+       also says which screen owns this bar: "Studio" only while the studio
+       (or the browser opened from it) is the context. -->
   <button
     onclick={() =>
       // Write any edit still inside the debounce window before the dashboard
@@ -86,6 +99,14 @@
     <BrandMark size={22} />
     <span class="font-brand text-[15px] leading-none tracking-[0.02em]">
       T9 Editor <span class="text-nc-brand">LIT</span>
+      {#if studioHere}
+        <span
+          class="ml-1.5 text-[9.5px] font-light tracking-[0.18em] text-nc-mut uppercase"
+          aria-hidden="true"
+        >
+          Studio
+        </span>
+      {/if}
     </span>
   </button>
 
@@ -120,54 +141,19 @@
   <!-- cloud / local toggle → backup & AI providers -->
   <CloudMenu />
 
-  <!-- The browser's tabs — icon chips, in EVERY state of this bar (studio
-       and browser): they used to own a 40 px strip of their own above the
-       address bar; the spec for this update is that the strip goes and the
-       tabs live here, in the header, as favicons. From the studio a click
-       opens the browser on that tab. The `+` right after them is the
-       new-tab button in both states. -->
-  <TabChips />
-
-  <!-- + : the in-built browser. From the editor it opens the browser view;
-       already inside it, the same button is the familiar "new tab" (capped
-       at nine, and the tooltip says so when the cap is hit). -->
-  <button
-    type="button"
-    onclick={() => (app.view === 'browser' ? browser.open() : app.openBrowser('editor'))}
-    class="grid h-8 w-8 place-items-center rounded-md text-nc-mut transition-colors duration-150
-           {app.view === 'browser'
-      ? 'bg-nc-panel-2 text-nc-brand'
-      : 'hover:bg-nc-panel-2 hover:text-nc-txt'}"
-    title={app.view === 'browser'
-      ? browser.atCap
-        ? '9 tabs ki limit hai — pehle ek band karo'
-        : 'Naya tab'
-      : 'Browser kholo (9 tabs, fast download)'}
-    aria-label={app.view === 'browser' ? 'New browser tab' : 'Open browser'}
-  >
-    <svg
-      width="15"
-      height="15"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"
-    >
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  </button>
-
-  <!-- the way back: browser → wherever it was opened from. The hamburger's
-       "Close browser" and Ctrl+Shift+W do the same job, but a mode switch
-       needs a visible door, not a shortcut — "browser se yaha kasie?". -->
-  {#if app.view === 'browser'}
+  <!-- the way back: browser → the studio that opened it. Only the STUDIO's
+       door is drawn — "home btn kabhi nahi dikhna chaiye": from a browser
+       opened on Home the logo already is the way home, and a second control
+       that does the same thing is noise. Placed BEFORE the chips ("pehle
+       <-- studio fir icon tab wala logic"), so the way out is read first. -->
+  {#if app.view === 'browser' && app.browserFrom === 'editor'}
     <button
       type="button"
       onclick={() => app.closeBrowser()}
       class="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-nc-mut
              transition-colors duration-150 hover:bg-nc-panel-2 hover:text-nc-txt"
-      title="Wapas {app.browserFrom === 'editor' ? 'Studio' : 'Home'} (Ctrl+Shift+W)"
-      aria-label={app.browserFrom === 'editor' ? 'Back to studio' : 'Back to home'}
+      title="Wapas Studio (Ctrl+Shift+W)"
+      aria-label="Back to studio"
     >
       <svg
         width="13"
@@ -182,9 +168,46 @@
       >
         <path d="M19 12H5M12 19l-7-7 7-7" />
       </svg>
-      {app.browserFrom === 'editor' ? 'Studio' : 'Home'}
+      Studio
     </button>
   {/if}
+
+  <!-- The browser's tabs — icon chips, in EVERY state of this bar (studio
+       and browser): they used to own a 40 px strip of their own above the
+       address bar; the spec for this update is that the strip goes and the
+       tabs live here, in the header, as favicons. From the studio a click
+       opens the browser on that tab. The `+` right after them is the
+       new-tab button in both states. -->
+  <TabChips />
+
+  <!-- + : a NEW TAB, always — "+ icon per click se hamesha new tab khulni
+       chaiye". From the studio that means opening the browser AND landing on
+       a fresh dial rather than whatever was last open; inside the browser it
+       is the familiar new tab (capped at nine, and the tooltip says so). -->
+  <button
+    type="button"
+    onclick={() => {
+      if (app.view !== 'browser') app.openBrowser('editor');
+      browser.open();
+    }}
+    class="grid h-8 w-8 place-items-center rounded-md text-nc-mut transition-colors duration-150
+           {app.view === 'browser'
+      ? 'bg-nc-panel-2 text-nc-brand'
+      : 'hover:bg-nc-panel-2 hover:text-nc-txt'}"
+    title={browser.atCap ? '9 tabs ki limit hai — pehle ek band karo' : 'Naya tab'}
+    aria-label="New browser tab"
+  >
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  </button>
 
   <div class="flex-1" data-tauri-drag-region></div>
 
