@@ -5,6 +5,7 @@ _Last updated: 2026-11-18_
 ## 🔴 High Priority
 
 - [ ] Word cut: multi-line text selection cut (abhi ek row ke bahar selection par toolbar hi nahi aata) + duplicate take hint (added: 2026-11-18)
+- [x] Tiny rows: trim ka fixed 0.3 s floor proportional (`min(0.3, span/2)`) - trimStart backwards-jagta bug fix, timeline handles + segment trims bhi (done: 2026-11-18)
 - [x] Word cut: split ki 0.25/0.35/0.5 s floor hatayi - 10 ms tak split, zero-length part drop, hybrid export chhote kept piece ko drop nahi karta (encode karta hai) (done: 2026-11-18)
 - [x] Word cut: bottom timeline par sirf selected range ke upar blue band (minimap tick + CUT chip) (done: 2026-11-18)
 - [x] Word cut: imported ElevenLabs JSON ke nested words + purane project ka backfill - SHORT6 me 33/35 rows, 441 words exact; 7-1a/7-2a jaan-boojh kar approx (manual splits se text duplicate) (done: 2026-11-18)

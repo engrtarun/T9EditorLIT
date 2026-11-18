@@ -11,6 +11,7 @@
   import { thumbUrl } from '../../media';
   import { dropIndex, moveInOrder, timelineSpansForSource } from '../../segments';
   import { clamp, fmtShort, fmtTime, formatTimecode, niceStep, parseTimecode } from '../../utils';
+  import { trimKeep, trimStep } from '../../trim';
   import ContextMenu from '../ContextMenu.svelte';
   import MenuIcon from '../MenuIcon.svelte';
   import UsageChip from '../dashboard/UsageChip.svelte';
@@ -1068,8 +1069,14 @@
 
     const startX = e.clientX;
     const origin = edge === 'start' ? seg.startSec : seg.endSec;
-    const lo = edge === 'start' ? seg.startSec + 0.02 : seg.startSec + 0.3;
-    const hi = edge === 'start' ? seg.endSec - 0.3 : seg.endSec - 0.02;
+    // A word-cut clip can be shorter than the old 0.3 s floor; the floor and
+    // the "did the pointer really move" step both scale with the clip, so the
+    // handle never clamps past the opposite edge.
+    const span = seg.endSec - seg.startSec;
+    const keep = trimKeep(span);
+    const step = trimStep(span);
+    const lo = edge === 'start' ? seg.startSec + step : seg.startSec + keep;
+    const hi = edge === 'start' ? seg.endSec - keep : seg.endSec - step;
     let target = origin;
 
     const move = (ev: PointerEvent) => {
@@ -1085,7 +1092,7 @@
       window.removeEventListener('pointerup', up);
       const t = trim;
       trim = null;
-      if (!t || Math.abs(t.targetSec - t.originSec) < 0.02) return;
+      if (!t || Math.abs(t.targetSec - t.originSec) < step) return;
       const ok =
         edge === 'start'
           ? project.trimSegmentStartTo(t.segId, t.targetSec)

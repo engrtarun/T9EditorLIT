@@ -26,6 +26,7 @@ import {
   timelineDuration as timelineDurationOf
 } from '../segments';
 import { loadMediaInfo, loadThumbnails, loadWaveform } from '../media';
+import { nextTrimEnd, nextTrimStart, trimKeep, trimStep } from '../trim';
 import { detectQualitySuggestions, type QualitySuggestion } from '../suggestions';
 import { chunkSourceKey } from '../cloud-contract';
 import type { LayoutReport, MediaReport } from '../media-report';
@@ -3721,7 +3722,9 @@ class ProjectStore {
   trimStart(delta: number) {
     const cur = this.lines[this.cursor];
     if (!cur) return;
-    const next = Math.max(0, Math.min(cur.endSec - 0.3, cur.startSec + delta));
+    // A word-cut row can be shorter than the old fixed 0.3 s floor, which made
+    // this clamp push the start *before* the end. The floor now scales down.
+    const next = nextTrimStart(cur.startSec, cur.endSec, delta);
     if (Math.abs(next - cur.startSec) < 0.01) return;
     this.commit();
     this.lines = this.lines.map((l) => (l.id === cur.id ? { ...l, startSec: next } : l));
@@ -3731,7 +3734,7 @@ class ProjectStore {
   trimEnd(delta: number) {
     const cur = this.lines[this.cursor];
     if (!cur) return;
-    const next = Math.max(cur.startSec + 0.3, cur.endSec + delta);
+    const next = nextTrimEnd(cur.startSec, cur.endSec, delta);
     if (Math.abs(next - cur.endSec) < 0.01) return;
     this.commit();
     this.lines = this.lines.map((l) => (l.id === cur.id ? { ...l, endSec: next } : l));
@@ -3920,7 +3923,13 @@ class ProjectStore {
   trimSegmentStartTo(segId: string, targetSec: number): boolean {
     const seg = this.segments.find((s) => s.id === segId);
     if (!seg) return false;
-    const target = Math.min(seg.endSec - 0.3, Math.max(seg.startSec + 0.02, targetSec));
+    const span = seg.endSec - seg.startSec;
+    // Same proportional floor as the keyboard trim: a 120 ms word-cut clip
+    // must still be trimmable instead of being refused by a 0.3 s minimum.
+    const target = Math.max(
+      seg.startSec + trimStep(span),
+      Math.min(seg.endSec - trimKeep(span), targetSec)
+    );
     if (target <= seg.startSec + 0.01) return false;
     this.commit();
     const updates = new Map<string, Partial<TranscriptLine>>();
@@ -3945,7 +3954,11 @@ class ProjectStore {
   trimSegmentEndTo(segId: string, targetSec: number): boolean {
     const seg = this.segments.find((s) => s.id === segId);
     if (!seg) return false;
-    const target = Math.max(seg.startSec + 0.3, Math.min(seg.endSec - 0.02, targetSec));
+    const span = seg.endSec - seg.startSec;
+    const target = Math.max(
+      seg.startSec + trimKeep(span),
+      Math.min(seg.endSec - trimStep(span), targetSec)
+    );
     if (target >= seg.endSec - 0.01) return false;
     this.commit();
     const updates = new Map<string, Partial<TranscriptLine>>();
