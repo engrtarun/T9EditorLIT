@@ -5,7 +5,22 @@
   import TranscriptPanel from '../cut/TranscriptPanel.svelte';
   import WaveTimeline from '../cut/WaveTimeline.svelte';
   import { project } from '../../stores/project.svelte';
+  import { player } from '../../stores/player.svelte';
   import { layout } from '../../stores/layout.svelte';
+
+  /**
+   * The transport settings are **per project**: the zoom a 40-minute lecture
+   * needs is not the zoom a 20-second clip needs. The controls live in three
+   * places (preview bar, timeline tool row, keyboard), so watching the four
+   * values is safer than remembering to save inside each handler.
+   */
+  $effect(() => {
+    void player.zoom;
+    void player.previewRaw;
+    void player.loop;
+    void player.snap;
+    project.noteUiChange();
+  });
 
   /** Clipchamp's `role="separator" aria-label="Resize panel"` — drag the edge. */
   function startResize(e: PointerEvent) {

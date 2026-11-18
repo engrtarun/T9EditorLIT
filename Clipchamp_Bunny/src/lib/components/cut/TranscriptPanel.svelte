@@ -14,6 +14,10 @@
   import ShapeStrip from './ShapeStrip.svelte';
   import RangeTranscribe from './RangeTranscribe.svelte';
   import TranscriptImport from './TranscriptImport.svelte';
+  import WordCutToolbar from './WordCutToolbar.svelte';
+  import { toast } from '../../stores/toast.svelte';
+  import { planWordCut } from '../../word-cut';
+  import { readWordSelection, wordCount, type WordSelection } from '../../word-selection';
 
   /** The import dialog is mounted only while it is open (zero-RAM isolation). */
   let importing = $state(false);
@@ -136,6 +140,77 @@
   let scrollTop = $state(0);
   let viewportH = $state(640);
   let scroller: HTMLDivElement | null = $state(null);
+
+  /**
+   * The words the user dragged over inside one line.
+   *
+   * A cut that only exists in the audio would be invisible here, so this is a
+   * deliberate two-step: drag the words, check the toolbar anchored to them,
+   * then press Cut. Nothing changes until that click, and the toolbar names the
+   * exact words and duration that will go.
+   */
+  let selCut = $state<
+    | ({
+        lineId: string;
+        approx: boolean;
+        words: number;
+        seconds: number;
+      } & Pick<WordSelection, 'from' | 'to' | 'text' | 'rect'>)
+    | null
+  >(null);
+
+  const shorten = (s: string) => (s.length > 48 ? `${s.slice(0, 48).trimEnd()}…` : s);
+
+  /**
+   * Read a mouse-drag selection that lives inside one line's text node.
+   *
+   * Character offsets — not pixels — because that is what the word timings are
+   * indexed by. Anything outside the host span (a drag across two rows, a
+   * click) is ignored: a word cut belongs to exactly one line. The plan is
+   * computed here, before the toolbar opens, so the duration on the button is
+   * the duration that will actually be cut.
+   */
+  function readSelection(e: MouseEvent, line: TranscriptLine) {
+    const row = e.currentTarget as HTMLElement | null;
+    const picked = readWordSelection(row?.querySelector<HTMLElement>('[data-line-text]'));
+    if (!picked) return;
+    const plan = planWordCut(line, picked.from, picked.to);
+    if (!plan) return;
+    selCut = {
+      lineId: line.id,
+      from: picked.from,
+      to: picked.to,
+      text: picked.text,
+      rect: picked.rect,
+      approx: plan.approx,
+      words: wordCount(picked.text),
+      seconds: plan.toSec - plan.fromSec
+    };
+  }
+
+  function applySelCut() {
+    const picked = selCut;
+    if (!picked) return;
+    const res = project.cutWords(picked.lineId, picked.from, picked.to);
+    if (!res.ok) {
+      toast.push('warn', 'Selection cut nahi ho saka — words dobara select karo.');
+      return;
+    }
+    selCut = null;
+    window.getSelection()?.removeAllRanges();
+    const tail = res.approx ? ' · word timings nahi thin, andaazan' : '';
+    toast.push(
+      'cut',
+      res.rows > 1
+        ? `${res.rows} clips banengi — “${shorten(res.text)}” cut${tail}`
+        : `Line cut — “${shorten(res.text)}”${tail}`
+    );
+  }
+
+  function dismissSelCut() {
+    selCut = null;
+    window.getSelection()?.removeAllRanges();
+  }
 
   const view = $derived.by(() => {
     // `orderedLines` is the final-video order — dragging a clip on the
@@ -705,10 +780,14 @@
               project.toggleSelect(line.id);
               return;
             }
+            // A drag that selected words is an edit gesture, not a seek.
+            const sel = window.getSelection();
+            if (sel && !sel.isCollapsed) return;
             jump(line);
           }}
           class="flex min-w-0 flex-1 items-start gap-2 text-left"
-          title="Jump preview here · Ctrl+click to multi-select"
+          title="Jump preview here · Ctrl+click to multi-select · drag text to cut just those words"
+          onmouseup={(e) => readSelection(e, line)}
         >
           <span class="mt-[2px] w-[66px] shrink-0 font-mono text-[9px] leading-4 text-nc-mut-2">
             <span class="block">{fmtShort(line.startSec)}</span>
@@ -723,10 +802,13 @@
               Devanagari, Arabic and CJK never render as tofu boxes.
             -->
             <span
-              class="text-xs leading-4 {layout.transcriptWrap ? 'break-words' : 'line-clamp-2'} {cut
+              class="select-text text-xs leading-4 {layout.transcriptWrap
+                ? 'break-words'
+                : 'line-clamp-2'} {cut
                 ? 'nc-slash text-nc-mut line-through decoration-nc-red/70'
                 : 'text-nc-txt'}"
               dir="auto"
+              data-line-text
             >
               {line.text}
             </span>
@@ -1086,6 +1168,24 @@
       {/if}
     {/if}
   </div>
+
+  {#if selCut}
+    <!--
+      The confirmation lives at the selection (Descript's selection toolbar),
+      so the action is where the eye is instead of in a footer. Fixed-position,
+      because the transcript scroller would clip it. "Cut" is the only thing
+      that mutates: dragging words is a question, not an edit.
+    -->
+    <WordCutToolbar
+      text={selCut.text}
+      approx={selCut.approx}
+      words={selCut.words}
+      seconds={selCut.seconds}
+      rect={selCut.rect}
+      oncancel={dismissSelCut}
+      oncut={applySelCut}
+    />
+  {/if}
 
   <!--
     Incremental transcript footer.

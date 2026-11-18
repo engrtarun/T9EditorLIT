@@ -31,6 +31,7 @@ import { chunkSourceKey } from '../cloud-contract';
 import type { LayoutReport, MediaReport } from '../media-report';
 import type { BuiltImport, ImportFormat } from '../transcript-import';
 import { tagIcon, tagsOf } from '../transcript-tags';
+import { planWordCut } from '../word-cut';
 import {
   classifyGaps,
   cutCandidates,
@@ -71,6 +72,29 @@ interface LineMeta {
   language?: string;
   translatedText?: string;
   protected?: boolean;
+}
+
+/**
+ * One project's saved editor state — the shape of the SQLite `kv` row.
+ *
+ * `player` is optional because payloads written before the transport settings
+ * moved in must still load; a missing field restores nothing and keeps the
+ * current value.
+ */
+interface UiStatePayload {
+  segmentOrder?: string[];
+  splitMarks?: number[];
+  cutSpans?: unknown;
+  mutedSegments?: string[];
+  segmentVolume?: Record<string, number>;
+  hiddenTracks?: TrackId[];
+  lineMeta?: Record<string, LineMeta>;
+  player?: {
+    zoom?: number;
+    previewRaw?: boolean;
+    loop?: boolean;
+    snap?: boolean;
+  };
 }
 import {
   NoSpeechError,
@@ -646,7 +670,7 @@ class ProjectStore {
     const bakedEntry = media.byPath(baked.url);
     if (bakedEntry) media.focusSource(bakedEntry.asset.id);
     this.restoreClips();
-    this.restoreUiState();
+    void this.restoreUiState();
     this.restorePlayhead();
     this.ready = true;
   }
@@ -900,7 +924,7 @@ class ProjectStore {
       if (!this.lines.length) this.lines = [];
     }
     this.restoreClips();
-    this.restoreUiState();
+    void this.restoreUiState();
     this.restorePlayhead();
 
     this.ready = true;
@@ -2471,102 +2495,196 @@ class ProjectStore {
   private autosave: ReturnType<typeof setTimeout> | null = null;
 
   /**
-   * Clip mutes, track hides and the user's segment order are UI state, not
-   * transcript rows. They live in localStorage (small, synchronous, no extra
-   * SQLite schema): the transcript itself stays in SQLite on disk.
+   * Clip mutes, track hides, the timeline zoom and the applied/raw preview are
+   * **per project**, not app preferences.
+   *
+   * localStorage is the synchronous mirror — a paint can read it before the
+   * first frame — but the durable copy is SQLite (`stats_kv`), one row per
+   * source. Closing the app and opening the project again must not depend on
+   * the WebView's storage: a cache clear, a second window or a fresh install
+   * would forget every setting the user tuned for this one video.
    */
   private uiStateKey(): string | null {
     const id = this.sourcePath ?? this.media?.name;
     return id ? `t9.timelineUi:${id}` : null;
   }
 
-  private saveUiState() {
-    const key = this.uiStateKey();
-    if (!key) return;
-    try {
-      // The per-line extras - the language badge, the translation and the
-      // "never cut this" pin - ride along here rather than in the transcript
-      // table. They are the editor's own annotations on the words, not part
-      // of the words, and the transcript schema stays as it is.
-      const lineMeta: Record<string, LineMeta> = {};
-      for (const l of this.lines) {
-        if (!l.language && !l.translatedText && !l.protected) continue;
-        lineMeta[l.id] = {
-          language: l.language,
-          translatedText: l.translatedText,
-          protected: l.protected
-        };
-      }
-      const payload = {
-        segmentOrder: this.segmentOrder,
-        splitMarks: this.splitMarks,
-        cutSpans: this.cutSpans,
-        mutedSegments: this.mutedSegments,
-        segmentVolume: this.segmentVolume,
-        hiddenTracks: this.hiddenTracks,
-        lineMeta
+  /** SQLite `kv` key — same shape as the transcript plan and import records. */
+  private uiDbKey(): string | null {
+    const id = this.sourcePath ?? this.media?.name;
+    return id ? `t9-editor-lit.ui-state.${id}` : null;
+  }
+
+  /** False until the saved state has been read back; nothing may overwrite it. */
+  private uiReady = false;
+  /** A save was requested while the restore was still reading — flush after. */
+  private uiDirty = false;
+  private uiSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Everything that survives a close, exactly as it is stored. */
+  private uiPayload(): UiStatePayload {
+    // The per-line extras - the language badge, the translation and the
+    // "never cut this" pin - ride along here rather than in the transcript
+    // table. They are the editor's own annotations on the words, not part of
+    // the words, and the transcript schema stays as it is.
+    const lineMeta: Record<string, LineMeta> = {};
+    for (const l of this.lines) {
+      if (!l.language && !l.translatedText && !l.protected) continue;
+      lineMeta[l.id] = {
+        language: l.language,
+        translatedText: l.translatedText,
+        protected: l.protected
       };
-      localStorage.setItem(key, JSON.stringify(payload));
-    } catch {
-      /* private mode / quota — the edit still works for this session */
+    }
+    return {
+      segmentOrder: this.segmentOrder,
+      splitMarks: this.splitMarks,
+      cutSpans: this.cutSpans,
+      mutedSegments: this.mutedSegments,
+      segmentVolume: this.segmentVolume,
+      hiddenTracks: this.hiddenTracks,
+      lineMeta,
+      // The transport/view settings the user tuned for this project.
+      player: {
+        zoom: player.zoom,
+        previewRaw: player.previewRaw,
+        loop: player.loop,
+        snap: player.snap
+      }
+    };
+  }
+
+  private applyUiState(data: UiStatePayload) {
+    if (Array.isArray(data.segmentOrder)) {
+      this.segmentOrder = data.segmentOrder.filter((x) => typeof x === 'string');
+    }
+    if (Array.isArray(data.splitMarks)) {
+      this.splitMarks = data.splitMarks
+        .filter((x): x is number => typeof x === 'number' && Number.isFinite(x))
+        .sort((a, b) => a - b);
+    }
+    this.cutSpans = weldSpans(toCutSpans(data.cutSpans));
+    this.syncCutsIntoLines();
+    if (Array.isArray(data.mutedSegments)) {
+      this.mutedSegments = data.mutedSegments.filter((x) => typeof x === 'string');
+    }
+    if (data.segmentVolume && typeof data.segmentVolume === 'object') {
+      const map: Record<string, number> = {};
+      for (const [id, v] of Object.entries(data.segmentVolume)) {
+        if (typeof v === 'number' && Number.isFinite(v)) map[id] = Math.min(1, Math.max(0, v));
+      }
+      this.segmentVolume = map;
+    }
+    if (Array.isArray(data.hiddenTracks)) {
+      this.hiddenTracks = data.hiddenTracks.filter(
+        (x): x is TrackId => x === 'video' || x === 'audio'
+      );
+    }
+    // The per-line extras come back with the lines they belong to.
+    if (data.lineMeta && typeof data.lineMeta === 'object') {
+      this.lines = this.lines.map((l) => {
+        const meta = data.lineMeta?.[l.id];
+        if (!meta) return l;
+        return {
+          ...l,
+          language: meta.language ?? l.language,
+          translatedText: meta.translatedText ?? l.translatedText,
+          protected: meta.protected ?? l.protected
+        };
+      });
+    }
+    // The transport keeps its own scope: opening a project restores its zoom,
+    // its applied/raw choice, its loop and its magnet.
+    const p = data.player;
+    if (p && typeof p === 'object') {
+      if (typeof p.zoom === 'number' && Number.isFinite(p.zoom)) {
+        player.zoom = Math.min(220, Math.max(4, p.zoom));
+      }
+      if (typeof p.previewRaw === 'boolean') player.previewRaw = p.previewRaw;
+      if (typeof p.loop === 'boolean') player.loop = p.loop;
+      if (typeof p.snap === 'boolean') player.snap = p.snap;
     }
   }
 
-  private restoreUiState() {
-    const key = this.uiStateKey();
-    if (!key) return;
+  private parseUiState(raw: string | null): UiStatePayload | null {
+    if (!raw) return null;
     try {
-      const raw = localStorage.getItem(key);
-      if (!raw) return;
-      const data = JSON.parse(raw) as {
-        segmentOrder?: string[];
-        splitMarks?: number[];
-        cutSpans?: unknown;
-        mutedSegments?: string[];
-        segmentVolume?: Record<string, number>;
-        hiddenTracks?: TrackId[];
-        lineMeta?: Record<string, LineMeta>;
-      };
-      if (Array.isArray(data.segmentOrder)) {
-        this.segmentOrder = data.segmentOrder.filter((x) => typeof x === 'string');
-      }
-      if (Array.isArray(data.splitMarks)) {
-        this.splitMarks = data.splitMarks
-          .filter((x): x is number => typeof x === 'number' && Number.isFinite(x))
-          .sort((a, b) => a - b);
-      }
-      this.cutSpans = weldSpans(toCutSpans(data.cutSpans));
-      this.syncCutsIntoLines();
-      if (Array.isArray(data.mutedSegments)) {
-        this.mutedSegments = data.mutedSegments.filter((x) => typeof x === 'string');
-      }
-      if (data.segmentVolume && typeof data.segmentVolume === 'object') {
-        const map: Record<string, number> = {};
-        for (const [id, v] of Object.entries(data.segmentVolume)) {
-          if (typeof v === 'number' && Number.isFinite(v)) map[id] = Math.min(1, Math.max(0, v));
-        }
-        this.segmentVolume = map;
-      }
-      if (Array.isArray(data.hiddenTracks)) {
-        this.hiddenTracks = data.hiddenTracks.filter(
-          (x): x is TrackId => x === 'video' || x === 'audio'
-        );
-      }
-      // The per-line extras come back with the lines they belong to.
-      if (data.lineMeta && typeof data.lineMeta === 'object') {
-        this.lines = this.lines.map((l) => {
-          const meta = data.lineMeta?.[l.id];
-          if (!meta) return l;
-          return {
-            ...l,
-            language: meta.language ?? l.language,
-            translatedText: meta.translatedText ?? l.translatedText,
-            protected: meta.protected ?? l.protected
-          };
-        });
-      }
+      const data = JSON.parse(raw) as unknown;
+      return data && typeof data === 'object' ? (data as UiStatePayload) : null;
     } catch {
-      /* corrupt entry — start clean rather than block the project */
+      return null;
+    }
+  }
+
+  private saveUiState() {
+    if (!this.uiReady) {
+      // An edit landed while the saved state was still loading: remember it and
+      // write once the restore has finished, instead of dropping it.
+      this.uiDirty = true;
+      return;
+    }
+    const key = this.uiStateKey();
+    const dbKey = this.uiDbKey();
+    if (!key || !dbKey) return;
+    const raw = JSON.stringify(this.uiPayload());
+    try {
+      localStorage.setItem(key, raw);
+    } catch {
+      /* private mode / quota — SQLite below is the durable copy */
+    }
+    void statsSet(dbKey, raw);
+  }
+
+  /**
+   * A player setting changed. Debounced because zoom is dragged and wheeled:
+   * one SQLite write per gesture, not one per pixel.
+   */
+  noteUiChange() {
+    if (!this.uiReady) {
+      this.uiDirty = true;
+      return;
+    }
+    if (this.uiSaveTimer !== null) clearTimeout(this.uiSaveTimer);
+    this.uiSaveTimer = setTimeout(() => {
+      this.uiSaveTimer = null;
+      this.saveUiState();
+    }, 300);
+  }
+
+  /**
+   * Read the state back: localStorage first so the first paint is instant,
+   * then SQLite — which wins, because it is the copy that survives a cache
+   * clear, and the only one the desktop app can trust.
+   */
+  private async restoreUiState(): Promise<void> {
+    const key = this.uiStateKey();
+    const dbKey = this.uiDbKey();
+    if (!key || !dbKey) {
+      this.uiReady = true;
+      return;
+    }
+    this.uiReady = false;
+    let local: string | null = null;
+    try {
+      local = localStorage.getItem(key);
+    } catch {
+      /* private mode */
+    }
+    const cached = this.parseUiState(local);
+    if (cached) this.applyUiState(cached);
+
+    let fromDb: string | null = null;
+    try {
+      fromDb = await statsGet(dbKey);
+    } catch {
+      /* no bridge (browser preview) */
+    }
+    const durable = this.parseUiState(fromDb);
+    if (durable) this.applyUiState(durable);
+    this.uiReady = true;
+    if (this.uiDirty) {
+      this.uiDirty = false;
+      this.saveUiState();
     }
   }
 
@@ -2657,6 +2775,14 @@ class ProjectStore {
     this.mutedSegments = [];
     this.segmentVolume = {};
     this.hiddenTracks = [];
+    // The next file gets its own saved state. Until that state is read back,
+    // nothing may write over it — a load is not an edit.
+    this.uiReady = false;
+    this.uiDirty = false;
+    if (this.uiSaveTimer !== null) {
+      clearTimeout(this.uiSaveTimer);
+      this.uiSaveTimer = null;
+    }
     this.past = [];
     this.future = [];
     this.splitSeq = 0;
@@ -3861,6 +3987,92 @@ class ProjectStore {
     this.splitMarks = [...this.splitMarks, at].sort((a, b) => a - b);
     this.cursor = idx + 1;
     return true;
+  }
+
+  /**
+   * Cut **part of one line** — the words the user selected in the transcript.
+   *
+   * "machli jal ki rani h" with "jal ki rani" selected becomes three rows:
+   * `machli` (keep), `jal ki rani` (cut), `h` (keep). The rows are the only
+   * source of truth: `segments` is derived from them, so the timeline shows
+   * three clips the moment the rows land. Both boundaries also become split
+   * marks, otherwise the kept prefix would glue to the clip before it and the
+   * user would see one clip with a hole instead of the three they asked for.
+   *
+   * The mapping from a browser selection (character offsets) to seconds lives
+   * in `lib/word-cut.ts` and is unit-tested. Without word timings the cut is
+   * spread over the line by character count and `approx` comes back true — the
+   * panel says so before the user commits.
+   */
+  cutWords(
+    lineId: string,
+    selectionFrom: number,
+    selectionTo: number
+  ): { ok: boolean; approx: boolean; rows: number; text: string } {
+    const idx = this.lines.findIndex((l) => l.id === lineId);
+    if (idx < 0) return { ok: false, approx: false, rows: 0, text: '' };
+    const line = this.lines[idx];
+    const plan = planWordCut(line, selectionFrom, selectionTo);
+    if (!plan) return { ok: false, approx: false, rows: 0, text: '' };
+
+    this.commit();
+
+    // Selecting the whole line is just a cut: splitting it would leave two
+    // zero-word rows behind, and no clip boundary is needed at the edges.
+    if (plan.whole || (!plan.prefix && !plan.suffix)) {
+      this.lines = this.lines.map((l) => (l.id === lineId ? { ...l, keep: 'cut' } : l));
+      this.cursor = idx;
+      return { ok: true, approx: plan.approx, rows: 1, text: plan.cut.text };
+    }
+
+    const base = baseId(line.id);
+    const tag = (++this.splitSeq).toString(36);
+    const parts: TranscriptLine[] = [];
+    const push = (
+      suffix: string,
+      part: { text: string; fromSec: number; toSec: number; words?: TranscriptLine['words'] },
+      keep: KeepState,
+      first: boolean
+    ) => {
+      parts.push({
+        ...line,
+        id: `${base}-${tag}${suffix}`,
+        text: part.text,
+        startSec: part.fromSec,
+        endSec: part.toSec,
+        keep,
+        words: part.words,
+        // The badge row belongs to the line, not to each third of it: three
+        // copies of the same language chip would read as three speakers.
+        language: first ? line.language : undefined,
+        translatedText: first ? line.translatedText : undefined,
+        tags: first ? line.tags : undefined,
+        flag: first ? line.flag : 'none',
+        needsConfirm: false,
+        // A pin stops the automatic passes; it does not stop an explicit cut.
+        protected: keep === 'cut' ? false : line.protected
+      });
+    };
+
+    if (plan.prefix) push('a', plan.prefix, line.keep, true);
+    push(plan.prefix ? 'b' : 'a', plan.cut, 'cut', !plan.prefix);
+    if (plan.suffix) push(plan.prefix ? 'c' : 'b', plan.suffix, line.keep, false);
+
+    this.lines = [...this.lines.slice(0, idx), ...parts, ...this.lines.slice(idx + 1)];
+
+    // A promise: the two sides of the removed words are separate clips even
+    // when the neighbouring material would otherwise glue to them.
+    const marks = new Set(this.splitMarks);
+    marks.add(plan.fromSec);
+    marks.add(plan.toSec);
+    this.splitMarks = [...marks].sort((a, b) => a - b);
+
+    this.cursor = idx + (plan.prefix ? 1 : 0);
+    this.selectedIds = [];
+    this.refreshShape();
+    // Rows + split marks are an edit: write them (and the UI state) to disk.
+    this.scheduleAutosave();
+    return { ok: true, approx: plan.approx, rows: parts.length, text: plan.cut.text };
   }
 
   /**
