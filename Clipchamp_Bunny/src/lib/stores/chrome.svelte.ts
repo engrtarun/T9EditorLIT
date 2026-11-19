@@ -26,7 +26,13 @@ interface ChromePrefs {
 class ChromeStore {
   fullscreen = $state(false);
   fullscreenKey = $state(true);
-  fullscreenToolbar = $state(true);
+  /**
+   * The ⛶ button in the browser toolbar. OFF by default — "by difialt ye
+   * hide rahe halaki key se acces also on rahe": F11 (and Escape) are the
+   * doors that stay open; the button is an optional fourth one the user can
+   * switch on from Browser settings.
+   */
+  fullscreenToolbar = $state(false);
 
   constructor() {
     if (typeof localStorage === 'undefined') return;

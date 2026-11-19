@@ -30,6 +30,16 @@ const TIME_FORMAT_KEY = 't9-editor-lit.timeFormat';
 /** LocalStorage key for "the timeline scrolls with the playhead". */
 const FOLLOW_PLAYHEAD_KEY = 't9-editor-lit.followPlayhead';
 
+/**
+ * Timeline display filters (the eye menu's "Timeline" block). Four separate
+ * keys, like every other preference: a user who hides cut blocks has said
+ * nothing about thumbnails, and one corrupt value must not reset the rest.
+ */
+const SHOW_CUTS_KEY = 't9-editor-lit.timelineCuts';
+const SHOW_SILENCE_KEY = 't9-editor-lit.timelineSilence';
+const SHOW_FILMSTRIP_KEY = 't9-editor-lit.timelineFilmstrip';
+const SHOW_SUGGESTIONS_KEY = 't9-editor-lit.timelineSuggestions';
+
 /** The window the user asked for: a binned project is recoverable for 12 days. */
 export const TRASH_DAYS_DEFAULT = 12;
 
@@ -97,6 +107,22 @@ class SettingsStore {
    * prefer a still timeline, so this is a switch (eye menu → Follow playhead).
    */
   followPlayhead = $state(true);
+
+  /**
+   * Timeline display filters — what the strip is allowed to paint.
+   *
+   * Hiding is a **display** choice, never a project edit: the cut still exists,
+   * still exports, still owns its width on the strip. `cut blocks` covers the
+   * red CUT blocks; `silence blocks` covers the grey SILENCE ones (a silence is
+   * a cut, so the two switches are independent categories, not one master).
+   * `filmstrip` stops the thumbnail strip from being fetched at all, which is
+   * also the low-RAM option; `suggestions` hides the green/amber AI preview
+   * stripes in the source overview.
+   */
+  timelineShowCuts = $state(true);
+  timelineShowSilence = $state(true);
+  timelineShowFilmstrip = $state(true);
+  timelineShowSuggestions = $state(true);
 
   /** True when the printed format can be typed back into the timecode box. */
   get timeFormatEditable(): boolean {
@@ -172,6 +198,30 @@ class SettingsStore {
     this.persist();
   }
 
+  /** Show/hide the red CUT blocks on the timeline (display only). */
+  setTimelineShowCuts(on: boolean): void {
+    this.timelineShowCuts = on;
+    this.persist();
+  }
+
+  /** Show/hide the grey SILENCE blocks (display only). */
+  setTimelineShowSilence(on: boolean): void {
+    this.timelineShowSilence = on;
+    this.persist();
+  }
+
+  /** Show/hide the filmstrip thumbnails (display only, and saves decodes). */
+  setTimelineShowFilmstrip(on: boolean): void {
+    this.timelineShowFilmstrip = on;
+    this.persist();
+  }
+
+  /** Show/hide the green/amber AI preview stripes in the source overview. */
+  setTimelineShowSuggestions(on: boolean): void {
+    this.timelineShowSuggestions = on;
+    this.persist();
+  }
+
   private persist(): void {
     try {
       localStorage.setItem(TRASH_DAYS_KEY, String(this.trashRetentionDays));
@@ -180,6 +230,10 @@ class SettingsStore {
       localStorage.setItem(AUTO_RESUME_KEY, this.autoResumeTranscript ? '1' : '0');
       localStorage.setItem(TIME_FORMAT_KEY, this.timeFormat);
       localStorage.setItem(FOLLOW_PLAYHEAD_KEY, this.followPlayhead ? '1' : '0');
+      localStorage.setItem(SHOW_CUTS_KEY, this.timelineShowCuts ? '1' : '0');
+      localStorage.setItem(SHOW_SILENCE_KEY, this.timelineShowSilence ? '1' : '0');
+      localStorage.setItem(SHOW_FILMSTRIP_KEY, this.timelineShowFilmstrip ? '1' : '0');
+      localStorage.setItem(SHOW_SUGGESTIONS_KEY, this.timelineShowSuggestions ? '1' : '0');
     } catch {
       /* private mode */
     }
@@ -201,6 +255,16 @@ class SettingsStore {
       const follow = localStorage.getItem(FOLLOW_PLAYHEAD_KEY);
       // Absent = on: Clipchamp's behaviour is the default.
       this.followPlayhead = follow === null ? true : follow === '1';
+      // Absent = on: the timeline has always painted all of this. A filter is
+      // something the user turns ON, never a surprise first run.
+      const cuts = localStorage.getItem(SHOW_CUTS_KEY);
+      if (cuts !== null) this.timelineShowCuts = cuts === '1';
+      const silence = localStorage.getItem(SHOW_SILENCE_KEY);
+      if (silence !== null) this.timelineShowSilence = silence === '1';
+      const strip = localStorage.getItem(SHOW_FILMSTRIP_KEY);
+      if (strip !== null) this.timelineShowFilmstrip = strip === '1';
+      const sugg = localStorage.getItem(SHOW_SUGGESTIONS_KEY);
+      if (sugg !== null) this.timelineShowSuggestions = sugg === '1';
     } catch {
       /* private mode */
     }

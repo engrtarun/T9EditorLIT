@@ -35,7 +35,7 @@ _Last updated: 2026-11-19_
 - [x] Browser header: browser me "Studio" nahi - "Fast / Safe / Light / AI Plus / Secure **Browser**" per-letter rolling reveal (done: 2026-11-19) - `RollingWord.svelte`, har letter apne 11px mask me upar roll karta hai (AE reference), studio me sirf "Studio"
 - [x] Firefox F11 fullscreen + settings (done: 2026-11-19) - F11 toggle (Esc bahar), browser toolbar me Home ke bagal button, settings me 2 switch: F11 key on/off + toolbar button on/off (switch wahi se live hide/show karta hai). Tauri `setFullscreen` + dev me Fullscreen API
 - [x] Tab chip: sirf icon dikhe, uske upar bg nahi (done: 2026-11-19) - active tab ka `ring-nc-brand/55` + `bg-nc-panel-2` hataya: sirf `ring-nc-line/50`, non-active me `text-nc-mut ring-transparent`
-- [ ] Silence hide/unhide ke aur options (cuts se related) (added: 2026-11-18)
+- [x] Silence hide/unhide + cut hide/unhide + display filters (done: 2026-11-19) - eye menu ("Both") me naya **Timeline** block: Cut blocks (red), Silence blocks (grey), Filmstrip (frames; OFF par thumbnail fetch hi nahi hota = low-RAM), AI suggestions (green/amber) — chaaron persisted (`settings`), menu khula rehta hai live toggle ke liye. Hide display-only hai: block apni width/right-click restore rakhta hai, strip ripple nahi hoti; minimap bhi wahi filter follow karta hai (silence ab grey, red nahi)
 - [ ] Transcript row/time chip (0:00-0:03) hilta hai (added: 2026-11-18)
 
 - [ ] Transcript import: DOCX/PDF native picker + restart persistence (added: 2026-11-16)

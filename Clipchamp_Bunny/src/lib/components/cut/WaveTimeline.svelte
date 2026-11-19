@@ -359,6 +359,18 @@
   const offsets = $derived(project.segmentOffsets);
 
   /**
+   * Is this cut block hidden by the eye menu's display filters?
+   *
+   * Silences are their own category: a user can hide every fumble cut and keep
+   * the grey silence blocks (or the other way round). The block keeps its width
+   * and its right-click restore; only what it paints changes.
+   */
+  function blockHidden(s: (typeof segments)[number]): boolean {
+    if (s.state !== 'cut') return false;
+    return s.reason === 'silence' ? !settings.timelineShowSilence : !settings.timelineShowCuts;
+  }
+
+  /**
    * The word cut that is pending, mapped onto the timeline axis.
    *
    * This is the promise the user asked for: once words are selected, the lane
@@ -419,6 +431,9 @@
   const thumbImgs = new Map<number, HTMLImageElement>();
 
   function ensureThumbs(fromSec: number, toSec: number) {
+    // The filmstrip switch is also the low-RAM switch: with it off no JPEG is
+    // fetched at all, instead of fetching frames the lane will not paint.
+    if (!settings.timelineShowFilmstrip) return;
     const strip = project.thumbnails;
     if (!strip) return;
     const i0 = Math.max(0, Math.floor(fromSec / thumbStep));
@@ -490,9 +505,10 @@
     ctx.clearRect(0, 0, w, VIDEO_H);
     const left = paintLeft;
 
-    const strip = project.thumbnails;
+    const strip = settings.timelineShowFilmstrip ? project.thumbnails : null;
     // Nothing to draw yet: say why, so a black lane never reads as "broken".
-    if (!strip) {
+    // A deliberately hidden filmstrip is not an error and says nothing.
+    if (settings.timelineShowFilmstrip && !strip) {
       const note = project.thumbError
         ? 'Filmstrip unavailable'
         : project.thumbLoading
@@ -506,6 +522,8 @@
       const x0 = off.start * zoom - left;
       const x1 = off.end * zoom - left;
       if (x1 < 0 || x0 > w) continue;
+      // A hidden cut is an empty slot on purpose: paint no frame from it.
+      if (!strip || blockHidden(s)) continue;
 
       ctx.save();
       ctx.beginPath();
@@ -585,15 +603,18 @@
       const startPx = Math.max(0, Math.ceil(-x0 / 2) * 2);
       const endPx = Math.min(wpx, Math.ceil(w - x0));
       // A muted clip still shows its shape, just ghosted — Clipchamp keeps the
-      // waveform visible so the user can see what is muted.
-      ctx.globalAlpha = project.isSegmentMuted(s.id) ? 0.28 : 1;
+      // waveform visible so the user can see what is muted. A **hidden** cut
+      // block is ghosted harder and loses its red/grey colour: the filter is
+      // about not seeing that material, not about deleting it.
+      const hiddenCut = blockHidden(s);
+      ctx.globalAlpha = hiddenCut ? 0.16 : project.isSegmentMuted(s.id) ? 0.28 : 1;
       for (let px = startPx; px < endPx; px += 2) {
         const sourceSec = s.startSec + px / zoom;
         if (sourceSec > covered) break;
         const pi = Math.min(peaks.length - 1, Math.floor((sourceSec / dur) * peaks.length));
         const p = peaks[Math.max(0, pi)] ?? 0;
         const hgt = Math.max(1, p * (AUDIO_H - 10));
-        ctx.fillStyle = sourceColour(sourceSec);
+        ctx.fillStyle = hiddenCut ? '#5b5e6c' : sourceColour(sourceSec);
         ctx.fillRect(x0 + px, mid - hgt / 2, 2, hgt);
       }
       ctx.globalAlpha = 1;
@@ -658,21 +679,34 @@
     // AI suggestions first — a staged span paints GREEN and disappears the
     // moment either side of the deal changes (applied, rejected, or the user
     // cut the span manually). Red is painted after, so an already-cut region
-    // always reads as its final state.
-    ctx.fillStyle = 'rgba(61, 214, 140, 0.8)';
-    for (const r of project.liveSuggestions) {
-      ctx.fillRect(r.start * scale, 0, Math.max(1, (r.end - r.start) * scale), MINIMAP_H);
+    // always reads as its final state. The display filter can hide the whole
+    // preview layer without rejecting it: the Apply/Reject chip stays.
+    if (settings.timelineShowSuggestions) {
+      ctx.fillStyle = 'rgba(61, 214, 140, 0.8)';
+      for (const r of project.liveSuggestions) {
+        ctx.fillRect(r.start * scale, 0, Math.max(1, (r.end - r.start) * scale), MINIMAP_H);
+      }
+      // Text-level suggestions get their own colour: a fumble or a retake is a
+      // different kind of evidence from a silent gap, and the user must be able
+      // to tell which is which before pressing Apply.
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.85)';
+      for (const s of project.liveQualitySuggestions) {
+        ctx.fillRect(
+          s.startSec * scale,
+          0,
+          Math.max(1, (s.endSec - s.startSec) * scale),
+          MINIMAP_H
+        );
+      }
     }
-    // Text-level suggestions get their own colour: a fumble or a retake is a
-    // different kind of evidence from a silent gap, and the user must be able
-    // to tell which is which before pressing Apply.
-    ctx.fillStyle = 'rgba(245, 158, 11, 0.85)';
-    for (const s of project.liveQualitySuggestions) {
-      ctx.fillRect(s.startSec * scale, 0, Math.max(1, (s.endSec - s.startSec) * scale), MINIMAP_H);
-    }
-    ctx.fillStyle = 'rgba(229, 72, 77, 0.75)';
+    // Cuts use the same two categories as the lanes: silence is grey, every
+    // other cut is red. A hidden category is not painted here either, so the
+    // overview and the lane never disagree about what the filter shows.
     for (const l of project.lines) {
       if (l.keep === 'keep') continue;
+      const isSilence = l.flag === 'silence';
+      if (isSilence ? !settings.timelineShowSilence : !settings.timelineShowCuts) continue;
+      ctx.fillStyle = isSilence ? 'rgba(150, 153, 168, 0.55)' : 'rgba(229, 72, 77, 0.75)';
       ctx.fillRect(l.startSec * scale, 0, Math.max(1, (l.endSec - l.startSec) * scale), MINIMAP_H);
     }
     // The pending word cut, in the same blue as the lane band: a 3-word cut is
@@ -701,6 +735,10 @@
     void project.qualitySuggestions; // and so does the amber one
     void project.durationSec; // and when the loaded source length changes
     void wordCutPreview.ranges; // pending cut band / minimap tick
+    void settings.timelineShowCuts; // eye menu display filters
+    void settings.timelineShowSilence;
+    void settings.timelineShowFilmstrip;
+    void settings.timelineShowSuggestions;
     void LANES_H; // lane heights are drag-resizable — redraw on resize
     drawWave();
     drawVideoLane();
@@ -714,6 +752,7 @@
     const z = zoom;
     const sl = scrollLeft;
     viewW = w.clientWidth;
+    void settings.timelineShowFilmstrip; // turning it back on fetches frames again
     // source range currently visible on the edit timeline
     let from = Infinity;
     let to = -Infinity;
@@ -1333,6 +1372,27 @@
 {/snippet}
 
 <!--
+  One display filter in the eye menu. Unlike a preset this does NOT close the
+  menu: the effect is on the strip right behind the menu, so the user can flip
+  two or three filters in one visit and watch each one land.
+-->
+{#snippet filterRow(label: string, hint: string, on: boolean, run: () => void)}
+  <button
+    type="button"
+    role="menuitemcheckbox"
+    aria-checked={on}
+    onclick={run}
+    class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11px] transition-colors
+           hover:bg-nc-panel-2 {on ? 'text-nc-txt' : 'text-nc-mut-2'}"
+  >
+    <span class="flex-1">
+      {label}{#if hint}<span class="ml-1 text-[9px] text-nc-mut-2">{hint}</span>{/if}
+    </span>
+    <span class="w-3 text-center text-nc-brand">{on ? '✓' : ''}</span>
+  </button>
+{/snippet}
+
+<!--
   The J / L skip buttons: YouTube's circular arrow with the number in the
   middle, drawn once so both directions stay identical. The number is the
   user's own step from Settings, never a hard-coded 5.
@@ -1697,7 +1757,7 @@
           <div
             role="menu"
             aria-label="Tracks"
-            class="t9-fade-in absolute right-0 bottom-full z-30 mb-1 w-44 rounded-lg border border-nc-line-2
+            class="t9-fade-in absolute right-0 bottom-full z-30 mb-1 w-52 rounded-lg border border-nc-line-2
                    bg-nc-panel p-1 shadow-2xl"
           >
             <p
@@ -1732,6 +1792,27 @@
             )}
             {@render presetRow('Show both', '', bothShown, () => project.showTracks())}
             {@render presetRow('Hide both', '', bothHidden, () => project.hideTracks())}
+            <span class="my-1 block h-px bg-nc-line"></span>
+            <p
+              class="px-2 pt-1 pb-1 text-[9px] font-semibold tracking-wider text-nc-mut-2 uppercase"
+            >
+              Timeline
+            </p>
+            {@render filterRow('Cut blocks', 'red', settings.timelineShowCuts, () =>
+              settings.setTimelineShowCuts(!settings.timelineShowCuts)
+            )}
+            {@render filterRow('Silence blocks', 'grey', settings.timelineShowSilence, () =>
+              settings.setTimelineShowSilence(!settings.timelineShowSilence)
+            )}
+            {@render filterRow('Filmstrip', 'frames', settings.timelineShowFilmstrip, () =>
+              settings.setTimelineShowFilmstrip(!settings.timelineShowFilmstrip)
+            )}
+            {@render filterRow(
+              'AI suggestions',
+              'green/amber',
+              settings.timelineShowSuggestions,
+              () => settings.setTimelineShowSuggestions(!settings.timelineShowSuggestions)
+            )}
             <span class="my-1 block h-px bg-nc-line"></span>
             <button
               type="button"
@@ -1848,6 +1929,7 @@
               {@const sel = segmentSelection(s)}
               {@const cut = s.state === 'cut'}
               {@const silence = cut && s.reason === 'silence'}
+              {@const hiddenCut = cut && blockHidden(s)}
               {@const tr = trim?.segId === s.id ? trim : null}
               {@const trStart = tr?.edge === 'start' ? tr.targetSec - s.startSec : 0}
               {@const trEnd = tr?.edge === 'end' ? tr.targetSec - s.endSec : 0}
@@ -1871,19 +1953,25 @@
                 tabindex="0"
                 aria-pressed={sel === 'all'}
                 aria-label="Clip {fmtShort(s.startSec)} to {fmtShort(s.endSec)}{cut
-                  ? ` — ${silence ? 'silence' : 'cut'} block, right-click to restore`
+                  ? ` — ${silence ? 'silence' : 'cut'} block${
+                      hiddenCut ? ' (hidden by the timeline filter)' : ''
+                    }, right-click to restore`
                   : ' — drag to reorder'}"
                 title={cut
-                  ? `${silence ? 'Silence' : 'Cut'} ${fmtShort(s.startSec)}–${fmtShort(s.endSec)} · ${fmtShort(s.endSec - s.startSec)} — right-click to restore`
+                  ? `${silence ? 'Silence' : 'Cut'} ${fmtShort(s.startSec)}–${fmtShort(s.endSec)} · ${fmtShort(s.endSec - s.startSec)}${
+                      hiddenCut ? ' — hidden by the timeline filter' : ''
+                    } — right-click to restore`
                   : undefined}
                 class="group absolute top-0 bottom-0 cursor-grab overflow-hidden rounded-[4px] border-2 transition-all active:cursor-grabbing
                        {dragId === s.id ? 'transition-none' : ''}
                        {dragId === s.id
                   ? 'z-20 border-nc-brand shadow-lg shadow-nc-brand/20'
                   : cut
-                    ? silence
-                      ? 'border-white/20 bg-nc-panel brightness-[.45] saturate-0'
-                      : 'border-nc-red/70 bg-nc-red/25 brightness-[.6]'
+                    ? hiddenCut
+                      ? 'border-dashed border-white/15 bg-white/[0.02]'
+                      : silence
+                        ? 'border-white/20 bg-nc-panel brightness-[.45] saturate-0'
+                        : 'border-nc-red/70 bg-nc-red/25 brightness-[.6]'
                     : sel === 'all'
                       ? 'border-nc-brand ring-1 ring-nc-brand/40'
                       : sel === 'some'
@@ -1891,24 +1979,35 @@
                         : 'border-white/15 hover:border-nc-brand/70'}"
                 style="left:{left}px;width:{width}px"
               >
-                <!-- scrims so the filename and duration stay readable over any frame -->
-                <div
-                  class="pointer-events-none absolute inset-x-0 top-0 h-5 bg-gradient-to-b from-black/70 to-transparent"
-                ></div>
-                <div
-                  class="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-black/80 to-transparent"
-                ></div>
-                <span
-                  class="pointer-events-none absolute top-0.5 left-1.5 max-w-[calc(100%-1.5rem)] truncate text-[9px] font-medium text-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,.9)]"
-                  >{project.media?.name ?? 'clip'}</span
-                >
-                <span
-                  class="pointer-events-none absolute bottom-0.5 left-1.5 max-w-[calc(100%-2rem)] truncate font-mono text-[9px] text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,.9)]"
-                  >{fmtShort(s.startSec)}–{fmtShort(s.endSec)} · {fmtShort(
-                    s.endSec - s.startSec
-                  )}</span
-                >
-                {#if cut}
+                {#if hiddenCut}
+                  <!-- The block is filtered off, not editable material: the
+                       slot stays (the strip must not ripple on a display
+                       switch), but it paints nothing. The hint appears on
+                       hover so the block is still findable and restorable. -->
+                  <span
+                    class="pointer-events-none absolute inset-0 grid place-items-center text-[8px] tracking-wider text-nc-mut-2 uppercase opacity-0 transition-opacity group-hover:opacity-100"
+                    >{silence ? 'silence hidden' : 'cut hidden'}</span
+                  >
+                {:else}
+                  <!-- scrims so the filename and duration stay readable over any frame -->
+                  <div
+                    class="pointer-events-none absolute inset-x-0 top-0 h-5 bg-gradient-to-b from-black/70 to-transparent"
+                  ></div>
+                  <div
+                    class="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-black/80 to-transparent"
+                  ></div>
+                  <span
+                    class="pointer-events-none absolute top-0.5 left-1.5 max-w-[calc(100%-1.5rem)] truncate text-[9px] font-medium text-white/90 drop-shadow-[0_1px_2px_rgba(0,0,0,.9)]"
+                    >{project.media?.name ?? 'clip'}</span
+                  >
+                  <span
+                    class="pointer-events-none absolute bottom-0.5 left-1.5 max-w-[calc(100%-2rem)] truncate font-mono text-[9px] text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,.9)]"
+                    >{fmtShort(s.startSec)}–{fmtShort(s.endSec)} · {fmtShort(
+                      s.endSec - s.startSec
+                    )}</span
+                  >
+                {/if}
+                {#if cut && !hiddenCut}
                   <span
                     class="pointer-events-none absolute top-0.5 right-1.5 z-10 rounded px-1 text-[8px] font-bold tracking-wider {silence
                       ? 'bg-white/20 text-white/80'
@@ -2017,14 +2116,17 @@
               ></div>
               <!-- The sketch asks for a dropped clip to look "like previews":
                    real frames, not a gradient. The strip falls back to the
-                   gradient above if the file cannot be read. -->
-              <ClipFilmstrip
-                src={r.clip.url}
-                kind={r.clip.kind}
-                inSec={r.clip.inSec}
-                outSec={r.clip.outSec}
-                width={Math.max(6, (r.end - r.start) * zoom)}
-              />
+                   gradient above if the file cannot be read. The display
+                   filter can switch the frames off without touching the clip. -->
+              {#if settings.timelineShowFilmstrip}
+                <ClipFilmstrip
+                  src={r.clip.url}
+                  kind={r.clip.kind}
+                  inSec={r.clip.inSec}
+                  outSec={r.clip.outSec}
+                  width={Math.max(6, (r.end - r.start) * zoom)}
+                />
+              {/if}
               <div
                 class="pointer-events-none absolute inset-0 bg-gradient-to-br from-nc-brand/10 via-transparent to-black/35"
               ></div>
