@@ -1322,6 +1322,10 @@ pub fn audio_filter_chain(pieces: &[Piece], gains: &[f64]) -> Option<String> {
         }
         chain.push_str(&format!("[t{i}]"));
     }
+    // The concat clause is a filter of its own: without this `;` it is glued to
+    // the last trim chain and ffmpeg rejects the whole graph with "Trailing
+    // garbage after a filter".
+    chain.push(';');
     for i in 0..n {
         chain.push_str(&format!("[t{i}]"));
     }
@@ -3043,6 +3047,29 @@ mod tests {
              [t0][t1]concat=n=2:v=0:a=1[a]"
         );
         assert!(audio_filter_chain(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn audio_chain_puts_the_concat_clause_behind_a_semicolon() {
+        let pieces: Vec<Piece> = (0..50)
+            .map(|i| Piece {
+                index: i,
+                segment_index: i,
+                start: i as f64,
+                end: i as f64 + 1.0,
+                kind: PieceKind::Copy,
+                duration_secs: 1.0,
+                roll: None,
+            })
+            .collect();
+        let gains = vec![1.0; pieces.len()];
+        let chain = audio_filter_chain(&pieces, &gains).unwrap();
+        assert!(
+            chain.contains("[t49];[t0]"),
+            "without the `;` ffmpeg reads the concat clause as trailing garbage: {chain}"
+        );
+        assert!(chain.ends_with("concat=n=50:v=0:a=1[a]"), "{chain}");
+        assert_eq!(chain.matches("asplit=50").count(), 1);
     }
 
     #[test]
