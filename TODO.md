@@ -1,11 +1,12 @@
 # TODO - Scratch Pad
 
-_Last updated: 2026-11-18_
+_Last updated: 2026-11-19_
 
 ## 🔴 High Priority
 
 - [x] Export me fps drop (60 -> 50/30) kyun - source fps preserve karo (done: 2026-11-19) - root cause: per-piece AAC encode ne har join par ~48ms priming silence + container duration audio-driven hone se video me pts holes (47 gaps / 50.9fps). Fix: v2 pipeline - video pieces seedha MPEG-TS me (90kHz tb = 60fps exact), audio EK filter pass (asplit+atrim+concat), last me mux copy. Real SHORT6 plan (50 pieces) par proof: 4570/4570 frames, 0 gaps, delta 1500 ticks (60fps), audio 76.166667s = video se 1.5ms andar
 - [ ] Sequence/canvas export (9:16, 1:1, 4:5, 4:3) abhi purane per-piece audio path par hai - wahan bhi v2 (TS video pieces + ek audio pass) lagao (added: 2026-11-19)
+- [x] Export "video join failed (exit -2)" jab output field me sirf filename ho (koi folder nahi) (fixed: 2026-11-19) - kaaran: work dir `.t9export` relative ban gaya, list me `./.t9export/v0000.ts` gaya, aur ffconcat entry ko **list ke folder** se resolve karta hai -> `.t9export/.t9export/...` missing. Fix: list ki har entry absolute (`absolute_flat`), aur bare filename ab seedha Downloads me resolve hota hai (install folder me nahi). Saath me 0-byte piece (ffmpeg exit 0 par koi frame nahi) ab naam lekar error deta hai, cryptic concat fail nahi
 - [x] Export progress ke notifications: app toast + Windows native (Win+A/Win+N) (done: 2026-11-19) - start/done/fail par appNotify (export start, `file · size · duration`, fail reason), toasts ke saath
 - [x] Export presets: Fast export vs Quality export (user ko dono chahiye) (done: 2026-11-19) - SPEED·QUALITY row me Fast (hybrid) + Quality (encode + original), purana engine/quality list `Advanced` details me collapse (kuch delete nahi hua)
 - [ ] Waveform zoom in/out me wave aage-picche + accuracy badhani hai (added: 2026-11-18)

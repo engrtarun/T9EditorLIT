@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 /// Tauri event name the UI listens on for live render progress.
 pub const EXPORT_EVENT: &str = "export-progress";
@@ -477,10 +477,28 @@ pub fn snap_pieces_to_frames(pieces: &mut [Piece], fps: f64, source_secs: f64) {
 /// The concat demuxer's own list syntax, with Windows paths flattened to
 /// forward slashes â€” backslashes are escape characters inside `ffconcat`
 /// quotes, so `C:\Users` would otherwise parse as `C:Users`.
+///
+/// A relative `file` entry is resolved by the demuxer against the **list's own
+/// folder**, never against the process working directory. A bare output name
+/// (`my video.mp4`, no folder) makes the work folder `.t9export`, so a list
+/// holding `./.t9export/v0000.ts` was read back as
+/// `.t9export/.t9export/v0000.ts` — the `video join failed (exit -2)` bug.
+/// Every entry is therefore anchored to an absolute path.
+fn absolute_flat(p: &Path) -> String {
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(p))
+            .unwrap_or_else(|_| p.to_path_buf())
+    };
+    abs.to_string_lossy().replace('\\', "/")
+}
+
 pub fn concat_list_text(paths: &[PathBuf]) -> String {
     let mut out = String::from("ffconcat version 1.0\n");
     for p in paths {
-        let flat = p.to_string_lossy().replace('\\', "/");
+        let flat = absolute_flat(p);
         out.push_str("file '");
         out.push_str(&flat.replace('\'', "'\\''"));
         out.push_str("'\n");
@@ -1454,7 +1472,16 @@ pub fn run_export(
     if !source.exists() {
         return Err(format!("source not found: {}", req.source));
     }
-    let output = PathBuf::from(&req.output);
+    // A bare file name (`my video.mp4`, no folder) would otherwise land in
+    // whatever folder the app happened to start in - the install directory -
+    // and every intermediate path would be relative. Anchor it to Downloads so
+    // the user finds the file where every other export went.
+    let mut output = PathBuf::from(&req.output);
+    if output.parent().is_none_or(|p| p.as_os_str().is_empty()) {
+        if let Ok(dir) = app.path().download_dir() {
+            output = dir.join(output);
+        }
+    }
     if output.as_path() == source.as_path() {
         return Err("output path must differ from the source".to_string());
     }
@@ -1703,6 +1730,19 @@ fn cut_and_concat(
                 piece_count,
                 out.status,
                 out.stderr_tail.trim()
+            ));
+        }
+        // FFmpeg writes a 0-byte file and still exits 0 when the trim window
+        // holds no frames; a concat then dies with a cryptic "Impossible to
+        // open". Name the cut that produced nothing instead.
+        let bytes = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+        if bytes == 0 {
+            return Err(format!(
+                "piece {}/{} produced no frames ({:.3}s at {:.3}s) - there is no picture at that cut",
+                piece.index + 1,
+                piece_count,
+                piece.duration_secs,
+                piece.start
             ));
         }
         done_dur += piece.duration_secs;
@@ -2006,6 +2046,19 @@ fn cut_and_stitch(
                 piece_count,
                 out.status,
                 out.stderr_tail.trim()
+            ));
+        }
+        // FFmpeg writes a 0-byte file and still exits 0 when the trim window
+        // holds no frames; a concat then dies with a cryptic "Impossible to
+        // open". Name the cut that produced nothing instead.
+        let bytes = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+        if bytes == 0 {
+            return Err(format!(
+                "piece {}/{} produced no frames ({:.3}s at {:.3}s) - there is no picture at that cut",
+                piece.index + 1,
+                piece_count,
+                piece.duration_secs,
+                piece.start
             ));
         }
         done_dur += piece.duration_secs;
@@ -2577,6 +2630,25 @@ mod tests {
         assert!(
             text.contains(r"file 'C:/temp/it'\''s here/piece_0001.mkv'"),
             "quote must be escaped: {text}"
+        );
+    }
+
+    #[test]
+    fn concat_list_anchors_relative_paths_to_the_absolute_path() {
+        let text = concat_list_text(&[PathBuf::from(r".t9export/v0000.ts")]);
+        let cwd = std::env::current_dir().expect("cwd");
+        let expected = cwd
+            .join(".t9export")
+            .join("v0000.ts")
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert!(
+            text.contains(&format!("file '{expected}'")),
+            "a relative entry must be absolute: {text}"
+        );
+        assert!(
+            !text.contains("file './"),
+            "ffmpeg resolves an entry against the list folder, so a relative one is read twice: {text}"
         );
     }
 
