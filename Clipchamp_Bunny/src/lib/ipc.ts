@@ -985,7 +985,7 @@ export interface ExportResult {
 }
 
 export interface ExportProgress {
-  stage: 'scan' | 'cut' | 'concat' | 'audio' | 'gif' | 'done' | string;
+  stage: 'scan' | 'cut' | 'concat' | 'audio' | 'mux' | 'gif' | 'done' | string;
   pieceIndex: number;
   pieceCount: number;
   percent: number;

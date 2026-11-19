@@ -81,6 +81,17 @@ pub struct Piece {
     pub end: f64,
     pub kind: PieceKind,
     pub duration_secs: f64,
+    /// Where an encode piece starts *reading*. FFmpeg's input seek lands on the
+    /// keyframe at or before the requested time, so a piece is cut from a
+    /// little earlier than its first frame and the extra head is trimmed away
+    /// in the filter graph. Seeking to the cut point instead leaves the first
+    /// encoded frame late by up to a GOP (the 0.03 s "cut is off" bug), because
+    /// the decoder has to start on a keyframe either way.
+    ///
+    /// `None` means "seek exactly to `start`" â€” the fallback when the piece
+    /// starts before the first known keyframe.
+    #[serde(default)]
+    pub roll: Option<f64>,
 }
 
 /// What the user asked the engine to do.
@@ -220,7 +231,8 @@ pub struct ExportResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportProgress {
-    /// `scan` Â· `cut` Â· `concat` Â· `done`.
+    /// `scan` Â· `cut` Â· `concat` Â· `audio` Â· `mux` Â· `done`. A sequence export
+    /// has no `audio`/`mux` stage â€” its parts carry their own sound.
     pub stage: String,
     /// 1-based piece being cut, 0 outside the cutting phase.
     pub piece_index: usize,
@@ -243,6 +255,9 @@ const SNAP_EPS: f64 = 1e-6;
 /// Seek a copy piece this far past its keyframe so a timestamp rounded down by
 /// ffprobe's output precision can never pull the cut back a whole GOP.
 const COPY_SEEK_EPS: f64 = 1e-6;
+/// How far before a keyframe an encode piece starts reading. One millisecond
+/// covers keyframe timestamps printed to microsecond precision.
+const ROLL_MARGIN: f64 = 0.001;
 
 /// Files at or below these thresholds are "light": small enough that a full
 /// re-encode is fast, so we skip the expensive full-file keyframe scan and
@@ -397,6 +412,10 @@ pub fn plan_pieces(segments: &[Segment], kfs: &[f64], opts: &ExportOptions) -> P
             if end - start <= SNAP_EPS {
                 continue;
             }
+            let roll = match kind {
+                PieceKind::Encode => encode_roll(start, kfs),
+                PieceKind::Copy => None,
+            };
             outcome.pieces.push(Piece {
                 index: outcome.pieces.len(),
                 segment_index,
@@ -404,6 +423,7 @@ pub fn plan_pieces(segments: &[Segment], kfs: &[f64], opts: &ExportOptions) -> P
                 end,
                 kind,
                 duration_secs: end - start,
+                roll,
             });
         }
     }
@@ -416,6 +436,41 @@ fn prev_keyframe_before(t: f64, kfs: &[f64]) -> Option<f64> {
     match idx {
         0 => None,
         i => Some(kfs[i - 1]),
+    }
+}
+
+/// Where an encode piece starts reading: a little before the keyframe at or
+/// before `start`, so the decoder has every reference the first frame needs and
+/// can produce it immediately.
+fn encode_roll(start: f64, kfs: &[f64]) -> Option<f64> {
+    prev_keyframe_before(start, kfs).map(|k| (k - ROLL_MARGIN).max(0.0))
+}
+
+/// Round every piece to a whole number of frames.
+///
+/// Video can only be cut *between* frames, but a piece whose length is not a
+/// whole number of frames still occupies one more frame of screen time. The
+/// concat demuxer stacks the next piece at the previous one's *duration*, so
+/// those fractions used to pile up: the picture grew longer than the sound by a
+/// partial frame per join, and every join after the first drifted a little more.
+///
+/// Snapping each piece to `n / fps` makes `sum(n) / fps` equal the audio range
+/// exactly, which is what keeps picture and sound locked from the first join to
+/// the last. A piece is never rounded away â€” the floor is one frame, so a 10 ms
+/// word that survived a cut still reaches the file.
+pub fn snap_pieces_to_frames(pieces: &mut [Piece], fps: f64, source_secs: f64) {
+    if !fps.is_finite() || fps <= 1.0 {
+        return;
+    }
+    for piece in pieces.iter_mut() {
+        let mut frames = (piece.duration_secs * fps).round().max(1.0);
+        // Never run past the end of the file: a piece that would extend the
+        // timeline is shortened to its last whole frame instead.
+        if source_secs > 0.0 && piece.start + frames / fps > source_secs + SNAP_EPS {
+            frames = ((source_secs - piece.start) * fps).floor().max(1.0);
+        }
+        piece.duration_secs = frames / fps;
+        piece.end = piece.start + piece.duration_secs;
     }
 }
 
@@ -681,11 +736,18 @@ pub fn build_plan(
         }
     }
 
-    let outcome = plan_pieces(
+    let mut outcome = plan_pieces(
         &segments,
         &keyframes,
         &req.options.options_copy(&effective_mode),
     );
+
+    // Every piece is rounded to whole frames. A sequence is rendered onto a
+    // 30 fps canvas, so its own grid is not the source's â€” the single-source
+    // pipeline is the only place the source frame rate is the authority.
+    if canvas.is_none() {
+        snap_pieces_to_frames(&mut outcome.pieces, info.fps.unwrap_or(0.0), duration);
+    }
 
     if outcome.pieces.is_empty() {
         return Err(
@@ -754,6 +816,14 @@ pub fn build_plan(
                     .to_string(),
             );
         }
+    }
+
+    // The single-source pipeline builds the whole audio track in one pass, so
+    // "copied audio" is no longer on the table there â€” and that is the fix, not
+    // a loss: one AAC encode per piece leaves ~2112 priming samples of silence
+    // (~48 ms) at *every* join, and a concat keeps them in the middle.
+    if canvas.is_none() {
+        audio_copy = false;
     }
 
     let output_duration_secs = outcome.pieces.iter().map(|p| p.duration_secs).sum();
@@ -1073,6 +1143,236 @@ fn concat_args(list: &Path, has_audio: bool, output: &Path) -> Vec<String> {
     args
 }
 
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ the single-source pipeline (v2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//
+// Pieces used to be cut *with* their audio and stitched by the concat demuxer.
+// That shape cannot hold a timeline together:
+//
+//   Â· every piece carried its own AAC encode, and every AAC encode starts with
+//     ~2112 priming samples (~48 ms) of silence that a copy keeps mid-stream;
+//   Â· a piece whose length was not whole frames made the container's duration
+//     audio-driven, so the demuxer stacked the next piece at the *audio* length
+//     and left holes in the video's timestamp grid â€” the 47 gaps, the 50.9 fps
+//     average and the freezes all came from there.
+//
+// So v2 splits the job: video pieces are written on their own, as MPEG-TS (a
+// 90 kHz timebase holds 1500 ticks per frame at 60 fps *exactly*, where
+// Matroska's 1/1000 does not), the whole audio track is built in a single
+// filter-graph pass, and the two are muxed at the very end with a stream copy.
+
+/// The flags every child FFmpeg in this pipeline carries.
+fn base_args() -> Vec<String> {
+    vec![
+        "-hide_banner".into(),
+        "-nostdin".into(),
+        "-y".into(),
+        "-loglevel".into(),
+        "error".into(),
+    ]
+}
+
+/// Arguments for one **video-only** piece, written straight as MPEG-TS.
+fn piece_video_args(
+    source: &Path,
+    piece: &Piece,
+    out_file: &Path,
+    encoder: Option<&str>,
+    quality: &str,
+    scale: Option<&str>,
+    pix_fmt: Option<&str>,
+) -> Vec<String> {
+    let mut args = base_args();
+    let length = piece.duration_secs;
+
+    match piece.kind {
+        PieceKind::Copy => {
+            // Copy starts at the keyframe the plan chose; the epsilon keeps a
+            // rounded-down timestamp from seeking a whole GOP too early. A piece
+            // that starts at zero is not nudged: `-ss` past frame 0 would drop
+            // that frame from the copy.
+            let seek = if piece.start > 0.0 {
+                piece.start + COPY_SEEK_EPS
+            } else {
+                0.0
+            };
+            args.push("-ss".into());
+            args.push(time_arg(seek));
+            args.push("-i".into());
+            args.push(source.to_string_lossy().into_owned());
+            args.push("-t".into());
+            args.push(time_arg(length));
+            args.push("-map".into());
+            args.push("0:v:0".into());
+            args.push("-c:v".into());
+            args.push("copy".into());
+            args.push("-avoid_negative_ts".into());
+            args.push("make_zero".into());
+        }
+        PieceKind::Encode => {
+            // Decode from the keyframe *before* the cut and trim the extra head
+            // away. Input seek lands on a keyframe either way, so seeking to the
+            // cut itself would leave the first encoded frame late by up to a
+            // GOP â€” the "cut lands ~0.03 s off" bug.
+            let roll = piece.roll.unwrap_or(piece.start);
+            let seek = roll.min(piece.start);
+            let head = (piece.start - seek).max(0.0);
+            let mut chain = format!(
+                "trim=start={}:end={},setpts=PTS-STARTPTS",
+                time_arg(head),
+                time_arg(head + length)
+            );
+            if let Some(filter) = scale {
+                chain.push(',');
+                chain.push_str(filter);
+            }
+
+            args.push("-ss".into());
+            args.push(time_arg(seek));
+            args.push("-i".into());
+            args.push(source.to_string_lossy().into_owned());
+            args.push("-filter_complex".into());
+            args.push(format!("[0:v]{chain}[v]"));
+            args.push("-map".into());
+            args.push("[v]".into());
+
+            let enc = encoder.unwrap_or("libx264");
+            args.push("-c:v".into());
+            args.push(enc.to_string());
+            args.extend(encoder_args(enc, quality));
+            if let Some(fmt) = pix_fmt {
+                args.push("-pix_fmt".into());
+                args.push(fmt.to_string());
+            }
+            args.push("-t".into());
+            args.push(time_arg(length));
+        }
+    }
+
+    // Audio never travels with a piece: it is one pass at the end.
+    args.push("-an".into());
+    args.push(out_file.to_string_lossy().into_owned());
+    args
+}
+
+/// Join the video-only pieces. No `-avoid_negative_ts` here: every piece
+/// already starts at zero, and forcing it on a concat can shift the head open.
+fn concat_video_args(list: &Path, output: &Path) -> Vec<String> {
+    let mut args = base_args();
+    args.push("-f".into());
+    args.push("concat".into());
+    args.push("-safe".into());
+    args.push("0".into());
+    args.push("-i".into());
+    args.push(list.to_string_lossy().into_owned());
+    args.push("-map".into());
+    args.push("0:v:0".into());
+    args.push("-c".into());
+    args.push("copy".into());
+    args.push("-progress".into());
+    args.push("pipe:1".into());
+    args.push("-nostats".into());
+    args.push(output.to_string_lossy().into_owned());
+    args
+}
+
+/// The whole audio track in one graph: one `asplit` branch per piece, each
+/// trimmed to *exactly* the video piece's length, re-zeroed, level-adjusted,
+/// then `concat`-ed back together and encoded to AAC once.
+///
+/// One encode means one set of priming samples, at the head of the track, where
+/// a player hides them â€” instead of ~48 ms of silence at every join.
+pub fn audio_filter_chain(pieces: &[Piece], gains: &[f64]) -> Option<String> {
+    let n = pieces.len();
+    if n == 0 {
+        return None;
+    }
+    let mut chain = format!("[0:a]asplit={n}");
+    for i in 0..n {
+        chain.push_str(&format!("[a{i}]"));
+    }
+    for (i, piece) in pieces.iter().enumerate() {
+        let gain = gains.get(i).copied().unwrap_or(1.0);
+        chain.push_str(&format!(
+            ";[a{i}]atrim=start={}:end={},asetpts=PTS-STARTPTS",
+            time_arg(piece.start),
+            time_arg(piece.start + piece.duration_secs)
+        ));
+        // A gain of 1 adds no filter at all: an export nobody touched keeps its
+        // samples untouched.
+        if (gain - 1.0).abs() > 1e-6 {
+            chain.push_str(&format!(",volume={gain:.6}"));
+        }
+        chain.push_str(&format!("[t{i}]"));
+    }
+    for i in 0..n {
+        chain.push_str(&format!("[t{i}]"));
+    }
+    chain.push_str(&format!("concat=n={n}:v=0:a=1[a]"));
+    Some(chain)
+}
+
+/// Encode the single audio track.
+fn audio_args(source: &Path, filter: &str, output: &Path) -> Vec<String> {
+    let mut args = base_args();
+    args.push("-i".into());
+    args.push(source.to_string_lossy().into_owned());
+    args.push("-filter_complex".into());
+    args.push(filter.to_string());
+    args.push("-map".into());
+    args.push("[a]".into());
+    args.push("-c:a".into());
+    args.push("aac".into());
+    args.push("-b:a".into());
+    args.push("192k".into());
+    args.push("-progress".into());
+    args.push("pipe:1".into());
+    args.push("-nostats".into());
+    args.push(output.to_string_lossy().into_owned());
+    args
+}
+
+/// Mux the finished tracks. A stream copy: nothing is re-encoded a second time.
+fn mux_args(video: &Path, audio: Option<&Path>, output: &Path) -> Vec<String> {
+    let mut args = base_args();
+    args.push("-i".into());
+    args.push(video.to_string_lossy().into_owned());
+    if let Some(audio) = audio {
+        args.push("-i".into());
+        args.push(audio.to_string_lossy().into_owned());
+    }
+    args.push("-map".into());
+    args.push("0:v:0".into());
+    if audio.is_some() {
+        args.push("-map".into());
+        args.push("1:a:0".into());
+    }
+    args.push("-c".into());
+    args.push("copy".into());
+    let mp4 = output
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("mp4") || e.eq_ignore_ascii_case("mov"));
+    if mp4 {
+        // The index goes to the head, so playback starts without reading the
+        // whole file first.
+        args.push("-movflags".into());
+        args.push("+faststart".into());
+    }
+    args.push("-progress".into());
+    args.push("pipe:1".into());
+    args.push("-nostats".into());
+    args.push(output.to_string_lossy().into_owned());
+    args
+}
+
+/// Progress share of each v2 stage. Cutting dominates because that is where
+/// the decode/encode time goes; the concat and the mux are disk-bound copies
+/// and the audio pass is a single fast filter run.
+const V2_CUT: f64 = 75.0;
+const V2_CONCAT: f64 = 10.0;
+const V2_AUDIO: f64 = 10.0;
+const V2_MUX: f64 = 5.0;
+
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ the run â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn emit(app: &tauri::AppHandle, progress: ExportProgress) {
@@ -1212,16 +1512,35 @@ pub fn run_export(
         ));
     }
 
-    let result = cut_and_concat(
-        &app,
-        &cancel,
-        &source,
-        &plan,
-        &info,
-        &work,
-        &output,
-        &mut warnings,
-    );
+    // Video pieces can only be written as MPEG-TS while every piece is
+    // H.264/HEVC: a source the planner re-encodes whole is always H.264 by the
+    // time it leaves the encoder, so only a stream copy of another codec keeps
+    // the older per-piece pipeline.
+    let ts_ok = family_of(info.video_codec.as_deref().unwrap_or("")).is_some()
+        || plan.pieces.iter().all(|p| p.kind == PieceKind::Encode);
+    let result = if plan.canvas.is_none() && ts_ok {
+        cut_and_stitch(
+            &app,
+            &cancel,
+            &source,
+            &plan,
+            &info,
+            &work,
+            &output,
+            &mut warnings,
+        )
+    } else {
+        cut_and_concat(
+            &app,
+            &cancel,
+            &source,
+            &plan,
+            &info,
+            &work,
+            &output,
+            &mut warnings,
+        )
+    };
 
     if let Err(e) = result {
         // Never leave gigabytes of intermediates behind, whatever happened.
@@ -1528,6 +1847,327 @@ fn run_piece(
 
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
+}
+
+/// Run one video-only piece and stream its progress into the shared bar.
+#[allow(clippy::too_many_arguments)]
+fn run_video_piece(
+    app: &tauri::AppHandle,
+    cancel: &Arc<AtomicBool>,
+    piece: &Piece,
+    file: &Path,
+    source: &Path,
+    plan: &ExportPlan,
+    encoder: Option<&str>,
+    pix_fmt: Option<&str>,
+    base: f64,
+    total_dur: f64,
+) -> Result<crate::ffmpeg::StreamOutput, String> {
+    let args = piece_video_args(
+        source,
+        piece,
+        file,
+        encoder,
+        &plan.quality,
+        plan.scale.as_deref(),
+        pix_fmt,
+    );
+    let piece_dur = piece.duration_secs.max(0.001);
+    let mut last_out = 0.0f64;
+    let piece_index = piece.index + 1;
+    let piece_count = plan.pieces.len();
+
+    let out = run_streaming("ffmpeg", &args, Some(Arc::clone(cancel)), |line| {
+        if let Some(ProgressLine::OutTime(t)) = parse_progress_line(line) {
+            last_out = t;
+        }
+        let local = ((last_out / piece_dur) * 100.0).clamp(0.0, 100.0);
+        emit(
+            app,
+            ExportProgress {
+                stage: "cut".into(),
+                piece_index,
+                piece_count,
+                percent: base + (V2_CUT / total_dur) * piece_dur * local / 100.0,
+                message: match piece.kind {
+                    PieceKind::Copy => format!("copying {piece_index}/{piece_count}"),
+                    PieceKind::Encode => format!("encoding {piece_index}/{piece_count}"),
+                },
+            },
+        );
+    })?;
+    Ok(out)
+}
+
+/// The single-source pipeline: video pieces (TS) â†’ video concat â†’ one audio
+/// pass â†’ mux. Used for every export that is not a canvas sequence.
+#[allow(clippy::too_many_arguments)]
+fn cut_and_stitch(
+    app: &tauri::AppHandle,
+    cancel: &Arc<AtomicBool>,
+    source: &Path,
+    plan: &ExportPlan,
+    info: &MediaInfo,
+    work: &Path,
+    output: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    let total_dur: f64 = plan.pieces.iter().map(|p| p.duration_secs).sum();
+    let total_dur = if total_dur > 0.0 { total_dur } else { 1.0 };
+    let piece_count = plan.pieces.len();
+    let pix_fmt = info.pix_fmt.as_deref();
+    let mut done_dur = 0.0f64;
+    let mut used_encoder = plan.encoder.clone();
+
+    let paths: Vec<PathBuf> = (0..piece_count)
+        .map(|i| work.join(format!("v{i:04}.ts")))
+        .collect();
+
+    for (piece, file) in plan.pieces.iter().zip(&paths) {
+        if cancelled(cancel) {
+            return Err("export cancelled".to_string());
+        }
+        let base = V2_CUT * done_dur / total_dur;
+        emit(
+            app,
+            ExportProgress {
+                stage: "cut".into(),
+                piece_index: piece.index + 1,
+                piece_count,
+                percent: base,
+                message: match piece.kind {
+                    PieceKind::Copy => format!("copying {}s", round2(piece.duration_secs)),
+                    PieceKind::Encode => format!("encoding {}s", round2(piece.duration_secs)),
+                },
+            },
+        );
+
+        let mut out = run_video_piece(
+            app,
+            cancel,
+            piece,
+            file,
+            source,
+            plan,
+            used_encoder.as_deref(),
+            pix_fmt,
+            base,
+            total_dur,
+        )?;
+
+        // A hardware encoder can still refuse a real GOP after passing the
+        // synthetic probe. Fall back to the CPU for the rest of the run rather
+        // than failing a render that is already minutes in.
+        if !out.success() && piece.kind == PieceKind::Encode {
+            if let Some(fb) = plan_fallback(plan) {
+                warnings.push(format!(
+                    "{} failed on piece {} ({}); falling back to {fb} for the rest of the export",
+                    used_encoder.clone().unwrap_or_default(),
+                    piece.index + 1,
+                    out.stderr_tail
+                        .lines()
+                        .next()
+                        .unwrap_or("unknown error")
+                        .trim()
+                ));
+                used_encoder = Some(fb.clone());
+                emit(
+                    app,
+                    ExportProgress {
+                        stage: "cut".into(),
+                        piece_index: piece.index + 1,
+                        piece_count,
+                        percent: base,
+                        message: format!("retrying with {fb}â€¦"),
+                    },
+                );
+                out = run_video_piece(
+                    app,
+                    cancel,
+                    piece,
+                    file,
+                    source,
+                    plan,
+                    Some(&fb),
+                    pix_fmt,
+                    base,
+                    total_dur,
+                )?;
+            }
+        }
+
+        if out.cancelled || cancelled(cancel) {
+            return Err("export cancelled".to_string());
+        }
+        if !out.success() {
+            return Err(format!(
+                "piece {}/{} failed (exit {}): {}",
+                piece.index + 1,
+                piece_count,
+                out.status,
+                out.stderr_tail.trim()
+            ));
+        }
+        done_dur += piece.duration_secs;
+    }
+
+    if cancelled(cancel) {
+        return Err("export cancelled".to_string());
+    }
+
+    // â”€â”€ video concat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    let list = work.join("list.txt");
+    std::fs::write(&list, concat_list_text(&paths))
+        .map_err(|e| format!("could not write concat list: {e}"))?;
+    let video = work.join("video.ts");
+
+    emit(
+        app,
+        ExportProgress {
+            stage: "concat".into(),
+            piece_index: piece_count,
+            piece_count,
+            percent: V2_CUT,
+            message: "joining the pictureâ€¦".into(),
+        },
+    );
+
+    let args = concat_video_args(&list, &video);
+    let mut last = 0.0f64;
+    let out = run_streaming("ffmpeg", &args, Some(Arc::clone(cancel)), |line| {
+        if let Some(ProgressLine::OutTime(t)) = parse_progress_line(line) {
+            last = t;
+        }
+        if last > 0.0 {
+            let local = ((last / total_dur) * 100.0).clamp(0.0, 100.0);
+            emit(
+                app,
+                ExportProgress {
+                    stage: "concat".into(),
+                    piece_index: piece_count,
+                    piece_count,
+                    percent: V2_CUT + V2_CONCAT * local / 100.0,
+                    message: format!("joining {} / {}s", round2(last), round2(total_dur)),
+                },
+            );
+        }
+    })?;
+    if out.cancelled || cancelled(cancel) {
+        return Err("export cancelled".to_string());
+    }
+    if out.status != 0 {
+        return Err(format!(
+            "video join failed (exit {}): {}",
+            out.status,
+            out.stderr_tail.trim()
+        ));
+    }
+
+    // â”€â”€ audio, one pass â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    let audio_file = work.join("audio.m4a");
+    let audio = if info.has_audio {
+        let gains: Vec<f64> = plan
+            .pieces
+            .iter()
+            .map(|p| {
+                plan.segments
+                    .get(p.segment_index)
+                    .map(|s| s.gain)
+                    .unwrap_or(1.0)
+            })
+            .collect();
+        let filter = audio_filter_chain(&plan.pieces, &gains).ok_or_else(|| {
+            "could not build the audio graph â€” the export has no pieces".to_string()
+        })?;
+
+        emit(
+            app,
+            ExportProgress {
+                stage: "audio".into(),
+                piece_index: piece_count,
+                piece_count,
+                percent: V2_CUT + V2_CONCAT,
+                message: "mixing the soundâ€¦".into(),
+            },
+        );
+
+        let args = audio_args(source, &filter, &audio_file);
+        let mut last = 0.0f64;
+        let out = run_streaming("ffmpeg", &args, Some(Arc::clone(cancel)), |line| {
+            if let Some(ProgressLine::OutTime(t)) = parse_progress_line(line) {
+                last = t;
+            }
+            let local = ((last / total_dur) * 100.0).clamp(0.0, 100.0);
+            emit(
+                app,
+                ExportProgress {
+                    stage: "audio".into(),
+                    piece_index: piece_count,
+                    piece_count,
+                    percent: V2_CUT + V2_CONCAT + V2_AUDIO * local / 100.0,
+                    message: format!("sound {} / {}s", round2(last), round2(total_dur)),
+                },
+            );
+        })?;
+        if out.cancelled || cancelled(cancel) {
+            return Err("export cancelled".to_string());
+        }
+        if out.status != 0 {
+            return Err(format!(
+                "audio track failed (exit {}): {}",
+                out.status,
+                out.stderr_tail.trim()
+            ));
+        }
+        Some(audio_file)
+    } else {
+        None
+    };
+
+    // â”€â”€ mux â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    let base = V2_CUT + V2_CONCAT + if audio.is_some() { V2_AUDIO } else { 0.0 };
+    emit(
+        app,
+        ExportProgress {
+            stage: "mux".into(),
+            piece_index: piece_count,
+            piece_count,
+            percent: base,
+            message: "writing the fileâ€¦".into(),
+        },
+    );
+
+    let args = mux_args(&video, audio.as_deref(), output);
+    let mut last = 0.0f64;
+    let out = run_streaming("ffmpeg", &args, Some(Arc::clone(cancel)), |line| {
+        if let Some(ProgressLine::OutTime(t)) = parse_progress_line(line) {
+            last = t;
+        }
+        if last > 0.0 {
+            let local = ((last / total_dur) * 100.0).clamp(0.0, 100.0);
+            emit(
+                app,
+                ExportProgress {
+                    stage: "mux".into(),
+                    piece_index: piece_count,
+                    piece_count,
+                    percent: base + V2_MUX * local / 100.0,
+                    message: format!("writing {} / {}s", round2(last), round2(total_dur)),
+                },
+            );
+        }
+    })?;
+    if out.cancelled || cancelled(cancel) {
+        return Err("export cancelled".to_string());
+    }
+    if out.status != 0 {
+        return Err(format!(
+            "write failed (exit {}): {}",
+            out.status,
+            out.stderr_tail.trim()
+        ));
+    }
+    Ok(())
 }
 
 /// Stitch independently rendered parts into the final file.
@@ -1975,6 +2615,7 @@ mod tests {
             end: 4.0,
             kind: PieceKind::Encode,
             duration_secs: 1.0,
+            roll: None,
         };
         let args = piece_args(
             Path::new("C:\\src\\v.mp4"),
@@ -2009,6 +2650,7 @@ mod tests {
             end: 4.0,
             kind: PieceKind::Copy,
             duration_secs: 1.0,
+            roll: None,
         };
         let args = piece_args(
             Path::new("v.mp4"),
@@ -2056,6 +2698,7 @@ mod tests {
             end: 5.0,
             kind: PieceKind::Encode,
             duration_secs: 5.0,
+            roll: None,
         };
         let args = piece_args(
             Path::new("v.mp4"),
@@ -2106,6 +2749,7 @@ mod tests {
             end: 9.5,
             kind: PieceKind::Copy,
             duration_secs: 5.5,
+            roll: None,
         };
         let args = piece_args(
             Path::new("v.mp4"),
@@ -2165,6 +2809,7 @@ mod tests {
                 end: 5.0,
                 kind: PieceKind::Copy,
                 duration_secs: 5.0,
+                roll: None,
             },
             Piece {
                 index: 1,
@@ -2173,6 +2818,7 @@ mod tests {
                 end: 6.0,
                 kind: PieceKind::Encode,
                 duration_secs: 1.0,
+                roll: None,
             },
         ];
         // 5 s copy = 500 B, 1 s encode = 100 B Ã— 0.7 = 70 B.
@@ -2185,5 +2831,163 @@ mod tests {
         let d = ExportOptions::default();
         assert_eq!(d.mode, "hybrid");
         assert_eq!(d.align_tolerance_ms, 40.0);
+    }
+
+    // â”€â”€ v2: frame snapping, video-only pieces, one audio pass, mux â”€â”€
+
+    fn piece(start: f64, dur: f64, kind: PieceKind) -> Piece {
+        Piece {
+            index: 0,
+            segment_index: 0,
+            start,
+            end: start + dur,
+            kind,
+            duration_secs: dur,
+            roll: None,
+        }
+    }
+
+    #[test]
+    fn snap_rounds_every_piece_to_whole_frames() {
+        // The numbers from the real SHORT6 export: 2.000040 s of source is
+        // 120.0024 frames at 60 fps, and the 0.0024 used to become an extra
+        // frame of video that the sound never had.
+        let mut pieces = vec![
+            piece(2.000040, 1.499960, PieceKind::Copy),
+            piece(10.250199, 0.750021, PieceKind::Encode),
+            piece(11.000220, 2.000040, PieceKind::Copy),
+            piece(20.500000, 0.500420, PieceKind::Encode),
+            piece(21.000420, 1.000020, PieceKind::Copy),
+        ];
+        snap_pieces_to_frames(&mut pieces, 60.0, 300.0);
+        let frames: Vec<f64> = pieces.iter().map(|p| p.duration_secs * 60.0).collect();
+        assert_eq!(frames, vec![90.0, 45.0, 120.0, 30.0, 60.0]);
+        // Sum of the pieces is the audio range exactly: 345 frames = 5.75 s.
+        let total: f64 = pieces.iter().map(|p| p.duration_secs).sum();
+        assert!((total - 5.75).abs() < 1e-9, "total {total}");
+        // `end` follows the snapped duration, never the raw one.
+        for p in &pieces {
+            assert!((p.end - (p.start + p.duration_secs)).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn snap_keeps_a_sub_frame_piece_as_one_frame() {
+        // A 10 ms word that survived a cut must still reach the file: video
+        // cannot show less than one frame, and dropping it was the bug.
+        let mut pieces = vec![piece(4.0, 0.010, PieceKind::Encode)];
+        snap_pieces_to_frames(&mut pieces, 60.0, 300.0);
+        assert_eq!(pieces.len(), 1);
+        assert!((pieces[0].duration_secs - 1.0 / 60.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn snap_never_runs_past_the_end_of_the_source() {
+        let mut pieces = vec![piece(9.99, 0.02, PieceKind::Encode)];
+        snap_pieces_to_frames(&mut pieces, 60.0, 10.0);
+        assert!(pieces[0].start + pieces[0].duration_secs <= 10.0 + 1e-9);
+        assert!(pieces[0].duration_secs >= 1.0 / 60.0 - 1e-12);
+    }
+
+    #[test]
+    fn encode_pieces_carry_the_keyframe_before_the_cut() {
+        let seg = [Segment {
+            start: 10.25,
+            end: 13.0,
+            gain: 1.0,
+        }];
+        let out = plan_pieces(&seg, &kfs(), &opts("hybrid"));
+        let head = &out.pieces[0];
+        assert_eq!(head.kind, PieceKind::Encode);
+        // kfs() has 10.0: read from just before it, so the decoder has its
+        // references and the first encoded frame is produced on time.
+        assert_eq!(head.roll, Some(10.0 - ROLL_MARGIN));
+        assert_eq!(out.pieces[1].roll, None, "a copy starts on a keyframe");
+    }
+
+    #[test]
+    fn video_copy_piece_is_ts_and_carries_no_audio() {
+        let p = piece(2.000040, 1.5, PieceKind::Copy);
+        let args = piece_video_args(
+            Path::new("C:\\src\\v.mp4"),
+            &p,
+            Path::new("C:\\w\\v0000.ts"),
+            None,
+            "high",
+            None,
+            None,
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("-ss 2.000041"), "{joined}");
+        assert!(joined.contains("-t 1.500000"), "{joined}");
+        assert!(joined.contains("-map 0:v:0"), "{joined}");
+        assert!(joined.contains("-c:v copy"), "{joined}");
+        assert!(joined.contains("-avoid_negative_ts make_zero"), "{joined}");
+        assert!(joined.contains("-an"), "{joined}");
+        assert!(joined.ends_with("v0000.ts"), "{joined}");
+        assert!(!joined.contains("-c:a"), "{joined}");
+    }
+
+    #[test]
+    fn video_encode_piece_rolls_back_and_trims_the_head_away() {
+        let mut p = piece(10.250199, 0.750021, PieceKind::Encode);
+        p.roll = Some(9.999220);
+        snap_pieces_to_frames(std::slice::from_mut(&mut p), 60.0, 300.0);
+        let args = piece_video_args(
+            Path::new("C:\\src\\v.mp4"),
+            &p,
+            Path::new("C:\\w\\v0001.ts"),
+            Some("libx264"),
+            "high",
+            None,
+            Some("yuv420p"),
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("-ss 9.999220"), "{joined}");
+        // head = 10.250199 - 9.999220; end = head + the snapped 0.75 s
+        assert!(
+            joined.contains("trim=start=0.250979:end=1.000979"),
+            "{joined}"
+        );
+        assert!(joined.contains("setpts=PTS-STARTPTS"), "{joined}");
+        assert!(joined.contains("-map [v]"), "{joined}");
+        assert!(joined.contains("-c:v libx264"), "{joined}");
+        assert!(joined.contains("-t 0.750000"), "{joined}");
+        assert!(joined.contains("-an"), "{joined}");
+    }
+
+    #[test]
+    fn audio_chain_trims_each_piece_to_its_video_length() {
+        let pieces = vec![
+            piece(0.0, 5.0, PieceKind::Copy),
+            piece(5.0, 1.0, PieceKind::Encode),
+        ];
+        let chain = audio_filter_chain(&pieces, &[1.0, 0.5]).unwrap();
+        assert_eq!(
+            chain,
+            "[0:a]asplit=2[a0][a1];\
+             [a0]atrim=start=0.000000:end=5.000000,asetpts=PTS-STARTPTS[t0];\
+             [a1]atrim=start=5.000000:end=6.000000,asetpts=PTS-STARTPTS,volume=0.500000[t1];\
+             [t0][t1]concat=n=2:v=0:a=1[a]"
+        );
+        assert!(audio_filter_chain(&[], &[]).is_none());
+    }
+
+    #[test]
+    fn mux_copies_both_tracks_and_faststarts_an_mp4() {
+        let args = mux_args(
+            Path::new("video.ts"),
+            Some(Path::new("audio.m4a")),
+            Path::new("out.mp4"),
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("-map 0:v:0"), "{joined}");
+        assert!(joined.contains("-map 1:a:0"), "{joined}");
+        assert!(joined.contains("-c copy"), "{joined}");
+        assert!(joined.contains("-movflags +faststart"), "{joined}");
+
+        let mkv = mux_args(Path::new("video.ts"), None, Path::new("out.mkv")).join(" ");
+        assert!(!mkv.contains("+faststart"), "{mkv}");
+        assert!(!mkv.contains("-map 1:a:0"), "{mkv}");
     }
 }

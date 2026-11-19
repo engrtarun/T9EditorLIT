@@ -4,6 +4,14 @@ _Last updated: 2026-11-18_
 
 ## 🔴 High Priority
 
+- [x] Export me fps drop (60 -> 50/30) kyun - source fps preserve karo (done: 2026-11-19) - root cause: per-piece AAC encode ne har join par ~48ms priming silence + container duration audio-driven hone se video me pts holes (47 gaps / 50.9fps). Fix: v2 pipeline - video pieces seedha MPEG-TS me (90kHz tb = 60fps exact), audio EK filter pass (asplit+atrim+concat), last me mux copy. Real SHORT6 plan (50 pieces) par proof: 4570/4570 frames, 0 gaps, delta 1500 ticks (60fps), audio 76.166667s = video se 1.5ms andar
+- [ ] Sequence/canvas export (9:16, 1:1, 4:5, 4:3) abhi purane per-piece audio path par hai - wahan bhi v2 (TS video pieces + ek audio pass) lagao (added: 2026-11-19)
+- [x] Export progress ke notifications: app toast + Windows native (Win+A/Win+N) (done: 2026-11-19) - start/done/fail par appNotify (export start, `file · size · duration`, fail reason), toasts ke saath
+- [x] Export presets: Fast export vs Quality export (user ko dono chahiye) (done: 2026-11-19) - SPEED·QUALITY row me Fast (hybrid) + Quality (encode + original), purana engine/quality list `Advanced` details me collapse (kuch delete nahi hua)
+- [ ] Waveform zoom in/out me wave aage-picche + accuracy badhani hai (added: 2026-11-18)
+- [ ] Editor playback me cut feel hota hai - export side fixed by v2 (0 gaps / audio-video 1.5ms), preview playback ka smoothness baaki (added: 2026-11-18)
+- [x] Export cut ~0.03s off - exact word se cut alag aata hai (frame/audio drift) (done: 2026-11-19) - encode piece ab previous keyframe par decode karke trim karta hai (`Piece.roll`), aur har piece frame-grid par snap (`n/fps`) - A/V dono ko same length milti hai, sub-frame kept piece kabhi drop nahi hota (floor = 1 frame)
+
 - [ ] Word cut: multi-line text selection cut (abhi ek row ke bahar selection par toolbar hi nahi aata) + duplicate take hint (added: 2026-11-18)
 - [x] Tiny rows: trim ka fixed 0.3 s floor proportional (`min(0.3, span/2)`) - trimStart backwards-jagta bug fix, timeline handles + segment trims bhi (done: 2026-11-18)
 - [x] Word cut: split ki 0.25/0.35/0.5 s floor hatayi - 10 ms tak split, zero-length part drop, hybrid export chhote kept piece ko drop nahi karta (encode karta hai) (done: 2026-11-18)
@@ -21,6 +29,11 @@ _Last updated: 2026-11-18_
 - [x] Browser: pinned YouTube → editor → wapas, video band na ho — `ci-94dfbb1` par `media event … playing` + `pin … true` + `show … resume=Some(true)`, aur user ke manual test me playback chalta raha (docs/TODO.md §12)
 
 ## 🟡 Medium Priority
+
+- [ ] Ctrl+1..9 tab switching agar tab exist kare (added: 2026-11-18)
+- [ ] Tab chip: sirf icon dikhe, uske upar bg nahi (added: 2026-11-18)
+- [ ] Silence hide/unhide ke aur options (cuts se related) (added: 2026-11-18)
+- [ ] Transcript row/time chip (0:00-0:03) hilta hai (added: 2026-11-18)
 
 - [ ] Transcript import: DOCX/PDF native picker + restart persistence (added: 2026-11-16)
 - [ ] ElevenLabs STT browser flow: upload / record / transcribe / export (added: 2026-11-16)

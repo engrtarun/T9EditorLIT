@@ -2,6 +2,7 @@
   import { project } from '../../stores/project.svelte';
   import { toast } from '../../stores/toast.svelte';
   import {
+    appNotify,
     cancelExport,
     concatParts,
     defaultDbPath,
@@ -63,12 +64,41 @@
   ];
   const QUALITIES = ['original', 'high', 'balanced', 'small'] as const;
 
+  /**
+   * The two choices almost everybody wants, above the engine list.
+   *
+   * They are **shortcuts, not a second engine**: each one just moves the
+   * engine and the encoder-quality knobs, and the advanced section underneath
+   * still holds the full list. Picking something there simply stops matching a
+   * preset, which is what "Custom" means.
+   */
+  const PRESETS = [
+    {
+      id: 'fast',
+      label: 'Fast',
+      note: 'sirf cut ke kinare re-encode · baaki stream copy · sound ek hi pass me',
+      engine: 'hybrid' as Engine,
+      quality: 'high' as (typeof QUALITIES)[number]
+    },
+    {
+      id: 'quality',
+      label: 'Quality',
+      note: 'har frame re-encode · near-lossless · sabse slow',
+      engine: 'encode' as Engine,
+      quality: 'original' as (typeof QUALITIES)[number]
+    }
+  ];
+
   let format = $state<ExportFormat>('video');
   // "Advanced settings" in Create New Project sets this ahead of time; the
   // panel's own dropdown still overrides it for one export.
   let resolution = $state<ResolutionId>(exportDefaults.resolution);
   let engine = $state<Engine>('hybrid');
   let quality = $state<(typeof QUALITIES)[number]>('high');
+  /** `null` once the advanced knobs were moved by hand. */
+  const activePreset = $derived(
+    PRESETS.find((p) => p.engine === engine && p.quality === quality)?.id ?? null
+  );
   let bitrate = $state<number>(192);
   let sampleRate = $state<number>(44100);
   let channels = $state<number>(2);
@@ -288,6 +318,11 @@
     return concatParts(parts, out);
   }
 
+  /** One native notification — a courtesy, never allowed to fail the export. */
+  function notify(title: string, body: string) {
+    void appNotify(title, body).catch(() => {});
+  }
+
   async function run() {
     if (running) return;
     const source = project.sourcePath;
@@ -320,6 +355,12 @@
     result = null;
     warnings = [];
     toast.push('info', multiClip ? 'Sequence export shuru…' : 'Export shuru…');
+    notify(
+      'T9EditorLIT',
+      multiClip
+        ? `Sequence export shuru — ${extraClips.length + 1} parts jodne hain`
+        : 'Export shuru — cut aur encode chal raha hai'
+    );
 
     const unlisten = await onExportProgress((p) => {
       percent = Math.min(99, progressBase + (p.percent / 100) * progressSpan);
@@ -367,9 +408,18 @@
       // Case 36: count the pass, so a third re-encode can warn about banding.
       project.noteExport();
       toast.push('info', `Export done · ${fmtSize(res.sizeBytes)}`);
+      notify(
+        'Export done',
+        `${(res.output || 'file').split(/[\\/]/).pop()} · ${fmtSize(res.sizeBytes)} · ${res.durationSecs.toFixed(1)}s`
+      );
     } catch (e) {
-      if (aborted) toast.push('info', 'Export cancelled');
-      else toast.push('warn', `Export failed: ${e instanceof Error ? e.message : e}`);
+      const why = e instanceof Error ? e.message : String(e);
+      if (aborted) {
+        toast.push('info', 'Export cancelled');
+      } else {
+        toast.push('warn', `Export failed: ${why}`);
+        notify('Export failed', why);
+      }
     } finally {
       unlisten();
       running = false;
@@ -511,53 +561,77 @@
         </section>
       {/if}
 
-      <!-- engine (video only) -->
+      <!-- speed vs quality + engine (video only) -->
       {#if format === 'video'}
         <section>
-          <h3 class="mb-2 text-[10px] font-bold tracking-widest text-nc-mut">EXPORT ENGINE</h3>
-          <div class="grid gap-2">
-            {#each ENGINES as e (e.id)}
+          <h3 class="mb-2 text-[10px] font-bold tracking-widest text-nc-mut">SPEED · QUALITY</h3>
+          <div class="grid grid-cols-2 gap-2">
+            {#each PRESETS as p (p.id)}
               <button
-                onclick={() => (engine = e.id)}
-                class="flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors
-                       {engine === e.id
+                onclick={() => {
+                  engine = p.engine;
+                  quality = p.quality;
+                }}
+                aria-pressed={activePreset === p.id}
+                class="rounded-lg border px-3 py-2.5 text-left transition-colors
+                       {activePreset === p.id
                   ? 'border-nc-brand bg-nc-brand/5'
                   : 'border-nc-line bg-nc-panel hover:border-nc-line-2'}"
               >
-                <span
-                  class="grid h-4 w-4 shrink-0 place-items-center rounded-full border
-                         {engine === e.id ? 'border-nc-brand' : 'border-nc-line-2'}"
-                >
-                  {#if engine === e.id}<span class="h-2 w-2 rounded-full bg-nc-brand"></span>{/if}
-                </span>
-                <span class="min-w-0">
-                  <span class="block text-xs font-semibold">{e.label}</span>
-                  <span class="block text-[10px] text-nc-mut">{e.note}</span>
-                </span>
+                <span class="block text-xs font-semibold">{p.label}</span>
+                <span class="mt-0.5 block text-[10px] leading-snug text-nc-mut">{p.note}</span>
               </button>
             {/each}
           </div>
+          {#if estimated > 0}
+            <p class="mt-2 font-mono text-[10px] text-nc-mut-2">≈ {fmtSize(estimated)}</p>
+          {/if}
 
-          <div class="mt-3 flex items-center gap-3">
-            <span class="text-[11px] text-nc-mut">Quality</span>
-            <div class="flex gap-1">
-              {#each QUALITIES as q (q)}
+          <details class="mt-3 rounded-lg border border-nc-line bg-nc-panel-2/40 px-3 py-2">
+            <summary class="cursor-pointer select-none text-[11px] text-nc-mut">
+              Advanced — engine &amp; encoder quality
+              {#if activePreset === null}<span class="text-nc-brand">· custom</span>{/if}
+            </summary>
+            <div class="mt-3 grid gap-2">
+              {#each ENGINES as e (e.id)}
                 <button
-                  onclick={() => (quality = q)}
-                  class="rounded-md px-2.5 py-1 text-[11px] capitalize transition-colors
-                         {quality === q
-                    ? 'bg-nc-brand text-nc-bg'
-                    : 'bg-nc-panel-2 text-nc-mut hover:text-nc-txt'}"
+                  onclick={() => (engine = e.id)}
+                  class="flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors
+                         {engine === e.id
+                    ? 'border-nc-brand bg-nc-brand/5'
+                    : 'border-nc-line bg-nc-panel hover:border-nc-line-2'}"
                 >
-                  {q}
+                  <span
+                    class="grid h-4 w-4 shrink-0 place-items-center rounded-full border
+                           {engine === e.id ? 'border-nc-brand' : 'border-nc-line-2'}"
+                  >
+                    {#if engine === e.id}<span class="h-2 w-2 rounded-full bg-nc-brand"></span>{/if}
+                  </span>
+                  <span class="min-w-0">
+                    <span class="block text-xs font-semibold">{e.label}</span>
+                    <span class="block text-[10px] text-nc-mut">{e.note}</span>
+                  </span>
                 </button>
               {/each}
             </div>
-            {#if estimated > 0}
-              <span class="ml-auto font-mono text-[10px] text-nc-mut-2">≈ {fmtSize(estimated)}</span
-              >
-            {/if}
-          </div>
+
+            <div class="mt-3 mb-1 flex items-center gap-3">
+              <span class="text-[11px] text-nc-mut">Quality</span>
+              <div class="flex gap-1">
+                {#each QUALITIES as q (q)}
+                  <button
+                    onclick={() => (quality = q)}
+                    class="rounded-md px-2.5 py-1 text-[11px] capitalize transition-colors
+                           {quality === q
+                      ? 'bg-nc-brand text-nc-bg'
+                      : 'bg-nc-panel-2 text-nc-mut hover:text-nc-txt'}"
+                  >
+                    {q}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          </details>
         </section>
       {/if}
 
