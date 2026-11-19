@@ -640,6 +640,7 @@
     ['ctrl++', 'zoom', 1, false],
     ['ctrl+-', 'zoom', -1, false],
     ['ctrl+0', 'zoom', 0, false],
+    ['f11', 'toggleFullscreen', 0, true],
     ['f1', 'openHelp', 0, true]
   ];
 

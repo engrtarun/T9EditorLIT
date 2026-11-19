@@ -17,6 +17,7 @@
   import BrowserView from './lib/components/browser/BrowserView.svelte';
   import BackgroundVideo from './lib/components/BackgroundVideo.svelte';
   import { mode } from './lib/stores/mode.svelte';
+  import { chrome } from './lib/stores/chrome.svelte';
   import { app } from './lib/stores/app.svelte';
   import { browser } from './lib/stores/browser.svelte';
   import { player } from './lib/stores/player.svelte';
@@ -153,7 +154,14 @@
     },
     back: () => browser.back(),
     forward: () => browser.forward(),
-    stopLoading: () => browser.stopLoading(),
+    stopLoading: () => {
+      // Firefox: Escape leaves fullscreen before it means "stop loading".
+      if (chrome.fullscreen) {
+        void chrome.exitFullscreen();
+        return;
+      }
+      browser.stopLoading();
+    },
     reload: () => browser.reload(), // plain and forced land on the same forced nudge
     goHome: () => browser.goHome(),
     focusUrlbar: () => focusUrlbar(),
@@ -196,6 +204,11 @@
     zoom: (dir: -1 | 0 | 1) => browser.applyZoom(dir),
     findInPage: () => {
       toast.push('info', '⌕ Find-in-page webview ka API is build me nahi hai');
+    },
+    toggleFullscreen: () => {
+      // The settings switch gates the action, not the key: when it is off,
+      // F11 does nothing here (and the page keeps whatever it does with it).
+      if (chrome.fullscreenKey) void chrome.toggleFullscreen();
     },
     openHelp: () => {
       layout.helpOpen = true;
@@ -242,6 +255,7 @@
     });
     let off: (() => void) | null = null;
     let dead = false;
+    const offFullscreen = chrome.watch();
     void onBrowserKey(({ action, value }) => {
       if (app.view !== 'browser') return;
       runBrowserAction(action, value ?? 0, browserDeps);
@@ -259,10 +273,22 @@
     return () => {
       dead = true;
       off?.();
+      offFullscreen();
     };
   });
 
   function onKey(e: KeyboardEvent) {
+    // Firefox's F11 is a window-level key, not an editor shortcut: it works on
+    // every screen and while typing. The settings switch only decides whether
+    // we act on it, never whether the browser map sees it.
+    if (e.key === 'F11') {
+      if (chrome.fullscreenKey) {
+        e.preventDefault();
+        void chrome.toggleFullscreen();
+      }
+      return;
+    }
+
     // System shortcuts & screenshot keys must never be captured or blocked:
     // PrintScreen, Snapshot, and any Meta / Windows key chord (e.g. Win+Shift+S).
     // F-keys stay system-owned EXCEPT F1 (the shortcut sheet) — and F4/F5
@@ -275,6 +301,15 @@
       e.metaKey ||
       (e.key.startsWith('F') && !ownsF)
     ) {
+      return;
+    }
+
+    // Firefox: Escape leaves fullscreen before anything else claims the key -
+    // dialogs included. Without this the only way out was F11 again, which is
+    // not how the user knows the gesture.
+    if (e.key === 'Escape' && chrome.fullscreen) {
+      e.preventDefault();
+      void chrome.exitFullscreen();
       return;
     }
 

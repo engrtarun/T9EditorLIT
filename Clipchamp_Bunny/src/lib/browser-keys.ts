@@ -58,6 +58,8 @@ export interface BrowserKeyDeps {
   /** dir: -1 out, +1 in, 0 reset — the native webview's zoom. */
   zoom(dir: -1 | 0 | 1): void;
   findInPage(): void;
+  /** Firefox's F11: the whole window, chrome included, goes fullscreen. */
+  toggleFullscreen(): void;
   openHelp(): void;
 }
 
@@ -131,6 +133,10 @@ export const BINDINGS: Entry[] = [
   // Ctrl+Shift+= is the "+" key — Firefox zooms with both meanings of that key.
   B('zoom', ['ctrl+=', 'ctrl+shift+=', 'ctrl++', 'ctrl+-', 'ctrl+0']),
   // ── help ────────────────────────────────────────────────────────────────
+  // F11 is Firefox's fullscreen, and it is honoured while typing - the key
+  // never inserts text, so there is no reason to make the user click the page
+  // first. The settings switch gates the action, not the binding.
+  B('toggleFullscreen', ['f11'], true),
   B('openHelp', ['f1'], true)
 ];
 

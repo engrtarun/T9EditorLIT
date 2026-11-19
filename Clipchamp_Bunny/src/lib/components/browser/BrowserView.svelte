@@ -28,6 +28,7 @@
   import { app } from '../../stores/app.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { menu } from '../../stores/menu.svelte';
+  import { chrome } from '../../stores/chrome.svelte';
   import {
     isTauri,
     browserViewClosed,
@@ -438,6 +439,51 @@
           <path d="M6.5 10v10h4.5v-5.5h2V20h4.5V10" />
         </svg>
       </button>
+
+      <!-- Firefox's fullscreen (F11) - the diagonal-arrows door, right beside
+           Home exactly like the user's screenshot. The settings switch hides
+           it; the F11 key and the app-top-bar copy are separate switches. -->
+      {#if chrome.fullscreenToolbar}
+        <button
+          type="button"
+          onclick={() => void chrome.toggleFullscreen()}
+          class="grid h-8 w-8 place-items-center rounded-full transition-colors hover:bg-nc-panel-2
+                 {chrome.fullscreen ? 'text-nc-brand' : 'text-nc-mut hover:text-nc-txt'}"
+          title={chrome.fullscreen
+            ? 'Exit fullscreen (F11 / Esc)'
+            : 'Fullscreen — poora window (F11)'}
+          aria-label={chrome.fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+          aria-pressed={chrome.fullscreen}
+        >
+          {#if chrome.fullscreen}
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.9"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M20 10h-6V4M14 10l7-7M4 14h6v6M10 14l-7 7" />
+            </svg>
+          {:else}
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.9"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
+            </svg>
+          {/if}
+        </button>
+      {/if}
 
       <div class="mx-1 min-w-0 flex-1">
         <UrlBar />

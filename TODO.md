@@ -10,7 +10,7 @@ _Last updated: 2026-11-19_
 - [x] Export progress ke notifications: app toast + Windows native (Win+A/Win+N) (done: 2026-11-19) - start/done/fail par appNotify (export start, `file · size · duration`, fail reason), toasts ke saath
 - [x] Export presets: Fast export vs Quality export (user ko dono chahiye) (done: 2026-11-19) - SPEED·QUALITY row me Fast (hybrid) + Quality (encode + original), purana engine/quality list `Advanced` details me collapse (kuch delete nahi hua)
 - [ ] Waveform zoom in/out me wave aage-picche + accuracy badhani hai (added: 2026-11-18)
-- [ ] Editor playback me cut feel hota hai - export side fixed by v2 (0 gaps / audio-video 1.5ms), preview playback ka smoothness baaki (added: 2026-11-18)
+- [ ] Editor playback me cut feel hota hai - export side fixed by v2 (0 gaps / audio-video 1.5ms) (added: 2026-11-18) - preview side: cut ab har **presented frame** par enforce hota hai (`requestVideoFrameCallback`, pehle `timeupdate` ~4Hz = 250ms tak cut chalta tha) + stale-seek guard (`seekFrom` comparison) + mid-seek updates ignore - seek fight khatam. Baaki: 1080p60 ka 1s-GOP seek khud decoder cost hai (proxy preview alag item)
 - [x] Export cut ~0.03s off - exact word se cut alag aata hai (frame/audio drift) (done: 2026-11-19) - encode piece ab previous keyframe par decode karke trim karta hai (`Piece.roll`), aur har piece frame-grid par snap (`n/fps`) - A/V dono ko same length milti hai, sub-frame kept piece kabhi drop nahi hota (floor = 1 frame)
 
 - [ ] Word cut: multi-line text selection cut (abhi ek row ke bahar selection par toolbar hi nahi aata) + duplicate take hint (added: 2026-11-18)
@@ -31,7 +31,9 @@ _Last updated: 2026-11-19_
 
 ## 🟡 Medium Priority
 
-- [ ] Ctrl+1..9 tab switching agar tab exist kare (added: 2026-11-18)
+- [x] Ctrl+1..9 tab switching agar tab exist kare (done: `browser-keys.ts` BINDINGS me Ctrl+1..8 = `selectTabN`, Ctrl+9 = last tab; shim table test-enforced)
+- [x] Browser header: browser me "Studio" nahi - "Fast / Safe / Light / AI Plus / Secure **Browser**" per-letter rolling reveal (done: 2026-11-19) - `RollingWord.svelte`, har letter apne 11px mask me upar roll karta hai (AE reference), studio me sirf "Studio"
+- [x] Firefox F11 fullscreen + settings (done: 2026-11-19) - F11 toggle (Esc bahar), browser toolbar me Home ke bagal button, settings me 2 switch: F11 key on/off + toolbar button on/off (switch wahi se live hide/show karta hai). Tauri `setFullscreen` + dev me Fullscreen API
 - [x] Tab chip: sirf icon dikhe, uske upar bg nahi (done: 2026-11-19) - active tab ka `ring-nc-brand/55` + `bg-nc-panel-2` hataya: sirf `ring-nc-line/50`, non-active me `text-nc-mut ring-transparent`
 - [ ] Silence hide/unhide ke aur options (cuts se related) (added: 2026-11-18)
 - [ ] Transcript row/time chip (0:00-0:03) hilta hai (added: 2026-11-18)

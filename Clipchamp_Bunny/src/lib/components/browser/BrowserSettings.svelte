@@ -9,6 +9,7 @@
    */
   import { downloads } from '../../stores/downloads.svelte';
   import { ublock } from '../../stores/ublock.svelte';
+  import { chrome } from '../../stores/chrome.svelte';
   import { pickFolder, appNotify } from '../../ipc';
   import { toast } from '../../stores/toast.svelte';
 
@@ -119,6 +120,65 @@
         {ublock.status.error}
       </p>
     {/if}
+  </section>
+
+  <!-- ── Fullscreen (Firefox F11) ──────────────────────────────────────── -->
+  <section class="border-t border-nc-line/40 pt-3" aria-label="Fullscreen settings">
+    <div class="flex flex-wrap items-baseline justify-between gap-1">
+      <span class="text-[11px] font-semibold text-nc-txt">Fullscreen</span>
+      <span class="text-[10px] text-nc-mut-2">Firefox jaisa F11 · switch live hide/show</span>
+    </div>
+
+    <div class="mt-2 grid gap-1.5">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={chrome.fullscreenKey}
+        onclick={() => chrome.setFullscreenKey(!chrome.fullscreenKey)}
+        class="flex items-center gap-2 rounded px-1 py-1 text-left text-[11px] text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+        title="F11 dabate hi poora window fullscreen; Esc ya F11 se wapas"
+      >
+        <span
+          class="relative h-3.5 w-6 shrink-0 rounded-full transition-colors {chrome.fullscreenKey
+            ? 'bg-nc-brand'
+            : 'bg-nc-line'}"
+        >
+          <span
+            class="absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-all {chrome.fullscreenKey
+              ? 'left-3'
+              : 'left-0.5'}"
+          ></span>
+        </span>
+        <span class="min-w-0 flex-1">F11 key se fullscreen</span>
+        <kbd class="rounded bg-nc-panel-2 px-1.5 py-0.5 text-[9.5px] text-nc-mut-2">F11</kbd>
+      </button>
+
+      <button
+        type="button"
+        role="switch"
+        aria-checked={chrome.fullscreenToolbar}
+        onclick={() => chrome.setFullscreenToolbar(!chrome.fullscreenToolbar)}
+        class="flex items-center gap-2 rounded px-1 py-1 text-left text-[11px] text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+        title="Home ke bagal me diagonal-arrows button (browser toolbar me)"
+      >
+        <span
+          class="relative h-3.5 w-6 shrink-0 rounded-full transition-colors {chrome.fullscreenToolbar
+            ? 'bg-nc-brand'
+            : 'bg-nc-line'}"
+        >
+          <span
+            class="absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-all {chrome.fullscreenToolbar
+              ? 'left-3'
+              : 'left-0.5'}"
+          ></span>
+        </span>
+        <span class="min-w-0 flex-1">Browser toolbar me button (Home ke bagal)</span>
+      </button>
+    </div>
+    <p class="mt-1 text-[10px] leading-snug text-nc-mut-2">
+      Fullscreen kisi cheez ko encode ya buffer nahi karta — sirf window ka flag badalta hai. Esc
+      hamesha bahar nikale.
+    </p>
   </section>
 
   <!-- ── Downloader ─────────────────────────────────────────────────────── -->
