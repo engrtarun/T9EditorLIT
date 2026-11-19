@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RollingWord from './RollingWord.svelte';
   import { project } from '../stores/project.svelte';
   import { layout } from '../stores/layout.svelte';
   import { app } from '../stores/app.svelte';
@@ -24,15 +25,21 @@
   let draft = $state('');
 
   /**
-   * Which screen this bar is speaking for: the studio itself, or the browser
-   * the studio opened. That is what the wordmark's light "Studio" suffix
-   * reports ("LIT ke baad halka sa light font me studio bhi likha aaaye") —
-   * the dashboard has its own bar, and a browser opened on Home has the logo
-   * as its way back, so neither of them says it.
+   * Which screen this bar is speaking for. The studio says "Studio"; the
+   * browser says what it is ("Fast / Safe / Light / AI Plus / Secure"
+   * rolling, then "Browser"). The old rule also said "Studio" inside the
+   * browser whenever it had been opened from the studio, which is exactly
+   * what the user saw and rejected: "me ab browser me hu or waha ab bhi
+   * T9 Editor LIT studio likha aa raha h".
    */
-  const studioHere = $derived(
-    app.view === 'editor' || (app.view === 'browser' && app.browserFrom === 'editor')
-  );
+  const inBrowser = $derived(app.view === 'browser');
+
+  /**
+   * The browser's rolling adjective. The user's spec: the changing word is
+   * not only "fast" - it rolls through the set and the word "Browser" stays
+   * put after it, like the motion-graphic text they linked.
+   */
+  const BROWSER_WORDS = ['Fast', 'Safe', 'Light', 'AI Plus', 'Secure'] as const;
 
   /**
    * Commit the rename from the top bar.
@@ -99,7 +106,15 @@
     <BrandMark size={22} />
     <span class="font-brand text-[15px] leading-none tracking-[0.02em]">
       T9 Editor <span class="text-nc-brand">LIT</span>
-      {#if studioHere}
+      {#if inBrowser}
+        <span
+          class="ml-1.5 inline-flex items-center gap-1 align-middle text-[9.5px] font-light tracking-[0.18em] text-nc-mut uppercase"
+          aria-hidden="true"
+        >
+          <RollingWord words={BROWSER_WORDS} />
+          <span>Browser</span>
+        </span>
+      {:else}
         <span
           class="ml-1.5 text-[9.5px] font-light tracking-[0.18em] text-nc-mut uppercase"
           aria-hidden="true"

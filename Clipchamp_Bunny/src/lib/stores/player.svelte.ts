@@ -33,6 +33,12 @@ class PlayerStore {
   seekAt = 0;
   /** The time that seek asked for. */
   seekTarget = 0;
+  /**
+   * Where the element was when that seek started. A `timeupdate` that still
+   * reports this pre-seek position belongs to the renderer's old state, no
+   * matter which direction we seeked.
+   */
+  seekFrom = 0;
 
   attach(el: HTMLVideoElement | null) {
     this.el = el;
@@ -42,6 +48,7 @@ class PlayerStore {
   seek(sec: number) {
     this.currentTime = sec;
     this.seekAt = performance.now();
+    this.seekFrom = this.el?.currentTime ?? this.currentTime;
     this.seekTarget = sec;
     if (this.el) {
       try {
@@ -56,11 +63,18 @@ class PlayerStore {
    * True when a `<video>` `timeupdate` still reports the position from before a
    * seek we just asked for. Without this, a skip button moved the label and the
    * very next timeupdate snapped it back to the old second.
+   *
+   * The comparison is against the position the seek *left*, not its target.
+   * The old target comparison called every legitimately advancing update
+   * "stale" once playback had moved 0.25 s past the target - for 800 ms after
+   * each cut skip the playhead label froze and cut ranges went unenforced, so
+   * cut audio kept playing. The renderer reports the old frame until the seek
+   * lands, so "still at the old position" is the honest stale test.
    */
   isStaleUpdate(actual: number): boolean {
     if (!this.seekAt) return false;
     if (performance.now() - this.seekAt > 800) return false;
-    return Math.abs(actual - this.seekTarget) > 0.25;
+    return Math.abs(actual - this.seekFrom) < 0.05 && Math.abs(actual - this.seekTarget) > 0.01;
   }
 
   toggle() {

@@ -17,8 +17,8 @@
    * One refinement on top of that ("title tab ka tabhi dikhe jab wo khuli
    * ho"): the stretch only happens for a tab that has a REAL page in it.
    * The Home/new-tab is the browser's own dial, not a site — it stays a 28
-   * px icon whether or not it is the selected one, wearing only the brand
-   * ring so the selection still reads.
+   * px icon, and with the brand ring gone the active chip reads as "no blue, icon only" - every tab icon is plain, like the first YT chip the user showed.
+   * the user asked that every tab icon is plain.
    *
    * The row is mounted in ALL THREE headers (dashboard, studio, browser) —
    * "jagah badhne se matlab hai ki kuch jagah jaise home page of app ya
@@ -120,7 +120,7 @@
       class="group relative flex h-7 shrink-0 cursor-pointer items-center rounded-lg
              transition-colors duration-150
              {active
-        ? 'bg-nc-panel-2 text-nc-txt ring-1 ring-nc-brand/55'
+        ? 'text-nc-txt ring-1 ring-nc-line/50'
         : 'text-nc-mut ring-1 ring-transparent hover:bg-nc-panel-2/70 hover:text-nc-txt'}
              {titled ? 'w-auto max-w-[190px] px-1.5' : 'w-7 justify-center px-0'}"
       title={titled ? undefined : tab.title || (icon ? hostOf(icon) : 'Home')}

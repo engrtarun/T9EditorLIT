@@ -78,7 +78,45 @@
     } else {
       switching = false;
     }
+    // Frames are presented again now that there is media: restart the
+    // per-frame cut guard (it stops itself when the element pauses).
+    armFrameCheck();
   };
+
+  /**
+   * Enforce the cut at `t`: skip out of a cut range, or hand over to the next
+   * clip at its out-point. Returns true when it moved the playhead, so the
+   * caller must not copy the old position back into the store.
+   */
+  function enforce(t: number): boolean {
+    if (!activeClip) {
+      // Raw preview: the user asked to see the recording as it was, cuts and
+      // all. Nothing is re-encoded - we simply stop refusing cut ranges.
+      const corrected = player.previewRaw ? t : project.skipCuts(t);
+      if (corrected !== t) {
+        // Through the store, not a bare assignment: it records the seek so a
+        // late `timeupdate` from the pre-seek frame cannot undo the skip.
+        player.seek(corrected);
+        return true;
+      }
+      // With extra clips on the timeline the main cut hands over the moment
+      // the last kept second plays: trailing cut material belongs to neither.
+      // Raw preview owns the whole source, so it never hands over early.
+      if (!player.previewRaw && project.clips.length && mainEndSec > 0 && t >= mainEndSec - 0.03) {
+        advance();
+        return true;
+      }
+      const idx = project.lineAt(t);
+      if (idx >= 0 && idx !== project.cursor) project.cursor = idx;
+      return false;
+    }
+    if (activeClip.kind === 'video' && t >= activeClip.outSec - 0.04) {
+      // The clip's out-point: the project moves on to the next clip.
+      advance();
+      return true;
+    }
+    return false;
+  }
 
   /**
    * Phantom Cut - the whole point of this app.
@@ -88,44 +126,46 @@
   function onTimeUpdate() {
     const v = videoEl;
     if (!v || scrubbing) return;
-    // A seek we just asked for may not have landed yet - this event still
-    // carries the pre-seek position. Trusting it would undo the skip.
+    // A seek we asked for has not landed yet: this event still carries the
+    // pre-seek position. Trusting it used to start a seek fight (label snaps
+    // back, effect seeks again) which read as playback freezing at a cut.
+    if (v.seeking) return;
     if (player.isStaleUpdate(v.currentTime)) return;
-
-    if (!activeClip) {
-      // Raw preview: the user asked to see the recording as it was, cuts and
-      // all. Nothing is re-encoded - we simply stop refusing cut ranges.
-      const corrected = player.previewRaw ? v.currentTime : project.skipCuts(v.currentTime);
-      if (corrected !== v.currentTime) {
-        scrubbing = true;
-        v.currentTime = corrected;
-        scrubbing = false;
-        // The label must follow the frame the user is actually watching, not
-        // the position the seek asked for.
-        player.currentTime = corrected;
-        return;
-      }
-      // With extra clips on the timeline the main cut hands over the moment
-      // the last kept second plays: trailing cut material belongs to neither.
-      // Raw preview owns the whole source, so it never hands over early.
-      if (
-        !player.previewRaw &&
-        project.clips.length &&
-        mainEndSec > 0 &&
-        v.currentTime >= mainEndSec - 0.03
-      ) {
-        advance();
-        return;
-      }
-      const idx = project.lineAt(v.currentTime);
-      if (idx >= 0 && idx !== project.cursor) project.cursor = idx;
-    } else if (activeClip.kind === 'video' && v.currentTime >= activeClip.outSec - 0.04) {
-      // The clip's out-point: the project moves on to the next clip.
-      advance();
-      return;
-    }
-
+    if (enforce(v.currentTime)) return;
     player.currentTime = v.currentTime;
+  }
+
+  /**
+   * `timeupdate` only arrives ~4 times a second, so a cut could keep playing
+   * for a quarter second before the skip - audible cut words and a visible
+   * jolt at every yellow-to-next-clip seam. `requestVideoFrameCallback` fires
+   * on each presented frame, so the same guard runs at the source's frame
+   * rate and a cut is enforced within one frame.
+   */
+  let frameHandle = 0;
+
+  function onFrame() {
+    frameHandle = 0;
+    const v = videoEl;
+    if (!v) return;
+    armFrameCheck();
+    if (scrubbing || v.seeking) return;
+    if (enforce(v.currentTime)) return;
+    player.currentTime = v.currentTime;
+  }
+
+  function armFrameCheck() {
+    const v = videoEl;
+    if (!v || frameHandle || typeof v.requestVideoFrameCallback !== 'function') return;
+    frameHandle = v.requestVideoFrameCallback(onFrame);
+  }
+
+  function disarmFrameCheck() {
+    const v = videoEl;
+    if (v && frameHandle && typeof v.cancelVideoFrameCallback === 'function') {
+      v.cancelVideoFrameCallback(frameHandle);
+    }
+    frameHandle = 0;
   }
 
   /**
@@ -172,6 +212,7 @@
     switching = false;
     resume = false;
     player.playing = true;
+    armFrameCheck();
   }
   /**
    * The element pauses for two very different reasons: the user pressed pause,
@@ -179,6 +220,7 @@
    * project - the second is the seam between two clips.
    */
   function onPause() {
+    disarmFrameCheck();
     if (switching || resume) return;
     player.playing = false;
   }
@@ -189,6 +231,9 @@
     const t = player.currentTime;
     void src;
     if (!v || !project.media || isImage) return;
+    // A seek already in flight is the one we asked for; re-issuing it would
+    // restart the decoder work and make playback stutter at every cut.
+    if (v.seeking) return;
     if (Math.abs(v.currentTime - t) > 0.35) {
       scrubbing = true;
       v.currentTime = t;
@@ -227,6 +272,7 @@
   // Unregister on teardown so the element is not retained after mode switch.
   $effect(() => {
     return () => {
+      disarmFrameCheck();
       if (player.el === videoEl) player.attach(null);
     };
   });

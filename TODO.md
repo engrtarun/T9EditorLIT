@@ -32,7 +32,7 @@ _Last updated: 2026-11-19_
 ## 🟡 Medium Priority
 
 - [ ] Ctrl+1..9 tab switching agar tab exist kare (added: 2026-11-18)
-- [ ] Tab chip: sirf icon dikhe, uske upar bg nahi (added: 2026-11-18)
+- [x] Tab chip: sirf icon dikhe, uske upar bg nahi (done: 2026-11-19) - active tab ka `ring-nc-brand/55` + `bg-nc-panel-2` hataya: sirf `ring-nc-line/50`, non-active me `text-nc-mut ring-transparent`
 - [ ] Silence hide/unhide ke aur options (cuts se related) (added: 2026-11-18)
 - [ ] Transcript row/time chip (0:00-0:03) hilta hai (added: 2026-11-18)
 
