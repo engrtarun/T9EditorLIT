@@ -1,17 +1,18 @@
 # TODO - Scratch Pad
 
-_Last updated: 2026-11-19_
+_Last updated: 2026-11-20_
 
 ## 🔴 High Priority
 
 - [x] Clean/Final view: timeline se cut/silence blocks poori tarah gayab ho jayein (width collapse, kept clips back-to-back) taaki strip final video jaisi lage - playhead/timecode/seek bhi final-video seconds par (done: 2026-11-19) - `computeKeptOffsets` + `project.cleanTimeAt/cleanSequenceAt/stepCleanBy`; lane/minimap/ruler/playhead/seek/J-L sab clean axis par; cut blocks DOM se bhi hat gaye
 - [x] Legend pill ko replace karo: rotating colour key ki jagah "Final / Source" view switch (done: 2026-11-19) - moving thumb + toast ("10 cut blocks gayab")
 - [x] App me drag & drop kaam nahi karta (localhost par chalta hai) (fixed: 2026-11-19) - Tauri ka dragDropEnabled WebView2 me HTML5 drag start karta hai aur pointer fallback ko `dragstart` se dead kar deta hai. Fix: desktop par tile `draggable=false`, `dragstart` listener sirf browser me, pointer capture + pointercancel par bhi drop
-- [ ] Gemini user-controlled: transcription ke baad auto analyze band, sirf user ke button par chale; AI panel me key add/replace, usage, on/off, kya karta hai; Gemini ke marks hide/unhide (added: 2026-11-19)
-- [ ] Settings > Appearance: accent colour user hex code + colour picker se set kar sake (added: 2026-11-19)
-- [ ] Settings dialog: zyada professional English information (har section me short explanation) (added: 2026-11-19)
-- [ ] Transcript: jo word abhi bola ja raha hai wo bold highlight ho (word timing se, accuracy) (added: 2026-11-19)
-- [ ] Export v2 locked version ka git tag + doc (added: 2026-11-19)
+- [x] Gemini user-controlled: transcription ke baad auto analyze band, sirf user ke button par chale; AI panel me key add/replace, usage, on/off, kya karta hai; Gemini ke marks hide/unhide (done: 2026-11-20) - `refine()` ka `withAi` default false (sirf autocorrect), `project.runAiAnalysis()` hi `/v1/analyze` ka ekmatra entry point; naya `AiPanel.svelte` (RightRail AI button): what-it-does, Analyse button + live stage, usage (calls/tokens/errors/daily %), key save/replace/remove/test (loopback daemon), marks switch. Marks hide display-only: chips + "AI Flagged" filter off, flags SQLite me saved (`t9-editor-lit.aiMarks`)
+- [x] Settings > Appearance: accent colour user hex code + colour picker se set kar sake (done: 2026-11-20) - native colour input + `#RRGGBB` field + "Use colour", `normaliseHex`/`dimOf`, custom accent `--color-nc-brand`/`--color-nc-brand-dim` par apply, `t9-editor-lit.appearance.customAccent` me persist; preset swatch ya "Back to preset" custom clear karta hai
+- [x] Settings dialog: zyada professional English information (har section me short explanation) (done: 2026-11-20) - har tab ka `TAB_INTRO` (General/Language/Appearance/About) + typography, text size, density, panels, motion ke short English notes; Hinglish labels jaan-boojh kar (UI language Hinglish hai)
+- [x] Transcript: jo word abhi bola ja raha hai wo bold highlight ho (word timing se, accuracy) (done: 2026-11-20) - playhead wali line binary search se (`spokenLineId`), `tokenizeLine` se word tokens, live word `<b data-spoken-word>` (bg + bold); baaki rows plain text rehti hain (virtual list par per-timeupdate re-render nahi). `data-line-text` ka textContent byte-identical rehta hai, isliye word-selection offsets safe
+- [x] Browser: fresh install par YouTube default pinned ho, par user ka unpin respect ho (done: 2026-11-20) - `DEFAULT_PINS` seed sirf tab likha jata hai jab pin file hi na ho (`null`); empty `[]` = user ne sab unpin kiya, wo waisa hi rehta hai. localStorage mirror + SQLite dono
+- [x] Export v2 locked version ka git tag + doc (done: 2026-11-20) - tag `export-v2-locked` at `4ce648c` (engine ka last change), doc `docs/EXPORT_V2_LOCKED.md` (invariants + SHORT6 proof + verify steps)
 
 - [x] Export me fps drop (60 -> 50/30) kyun - source fps preserve karo (done: 2026-11-19) - root cause: per-piece AAC encode ne har join par ~48ms priming silence + container duration audio-driven hone se video me pts holes (47 gaps / 50.9fps). Fix: v2 pipeline - video pieces seedha MPEG-TS me (90kHz tb = 60fps exact), audio EK filter pass (asplit+atrim+concat), last me mux copy. Real SHORT6 plan (50 pieces) par proof: 4570/4570 frames, 0 gaps, delta 1500 ticks (60fps), audio 76.166667s = video se 1.5ms andar
 - [ ] Sequence/canvas export (9:16, 1:1, 4:5, 4:3) abhi purane per-piece audio path par hai - wahan bhi v2 (TS video pieces + ek audio pass) lagao (added: 2026-11-19)

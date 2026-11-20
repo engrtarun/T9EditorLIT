@@ -1,5 +1,9 @@
 <script lang="ts">
   import { project } from '../stores/project.svelte';
+  import AiPanel from './cut/AiPanel.svelte';
+
+  /** The AI drawer. Local to the rail: nothing else needs to know it is open. */
+  let aiOpen = $state(false);
 </script>
 
 <!-- RIGHT RAIL — Clipchamp has a slim right rail (CC Captions). Ours toggles the
@@ -30,8 +34,15 @@
   </button>
 
   <button
-    class="flex w-[44px] flex-col items-center gap-1 rounded-lg px-1 py-2 text-center text-nc-mut transition-colors hover:bg-nc-panel-2/60 hover:text-nc-txt"
-    title="AI fumble inspector"
+    onclick={() => (aiOpen = !aiOpen)}
+    aria-expanded={aiOpen}
+    aria-haspopup="dialog"
+    aria-label="AI analysis settings"
+    class="flex w-[44px] flex-col items-center gap-1 rounded-lg px-1 py-2 text-center transition-colors
+           {aiOpen
+      ? 'bg-nc-panel-2 text-nc-txt'
+      : 'text-nc-mut hover:bg-nc-panel-2/60 hover:text-nc-txt'}"
+    title="AI analysis — Gemini, run only when you ask"
   >
     <svg
       width="20"
@@ -40,12 +51,17 @@
       fill="none"
       stroke="currentColor"
       stroke-width="1.6"
+      class={aiOpen ? 'text-nc-brand' : ''}
     >
       <path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5l4.6-1.9z" />
       <path d="M18 16l.9 2.1L21 19l-2.1.9L18 22l-.9-2.1L15 19l2.1-.9z" />
     </svg>
     <span class="text-[9px] leading-[11px] font-medium">AI</span>
   </button>
+
+  {#if aiOpen}
+    <AiPanel onClose={() => (aiOpen = false)} />
+  {/if}
 
   <div class="flex-1"></div>
 

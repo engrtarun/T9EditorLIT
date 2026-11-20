@@ -112,6 +112,38 @@ export const APPEARANCE_DEFAULTS: Appearance = {
 
 const accentOf = (id: AccentId): Accent => ACCENTS.find((a) => a.id === id) ?? ACCENTS[0];
 
+/* ------------------------------------------------------- custom accent hex */
+
+/**
+ * Accept `#abc`, `#aabbcc`, `abc` and `aabbcc` (case-insensitive) and return
+ * the canonical `#aabbcc`, or `null` when the text is not a colour.
+ *
+ * The alpha channel is deliberately not supported: this token is painted on
+ * top of video, and a half-transparent accent would make the selection ring
+ * unreadable on a bright frame.
+ */
+export function normaliseHex(raw: string): string | null {
+  const s = raw.trim().replace(/^#/, '');
+  if (/^[0-9a-f]{3}$/i.test(s)) {
+    return `#${s
+      .split('')
+      .map((c) => c + c)
+      .join('')}`.toLowerCase();
+  }
+  if (/^[0-9a-f]{6}$/i.test(s)) return `#${s.toLowerCase()}`;
+  return null;
+}
+
+/** Same hue, ~34 % darker — the `-dim` half of an accent pair. */
+function dimOf(hex: string): string {
+  const n = Number.parseInt(hex.slice(1), 16);
+  const scale = (v: number) => Math.max(0, Math.round(v * 0.66));
+  const r = scale((n >> 16) & 255);
+  const g = scale((n >> 8) & 255);
+  const b = scale(n & 255);
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
+}
+
 function coerce(raw: unknown): Appearance {
   const o = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
   const oneOf = <T extends string>(v: unknown, list: readonly T[], fallback: T): T =>
@@ -140,6 +172,13 @@ function coerce(raw: unknown): Appearance {
 
 class AppearanceStore {
   accent = $state<AccentId>(APPEARANCE_DEFAULTS.accent);
+  /**
+   * A hex the user typed, or `null` for the preset above.
+   *
+   * Kept beside `accent` instead of replacing it, so clearing the custom colour
+   * returns to the preset the user had chosen rather than to the factory blue.
+   */
+  customAccent = $state<string | null>(null);
   typography = $state<TypographyId>(APPEARANCE_DEFAULTS.typography);
   textSize = $state<TextSizeId>(APPEARANCE_DEFAULTS.textSize);
   density = $state<DensityId>(APPEARANCE_DEFAULTS.density);
@@ -148,11 +187,18 @@ class AppearanceStore {
 
   /** The brand colour currently in use — handy for the settings swatches. */
   get brand(): string {
-    return accentOf(this.accent).brand;
+    return this.customAccent ?? accentOf(this.accent).brand;
+  }
+
+  /** The dimmer partner of `brand`, for gradients and pressed states. */
+  get brandDim(): string {
+    return this.customAccent ? dimOf(this.customAccent) : accentOf(this.accent).dim;
   }
 
   set<K extends keyof Appearance>(key: K, value: Appearance[K]): void {
     if (this[key] === value) return;
+    // Picking a preset is a statement that the custom colour is done.
+    if (key === 'accent') this.customAccent = null;
     // The store's fields are `$state`, so a plain cast keeps them writable
     // without widening the public type of `set`.
     (this as unknown as Record<K, Appearance[K]>)[key] = value;
@@ -160,18 +206,32 @@ class AppearanceStore {
     this.persist();
   }
 
+  /**
+   * Use a typed/picked colour. `null` (or a non-colour) clears it and falls
+   * back to the current preset.
+   */
+  setCustomAccent(raw: string | null): boolean {
+    const hex = raw === null ? null : normaliseHex(raw);
+    if (raw !== null && hex === null) return false;
+    this.customAccent = hex;
+    this.apply();
+    this.persist();
+    return true;
+  }
+
   /** One write to `<html>`, and every token-derived colour follows. */
   private apply(): void {
     if (typeof document === 'undefined') return;
     const root = document.documentElement;
-    const accent = accentOf(this.accent);
+    const brand = this.brand;
+    const dim = this.brandDim;
 
-    root.style.setProperty('--color-nc-brand', accent.brand);
-    root.style.setProperty('--color-nc-brand-dim', accent.dim);
+    root.style.setProperty('--color-nc-brand', brand);
+    root.style.setProperty('--color-nc-brand-dim', dim);
     // The legacy `nc-gold` token is an alias of the brand blue; leaving it
     // behind after an accent change would make the two disagree about a colour.
-    root.style.setProperty('--color-nc-gold', accent.brand);
-    root.style.setProperty('--color-nc-gold-dim', accent.dim);
+    root.style.setProperty('--color-nc-gold', brand);
+    root.style.setProperty('--color-nc-gold-dim', dim);
 
     root.style.setProperty('--font-heading', HEADING_FONT[this.typography]);
     root.style.setProperty('--t9-text-scale', TEXT_SCALE[this.textSize]);
@@ -197,6 +257,7 @@ class AppearanceStore {
         STORAGE_KEY,
         JSON.stringify({
           accent: this.accent,
+          customAccent: this.customAccent,
           typography: this.typography,
           textSize: this.textSize,
           density: this.density,
@@ -212,6 +273,7 @@ class AppearanceStore {
   /** Back to the T9 defaults — the look the app shipped with. */
   reset(): void {
     this.accent = APPEARANCE_DEFAULTS.accent;
+    this.customAccent = null;
     this.typography = APPEARANCE_DEFAULTS.typography;
     this.textSize = APPEARANCE_DEFAULTS.textSize;
     this.density = APPEARANCE_DEFAULTS.density;
@@ -231,6 +293,8 @@ class AppearanceStore {
     }
     const v = coerce(saved);
     this.accent = v.accent;
+    const customRaw = (saved as { customAccent?: unknown } | null)?.customAccent;
+    this.customAccent = typeof customRaw === 'string' ? normaliseHex(customRaw) : null;
     this.typography = v.typography;
     this.textSize = v.textSize;
     this.density = v.density;

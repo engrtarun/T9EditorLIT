@@ -43,6 +43,9 @@ const SHOW_SUGGESTIONS_KEY = 't9-editor-lit.timelineSuggestions';
 /** LocalStorage key for "the timeline shows the finished video, cuts removed". */
 const CLEAN_VIEW_KEY = 't9-editor-lit.timelineClean';
 
+/** LocalStorage key for "paint Gemini's flags on the transcript". */
+const AI_MARKS_KEY = 't9-editor-lit.aiMarks';
+
 /** The window the user asked for: a binned project is recoverable for 12 days. */
 export const TRASH_DAYS_DEFAULT = 12;
 
@@ -137,6 +140,16 @@ class SettingsStore {
    * and click-to-seek all count the final video's seconds, not the source's.
    */
   timelineCleanView = $state(false);
+
+  /**
+   * Whether Gemini's flags are painted on the transcript.
+   *
+   * Display-only, like the timeline filters: turning this off hides the fumble
+   * / retake chips and empties the "AI flagged" filter, but keeps the flags in
+   * the data (and in the saved transcript) so switching it back on restores
+   * them without spending another API call.
+   */
+  aiMarksVisible = $state(true);
 
   /** True when the printed format can be typed back into the timecode box. */
   get timeFormatEditable(): boolean {
@@ -248,6 +261,12 @@ class SettingsStore {
     this.persist();
   }
 
+  /** Show/hide Gemini's flags on the transcript (display only). */
+  setAiMarksVisible(on: boolean): void {
+    this.aiMarksVisible = on;
+    this.persist();
+  }
+
   private persist(): void {
     try {
       localStorage.setItem(TRASH_DAYS_KEY, String(this.trashRetentionDays));
@@ -261,6 +280,7 @@ class SettingsStore {
       localStorage.setItem(SHOW_FILMSTRIP_KEY, this.timelineShowFilmstrip ? '1' : '0');
       localStorage.setItem(SHOW_SUGGESTIONS_KEY, this.timelineShowSuggestions ? '1' : '0');
       localStorage.setItem(CLEAN_VIEW_KEY, this.timelineCleanView ? '1' : '0');
+      localStorage.setItem(AI_MARKS_KEY, this.aiMarksVisible ? '1' : '0');
     } catch {
       /* private mode */
     }
@@ -296,6 +316,9 @@ class SettingsStore {
       // is a deliberate choice, never a surprise first run.
       const clean = localStorage.getItem(CLEAN_VIEW_KEY);
       if (clean !== null) this.timelineCleanView = clean === '1';
+      // Absent = on: flags were always painted. Hiding them is a choice.
+      const marks = localStorage.getItem(AI_MARKS_KEY);
+      if (marks !== null) this.aiMarksVisible = marks === '1';
     } catch {
       /* private mode */
     }

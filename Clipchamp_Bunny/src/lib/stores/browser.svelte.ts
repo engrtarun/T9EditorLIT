@@ -95,19 +95,24 @@ function loadStoredHistory(): HistoryEntry[] {
   }
 }
 
-function loadPinnedTabs(): PinnedTab[] {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(PINS_KEY) ?? '[]');
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((p): p is PinnedTab => !!p && typeof (p as PinnedTab).url === 'string')
-      .map((p) => ({ url: p.url, title: String(p.title || hostOf(p.url)) }))
-      .filter((p) => p.url && p.url !== 'about:blank')
-      .slice(0, MAX_TABS);
-  } catch {
-    return [];
-  }
+function coercePins(parsed: unknown): PinnedTab[] {
+  return (Array.isArray(parsed) ? parsed : [])
+    .filter((p): p is PinnedTab => !!p && typeof (p as PinnedTab).url === 'string')
+    .map((p) => ({ url: p.url, title: String(p.title || hostOf(p.url)) }))
+    .filter((p) => p.url && p.url !== 'about:blank')
+    .slice(0, MAX_TABS);
 }
+
+/**
+ * What a browser with no pin file at all starts with.
+ *
+ * YouTube is the page this browser exists for — "video chalta rahe while I
+ * edit" — so the very first launch arrives with it already pinned instead of
+ * making the user discover Ctrl+click. This is a **seed**, not a rule: the
+ * moment a pin file exists (even an empty `[]`), the user's own pins win and
+ * YouTube is never re-added behind their back.
+ */
+const DEFAULT_PINS: PinnedTab[] = [{ url: 'https://www.youtube.com', title: 'YouTube' }];
 
 /**
  * Wait for `task`, but never longer than `ms`.
@@ -939,20 +944,36 @@ class BrowserStore {
    */
   async restorePinned(): Promise<void> {
     if (this.tabs.length > 0) return;
-    let pins = loadPinnedTabs();
+    // `null` = no pin file anywhere (a fresh install). `[]` = the user unpinned
+    // everything, and that decision is respected.
+    let pins: PinnedTab[] | null = null;
+    try {
+      const mirror = localStorage.getItem(PINS_KEY);
+      if (mirror !== null) pins = coercePins(JSON.parse(mirror));
+    } catch {
+      /* private mode — the SQLite copy below still answers */
+    }
     try {
       const raw = await withDeadline(statsGet(PINS_KEY), 1500, null);
-      if (raw != null) {
-        const parsed: unknown = JSON.parse(raw);
-        pins = (Array.isArray(parsed) ? parsed : []).filter(
-          (p): p is PinnedTab => !!p && typeof (p as PinnedTab).url === 'string'
-        );
-      } else if (pins.length) {
+      if (raw != null) pins = coercePins(JSON.parse(raw));
+      else if (pins && pins.length) {
         // An older install wrote only the mirror — bring it forward.
         void statsSet(PINS_KEY, JSON.stringify(pins));
       }
     } catch {
       /* no bridge / corrupt row — the mirror stands */
+    }
+    if (pins === null) {
+      // First run: start with YouTube pinned. Write the seed down immediately,
+      // so unpinning it later is remembered as an empty list, not as "no file".
+      pins = DEFAULT_PINS.slice();
+      const payload = JSON.stringify(pins);
+      try {
+        localStorage.setItem(PINS_KEY, payload);
+      } catch {
+        /* private mode */
+      }
+      void statsSet(PINS_KEY, payload);
     }
     if (this.tabs.length > 0 || pins.length === 0) return;
     for (const pin of pins) {

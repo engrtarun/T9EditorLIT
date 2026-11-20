@@ -2003,11 +2003,13 @@ class ProjectStore {
   }
 
   /**
-   * The plan is complete: refine once, clear the plan, delete the WAVs.
+   * The plan is complete: autocorrect once, clear the plan, delete the WAVs.
    *
-   * Autocorrect and Gemini flags are whole-transcript stages, so they run
-   * once at the end instead of once per chunk — that is what keeps a
-   * 49-minute video at one Gemini pass instead of ten.
+   * Autocorrect is a whole-transcript stage, so it runs once at the end
+   * instead of once per chunk — that is what keeps a 49-minute video at one
+   * correction pass instead of ten. Gemini is **not** run here: the AI flags
+   * are a user action (the AI panel's Analyse button), so a plain
+   * transcription never spends a Gemini call on its own.
    */
   private async finishTranscript(sourcePath: string): Promise<void> {
     const db = await defaultDbPath();
@@ -2043,12 +2045,12 @@ class ProjectStore {
   }
 
   /**
-   * Retry only the second half — autocorrect and AI flags — on lines we
-   * already have.
+   * Retry only the second half — autocorrect — on lines we already have.
    *
-   * The panel offers this when Whisper succeeded but a later stage failed.
+   * The panel offers this when Whisper succeeded but autocorrect failed.
    * Re-transcribing the same audio would pay Groq for the same words twice,
-   * and the words are already saved.
+   * and the words are already saved. Gemini's flags are a separate, explicit
+   * action (`runAiAnalysis`), so a retry never spends that call either.
    */
   async refineTranscript(): Promise<void> {
     const source = this.sourcePath;
@@ -2068,6 +2070,51 @@ class ProjectStore {
     } finally {
       // This path does not go through `runPipeline`, so it owns the cleanup —
       // a stuck `pipeline` would also block every later retry.
+      this.pipeline = null;
+    }
+  }
+
+  /**
+   * Ask Gemini for its flags, because the user pressed Analyse.
+   *
+   * Transcription used to run this automatically, which spent a Gemini call on
+   * every import whether or not the user wanted the AI pass. Now `refine()`
+   * stops after autocorrect; this is the **only** entry point to
+   * `/v1/analyze`. The words are already in SQLite, so a failure costs the
+   * flags and nothing else.
+   */
+  async runAiAnalysis(): Promise<{ ok: true; flagged: number } | { ok: false; error: string }> {
+    const source = this.sourcePath;
+    if (!source) return { ok: false, error: 'No source video is open.' };
+    if (!this.lines.length) return { ok: false, error: 'There is no transcript to analyse yet.' };
+    if (this.pipeline) return { ok: false, error: 'Another cloud job is already running.' };
+    const db = await defaultDbPath();
+    this.loadError = null;
+    const segs = this.toCloudSegments(this.lines);
+    this.pipeline = { stage: 'Gemini flags shuru…', fraction: 0.05, lines: segs.length };
+    try {
+      const analysed = await runAnalysis(source, segs, (p) => {
+        this.pipeline = {
+          stage: p.message,
+          fraction: 0.05 + p.fraction * 0.9,
+          lines: segs.length,
+          completed: p.completed,
+          total: p.total
+        };
+      });
+      this.lines = this.toTranscriptLines(analysed);
+      this.syncCutsIntoLines();
+      this.refreshShape();
+      await this.saveSegments(db, source, analysed);
+      // Running the pass is a request to see its marks.
+      if (!settings.aiMarksVisible) settings.setAiMarksVisible(true);
+      const flagged = this.lines.reduce((n, l) => n + (l.flag !== 'none' ? 1 : 0), 0);
+      return { ok: true, flagged };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      this.loadError = error;
+      return { ok: false, error };
+    } finally {
       this.pipeline = null;
     }
   }
@@ -2178,11 +2225,17 @@ class ProjectStore {
    * The two cloud stages that sit on top of a transcript: autocorrect, then
    * Gemini's flags. Split out because a retry needs exactly these two and
    * must not touch Whisper again.
+   *
+   * `withAi` is `false` by default for the automatic paths: Gemini is a
+   * **user action**, so finishing a transcript cleans up the spelling and then
+   * stops. The AI panel's Analyse button calls `runAiAnalysis()` when the user
+   * wants the flags.
    */
   private async refine(
     sourcePath: string,
     segs: CloudSegment[],
-    band: [number, number]
+    band: [number, number],
+    withAi = false
   ): Promise<CloudSegment[]> {
     const [from, to] = band;
     const mid = from + (to - from) * 0.55;
@@ -2197,6 +2250,8 @@ class ProjectStore {
         total: p.total
       };
     });
+
+    if (!withAi) return corrected;
 
     this.pipeline = { stage: 'Gemini flags shuru…', fraction: mid, lines: segs.length };
     return runAnalysis(sourcePath, corrected, (p) => {
@@ -2304,6 +2359,9 @@ class ProjectStore {
    * auto-cut safe to try.
    */
   aiCutIds = $state<string[]>([]);
+
+  /** How many lines carry a Gemini flag (fumble / repeat / wrong example). */
+  aiFlagCount = $derived.by(() => this.lines.reduce((n, l) => n + (l.flag !== 'none' ? 1 : 0), 0));
 
   /** How many auto-cut lines are still cut (some may have been restored). */
   aiCutCount = $derived.by(() => {

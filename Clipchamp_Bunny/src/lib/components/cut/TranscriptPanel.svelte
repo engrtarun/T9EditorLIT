@@ -18,6 +18,8 @@
   import { toast } from '../../stores/toast.svelte';
   import { watchWordSelection, wordCount, type WordSelection } from '../../word-selection';
   import { wordCutPreview } from '../../stores/wordCutPreview.svelte';
+  import { settings } from '../../stores/settings.svelte';
+  import { tokenizeLine } from '../../word-cut';
 
   /** The import dialog is mounted only while it is open (zero-RAM isolation). */
   let importing = $state(false);
@@ -264,10 +266,64 @@
     // `orderedLines` is the final-video order — dragging a clip on the
     // timeline reorders these rows live.
     const src = project.orderedLines.length ? project.orderedLines : project.lines;
-    if (filter === 'flagged') return src.filter((l) => l.flag !== 'none');
+    // Marks hidden means the "AI Flagged" filter has nothing to show. It is a
+    // display switch, not a deletion: the flags stay in the data, and turning
+    // the marks back on restores this list without another Gemini call.
+    if (filter === 'flagged')
+      return settings.aiMarksVisible ? src.filter((l) => l.flag !== 'none') : [];
     if (filter === 'cut') return src.filter((l) => l.keep === 'cut');
     return src;
   });
+
+  /* ------------------------------------------------------- spoken word */
+  /**
+   * The transcript line under the playhead, by binary search on the source
+   * clock. `player.currentTime` is source seconds (the transcript is always
+   * the main source's), so no clean-view conversion belongs here.
+   */
+  const spokenLineId = $derived.by(() => {
+    const lines = project.lines;
+    const t = player.currentTime;
+    let lo = 0;
+    let hi = lines.length - 1;
+    let hit: TranscriptLine | null = null;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const l = lines[mid];
+      if (l.startSec <= t) {
+        hit = l;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return hit && t <= hit.endSec ? hit.id : null;
+  });
+
+  /**
+   * Split one row into plain and spoken pieces.
+   *
+   * The line stays a single text node string when the playhead is elsewhere —
+   * the virtual list renders ~30 rows and re-rendering their text on every
+   * `timeupdate` would be wasted work. Only the live row is tokenised, and
+   * `tokenizeLine` is the same pairing the word-cut uses, so punctuation,
+   * Devanagari matras and Whisper's split/merged words all line up.
+   */
+  function spokenParts(line: TranscriptLine): Array<{ text: string; spoken: boolean }> {
+    if (line.id !== spokenLineId) return [{ text: line.text, spoken: false }];
+    const tokens = tokenizeLine(line.text, line.words, line.startSec, line.endSec);
+    if (!tokens.length) return [{ text: line.text, spoken: false }];
+    const t = player.currentTime;
+    const out: Array<{ text: string; spoken: boolean }> = [];
+    let at = 0;
+    for (const tok of tokens) {
+      if (tok.from > at) out.push({ text: line.text.slice(at, tok.from), spoken: false });
+      out.push({ text: tok.text, spoken: t >= tok.startSec && t < tok.endSec });
+      at = tok.to;
+    }
+    if (at < line.text.length) out.push({ text: line.text.slice(at), spoken: false });
+    return out;
+  }
 
   const cursorPos = $derived.by(() => {
     const cur = project.lines[project.cursor];
@@ -864,7 +920,15 @@
               dir="auto"
               data-line-text
             >
-              {line.text}
+              {#each spokenParts(line) as part, i (i)}<!--
+                  The word under the playhead is bold. It is a span, not a
+                  replacement string, so `data-line-text`'s textContent stays
+                  byte-identical to `line.text` and word selection keeps its
+                  character offsets.
+                -->{#if part.spoken}<b
+                    class="rounded-[3px] bg-nc-brand/25 px-[1px] font-bold text-nc-txt"
+                    data-spoken-word>{part.text}</b
+                  >{:else}{part.text}{/if}{/each}
             </span>
             {#if line.translatedText}
               <!--
@@ -889,7 +953,7 @@
               below it - the badge row must never wrap.
             -->
             <span class="mt-0.5 flex flex-nowrap items-center gap-1 overflow-hidden">
-              {#if line.flag !== 'none'}
+              {#if settings.aiMarksVisible && line.flag !== 'none'}
                 <span
                   use:flagFlash
                   class="shrink-0 rounded border px-1 py-[1px] text-[8px] font-bold tracking-wider

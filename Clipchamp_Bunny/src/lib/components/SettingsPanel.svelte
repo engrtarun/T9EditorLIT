@@ -29,6 +29,8 @@
   import {
     ACCENTS,
     appearance,
+    normaliseHex,
+    type AccentId,
     type DensityId,
     type MotionId,
     type PanelId,
@@ -49,6 +51,30 @@
 
   type TabId = 'general' | 'language' | 'appearance' | 'about';
 
+  /**
+   * A plain-English intro per tab. Settings dialogs tend to list controls and
+   * leave the reader guessing what they change; this says it once, at the top,
+   * before the switches.
+   */
+  const TAB_INTRO: Record<TabId, { title: string; body: string }> = {
+    general: {
+      title: 'How the editor behaves',
+      body: 'Machine-level defaults — how long deleted projects stay recoverable, how far the transport skips, and how time is written. Nothing here touches your media or an export.'
+    },
+    language: {
+      title: 'Interface language',
+      body: 'Changes menus, dialogs and tooltips only. The language of a transcript is detected from the audio and is not affected by this choice.'
+    },
+    appearance: {
+      title: 'How the app looks',
+      body: 'Every option is a local preference applied through CSS variables, so the change is instant and needs no restart. Panel styling is a foreground setting — the footage itself is never tinted, blurred or filtered.'
+    },
+    about: {
+      title: 'About this build',
+      body: 'The version and build id are read from the installed binary, so what you see here is exactly what is running on this machine.'
+    }
+  };
+
   const TABS: { id: TabId; label: string }[] = [
     { id: 'general', label: 'set.tab.general' },
     { id: 'language', label: 'set.tab.language' },
@@ -64,6 +90,8 @@
 
   let customDays = $state(String(settings.trashRetentionDays));
   let customStep = $state(settings.seekStepLabel);
+  /** The hex field; empty means "the preset is in charge". */
+  let customHex = $state(appearance.customAccent ?? '');
   let cleaning = $state(false);
   /** The installed build's id — shown in About when there is one. */
   let buildId = $state('');
@@ -149,7 +177,34 @@
 
   function resetAppearance() {
     appearance.reset();
+    customHex = '';
     toast.push('info', i18n.t('set.resetDone'));
+  }
+
+  /** A preset is the opposite of a custom colour: it clears the hex field. */
+  function pickAccent(id: AccentId) {
+    appearance.set('accent', id);
+    customHex = '';
+  }
+
+  /** Type a hex (or pick one) and the whole UI repaints in one write. */
+  function applyCustomHex(raw: string = customHex) {
+    const hex = normaliseHex(raw);
+    if (!hex) {
+      toast.push('warn', 'That is not a colour — use a hex code like #4d8dff or #4af.');
+      customHex = appearance.customAccent ?? '';
+      return;
+    }
+    appearance.setCustomAccent(hex);
+    customHex = hex;
+    toast.push('info', `Accent colour set to ${hex}`);
+  }
+
+  /** The native picker fires while dragging; apply live so the preview is honest. */
+  function pickerInput(e: Event) {
+    const hex = (e.currentTarget as HTMLInputElement).value;
+    customHex = hex;
+    appearance.setCustomAccent(hex);
   }
 
   /* ---------------------------------------------------------------- about */
@@ -243,6 +298,15 @@
           role="tabpanel"
           aria-labelledby="settab-{layout.settingsTab}"
         >
+          <div class="mb-4 rounded-xl border border-nc-line bg-nc-bg/40 px-4 py-3">
+            <h3 class="text-[11.5px] font-semibold text-nc-txt">
+              {TAB_INTRO[layout.settingsTab].title}
+            </h3>
+            <p class="mt-1 text-[11px] leading-relaxed text-nc-mut">
+              {TAB_INTRO[layout.settingsTab].body}
+            </p>
+          </div>
+
           {#if layout.settingsTab === 'general'}
             <section class="rounded-xl border border-nc-line bg-nc-panel-2/50 p-4">
               <div class="flex items-baseline justify-between gap-3">
@@ -536,17 +600,17 @@
               <div class="mt-3 flex flex-wrap items-center gap-2.5">
                 {#each appearanceAccents as a (a.id)}
                   <button
-                    onclick={() => appearance.set('accent', a.id)}
-                    aria-pressed={appearance.accent === a.id}
+                    onclick={() => pickAccent(a.id)}
+                    aria-pressed={appearance.accent === a.id && !appearance.customAccent}
                     aria-label={i18n.t(`set.look.${a.id}`)}
                     title={i18n.t(`set.look.${a.id}`)}
                     class="grid h-8 w-8 place-items-center rounded-full border-2 transition-[border-color,filter] duration-150
-                           {appearance.accent === a.id
+                           {appearance.accent === a.id && !appearance.customAccent
                       ? 'border-nc-txt'
                       : 'border-transparent hover:brightness-110'}"
                     style="background:{a.brand}"
                   >
-                    {#if appearance.accent === a.id}
+                    {#if appearance.accent === a.id && !appearance.customAccent}
                       <svg
                         width="13"
                         height="13"
@@ -564,6 +628,67 @@
                   </button>
                 {/each}
               </div>
+
+              <!-- custom accent: the presets above, and an exact colour below -->
+              <div class="mt-4 rounded-lg border border-nc-line/70 bg-nc-bg/40 p-3">
+                <div class="flex items-baseline justify-between gap-3">
+                  <label for="accent-hex" class="text-[11px] font-medium text-nc-txt">
+                    Custom colour
+                  </label>
+                  <span class="font-mono text-[10px] text-nc-mut-2">#RRGGBB</span>
+                </div>
+                <p class="mt-1 text-[10.5px] leading-relaxed text-nc-mut-2">
+                  Pick any colour or paste a hex code. The accent is one token, so this repaints
+                  buttons, selections and the focus ring everywhere, and it is remembered on this
+                  machine.
+                </p>
+                <div class="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    type="color"
+                    aria-label="Pick a custom accent colour"
+                    value={appearance.customAccent ?? appearance.brand}
+                    oninput={pickerInput}
+                    class="h-8 w-10 shrink-0 cursor-pointer rounded-md border border-nc-line bg-transparent p-0.5"
+                  />
+                  <input
+                    id="accent-hex"
+                    bind:value={customHex}
+                    onchange={() => applyCustomHex()}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') applyCustomHex();
+                    }}
+                    placeholder="#4d8dff"
+                    spellcheck="false"
+                    autocomplete="off"
+                    class="w-28 rounded-md border border-nc-line bg-nc-bg px-2 py-1 font-mono text-[12px]
+                           tracking-wide text-nc-txt uppercase outline-none focus:border-nc-brand"
+                  />
+                  <button
+                    onclick={() => applyCustomHex()}
+                    class="rounded-lg border border-nc-line px-3 py-1.5 text-[12px] text-nc-mut
+                           transition-colors duration-150 hover:border-nc-brand hover:text-nc-txt"
+                  >
+                    Use colour
+                  </button>
+                  {#if appearance.customAccent}
+                    <button
+                      onclick={() => {
+                        appearance.setCustomAccent(null);
+                        customHex = '';
+                      }}
+                      class="rounded-lg px-2 py-1.5 text-[11px] text-nc-mut-2 underline decoration-dotted
+                             underline-offset-2 transition-colors hover:text-nc-txt"
+                    >
+                      Back to preset
+                    </button>
+                  {/if}
+                  <span
+                    class="ml-auto h-6 w-6 rounded-full border border-white/25"
+                    style="background:{appearance.brand}"
+                    title={appearance.brand}
+                  ></span>
+                </div>
+              </div>
             </section>
 
             <!-- typography -->
@@ -571,6 +696,11 @@
               <h3 class="text-[10px] font-bold tracking-widest text-nc-brand">
                 {i18n.t('set.typo.title')}
               </h3>
+              <p class="mt-2 text-[11px] leading-relaxed text-nc-mut">
+                The heading face. Body text keeps the system font, so a decorative face never
+                reaches the transcript or a timecode. All three ship with Windows — nothing is
+                downloaded.
+              </p>
               <div class="mt-3 flex flex-wrap gap-2">
                 {#each appearanceTypo as t (t)}
                   <button
@@ -589,6 +719,10 @@
               <h3 class="text-[10px] font-bold tracking-widest text-nc-brand">
                 {i18n.t('set.size.title')}
               </h3>
+              <p class="mt-2 text-[11px] leading-relaxed text-nc-mut">
+                Scales text only, never the whole webview — the timeline measures in real pixels, so
+                a global zoom would make every seek land slightly off.
+              </p>
               <div class="mt-3 flex flex-wrap gap-2">
                 {#each appearanceSizes as s (s)}
                   <button
