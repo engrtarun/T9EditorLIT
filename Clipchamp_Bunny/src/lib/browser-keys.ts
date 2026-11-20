@@ -116,7 +116,7 @@ export const BINDINGS: Entry[] = [
   B('reload', ['ctrl+f5', 'ctrl+shift+r'], true), // force reload (same nudge, force anyway)
   B('stopLoading', ['escape']),
   B('goHome', ['alt+home']),
-  B('focusUrlbar', ['ctrl+l', 'alt+d'], true),
+  B('focusUrlbar', ['ctrl+l', 'alt+d', 'f6'], true),
   // ── page & panels ───────────────────────────────────────────────────────
   B('downloads', ['ctrl+j'], true),
   B('history', ['ctrl+h']),

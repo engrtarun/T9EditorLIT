@@ -219,8 +219,11 @@
       y: Math.round(r.y),
       width: Math.round(r.width),
       // -1 safety margin so the native webview can never paint over the
-      // panel header sitting immediately below the content box.
-      height: Math.max(1, Math.round(r.height) - 1)
+      // panel header sitting immediately below the content box. In F11
+      // fullscreen nothing sits below the content — it runs to the window
+      // edge — and that hairline showed as a 1px line of app background
+      // under a full-screen page.
+      height: Math.max(1, Math.round(r.height) - (chrome.fullscreen ? 0 : 1))
     };
     if (
       next.x === lastSent.x &&
@@ -342,7 +345,20 @@
 
 <div class="flex min-h-0 min-w-0 flex-1 flex-col bg-nc-bg text-nc-txt">
   <!-- ── chrome: address bar only; the tabs live up in the top bar ───────── -->
-  <div class="shrink-0 border-b border-nc-line bg-nc-panel" class:invisible={fullscreen}>
+  <div
+    class="shrink-0 border-b border-nc-line bg-nc-panel"
+    data-t9-chrome
+    role="presentation"
+    class:invisible={fullscreen && !chrome.fullscreenRevealed}
+    class:hidden={chrome.fullscreen && !chrome.fullscreenRevealed}
+    onmouseleave={(e) => {
+      const to = e.relatedTarget as Element | null;
+      if (to && to.closest('[data-t9-chrome]')) return;
+      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      if (to === null && e.clientY < r.bottom - 2) return;
+      chrome.hideFullscreenChrome();
+    }}
+  >
     <div class="flex h-10 items-center gap-0.5 px-2 pb-1.5">
       <button
         type="button"
@@ -449,9 +465,7 @@
           onclick={() => void chrome.toggleFullscreen()}
           class="grid h-8 w-8 place-items-center rounded-full transition-colors hover:bg-nc-panel-2
                  {chrome.fullscreen ? 'text-nc-brand' : 'text-nc-mut hover:text-nc-txt'}"
-          title={chrome.fullscreen
-            ? 'Exit fullscreen (F11 / Esc)'
-            : 'Fullscreen — poora window (F11)'}
+          title={chrome.fullscreen ? 'Exit fullscreen (F11)' : 'Fullscreen — poora window (F11)'}
           aria-label={chrome.fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
           aria-pressed={chrome.fullscreen}
         >

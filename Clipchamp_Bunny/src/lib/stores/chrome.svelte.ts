@@ -1,5 +1,9 @@
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
 import { isTauri } from '../ipc';
+import { layout } from './layout.svelte';
+import { menu } from './menu.svelte';
+import { ublock } from './ublock.svelte';
+import { downloads } from './downloads.svelte';
 
 /**
  * The window's fullscreen state + where Firefox's F11 affordances live.
@@ -28,11 +32,17 @@ class ChromeStore {
   fullscreenKey = $state(true);
   /**
    * The ⛶ button in the browser toolbar. OFF by default — "by difialt ye
-   * hide rahe halaki key se acces also on rahe": F11 (and Escape) are the
-   * doors that stay open; the button is an optional fourth one the user can
-   * switch on from Browser settings.
+   * hide rahe halaki key se acces also on rahe": the F11 key stays on; the
+   * button is an optional extra the user can switch on from Browser settings.
    */
   fullscreenToolbar = $state(false);
+
+  /**
+   * Firefox F11: the nav toolbox (tab strip + toolbar) is COLLAPSED on
+   * enter and only comes back when the pointer goes to the top edge of the
+   * window. This flag tracks whether it is currently revealed.
+   */
+  fullscreenRevealed = $state(false);
 
   constructor() {
     if (typeof localStorage === 'undefined') return;
@@ -69,7 +79,13 @@ class ChromeStore {
     this.save();
   }
 
-  /** F11 / the toolbar button: one toggle, whichever door was used. */
+  /** F11 / the toolbar button: one toggle, whichever door was used.
+   *
+   * Firefox: entering fullscreen collapses ALL chrome (tab strip + toolbar)
+   * — the content fills the window. Esc never exits fullscreen (only F11
+   * does); it only hides a revealed toolbar. So on both transitions the
+   * revealed flag resets to "collapsed".
+   */
   async toggleFullscreen(): Promise<boolean> {
     if (isTauri()) {
       try {
@@ -77,6 +93,7 @@ class ChromeStore {
         const on = !(await win.isFullscreen());
         await win.setFullscreen(on);
         this.fullscreen = on;
+        this.fullscreenRevealed = false;
       } catch {
         /* missing permission: the state stays as it was */
       }
@@ -90,23 +107,56 @@ class ChromeStore {
         await document.documentElement.requestFullscreen();
         this.fullscreen = true;
       }
+      this.fullscreenRevealed = false;
     } catch {
       /* not a user gesture, or the preview frame refuses */
     }
     return this.fullscreen;
   }
 
-  /** Escape leaves fullscreen, exactly like Firefox. */
-  async exitFullscreen(): Promise<void> {
+  /**
+   * Reveal the collapsed chrome (Firefox's nav toolbox showing on a top-edge
+   * hover / F6 / Ctrl+L). Only meaningful while fullscreen.
+   */
+  revealFullscreenChrome(): void {
     if (!this.fullscreen) return;
-    if (isTauri()) {
-      await getCurrentWindow()
-        .setFullscreen(false)
-        .catch(() => {});
-    } else if (document.fullscreenElement) {
-      await document.exitFullscreen().catch(() => {});
+    this.fullscreenRevealed = true;
+  }
+
+  /**
+   * Collapse a revealed toolbar again (Firefox's autohide / Esc). Vetoed
+   * while the urlbar has focus or a popup is open — Firefox keeps the chrome
+   * in those cases so the user can keep typing / interacting. Returns whether
+   * the chrome actually collapsed, so Escape can fall through when vetoed.
+   */
+  hideFullscreenChrome(): boolean {
+    if (!this.fullscreen || !this.fullscreenRevealed) return false;
+    const ae = document.activeElement as HTMLElement | null;
+    // The desktop app renders the page in a CHILD window: clicking into it
+    // takes OS focus away from the main document, but `activeElement` stays
+    // the old INPUT. `hasFocus()` is what stops that stale focus from
+    // vetoing the autohide forever ("toolbar kabhi chhupta nahi").
+    if (
+      ae &&
+      (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable) &&
+      document.hasFocus()
+    ) {
+      return false;
     }
-    this.fullscreen = false;
+    if (menu.current) return false;
+    if (
+      layout.profileOpen ||
+      layout.helpOpen ||
+      layout.settingsOpen ||
+      layout.commandPaletteOpen ||
+      layout.importOpen
+    ) {
+      return false;
+    }
+    if (ublock.panelOpen) return false;
+    if (downloads.open) return false;
+    this.fullscreenRevealed = false;
+    return true;
   }
 
   /**
@@ -117,7 +167,11 @@ class ChromeStore {
    */
   watch(): () => void {
     if (!isTauri()) {
-      const onFs = () => (this.fullscreen = !!document.fullscreenElement);
+      const onFs = () => {
+        const prev = this.fullscreen;
+        this.fullscreen = !!document.fullscreenElement;
+        if (prev !== this.fullscreen) this.fullscreenRevealed = false;
+      };
       document.addEventListener('fullscreenchange', onFs);
       return () => document.removeEventListener('fullscreenchange', onFs);
     }
@@ -131,7 +185,11 @@ class ChromeStore {
         timer = setTimeout(() => {
           void win
             .isFullscreen()
-            .then((on) => (this.fullscreen = on))
+            .then((on) => {
+              const prev = this.fullscreen;
+              this.fullscreen = on;
+              if (prev !== on) this.fullscreenRevealed = false;
+            })
             .catch(() => {});
         }, 200);
       })
@@ -142,8 +200,31 @@ class ChromeStore {
       .catch(() => {
         /* no window permission in this build */
       });
+    // Firefox's `#fullscr-toggler`: while the chrome is COLLAPSED, the very
+    // top edge of the window reveals it. The pointer is out on the native
+    // child webview there — no DOM listener ever sees it — so the position
+    // comes from the window API (desktop-physical minus the window origin).
+    // Two tiny IPC calls every 100 ms, and ONLY while collapsed: outside
+    // that state the tick returns before touching the API at all.
+    const topEdge = setInterval(() => {
+      if (!this.fullscreen || this.fullscreenRevealed) return;
+      void Promise.all([cursorPosition(), win.outerPosition()])
+        .then(([cur, origin]) => {
+          const d = cur.y - origin.y;
+          // d >= -4 keeps a cursor parked on a monitor ABOVE this one from
+          // "hovering" the top edge it is nowhere near.
+          if (this.fullscreen && !this.fullscreenRevealed && d >= -4 && d <= 4) {
+            this.revealFullscreenChrome();
+          }
+        })
+        .catch(() => {
+          /* permission hiccup / window on another monitor: the keyboard
+             doors (F6, Ctrl+L, F11) still reveal the chrome */
+        });
+    }, 100);
     return () => {
       dead = true;
+      clearInterval(topEdge);
       if (timer) clearTimeout(timer);
       unlisten?.();
     };

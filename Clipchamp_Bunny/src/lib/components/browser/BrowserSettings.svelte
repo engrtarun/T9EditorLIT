@@ -136,7 +136,7 @@
         aria-checked={chrome.fullscreenKey}
         onclick={() => chrome.setFullscreenKey(!chrome.fullscreenKey)}
         class="flex items-center gap-2 rounded px-1 py-1 text-left text-[11px] text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-        title="F11 dabate hi poora window fullscreen; Esc ya F11 se wapas"
+        title="F11 dabate hi poora window fullscreen; F11 dobara dabao bahar"
       >
         <span
           class="relative h-3.5 w-6 shrink-0 rounded-full transition-colors {chrome.fullscreenKey
@@ -176,8 +176,9 @@
       </button>
     </div>
     <p class="mt-1 text-[10px] leading-snug text-nc-mut-2">
-      Fullscreen kisi cheez ko encode ya buffer nahi karta — sirf window ka flag badalta hai. Esc
-      hamesha bahar nikale.
+      Fullscreen kisi cheez ko encode ya buffer nahi karta — sirf window ka flag badalta hai. Bahar
+      aane ke liye F11 dobara dabao. Fullscreen me upar mouse le jao to toolbar wapas aa jati hai;
+      usme jaake Esc se toolbar chhup jati hai.
     </p>
   </section>
 

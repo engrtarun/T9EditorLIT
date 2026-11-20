@@ -112,6 +112,9 @@
         toast.push('warn', '9 tabs ki limit hai — pehle ek band karo');
         return;
       }
+      // Firefox: a new tab in F11 fullscreen reveals the collapsed chrome so
+      // the tab strip and address bar can actually be seen.
+      if (chrome.fullscreen) chrome.revealFullscreenChrome();
       // Firefox puts the caret in the address bar on a new tab; without this
       // Ctrl+T left the user on the speed dial with nowhere to type.
       requestAnimationFrame(focusUrlbar);
@@ -155,16 +158,26 @@
     back: () => browser.back(),
     forward: () => browser.forward(),
     stopLoading: () => {
-      // Firefox: Escape leaves fullscreen before it means "stop loading".
-      if (chrome.fullscreen) {
-        void chrome.exitFullscreen();
+      // Firefox: in F11 fullscreen Escape collapses a REVEALED toolbar —
+      // it never leaves fullscreen (only F11 does). Only a collapse that
+      // really happens consumes the key; when the chrome is already down
+      // (or a popup vetoed it) Escape falls through to stop-loading.
+      if (chrome.fullscreen && chrome.fullscreenRevealed && chrome.hideFullscreenChrome()) {
         return;
       }
       browser.stopLoading();
     },
     reload: () => browser.reload(), // plain and forced land on the same forced nudge
     goHome: () => browser.goHome(),
-    focusUrlbar: () => focusUrlbar(),
+    focusUrlbar: () => {
+      // Firefox: focusing the address bar in F11 fullscreen reveals the
+      // collapsed nav toolbox — the bar cannot be seen otherwise.
+      if (chrome.fullscreen) chrome.revealFullscreenChrome();
+      // …and one frame later, because the reveal is a render behind: focusing
+      // a `display:none` input is a silent no-op, which left Ctrl+L with the
+      // chrome up and the caret nowhere.
+      requestAnimationFrame(focusUrlbar);
+    },
     downloads: () => downloads.toggle(),
     history: () => browser.toggleHistory(),
     clearHistory: () => {
@@ -282,7 +295,10 @@
     // every screen and while typing. The settings switch only decides whether
     // we act on it, never whether the browser map sees it.
     if (e.key === 'F11') {
-      if (chrome.fullscreenKey) {
+      // The settings switch gates ENTERING fullscreen; once you are in it,
+      // F11 always gets you out again (Firefox's own door, even if the key
+      // was turned off afterwards).
+      if (chrome.fullscreenKey || chrome.fullscreen) {
         e.preventDefault();
         void chrome.toggleFullscreen();
       }
@@ -304,14 +320,10 @@
       return;
     }
 
-    // Firefox: Escape leaves fullscreen before anything else claims the key -
-    // dialogs included. Without this the only way out was F11 again, which is
-    // not how the user knows the gesture.
-    if (e.key === 'Escape' && chrome.fullscreen) {
-      e.preventDefault();
-      void chrome.exitFullscreen();
-      return;
-    }
+    // Firefox: Escape in F11 fullscreen collapses a REVEALED toolbar — it
+    // never leaves fullscreen (only F11 does). When the toolbar is already
+    // collapsed, Escape falls through to dialogs / stop-loading as usual.
+    // Dialogs above also get their chance at Escape first.
 
     // The profile popover owns the keyboard while it is open — including its
     // own Escape. Nothing here may steal an Arrow key from it.
@@ -334,6 +346,24 @@
         e.preventDefault();
       }
       return;
+    }
+
+    // Firefox: Escape collapses a revealed nav toolbox in F11 fullscreen.
+    // With the address bar focused the FIRST Escape just leaves it (Firefox
+    // separates those two steps too); the next one collapses. When a popup
+    // vetoes the collapse, Escape falls through to the handlers below
+    // instead of being swallowed.
+    if (e.key === 'Escape' && chrome.fullscreen && chrome.fullscreenRevealed) {
+      const ae = document.activeElement as HTMLElement | null;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) {
+        ae.blur();
+        e.preventDefault();
+        return;
+      }
+      if (chrome.hideFullscreenChrome()) {
+        e.preventDefault();
+        return;
+      }
     }
 
     // In the **browser** Firefox's own key map runs FIRST — it lives in
@@ -651,14 +681,66 @@
       `{#if}` branch means entering/leaving the browser also tears down the
       previous tree — same zero-RAM rule as the editor modes.
     -->
-    <div class="flex min-h-0 flex-1 flex-col">
-      <TopBar />
+    <div class="relative flex min-h-0 flex-1 flex-col">
+      <!--
+        Firefox's `#fullscr-toggler`: a transparent 4px band across the top of
+        the window. Hovering it reveals the collapsed chrome. It overlays the
+        content (absolute), so the collapsed state stays pixel-full-bleed — no
+        layout shift, no visible strip. The desktop's native page webview sits
+        above this DOM, so there the window-level cursor poll in the chrome
+        store does the same job; this band is what keeps localhost:5174's
+        preview hoverable.
+      -->
+      {#if chrome.fullscreen && !chrome.fullscreenRevealed}
+        <div
+          class="absolute inset-x-0 top-0 z-50 h-1"
+          data-t9-chrome
+          onmouseenter={() => chrome.revealFullscreenChrome()}
+          aria-hidden="true"
+        ></div>
+      {/if}
+      <div
+        data-t9-chrome
+        role="presentation"
+        class="shrink-0 {chrome.fullscreen && !chrome.fullscreenRevealed ? 'hidden' : ''}"
+        onmouseleave={(e) => {
+          const to = e.relatedTarget as Element | null;
+          if (to && to.closest('[data-t9-chrome]')) return;
+          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          if (to === null && e.clientY < r.bottom - 2) return;
+          chrome.hideFullscreenChrome();
+        }}
+      >
+        <TopBar />
+      </div>
       <BrowserView />
     </div>
   {:else}
     <!-- The editor slides in by a hair when the dashboard hands over. -->
-    <div class="t9-slide-in flex min-h-0 flex-1 flex-col">
-      <TopBar />
+    <div class="t9-slide-in relative flex min-h-0 flex-1 flex-col">
+      <!-- Same top-edge reveal band as the browser branch (Firefox parity). -->
+      {#if chrome.fullscreen && !chrome.fullscreenRevealed}
+        <div
+          class="absolute inset-x-0 top-0 z-50 h-1"
+          data-t9-chrome
+          onmouseenter={() => chrome.revealFullscreenChrome()}
+          aria-hidden="true"
+        ></div>
+      {/if}
+      <div
+        data-t9-chrome
+        role="presentation"
+        class="shrink-0 {chrome.fullscreen && !chrome.fullscreenRevealed ? 'hidden' : ''}"
+        onmouseleave={(e) => {
+          const to = e.relatedTarget as Element | null;
+          if (to && to.closest('[data-t9-chrome]')) return;
+          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          if (to === null && e.clientY < r.bottom - 2) return;
+          chrome.hideFullscreenChrome();
+        }}
+      >
+        <TopBar />
+      </div>
 
       <!-- Mode isolation: {#key} on the epoch destroys the previous mode's DOM tree,
            so its memory is released instead of being parked by the GC. -->
