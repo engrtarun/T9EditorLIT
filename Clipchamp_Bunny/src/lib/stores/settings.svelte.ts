@@ -40,6 +40,9 @@ const SHOW_SILENCE_KEY = 't9-editor-lit.timelineSilence';
 const SHOW_FILMSTRIP_KEY = 't9-editor-lit.timelineFilmstrip';
 const SHOW_SUGGESTIONS_KEY = 't9-editor-lit.timelineSuggestions';
 
+/** LocalStorage key for "the timeline shows the finished video, cuts removed". */
+const CLEAN_VIEW_KEY = 't9-editor-lit.timelineClean';
+
 /** The window the user asked for: a binned project is recoverable for 12 days. */
 export const TRASH_DAYS_DEFAULT = 12;
 
@@ -123,6 +126,17 @@ class SettingsStore {
   timelineShowSilence = $state(true);
   timelineShowFilmstrip = $state(true);
   timelineShowSuggestions = $state(true);
+
+  /**
+   * Clean view — the strip stops being a mirror of the source and becomes the
+   * **finished video**: cut/silence blocks take no width at all, so the kept
+   * clips sit back to back and the timeline reads like a normal NLE.
+   *
+   * Display-only, exactly like the filters above: no cut is deleted and the
+   * export is untouched. The axis changes, though — the playhead, the timecode
+   * and click-to-seek all count the final video's seconds, not the source's.
+   */
+  timelineCleanView = $state(false);
 
   /** True when the printed format can be typed back into the timecode box. */
   get timeFormatEditable(): boolean {
@@ -222,6 +236,18 @@ class SettingsStore {
     this.persist();
   }
 
+  /**
+   * Collapse the cut blocks so the strip is the final video.
+   *
+   * Turning this on is a promise about the **axis**, not just the pixels: the
+   * playhead, the timecode and click-to-seek switch to final-video seconds.
+   * The component owns that mapping; this store only remembers the choice.
+   */
+  setTimelineCleanView(on: boolean): void {
+    this.timelineCleanView = on;
+    this.persist();
+  }
+
   private persist(): void {
     try {
       localStorage.setItem(TRASH_DAYS_KEY, String(this.trashRetentionDays));
@@ -234,6 +260,7 @@ class SettingsStore {
       localStorage.setItem(SHOW_SILENCE_KEY, this.timelineShowSilence ? '1' : '0');
       localStorage.setItem(SHOW_FILMSTRIP_KEY, this.timelineShowFilmstrip ? '1' : '0');
       localStorage.setItem(SHOW_SUGGESTIONS_KEY, this.timelineShowSuggestions ? '1' : '0');
+      localStorage.setItem(CLEAN_VIEW_KEY, this.timelineCleanView ? '1' : '0');
     } catch {
       /* private mode */
     }
@@ -265,6 +292,10 @@ class SettingsStore {
       if (strip !== null) this.timelineShowFilmstrip = strip === '1';
       const sugg = localStorage.getItem(SHOW_SUGGESTIONS_KEY);
       if (sugg !== null) this.timelineShowSuggestions = sugg === '1';
+      // Absent = off: the strip has always shown the whole source. Clean view
+      // is a deliberate choice, never a surprise first run.
+      const clean = localStorage.getItem(CLEAN_VIEW_KEY);
+      if (clean !== null) this.timelineCleanView = clean === '1';
     } catch {
       /* private mode */
     }

@@ -528,11 +528,13 @@
       return;
     }
     if (hit('seekBack', e)) {
-      project.stepSequenceBy(-settings.seekStepSec);
+      if (settings.timelineCleanView) project.stepCleanBy(-settings.seekStepSec);
+      else project.stepSequenceBy(-settings.seekStepSec);
       return;
     }
     if (hit('seekForward', e)) {
-      project.stepSequenceBy(settings.seekStepSec);
+      if (settings.timelineCleanView) project.stepCleanBy(settings.seekStepSec);
+      else project.stepSequenceBy(settings.seekStepSec);
       return;
     }
     if (hit('nextLine', e)) {

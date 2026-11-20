@@ -5,7 +5,6 @@
   import { dropTarget } from '../../stores/dropTarget.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { settings } from '../../stores/settings.svelte';
-  import { appearance } from '../../stores/appearance.svelte';
   import { toast } from '../../stores/toast.svelte';
   import { wordCutPreview } from '../../stores/wordCutPreview.svelte';
   import { thumbUrl } from '../../media';
@@ -104,6 +103,36 @@
     } as const;
   });
 
+  /**
+   * Switch the strip between the finished video and the full source.
+   *
+   * The toast is not decoration: the axis changes under the user's hands, so
+   * saying out loud what just happened ("12 cut blocks collapse") is the
+   * difference between a feature and a glitch.
+   */
+  function setCleanView(on: boolean) {
+    if (settings.timelineCleanView === on) return;
+    if (!on) {
+      settings.setTimelineCleanView(false);
+      toast.push('info', 'Source view — cut blocks wapas apni jagah par');
+      return;
+    }
+    const cuts = segments.filter((s) => s.state === 'cut').length;
+    settings.setTimelineCleanView(true);
+    // If the playhead was parked inside a cut (Source view allows that), it has
+    // no position on the finished-video axis. Move it to the nearest kept edge
+    // instead of painting it on the cut's seam.
+    if (!project.activeClipId && project.editTimeAt(player.currentTime) == null) {
+      player.seek(project.nearestKeptSource(player.currentTime));
+    }
+    toast.push(
+      'keep',
+      cuts > 0
+        ? `Final view — ${cuts} cut block${cuts === 1 ? '' : 's'} gayab, timeline ab finished video jaisa`
+        : 'Final view — timeline ab finished video jaisa hai'
+    );
+  }
+
   $effect(() => {
     // Outside click / Escape closes the menu — before this it stayed open
     // until you found the tiny eye again.
@@ -199,69 +228,12 @@
   let dropSlot = $state<number | null>(null);
   let lastClickedSegId: string | null = $state(null);
 
-  /* ------------------------------------------------------------ legend pill
-   * Keep · AI Fumble · Silence · AI Suggest used to sit side by side in this
-   * 30 px row and eat ~200 px for information the timeline already paints.
-   * They now share ONE slot that cross-fades between them — the same treatment
-   * the dashboard gives its "T9 Cloud" tab: every phrase is stacked in a single
-   * grid cell, so the pill is as wide as the widest entry and nothing to its
-   * right ever shifts.
-   *
-   * The pill carries the live count of each colour, so the rotation is not
-   * decoration — it is the only readout of how many blocks are kept, how many
-   * the AI flagged and how many silences the cut drops. Hover or focus pauses
-   * it, a click steps to the next entry, and Reduced Motion lays all four out
-   * statically again: a legend that cannot rotate must not hide three quarters
-   * of itself.
+  /* ------------------------------------------------------- final-view switch
+   * The old slot cross-faded a colour key. The key is useful once; the switch
+   * is useful every time the user finishes an edit: one click collapses the
+   * cut/silence blocks and the strip becomes the finished video. It replaces
+   * the legend instead of adding another button to the row.
    */
-  const LEGEND_INTERVAL_MS = 2600; // ~2 s readable + the 650 ms cross-fade
-  const LEGEND = [
-    { label: 'Keep', swatch: 'var(--color-nc-brand)' },
-    { label: 'AI Fumble', swatch: 'var(--color-nc-red)' },
-    { label: 'Silence', swatch: 'var(--color-nc-mut-2)' },
-    { label: 'AI Suggest', swatch: 'var(--color-nc-green)' }
-  ] as const;
-
-  let legendIdx = $state(0);
-  /** Hover / keyboard focus holds the rotation so a phrase can be read. */
-  let legendPaused = $state(false);
-
-  const motionOff = $derived(
-    appearance.motion === 'reduced' ||
-      (typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches)
-  );
-
-  /** How many timeline blocks each colour stands for — segments, like the lanes. */
-  const legendCounts = $derived.by(() => {
-    let keep = 0;
-    let fumble = 0;
-    let silence = 0;
-    for (const s of project.orderedSegments) {
-      if (s.state === 'keep') keep++;
-      else if (s.reason === 'silence') silence++;
-      else fumble++;
-    }
-    return [keep, fumble, silence, project.liveQualitySuggestions.length] as const;
-  });
-
-  /** Label + colour + live count in one list, so markup never indexes twice. */
-  const legendItems = $derived(LEGEND.map((it, i) => ({ ...it, count: legendCounts[i] })));
-
-  const legendTitle = $derived(
-    `Colour key — ${legendItems.map((it) => `${it.label} ${it.count}`).join(' · ')}`
-  );
-
-  function nextLegend() {
-    legendIdx = (legendIdx + 1) % LEGEND.length;
-  }
-
-  $effect(() => {
-    // The loop restarts whenever motion or the hover hold changes — never on a
-    // tick, because `legendIdx` is only written here, never read.
-    if (motionOff || legendPaused) return;
-    const t = setInterval(() => (legendIdx = (legendIdx + 1) % LEGEND.length), LEGEND_INTERVAL_MS);
-    return () => clearInterval(t);
-  });
 
   type TrimEdge = 'start' | 'end';
   interface ClipTrim {
@@ -286,12 +258,58 @@
   let ctx = $state<CtxState | null>(null);
 
   const zoom = $derived(player.zoom);
+  /** Segments in final-video order. */
+  const segments = $derived(project.orderedSegments);
+  /** Does the strip show the finished video instead of the whole source? */
+  const cleanView = $derived(settings.timelineCleanView);
+  /**
+   * Where each segment sits on the **visible** axis.
+   *
+   * Normal view: the source, cut blocks included (`project.segmentOffsets`).
+   * Clean view: kept clips only, back to back (`computeKeptOffsets`). This one
+   * map is what every lane, block, tick and drag reads, so switching views can
+   * never leave one layer on the old axis.
+   */
+  const offsets = $derived(cleanView ? project.cleanOffsets : project.segmentOffsets);
+  /** The main-cut stretch of the visible axis (final-video seconds in clean view). */
+  const mainDur = $derived(cleanView ? project.editDuration : project.timelineDuration);
+  const extrasDur = $derived(project.sequenceDuration - project.timelineDuration);
   /** The timeline is the EDIT timeline: the main cut, then every extra clip. */
-  const editDur = $derived(project.sequenceDuration || project.durationSec);
-  /** Extra clips, with where each one starts on the timeline. */
-  const extras = $derived(project.extrasLayout);
-  /** Playhead on the whole project timeline (main cut + extras). */
-  const editPlayhead = $derived(project.globalTimeAt(project.activeClipId, player.currentTime));
+  const editDur = $derived(mainDur + extrasDur);
+  /** Extra clips, with where each one starts on the visible timeline. */
+  const extras = $derived.by(() => {
+    if (!cleanView) return project.extrasLayout;
+    // Clean view pulls the whole strip left by the cut width. The extra clips
+    // do not change, they just start after the finished video instead of after
+    // the source with its red holes.
+    const shift = Math.max(0, project.timelineDuration - project.editDuration);
+    return project.extrasLayout.map((r) => ({
+      ...r,
+      start: r.start - shift,
+      end: r.end - shift
+    }));
+  });
+
+  /**
+   * Kept source time → clean-view seconds. A source moment inside a cut maps
+   * to the seam it was removed from (the playhead cannot sit in material the
+   * timeline no longer shows), which is the same rule `globalTimeAt` uses.
+   */
+  /** Playhead on the whole visible timeline (main cut + extras). */
+  const editPlayhead = $derived.by(() => {
+    const clipId = project.activeClipId;
+    if (!cleanView) return project.globalTimeAt(clipId, player.currentTime);
+    if (clipId) {
+      const r = extras.find((x) => x.clip.id === clipId);
+      if (!r) return 0;
+      const inside = Math.min(
+        Math.max(player.currentTime - r.clip.inSec, 0),
+        project.clipLength(r.clip)
+      );
+      return r.start + inside;
+    }
+    return project.cleanTimeAt(player.currentTime);
+  });
   const contentW = $derived(Math.max(600, viewW, (editDur + 4) * zoom));
   /* Canvas backing width: the viewport, never the whole timeline.
    *
@@ -355,20 +373,45 @@
     return out;
   });
 
-  const segments = $derived(project.orderedSegments);
-  const offsets = $derived(project.segmentOffsets);
-
   /**
-   * Is this cut block hidden by the eye menu's display filters?
+   * Is this cut block hidden by the eye menu?
    *
-   * Silences are their own category: a user can hide every fumble cut and keep
-   * the grey silence blocks (or the other way round). The block keeps its width
-   * and its right-click restore; only what it paints changes.
+   * Clean view hides **every** cut, because the strip is the finished video
+   * then — not a filtered source. The normal view keeps its two independent
+   * categories: a user can hide every fumble cut and keep the grey silence
+   * blocks (or the other way round). A hidden block keeps its width and its
+   * right-click restore; only what it paints changes.
    */
   function blockHidden(s: (typeof segments)[number]): boolean {
     if (s.state !== 'cut') return false;
+    if (cleanView) return true;
     return s.reason === 'silence' ? !settings.timelineShowSilence : !settings.timelineShowCuts;
   }
+
+  /**
+   * Split dividers on the visible axis.
+   *
+   * `project.splitMarkPositions` counts source seconds with the cut widths in
+   * them. Clean view needs the same marks shifted left by every cut before
+   * them, so a divider never drifts away from the clip it splits.
+   */
+  const splitMarks = $derived.by(() => {
+    if (!cleanView) return project.splitMarkPositions;
+    const out: number[] = [];
+    for (const mark of project.splitMarks) {
+      let at = 0;
+      for (const s of segments) {
+        if (mark < s.startSec) break;
+        if (s.state === 'cut') continue;
+        if (mark <= s.endSec) {
+          out.push(at + (mark - s.startSec));
+          break;
+        }
+        at += s.endSec - s.startSec;
+      }
+    }
+    return out;
+  });
 
   /**
    * The word cut that is pending, mapped onto the timeline axis.
@@ -552,7 +595,7 @@
     // Split dividers — every split the user made stays visible, even when both
     // halves are kept (otherwise a split looks like it did nothing).
     ctx.fillStyle = 'rgba(212,175,55,0.95)';
-    for (const x of project.splitMarkPositions) {
+    for (const x of splitMarks) {
       const px = x * zoom - left;
       if (px < 0 || px > w) continue;
       ctx.fillRect(px - 0.5, 0, 1.5, VIDEO_H);
@@ -594,6 +637,8 @@
     for (const s of segments) {
       const off = offsets.get(s.id);
       if (!off || !peaks?.length) continue;
+      // Clean view: a cut has no width on the strip, so it paints no audio.
+      if (cleanView && s.state === 'cut') continue;
       const x0 = off.start * zoom - left;
       const x1 = off.end * zoom - left;
       if (x1 < 0 || x0 > w) continue;
@@ -672,16 +717,28 @@
     c.height = MINIMAP_H;
     const ctx = c.getContext('2d');
     if (!ctx) return;
-    const dur = project.durationSec || 1;
+    const dur = cleanView ? Math.max(editDur, project.durationSec || 1) : project.durationSec || 1;
     const scale = w / dur;
     ctx.fillStyle = '#1a1c26';
     ctx.fillRect(0, 0, w, MINIMAP_H);
+    if (cleanView) {
+      // Final view: the overview is the finished video. Every kept clip paints
+      // as one solid run at its clean-view position, and there is no red or
+      // green to find — because there is nothing left to remove.
+      ctx.fillStyle = 'rgba(77, 141, 255, 0.30)';
+      for (const s of segments) {
+        if (s.state === 'cut') continue;
+        const off = offsets.get(s.id);
+        if (!off) continue;
+        ctx.fillRect(off.start * scale, 0, Math.max(1, (off.end - off.start) * scale), MINIMAP_H);
+      }
+    }
     // AI suggestions first — a staged span paints GREEN and disappears the
     // moment either side of the deal changes (applied, rejected, or the user
     // cut the span manually). Red is painted after, so an already-cut region
     // always reads as its final state. The display filter can hide the whole
     // preview layer without rejecting it: the Apply/Reject chip stays.
-    if (settings.timelineShowSuggestions) {
+    if (settings.timelineShowSuggestions && !cleanView) {
       ctx.fillStyle = 'rgba(61, 214, 140, 0.8)';
       for (const r of project.liveSuggestions) {
         ctx.fillRect(r.start * scale, 0, Math.max(1, (r.end - r.start) * scale), MINIMAP_H);
@@ -701,13 +758,21 @@
     }
     // Cuts use the same two categories as the lanes: silence is grey, every
     // other cut is red. A hidden category is not painted here either, so the
-    // overview and the lane never disagree about what the filter shows.
-    for (const l of project.lines) {
-      if (l.keep === 'keep') continue;
-      const isSilence = l.flag === 'silence';
-      if (isSilence ? !settings.timelineShowSilence : !settings.timelineShowCuts) continue;
-      ctx.fillStyle = isSilence ? 'rgba(150, 153, 168, 0.55)' : 'rgba(229, 72, 77, 0.75)';
-      ctx.fillRect(l.startSec * scale, 0, Math.max(1, (l.endSec - l.startSec) * scale), MINIMAP_H);
+    // overview and the lane never disagree about what the filter shows. Clean
+    // view has no cuts at all: the overview belongs to the finished video too.
+    if (!cleanView) {
+      for (const l of project.lines) {
+        if (l.keep === 'keep') continue;
+        const isSilence = l.flag === 'silence';
+        if (isSilence ? !settings.timelineShowSilence : !settings.timelineShowCuts) continue;
+        ctx.fillStyle = isSilence ? 'rgba(150, 153, 168, 0.55)' : 'rgba(229, 72, 77, 0.75)';
+        ctx.fillRect(
+          l.startSec * scale,
+          0,
+          Math.max(1, (l.endSec - l.startSec) * scale),
+          MINIMAP_H
+        );
+      }
     }
     // The pending word cut, in the same blue as the lane band: a 3-word cut is
     // a sliver in an overview, but a sliver the user can still find.
@@ -730,6 +795,8 @@
     void colours;
     void segments;
     void offsets;
+    void splitMarks;
+    void cleanView;
     void project.splitMarkPositions;
     void project.suggestions; // green preview repaints the moment it changes
     void project.qualitySuggestions; // and so does the amber one
@@ -782,7 +849,7 @@
    * preview has the right `<video src>` before it seeks.
    */
   function seekToEdit(editSec: number, snap = true) {
-    const at = project.sequenceAt(editSec);
+    const at = cleanView ? project.cleanSequenceAt(editSec) : project.sequenceAt(editSec);
     if (!at) return;
     const local = snap && !at.clip ? project.snapTime(at.localSec) : at.localSec;
     project.activateClip(at.clip?.id ?? null);
@@ -801,7 +868,13 @@
    * the user chose a number of seconds of the video they are editing.
    */
   function stepBy(delta: number) {
-    project.stepSequenceBy(delta);
+    if (!cleanView) {
+      project.stepSequenceBy(delta);
+      return;
+    }
+    // The visible step is a step of the *finished video*, so it must not
+    // include the cut widths the strip no longer shows (J / L, transport).
+    project.stepCleanBy(delta);
   }
 
   function seekFromEvent(e: MouseEvent) {
@@ -1015,6 +1088,12 @@
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
+    const host = e.currentTarget as HTMLElement | null;
+    try {
+      host?.setPointerCapture(e.pointerId);
+    } catch {
+      /* no-op */
+    }
     selectSegment(seg, e);
     if (e.shiftKey || e.ctrlKey || e.metaKey) return;
 
@@ -1067,6 +1146,11 @@
     const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      try {
+        (e.currentTarget as HTMLElement | null)?.releasePointerCapture(e.pointerId);
+      } catch {
+        /* no-op */
+      }
       if (frame) {
         cancelAnimationFrame(frame);
         frame = 0;
@@ -1336,16 +1420,48 @@
 </script>
 
 <!--
-  One legend key: colour swatch · name · live count. Written once and rendered
-  by both the rotating pill and the Reduced Motion row, so the two can never
-  drift apart.
+  The Final / Source switch.
+
+  "Final" is the finished video: cuts collapse to zero width and the kept
+  clips sit back to back, so the strip reads like the file the user is about
+  to export. "Source" is the whole recording, red holes included. One control,
+  two honest answers — and the moving thumb makes the axis change legible
+  before a single pixel of the lane has repainted.
 -->
-{#snippet legendKey(item: (typeof legendItems)[number])}
-  <i class="inline-block h-1.5 w-1.5 shrink-0 rounded-sm" style:background={item.swatch}></i>
-  <span class="font-medium">{item.label}</span>
-  {#if item.count > 0}
-    <span class="tabular-nums text-nc-mut-2">{item.count}</span>
-  {/if}
+{#snippet viewSwitch()}
+  <div
+    class="relative flex h-[22px] items-center rounded-md border border-nc-line/70 bg-nc-panel-2/60 p-[2px] text-[9px]"
+    role="group"
+    aria-label="Timeline view — final video or full source"
+  >
+    <span
+      class="pointer-events-none absolute top-[2px] bottom-[2px] w-[calc(50%-2px)] rounded-[4px]
+             bg-nc-brand/85 shadow-[0_0_0_1px_rgba(77,141,255,0.35)] transition-transform
+             duration-300 ease-[cubic-bezier(.22,1,.36,1)]"
+      style:transform={cleanView ? 'translateX(0)' : 'translateX(100%)'}
+      aria-hidden="true"
+    ></span>
+    <button
+      type="button"
+      onclick={() => setCleanView(true)}
+      aria-pressed={cleanView}
+      class="relative z-10 rounded-[4px] px-1.5 leading-[18px] font-semibold transition-colors
+             {cleanView ? 'text-white' : 'text-nc-mut hover:text-nc-txt'}"
+      title="Final video — cut blocks collapse, kept clips sit back to back"
+    >
+      Final
+    </button>
+    <button
+      type="button"
+      onclick={() => setCleanView(false)}
+      aria-pressed={!cleanView}
+      class="relative z-10 rounded-[4px] px-1.5 leading-[18px] font-semibold transition-colors
+             {cleanView ? 'text-nc-mut hover:text-nc-txt' : 'text-white'}"
+      title="Full source — every cut block keeps its width"
+    >
+      Source
+    </button>
+  </div>
 {/snippet}
 
 <!--
@@ -1636,9 +1752,7 @@
               {formatTimecode(editPlayhead, settings.timeFormat)}
             </button>
           {/if}
-          <span class="text-nc-mut-2"
-            >/ {formatTimecode(project.sequenceDuration, settings.timeFormat)}</span
-          >
+          <span class="text-nc-mut-2">/ {formatTimecode(editDur, settings.timeFormat)}</span>
         </span>
       </div>
     </div>
@@ -1685,46 +1799,11 @@
         </div>
         <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
       {/if}
-      {#if motionOff}
-        <!-- Reduced Motion: the four keys stay side by side — the legend must
-             never hide three quarters of itself when it cannot rotate. -->
-        <div class="flex items-center gap-1.5">
-          {#each legendItems as item (item.label)}
-            <span class="flex items-center gap-1 text-[9px] text-nc-mut">
-              {@render legendKey(item)}
-            </span>
-          {/each}
-        </div>
-      {:else}
-        <button
-          type="button"
-          onclick={nextLegend}
-          onmouseenter={() => (legendPaused = true)}
-          onmouseleave={() => (legendPaused = false)}
-          onfocus={() => (legendPaused = true)}
-          onblur={() => (legendPaused = false)}
-          class="flex h-[22px] items-center overflow-hidden rounded-md border border-nc-line/70
-                 bg-nc-panel-2/60 px-1.5 text-[9px] text-nc-mut transition-colors
-                 hover:border-nc-line-2 hover:text-nc-txt"
-          title="{legendTitle} · click: next"
-          aria-label={legendTitle}
-        >
-          <span class="relative inline-grid" aria-hidden="true">
-            {#each legendItems as item, i (item.label)}
-              <span
-                class="t9-label-rotate col-start-1 row-start-1 flex items-center gap-1 whitespace-nowrap"
-                data-on={i === legendIdx ? '' : undefined}
-              >
-                {@render legendKey(item)}
-              </span>
-            {/each}
-          </span>
-        </button>
-      {/if}
-      <!-- Quota, where it is actually spent: the legend says what the colours
-           mean, the chip says what is left to spend on the next transcription.
-           It sits after the legend (and after its reduced-motion variant) so
-           the pair reads as one unit on either side of the divider. -->
+      {@render viewSwitch()}
+      <!-- Quota, where it is actually spent: the switch says which axis the
+           strip is on, the chip says what is left to spend on the next
+           transcription. It sits right after the switch so the pair reads as
+           one unit on either side of the divider. -->
       <UsageChip />
       <span class="mx-0.5 h-4 w-px bg-nc-line"></span>
       <span class="relative" bind:this={eyeWrap}>
@@ -1798,20 +1877,27 @@
             >
               Timeline
             </p>
-            {@render filterRow('Cut blocks', 'red', settings.timelineShowCuts, () =>
-              settings.setTimelineShowCuts(!settings.timelineShowCuts)
-            )}
-            {@render filterRow('Silence blocks', 'grey', settings.timelineShowSilence, () =>
-              settings.setTimelineShowSilence(!settings.timelineShowSilence)
-            )}
+            {#if cleanView}
+              <p class="px-2 py-1.5 text-[10px] leading-snug text-nc-mut-2">
+                Final view — cut blocks are collapsed, so there is nothing to filter. Switch to
+                <span class="text-nc-txt">Source</span> to see them.
+              </p>
+            {:else}
+              {@render filterRow('Cut blocks', 'red', settings.timelineShowCuts, () =>
+                settings.setTimelineShowCuts(!settings.timelineShowCuts)
+              )}
+              {@render filterRow('Silence blocks', 'grey', settings.timelineShowSilence, () =>
+                settings.setTimelineShowSilence(!settings.timelineShowSilence)
+              )}
+              {@render filterRow(
+                'AI suggestions',
+                'green/amber',
+                settings.timelineShowSuggestions,
+                () => settings.setTimelineShowSuggestions(!settings.timelineShowSuggestions)
+              )}
+            {/if}
             {@render filterRow('Filmstrip', 'frames', settings.timelineShowFilmstrip, () =>
               settings.setTimelineShowFilmstrip(!settings.timelineShowFilmstrip)
-            )}
-            {@render filterRow(
-              'AI suggestions',
-              'green/amber',
-              settings.timelineShowSuggestions,
-              () => settings.setTimelineShowSuggestions(!settings.timelineShowSuggestions)
             )}
             <span class="my-1 block h-px bg-nc-line"></span>
             <button
@@ -1925,7 +2011,7 @@
 
           {#each segments as s (s.id)}
             {@const off = offsets.get(s.id)}
-            {#if off}
+            {#if off && !(cleanView && s.state === 'cut')}
               {@const sel = segmentSelection(s)}
               {@const cut = s.state === 'cut'}
               {@const silence = cut && s.reason === 'silence'}

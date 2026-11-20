@@ -303,6 +303,31 @@ export function editDuration(segs: Segment[]): number {
   return segs.reduce((t, s) => t + (s.state === 'cut' ? 0 : Math.max(0, s.endSec - s.startSec)), 0);
 }
 
+/**
+ * Where each segment starts on the **finished-video** axis.
+ *
+ * This is `computeOffsets` with every cut collapsed to zero width: kept clips
+ * sit back to back, so the strip reads like the exported file instead of like
+ * the source with red holes in it. The mapping functions (`editTimeAt`,
+ * `sourceAt`, `timelineSpansForSource`) work unchanged on the returned map —
+ * that is the point of keeping the axis a plain offsets table.
+ *
+ * The cut segments still get an entry at the seam, width zero. Dropping them
+ * entirely would make a right-click on a hidden block impossible and would
+ * change the segment list a second time; a zero-width placeholder keeps both
+ * the model and the interactions in one piece.
+ */
+export function computeKeptOffsets(segs: Segment[]): Map<string, { start: number; end: number }> {
+  const out = new Map<string, { start: number; end: number }>();
+  let at = 0;
+  for (const s of segs) {
+    const len = s.state === 'cut' ? 0 : Math.max(0, s.endSec - s.startSec);
+    out.set(s.id, { start: at, end: at + len });
+    at += len;
+  }
+  return out;
+}
+
 /** Total length of the timeline — cut blocks included, so nothing hides. */
 export function timelineDuration(segs: Segment[]): number {
   return segs.reduce((t, s) => t + Math.max(0, s.endSec - s.startSec), 0);

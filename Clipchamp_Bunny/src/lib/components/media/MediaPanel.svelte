@@ -156,10 +156,13 @@
 
     const startX = ev.clientX;
     const startY = ev.clientY;
+    let lastPX = startX;
+    let lastPY = startY;
     let started = false;
     let dead = false;
     let ghost: HTMLDivElement | null = null;
     let lane: HTMLElement | null = null;
+    let capturedId: number | null = null;
 
     const finish = () => {
       window.removeEventListener('pointermove', move);
@@ -167,6 +170,14 @@
       window.removeEventListener('pointercancel', cancel);
       tile.removeEventListener('dragstart', deadDrag);
       tile.style.opacity = '';
+      if (capturedId != null) {
+        try {
+          tile.releasePointerCapture(capturedId);
+        } catch {
+          /* no-op */
+        }
+        capturedId = null;
+      }
       ghost?.remove();
       ghost = null;
       paintLane(null);
@@ -188,15 +199,24 @@
 
     // Chromium owns the gesture once a native drag starts; stand down.
     function deadDrag() {
+      if (isTauri()) return;
       dead = true;
       finish();
     }
 
     const move = (m: PointerEvent) => {
       if (dead) return;
+      lastPX = m.clientX;
+      lastPY = m.clientY;
       if (!started) {
         if (Math.hypot(m.clientX - startX, m.clientY - startY) < 6) return;
         started = true;
+        capturedId = ev.pointerId;
+        try {
+          tile.setPointerCapture(ev.pointerId);
+        } catch {
+          /* no-op */
+        }
         const entry = media.get(id);
         ghost = document.createElement('div');
         ghost.textContent = `+ ${entry ? entry.asset.name : 'clip'}`;
@@ -239,6 +259,16 @@
     };
 
     const cancel = () => {
+      if (started) {
+        const target = document
+          .elementFromPoint(lastPX, lastPY)
+          ?.closest(DROP_LANE) as HTMLElement | null;
+        const slot = target ? slotInLane(target, lastPX) : null;
+        const wasDrag = true;
+        finish();
+        if (wasDrag && target && slot) void placeAsset(id, slot.index);
+        return;
+      }
       dead = true;
       finish();
     };
@@ -246,7 +276,7 @@
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
     window.addEventListener('pointercancel', cancel);
-    tile.addEventListener('dragstart', deadDrag, { once: true });
+    if (!isTauri()) tile.addEventListener('dragstart', deadDrag, { once: true });
   }
 
   async function importFromFiles() {
@@ -484,7 +514,7 @@
               role="option"
               aria-selected={e.inUse}
               tabindex="0"
-              draggable={e.phase !== 'loading'}
+              draggable={!isTauri() && e.phase !== 'loading'}
               ondragstart={(ev) => onDragStart(ev, e.asset.id)}
               onpointerdown={(ev) => onTilePointerDown(ev, e.asset.id)}
               aria-label="{e.asset.name}, {e.durationLabel}, {e.inUse

@@ -14,6 +14,7 @@ import { framePreset, type ProjectFrame } from '../project-frame';
 import {
   buildSegments,
   type Segment,
+  computeKeptOffsets,
   computeOffsets,
   dropIndex,
   editDuration as editDurationOf,
@@ -3169,6 +3170,76 @@ class ProjectStore {
     const end = Math.max(0, this.sequenceDuration - 0.05);
     const target = Math.min(Math.max(from + delta, 0), end);
     const at = this.sequenceAt(target);
+    if (!at) return;
+    this.activateClip(at.clip?.id ?? null);
+    player.seek(at.localSec);
+  }
+
+  /* ------------------------------------------------------ finished-video axis
+     The normal axis is the whole strip: red/grey cut blocks keep their width.
+     The **clean** axis is the file the user is about to export — every cut
+     collapsed to zero, kept clips back to back, extra clips pulled left by the
+     cut width. `settings.timelineCleanView` chooses which one the timeline
+     shows; these three helpers are the only place that conversion lives, so
+     the lane, the transport and the keyboard cannot disagree. */
+
+  /** Segment offsets on the finished-video axis. */
+  cleanOffsets = $derived(computeKeptOffsets(this.orderedSegments));
+
+  /** Kept source time → finished-video seconds (a cut collapses to a seam). */
+  cleanTimeAt(sourceSec: number): number {
+    let at = 0;
+    for (const s of this.orderedSegments) {
+      if (sourceSec < s.startSec) break;
+      if (s.state === 'cut') continue;
+      if (sourceSec < s.endSec) return at + Math.max(0, sourceSec - s.startSec);
+      at += s.endSec - s.startSec;
+    }
+    return at;
+  }
+
+  /** Finished-video seconds → the clip and local second that owns it. */
+  cleanSequenceAt(editSec: number): { clip: ProjectClip | null; localSec: number } | null {
+    const mainDur = this.editDuration;
+    if (editSec < mainDur) {
+      for (const s of this.orderedSegments) {
+        if (s.state === 'cut') continue;
+        const off = this.cleanOffsets.get(s.id);
+        if (!off) continue;
+        if (editSec < off.end) {
+          return { clip: null, localSec: s.startSec + Math.max(0, editSec - off.start) };
+        }
+      }
+      // At the very end of the main lane: land on its last kept frame.
+      for (let i = this.orderedSegments.length - 1; i >= 0; i--) {
+        const s = this.orderedSegments[i];
+        if (s.state === 'cut') continue;
+        return { clip: null, localSec: s.endSec };
+      }
+      return null;
+    }
+    // Extras start after the finished video, not after the whole strip.
+    const shift = Math.max(0, this.timelineDuration - this.editDuration);
+    for (const r of this.extrasLayout) {
+      const start = r.start - shift;
+      const end = r.end - shift;
+      if (editSec < end) {
+        return { clip: r.clip, localSec: r.clip.inSec + Math.max(0, editSec - start) };
+      }
+    }
+    return null;
+  }
+
+  /** Transport step on the finished-video axis (Final view). */
+  stepCleanBy(delta: number) {
+    const clip = this.activeClip;
+    if (clip) {
+      player.seek(Math.min(clip.outSec, Math.max(clip.inSec, player.currentTime + delta)));
+      return;
+    }
+    const from = this.cleanTimeAt(player.currentTime);
+    const end = Math.max(0, this.editDuration + this.extrasDuration - 0.05);
+    const at = this.cleanSequenceAt(Math.min(Math.max(from + delta, 0), end));
     if (!at) return;
     this.activateClip(at.clip?.id ?? null);
     player.seek(at.localSec);

@@ -4,6 +4,15 @@ _Last updated: 2026-11-19_
 
 ## 🔴 High Priority
 
+- [x] Clean/Final view: timeline se cut/silence blocks poori tarah gayab ho jayein (width collapse, kept clips back-to-back) taaki strip final video jaisi lage - playhead/timecode/seek bhi final-video seconds par (done: 2026-11-19) - `computeKeptOffsets` + `project.cleanTimeAt/cleanSequenceAt/stepCleanBy`; lane/minimap/ruler/playhead/seek/J-L sab clean axis par; cut blocks DOM se bhi hat gaye
+- [x] Legend pill ko replace karo: rotating colour key ki jagah "Final / Source" view switch (done: 2026-11-19) - moving thumb + toast ("10 cut blocks gayab")
+- [x] App me drag & drop kaam nahi karta (localhost par chalta hai) (fixed: 2026-11-19) - Tauri ka dragDropEnabled WebView2 me HTML5 drag start karta hai aur pointer fallback ko `dragstart` se dead kar deta hai. Fix: desktop par tile `draggable=false`, `dragstart` listener sirf browser me, pointer capture + pointercancel par bhi drop
+- [ ] Gemini user-controlled: transcription ke baad auto analyze band, sirf user ke button par chale; AI panel me key add/replace, usage, on/off, kya karta hai; Gemini ke marks hide/unhide (added: 2026-11-19)
+- [ ] Settings > Appearance: accent colour user hex code + colour picker se set kar sake (added: 2026-11-19)
+- [ ] Settings dialog: zyada professional English information (har section me short explanation) (added: 2026-11-19)
+- [ ] Transcript: jo word abhi bola ja raha hai wo bold highlight ho (word timing se, accuracy) (added: 2026-11-19)
+- [ ] Export v2 locked version ka git tag + doc (added: 2026-11-19)
+
 - [x] Export me fps drop (60 -> 50/30) kyun - source fps preserve karo (done: 2026-11-19) - root cause: per-piece AAC encode ne har join par ~48ms priming silence + container duration audio-driven hone se video me pts holes (47 gaps / 50.9fps). Fix: v2 pipeline - video pieces seedha MPEG-TS me (90kHz tb = 60fps exact), audio EK filter pass (asplit+atrim+concat), last me mux copy. Real SHORT6 plan (50 pieces) par proof: 4570/4570 frames, 0 gaps, delta 1500 ticks (60fps), audio 76.166667s = video se 1.5ms andar
 - [ ] Sequence/canvas export (9:16, 1:1, 4:5, 4:3) abhi purane per-piece audio path par hai - wahan bhi v2 (TS video pieces + ek audio pass) lagao (added: 2026-11-19)
 - [x] Export "video join failed (exit -2)" jab output field me sirf filename ho (koi folder nahi) (fixed: 2026-11-19, shipped ci-99bb0fc) - kaaran: work dir `.t9export` relative ban gaya, list me `./.t9export/v0000.ts` gaya, aur ffconcat entry ko **list ke folder** se resolve karta hai -> `.t9export/.t9export/...` missing. Fix: list ki har entry absolute (`absolute_flat`), aur bare filename ab seedha Downloads me resolve hota hai (install folder me nahi). Saath me 0-byte piece (ffmpeg exit 0 par koi frame nahi) ab naam lekar error deta hai, cryptic concat fail nahi. Local proof: old-style list `exit -2`, absolute list `exit 0`

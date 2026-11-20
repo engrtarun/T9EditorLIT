@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   buildSegments,
+  computeKeptOffsets,
   computeOffsets,
   dropIndex,
   editDuration,
@@ -60,6 +61,41 @@ test('editDuration counts the final video, timelineDuration the whole strip', ()
   assert.deepEqual(off.get(a.id), { start: 0, end: 3 });
   assert.deepEqual(off.get(cut.id), { start: 3, end: 10 });
   assert.deepEqual(off.get(b.id), { start: 10, end: 15 });
+});
+
+test('computeKeptOffsets collapses cuts to zero width', () => {
+  seq = 0;
+  // 0-3 keep, 3-10 cut, 10-15 keep. The final-video axis is 3 s + 5 s, with
+  // the cut sitting at the seam as a zero-width placeholder.
+  const segs = buildSegments([line(0, 3), line(10, 15)]);
+  const off = computeKeptOffsets(segs);
+  const [a, cut, b] = segs;
+  assert.deepEqual(off.get(a.id), { start: 0, end: 3 });
+  assert.deepEqual(off.get(cut.id), { start: 3, end: 3 }, 'cut keeps an entry, no width');
+  assert.deepEqual(off.get(b.id), { start: 3, end: 8 }, 'kept clip starts where the cut ended');
+  // The last kept clip ends exactly at the final video's duration.
+  assert.equal(off.get(b.id)!.end, editDuration(segs));
+});
+
+test('computeKeptOffsets maps a kept moment past every cut before it', () => {
+  seq = 0;
+  const segs = buildSegments([
+    line(0, 2, 'keep', 'a'),
+    line(2, 5, 'cut', 'b'),
+    line(5, 6, 'keep', 'c'),
+    line(6, 9, 'cut', 'd'),
+    line(9, 12, 'keep', 'e')
+  ]);
+  const off = computeKeptOffsets(segs);
+  const [a, cut1, c, cut2, e] = segs;
+  assert.deepEqual(off.get(a.id), { start: 0, end: 2 });
+  assert.deepEqual(off.get(cut1.id), { start: 2, end: 2 });
+  assert.deepEqual(off.get(c.id), { start: 2, end: 3 });
+  assert.deepEqual(off.get(cut2.id), { start: 3, end: 3 });
+  assert.deepEqual(off.get(e.id), { start: 3, end: 6 });
+  // Every source second in the kept material maps 1:1 onto the clean axis.
+  assert.equal(editTimeAt(segs, off, 10), 4);
+  assert.equal(sourceAt(segs, off, 4), 10);
 });
 
 test('source time maps into timeline time and back', () => {
