@@ -1,76 +1,76 @@
-# TODO - Scratch Pad
+# TODO — Harry-style 60fps film + agent-proof system
 
-_Last updated: 2026-11-20_
+*Last updated: 2026-11-21, after the measured-research round*
 
-## 🔴 High Priority
+## What the user actually said
 
-- [x] Clean/Final view: timeline se cut/silence blocks poori tarah gayab ho jayein (width collapse, kept clips back-to-back) taaki strip final video jaisi lage - playhead/timecode/seek bhi final-video seconds par (done: 2026-11-19) - `computeKeptOffsets` + `project.cleanTimeAt/cleanSequenceAt/stepCleanBy`; lane/minimap/ruler/playhead/seek/J-L sab clean axis par; cut blocks DOM se bhi hat gaye
-- [x] Legend pill ko replace karo: rotating colour key ki jagah "Final / Source" view switch (done: 2026-11-19) - moving thumb + toast ("10 cut blocks gayab")
-- [x] App me drag & drop kaam nahi karta (localhost par chalta hai) (fixed: 2026-11-19) - Tauri ka dragDropEnabled WebView2 me HTML5 drag start karta hai aur pointer fallback ko `dragstart` se dead kar deta hai. Fix: desktop par tile `draggable=false`, `dragstart` listener sirf browser me, pointer capture + pointercancel par bhi drop
-- [x] Gemini user-controlled: transcription ke baad auto analyze band, sirf user ke button par chale; AI panel me key add/replace, usage, on/off, kya karta hai; Gemini ke marks hide/unhide (done: 2026-11-20) - `refine()` ka `withAi` default false (sirf autocorrect), `project.runAiAnalysis()` hi `/v1/analyze` ka ekmatra entry point; naya `AiPanel.svelte` (RightRail AI button): what-it-does, Analyse button + live stage, usage (calls/tokens/errors/daily %), key save/replace/remove/test (loopback daemon), marks switch. Marks hide display-only: chips + "AI Flagged" filter off, flags SQLite me saved (`t9-editor-lit.aiMarks`)
-- [x] Settings > Appearance: accent colour user hex code + colour picker se set kar sake (done: 2026-11-20) - native colour input + `#RRGGBB` field + "Use colour", `normaliseHex`/`dimOf`, custom accent `--color-nc-brand`/`--color-nc-brand-dim` par apply, `t9-editor-lit.appearance.customAccent` me persist; preset swatch ya "Back to preset" custom clear karta hai
-- [x] Settings dialog: zyada professional English information (har section me short explanation) (done: 2026-11-20) - har tab ka `TAB_INTRO` (General/Language/Appearance/About) + typography, text size, density, panels, motion ke short English notes; Hinglish labels jaan-boojh kar (UI language Hinglish hai)
-- [x] Transcript: jo word abhi bola ja raha hai wo bold highlight ho (word timing se, accuracy) (done: 2026-11-20) - playhead wali line binary search se (`spokenLineId`), `tokenizeLine` se word tokens, live word `<b data-spoken-word>` (bg + bold); baaki rows plain text rehti hain (virtual list par per-timeupdate re-render nahi). `data-line-text` ka textContent byte-identical rehta hai, isliye word-selection offsets safe
-- [x] Browser: fresh install par YouTube default pinned ho, par user ka unpin respect ho (done: 2026-11-20) - `DEFAULT_PINS` seed sirf tab likha jata hai jab pin file hi na ho (`null`); empty `[]` = user ne sab unpin kiya, wo waisa hi rehta hai. localStorage mirror + SQLite dono
-- [x] Export v2 locked version ka git tag + doc (done: 2026-11-20) - tag `export-v2-locked` at `4ce648c` (engine ka last change), doc `docs/EXPORT_V2_LOCKED.md` (invariants + SHORT6 proof + verify steps)
+> "bro maja nahi aaya" — motion slow/boring, style galat, cuts nahi (ek hi take).
+> Fix scope: **kam time + quality motion frames** (dono).
 
-- [x] Export me fps drop (60 -> 50/30) kyun - source fps preserve karo (done: 2026-11-19) - root cause: per-piece AAC encode ne har join par ~48ms priming silence + container duration audio-driven hone se video me pts holes (47 gaps / 50.9fps). Fix: v2 pipeline - video pieces seedha MPEG-TS me (90kHz tb = 60fps exact), audio EK filter pass (asplit+atrim+concat), last me mux copy. Real SHORT6 plan (50 pieces) par proof: 4570/4570 frames, 0 gaps, delta 1500 ticks (60fps), audio 76.166667s = video se 1.5ms andar
-- [ ] Sequence/canvas export (9:16, 1:1, 4:5, 4:3) abhi purane per-piece audio path par hai - wahan bhi v2 (TS video pieces + ek audio pass) lagao (added: 2026-11-19)
-- [x] Export "video join failed (exit -2)" jab output field me sirf filename ho (koi folder nahi) (fixed: 2026-11-19, shipped ci-99bb0fc) - kaaran: work dir `.t9export` relative ban gaya, list me `./.t9export/v0000.ts` gaya, aur ffconcat entry ko **list ke folder** se resolve karta hai -> `.t9export/.t9export/...` missing. Fix: list ki har entry absolute (`absolute_flat`), aur bare filename ab seedha Downloads me resolve hota hai (install folder me nahi). Saath me 0-byte piece (ffmpeg exit 0 par koi frame nahi) ab naam lekar error deta hai, cryptic concat fail nahi. Local proof: old-style list `exit -2`, absolute list `exit 0`
-- [x] Export progress ke notifications: app toast + Windows native (Win+A/Win+N) (done: 2026-11-19) - start/done/fail par appNotify (export start, `file · size · duration`, fail reason), toasts ke saath
-- [x] Export presets: Fast export vs Quality export (user ko dono chahiye) (done: 2026-11-19) - SPEED·QUALITY row me Fast (hybrid) + Quality (encode + original), purana engine/quality list `Advanced` details me collapse (kuch delete nahi hua)
-- [ ] Waveform zoom in/out me wave aage-picche + accuracy badhani hai (added: 2026-11-18)
-- [ ] Editor playback me cut feel hota hai - export side fixed by v2 (0 gaps / audio-video 1.5ms) (added: 2026-11-18) - preview side: cut ab har **presented frame** par enforce hota hai (`requestVideoFrameCallback`, pehle `timeupdate` ~4Hz = 250ms tak cut chalta tha) + stale-seek guard (`seekFrom` comparison) + mid-seek updates ignore - seek fight khatam. Baaki: 1080p60 ka 1s-GOP seek khud decoder cost hai (proxy preview alag item)
-- [x] Export cut ~0.03s off - exact word se cut alag aata hai (frame/audio drift) (done: 2026-11-19) - encode piece ab previous keyframe par decode karke trim karta hai (`Piece.roll`), aur har piece frame-grid par snap (`n/fps`) - A/V dono ko same length milti hai, sub-frame kept piece kabhi drop nahi hota (floor = 1 frame)
+Then, on the research sprint: *"fayda banane me nahi h, use karne me h"* — the
+numbers only count once they change the film.
 
-- [ ] Word cut: multi-line text selection cut (abhi ek row ke bahar selection par toolbar hi nahi aata) + duplicate take hint (added: 2026-11-18)
-- [x] Tiny rows: trim ka fixed 0.3 s floor proportional (`min(0.3, span/2)`) - trimStart backwards-jagta bug fix, timeline handles + segment trims bhi (done: 2026-11-18)
-- [x] Word cut: split ki 0.25/0.35/0.5 s floor hatayi - 10 ms tak split, zero-length part drop, hybrid export chhote kept piece ko drop nahi karta (encode karta hai) (done: 2026-11-18)
-- [x] Word cut: bottom timeline par sirf selected range ke upar blue band (minimap tick + CUT chip) (done: 2026-11-18)
-- [x] Word cut: imported ElevenLabs JSON ke nested words + purane project ka backfill - SHORT6 me 33/35 rows, 441 words exact; 7-1a/7-2a jaan-boojh kar approx (manual splits se text duplicate) (done: 2026-11-18)
-- [x] Split key: word selection pending ho to S/Delete global cut/keep na chale - sirf selection Cut (done: 2026-11-18)
-- [x] Selection UX: drag ke time transcript virtualization freeze + toolbar anchor stable (screen jitter) (done: 2026-11-18)
+## 🔴 Now
 
-- [ ] Browser: architecture decide - per-tab webview vs ek hi webview (added: 2026-11-16)
-- [ ] Browser: renderer crash/unresponsive ko log karo + auto-reload (instrument first) (added: 2026-11-16) — auto-reload shipped `22e7e57`, abhi tak koi `process failed` line nahi aayi, isliye open
-- [ ] Browser: heavy site load atak jata hai, refresh karna padta hai — asli chain `view -> open` → `set_rect` → **kuch nahi** (koi `show`, koi `refused`): `restoreSession()` ke `stats_kv_get` par mount chain ruk jata thi. Fix `1e1400c` (1.5 s deadline + har stage ka `ui ->` log) install + verify hona baaki (docs/TODO.md §11)
-- [ ] Browser: back dabane ke 1 s baad view khud wapas khulta hai (`view -> closed` → `view -> open` → `resume`) — ab `screen -> open|close browser (...)` log line se caller pakda jayega (added: 2026-11-17)
-- [ ] Browser: overlay park/restore 15 baar 15 s me (`layout.*Open` flap) — ab `overlay -> park (naam)` line se culprit pata chalega (added: 2026-11-17)
-- [x] Browser: shell reload ke baad YouTube page Home ke upar paint hota hai + close par app hang (`Responding=False`) — fix shipped: mount par stale webview sweep (`ffe3ccd`) + media flyout UI-thread deadlock (`94dfbb1`); installed `ci-94dfbb1` par verify (docs/TODO.md §12)
-- [x] Browser: pinned YouTube → editor → wapas, video band na ho — `ci-94dfbb1` par `media event … playing` + `pin … true` + `show … resume=Some(true)`, aur user ke manual test me playback chalta raha (docs/TODO.md §12)
+- [ ] **v7 full render** — `render60.mjs`, 4572 frames, 1× raster + JPEG capture,
+      running detached (log `out\v7-full.log`). Probe said 436 ms/f, actual
+      ~227 ms/f → ETA ~16 min.
+- [ ] Measure the finished film: `motion-report.mjs`. Gate: mean 1.0–3.0,
+      cuts ≥ 1 per act boundary, ink ≥ 2%, contrast reported.
+- [ ] Fill every PENDING row in `VERIFY.md` from this render.
+- [ ] Watch it and decide whether "maja" arrived. Numbers can only tell you
+      the frame is not empty; they cannot tell you it is good.
 
-## 🟡 Medium Priority
+## ✅ Research sprint → what changed (5/5 answers in)
 
-- [x] Ctrl+1..9 tab switching agar tab exist kare (done: `browser-keys.ts` BINDINGS me Ctrl+1..8 = `selectTabN`, Ctrl+9 = last tab; shim table test-enforced)
-- [x] Browser header: browser me "Studio" nahi - "Fast / Safe / Light / AI Plus / Secure **Browser**" per-letter rolling reveal (done: 2026-11-19) - `RollingWord.svelte`, har letter apne 11px mask me upar roll karta hai (AE reference), studio me sirf "Studio"
-- [x] Firefox F11 fullscreen + settings (done: 2026-11-19) - F11 toggle (Esc bahar), browser toolbar me Home ke bagal button, settings me 2 switch: F11 key on/off + toolbar button on/off (switch wahi se live hide/show karta hai). Tauri `setFullscreen` + dev me Fullscreen API
-- [x] Tab chip: sirf icon dikhe, uske upar bg nahi (done: 2026-11-19) - active tab ka `ring-nc-brand/55` + `bg-nc-panel-2` hataya: sirf `ring-nc-line/50`, non-active me `text-nc-mut ring-transparent`
-- [x] Silence hide/unhide + cut hide/unhide + display filters (done: 2026-11-19) - eye menu ("Both") me naya **Timeline** block: Cut blocks (red), Silence blocks (grey), Filmstrip (frames; OFF par thumbnail fetch hi nahi hota = low-RAM), AI suggestions (green/amber) — chaaron persisted (`settings`), menu khula rehta hai live toggle ke liye. Hide display-only hai: block apni width/right-click restore rakhta hai, strip ripple nahi hoti; minimap bhi wahi filter follow karta hai (silence ab grey, red nahi)
-- [ ] Transcript row/time chip (0:00-0:03) hilta hai (added: 2026-11-18)
+| Finding | Applied |
+|---|---|
+| Reference mean motion is **1.233**, not 2.75 | SKILL.md + never-do-this §J corrected; `motion-report` verdict rescaled (mean < 1.0 = frozen) |
+| Reference beats every **2.5–3.0 s**; ours was 4.75 s | staged lines spread 0/0.45/0.9/1.35 s, annot at +1.6 s, `stamp` at ~2.6 s on 15 of 16 cards |
+| Reference ink **2.7 %**; ours 0.37 % → 1.91 % | `cardScale` 1.35 → 1.48, `zoom` 1.4 → 1.46, act zoom spread |
+| A cut you cannot see measured **19.63** (cut = >20) | act zoom ±9 % + per-act Y offset → cut now measures **20.48** and `cuts 1` |
+| PNG capture was 772 ms/frame; `seek()` is 0.5 ms | `--capture jpeg` q90 (SSIM 0.9959) → **207–264 ms/frame** |
+| 2× supersample buys nothing | measured 1× edge energy 4.190 vs 2× 4.174, SSIM 0.9948 → **1× is the default** |
+| `pushIn` 4.5 % was on in this project | removed — the reference has no zoom at all, and per-frame `scale()` costs +340 ms/f |
 
-- [ ] Transcript import: DOCX/PDF native picker + restart persistence (added: 2026-11-16)
-- [ ] ElevenLabs STT browser flow: upload / record / transcribe / export (added: 2026-11-16)
+## ✅ System (the part other agents use)
 
-## 🟢 Nice to Have
+- [x] `scripts/doctor.mjs` — environment self-check, names the broken thing
+- [x] `scripts/smoke.mjs` — **scaffold → render 1 frame → assert it is the paper
+      world** (YAVG 221.1, not black, not white). 15 s. Exit 1 on any break.
+- [x] `scripts/motion-report.mjs` — mean/median/p90/max, **contrast (p90/median)**,
+      **holds %**, cuts, moves, **ink coverage**, flattest 1 s windows
+- [x] `scripts/render60.mjs` — JPEG capture + Edge flags by default, feel gate at
+      the end, `--super` for an archival 2× master
+- [x] `references/pacing-and-energy.md` — every measured number in one file
+- [x] SKILL.md feel gate rewritten (the old table would have failed the
+      reference itself), common-failure rows updated
+- [x] Skill enabled in vault, leased to `owner=main`
 
-## ✅ Done
+## 🐛 Fixed this round
 
-- [x] Ctrl+Shift+B: open in-built browser + a new tab from any screen (home/editor/browser, incl. page shim) (done: 2026-11-18)
-- [x] Word cut: toolbar on selectionchange (no mouseup wait), no APPROX, audio-snapped ms boundaries (wave-snap) (done: 2026-11-18)
+- [x] **`--edge-flags` silently became `true`** — `parseArgs` treats any next
+      token starting with `--` as the next flag. CLI now takes bare names
+      (`disable-partial-raster`); the env var still takes them with dashes.
+- [x] **Render log lied** — printed "3840x2160 supersampled" while rendering 1×
+- [x] **The cut was invisible** (position-only jump) — see the table above
+- [x] **`pushIn` was still 0.045** in the film's content.js — the one setting
+      that costs +340 ms/frame was live
+- [x] 30-min timeout, probe start, floor detection, `file=` path, transform
+      order, grain-at-encode (earlier rounds, still in place)
 
-- [x] Browser home: bottom-right no-internet animation, no text, size ~330px (dial 660px ka aadha), bottom se chipka hua (done: 2026-11-18)
-- [x] Browser se wapas (home/studio) ka visible back button TopBar me (done: 2026-11-18)
-- [x] Firefox-style 2-finger horizontal swipe -> previous/next tab (shim wheel + BrowserView window listener + browser-swipe.ts test) (done: 2026-11-18)
-- [x] Bookmark/pin app close par bhool jata hai - bookmarks+pins ko SQLite (statsSet/statsGet) me persist karo, session success path me pinned tabs restore karo (done: 2026-11-18)
-- [x] Tab chips: home dashboard header + editor studio TopBar me bhi dikhao (gate hatao, DashboardTopBar me mount karo) (done: 2026-11-18)
-- [x] Persist per-project UI state (zoom, applied preview, loop, both tracks, snap) in SQLite not localStorage (done: 2026-11-18)
-- [x] Remove caption over video, move current line + pin/keep/wrong controls below the video (full text wrap) (done: 2026-11-18)
-- [x] Word-level cut: select 'jal ki rani' inside a line -> 3 rows (keep/cut/keep) + 3 timeline clips (done: 2026-11-18)
+## 🟡 Next
 
-- [x] Browser: page-shim shortcuts installed build par prove karo — `event key 1 -> pinTab`, `event key 1 -> closeBrowserView` live log me (build `ci-1fbadef`, 2026-11-17)
-- [x] Browser: pin/unpin round installed build par — pin → back (`swept all, 1 pinned kept`, page hidden) → wapas (`resume=Some(true)`, memory normal). Commit `1fbadef`, docs/TODO.md §10
-- [x] Browser cold start Home par khulta hai, YouTube restore nahi — `4880033`; `Ctrl+Shift+T` se band tab wapas (docs/TODO.md §9)
+- [ ] Preview file (720p30, first 20 s) for quick review — 3 min, not 16
+- [ ] SFX pass (whoosh on cut, click on stamp) — the reference has audible cuts
+- [ ] Beat-sheet generator: derive `enter` times from a Whisper transcript
+      instead of hand-copying them
 
----
+## 🟢 Later
 
-## Notes
+- [ ] Install `iart-ai/explainer-video-skills` (MIT) — **needs explicit user approval**
+
+## Blocked
+
+- `websearch` returns HTTP 402 — use `webfetch`
+- Image read tool returns a stale/cached image — QA must use numbers, not eyes

@@ -16,6 +16,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import type { ExportCaps } from './export-presets';
 import type {
   ApiCallRow,
   AudioChunk,
@@ -23,6 +24,7 @@ import type {
   BrowserExtensionsEvent,
   BrowserUblockReply,
   DownloadSettings,
+  ExportHistoryRow,
   MemoryStats,
   UsageDayRow,
   MediaInfo,
@@ -965,6 +967,24 @@ export interface ExportOptions {
   applyCuts: boolean;
   /** ID3 title for an audio export. */
   title?: string | null;
+  /* ---- EXPORT.md §3 addendum ---- */
+  /** Quick preset id: youtube | shorts | 4k | custom. */
+  preset?: string | null;
+  /* ---- EXPORT.md §3: engine additions ---- */
+  /** Output frame rate; `null`/omitted keeps the source's own. */
+  fps?: number | null;
+  /** `h264` · `h265` · `av1`; `null`/omitted keeps the source family. */
+  codec?: string | null;
+  /** `mp4` · `mov` · `mkv` · `webm`; `null`/omitted follows the output extension. */
+  container?: string | null;
+  /** Drop the sound track entirely. */
+  includeAudio?: boolean;
+  /** Quality-based rate control (0-51); overrides the quality ladder. */
+  crf?: number | null;
+  /** Average video bitrate target, in kbps. */
+  videoBitrateKbps?: number | null;
+  /** Two-pass encode — needs `videoBitrateKbps`. */
+  twoPass?: boolean;
 }
 
 export interface ExportRequest {
@@ -1122,6 +1142,62 @@ export async function pickOutput(
     filters: filters ?? [{ name: 'MP4 video', extensions: ['mp4'] }]
   });
   return picked ?? null;
+}
+
+/**
+ * What the installed engine can do (EXPORT.md §3).
+ *
+ * Probed once; a backend that predates the additions answers "command not
+ * found" and every flag stays false, so the UI degrades instead of lying.
+ */
+export async function exportCapabilities(): Promise<Partial<ExportCaps>> {
+  if (!isTauri()) return {};
+  try {
+    return await invoke<Partial<ExportCaps>>('export_capabilities');
+  } catch {
+    return {};
+  }
+}
+
+/** Disk space + overwrite check before a render (EXPORT.md B1-3). */
+export async function preflightExport(
+  path: string,
+  estimatedBytes: number,
+  allowOverwrite = false
+): Promise<{
+  freeBytes: number;
+  exists: boolean;
+  ok: boolean;
+  reason: string | null;
+} | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invoke('preflight_export', { path, estimatedBytes, allowOverwrite });
+  } catch {
+    return null;
+  }
+}
+
+/** Previous exports, newest first (EXPORT.md B1-1). Empty until the engine lands it. */
+export async function listExportHistory(limit = 50): Promise<ExportHistoryRow[]> {
+  if (!isTauri()) return [];
+  try {
+    const dbPath = await defaultDbPath().catch(() => null);
+    if (!dbPath) return [];
+    return await invoke<ExportHistoryRow[]>('list_export_history', { dbPath, limit });
+  } catch {
+    return [];
+  }
+}
+
+/** The last export's FFmpeg command + stderr tail (EXPORT.md B1-5), or none. */
+export async function readExportLog(): Promise<string | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invoke<string | null>('read_export_log');
+  } catch {
+    return null;
+  }
 }
 
 /* ------------------------------------------------------------------ network */

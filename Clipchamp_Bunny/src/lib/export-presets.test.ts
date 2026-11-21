@@ -10,6 +10,13 @@ import {
   estimateGifBytes,
   estimateMp3Bytes,
   formatPreset,
+  formatValueLabel,
+  frameRateLabel,
+  resolutionValueLabel,
+  stageLabel,
+  etaSeconds,
+  fmtClock,
+  activeQuickPreset,
   targetFrame
 } from './export-presets.ts';
 
@@ -91,4 +98,42 @@ test('the offered bitrates and sample rates are the standard ones', () => {
   assert.deepEqual([...BITRATES], [128, 192, 256, 320]);
   assert.deepEqual([...SAMPLE_RATES], [44100, 48000]);
   assert.equal(GIF_MAX_SECS, 15);
+});
+
+test('quick presets light up the right card', () => {
+  assert.equal(activeQuickPreset('1080p', null), 'youtube');
+  assert.equal(activeQuickPreset('4k', null), '4k');
+  assert.equal(activeQuickPreset('720p', null), 'custom');
+  assert.equal(activeQuickPreset('1080p', [1080, 1920]), 'shorts');
+});
+
+test('frame rate label is honest about the source', () => {
+  assert.equal(frameRateLabel(null, 30), '30 FPS (source)');
+  assert.equal(frameRateLabel(60, 30), '60 FPS');
+  assert.equal(frameRateLabel(null, 0), 'Source');
+});
+
+test('resolution value label shows the real frame', () => {
+  assert.equal(resolutionValueLabel('720p', 1920, 1080), '720p (1280 × 720)');
+  assert.equal(resolutionValueLabel('source', 1920, 1080), 'Source (1920 × 1080)');
+});
+
+test('stage labels cover every engine stage', () => {
+  assert.equal(stageLabel('scan'), 'Preparing');
+  assert.equal(stageLabel('cut'), 'Rendering');
+  assert.equal(stageLabel('concat'), 'Joining');
+  assert.equal(stageLabel('mux'), 'Finalizing');
+  assert.equal(stageLabel('done'), 'Done');
+  assert.equal(stageLabel(''), 'Working');
+});
+
+test('eta is null until there is something to extrapolate', () => {
+  assert.equal(etaSeconds(0, 10), null);
+  assert.equal(etaSeconds(50, 10), 10);
+  assert.equal(etaSeconds(100, 10), null);
+});
+
+test('clock formatting pads seconds', () => {
+  assert.equal(fmtClock(65), '1:05');
+  assert.equal(fmtClock(3661), '1:01:01');
 });

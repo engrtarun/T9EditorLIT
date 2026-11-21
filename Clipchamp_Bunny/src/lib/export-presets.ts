@@ -148,6 +148,202 @@ export function estimateGifBytes(
   return Math.round(frames * width * height * 0.02);
 }
 
+/* ------------------------------------------------------------------ caps */
+
+/**
+ * What the installed backend actually understands.
+ *
+ * The export UI is built ahead of the engine: every control exists on screen,
+ * and this flag decides whether picking a value changes the render or only
+ * announces that the engine update is still coming (EXPORT.md B1-*). The app
+ * probes `export_capabilities` on start; the fallback below is "nothing yet",
+ * so an older binary can never be lied to.
+ */
+export interface ExportCaps {
+  /** `fps` option in ExportOptions (EXPORT.md B1-2). */
+  fps: boolean;
+  /** `codec` option — h264 / h265 / av1 choice (B1-2). */
+  codec: boolean;
+  /** `container` option — mov / mkv / webm besides mp4 (B1-2). */
+  container: boolean;
+  /** `includeAudio` option — drop the sound track (B1-2). */
+  includeAudio: boolean;
+  /** `crf` / `videoBitrateKbps` / `twoPass` quality knobs (B1-4). */
+  quality: boolean;
+  /** `preflight_export` — disk space + overwrite check (B1-3). */
+  preflight: boolean;
+  /** `list_export_history` (B1-1). */
+  history: boolean;
+  /** `read_export_log` (B1-5). */
+  logs: boolean;
+}
+
+/** Every capability off — what an engine without EXPORT.md's additions answers. */
+export const FALLBACK_CAPS: ExportCaps = {
+  fps: false,
+  codec: false,
+  container: false,
+  includeAudio: false,
+  quality: false,
+  preflight: false,
+  history: false,
+  logs: false
+};
+
+/** Probe answer (possibly partial) over the fallback, so unknown keys stay false. */
+export function mergeCaps(partial: Partial<ExportCaps> | null | undefined): ExportCaps {
+  return { ...FALLBACK_CAPS, ...(partial ?? {}) };
+}
+
+/* ---------------------------------------------------------- quick presets */
+
+/** The four cards on the Quick Export tab. */
+export type QuickPresetId = 'youtube' | 'shorts' | '4k' | 'custom';
+
+export interface QuickPreset {
+  id: QuickPresetId;
+  label: string;
+  /** The line under the label — the number the card promises. */
+  note: string;
+  /** Resolution the card sets; `null` = leave the panel's own choice alone. */
+  resolution: ResolutionId | null;
+  /**
+   * Canvas the card forces, or `null` for "the project's own shape".
+   * Only Shorts carries one — a vertical export of a horizontal project is
+   * exactly what that card is for, and it must not reshape the project.
+   */
+  canvas: [number, number] | null;
+}
+
+export const QUICK_PRESETS: QuickPreset[] = [
+  { id: 'youtube', label: 'YouTube', note: '1080p', resolution: '1080p', canvas: null },
+  { id: 'shorts', label: 'Shorts', note: '1080 × 1920', resolution: '1080p', canvas: [1080, 1920] },
+  { id: '4k', label: '4K UHD', note: '3840 × 2160', resolution: '4k', canvas: null },
+  { id: 'custom', label: 'Custom', note: 'Your Choice', resolution: null, canvas: null }
+];
+
+/**
+ * Which card the current settings light up.
+ *
+ * Derived, never stored: the cards are shortcuts over the same state the
+ * rows edit, so changing a row by hand simply moves the tick to "Custom".
+ */
+export function activeQuickPreset(
+  resolution: ResolutionId,
+  canvasOverride: [number, number] | null
+): QuickPresetId {
+  // A vertical canvas can only come from the Shorts card — the project's own
+  // frame is applied elsewhere and is not this panel's choice.
+  if (canvasOverride && canvasOverride[1] > canvasOverride[0]) return 'shorts';
+  if (resolution === '4k') return '4k';
+  if (resolution === '1080p') return 'youtube';
+  return 'custom';
+}
+
+/* ------------------------------------------------------------ frame rate */
+
+/** The frame rates the panel offers, in fps. */
+export const FRAME_RATES = [24, 25, 30, 50, 60] as const;
+
+/**
+ * The Frame Rate row's value.
+ *
+ * `null` means "keep the source's own rate" — the honest default, and the
+ * only one an engine without the `fps` option can honour.
+ */
+export function frameRateLabel(fps: number | null, sourceFps: number): string {
+  if (fps && fps > 0) return `${fps} FPS`;
+  const src = Math.round(sourceFps);
+  return src > 0 ? `${src} FPS (source)` : 'Source';
+}
+
+/** Does this choice ask the engine for something it cannot do yet? */
+export function needsBackend(fps: number | null, sourceFps: number, caps: ExportCaps): boolean {
+  if (!caps.fps && fps && fps > 0 && Math.round(sourceFps) !== fps) return true;
+  return false;
+}
+
+/* ---------------------------------------------------------------- labels */
+
+/** The Format row's value: the container the file will carry. */
+export function formatValueLabel(format: ExportFormat): string {
+  switch (format) {
+    case 'gif':
+      return 'GIF';
+    case 'mp3':
+      return 'MP3';
+    default:
+      return 'MP4';
+  }
+}
+
+/**
+ * The Resolution row's value: `1080p (1920 × 1080)`.
+ *
+ * The frame in parentheses is what the file will really be — the rescale
+ * target when there is one, the source size when there is not.
+ */
+export function resolutionValueLabel(
+  resolution: ResolutionId,
+  mediaWidth: number,
+  mediaHeight: number
+): string {
+  const preset = resolutionPreset(resolution);
+  const frame = targetFrame(resolution, mediaWidth, mediaHeight);
+  const dims =
+    frame ?? (mediaWidth && mediaHeight ? { width: mediaWidth, height: mediaHeight } : null);
+  return dims ? `${preset.label} (${dims.width} × ${dims.height})` : preset.label;
+}
+
+/* -------------------------------------------------------------- progress */
+
+/** Human names for the engine's progress stages. */
+export function stageLabel(stage: string): string {
+  switch (stage) {
+    case 'scan':
+      return 'Preparing';
+    case 'cut':
+      return 'Rendering';
+    case 'concat':
+      return 'Joining';
+    case 'audio':
+      return 'Audio';
+    case 'mux':
+      return 'Finalizing';
+    case 'gif':
+      return 'Frames';
+    case 'done':
+      return 'Done';
+    default:
+      return stage ? stage.charAt(0).toUpperCase() + stage.slice(1) : 'Working';
+  }
+}
+
+/**
+ * Seconds left, from what has happened so far — or `null` while there is
+ * nothing to extrapolate from (0% or no clock yet).
+ *
+ * Linear on purpose: a bar that has done a third of the work in a known time
+ * owes the user a number, not a model of FFmpeg's mood.
+ */
+export function etaSeconds(percent: number, elapsedSecs: number): number | null {
+  if (!(percent > 0) || !(elapsedSecs > 0) || percent >= 100) return null;
+  return Math.round((elapsedSecs / percent) * (100 - percent));
+}
+
+/** `1:05` / `12:04` for the elapsed and ETA clocks. */
+export function fmtClock(totalSecs: number): string {
+  if (!Number.isFinite(totalSecs) || totalSecs < 0) return '—';
+  const s = Math.round(totalSecs);
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    return `${h}:${String(m % 60).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
+  }
+  return `${m}:${String(r).padStart(2, '0')}`;
+}
+
 /**
  * The FFmpeg filter graph that joins the kept ranges into one stream.
  *

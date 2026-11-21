@@ -106,6 +106,27 @@ export interface ThumbnailStrip {
   dir: string;
 }
 
+/**
+ * One finished (or failed) export, as the engine records it.
+ * Mirrors Rust `ExportHistoryRow` (EXPORT.md §3, B1-1) — serde camelCase.
+ */
+export interface ExportHistoryRow {
+  id: number;
+  /** Unix ms. */
+  createdAt: number;
+  path: string;
+  sizeBytes: number;
+  durationSecs: number;
+  /** `video` · `gif` · `mp3`. */
+  format: string;
+  resolution: string;
+  /** The quick preset id, or `custom`. */
+  preset: string;
+  /** `done` · `failed`. */
+  status: string;
+  error: string | null;
+}
+
 /** One audio chunk the Rust side split out, handed to the cloud transcriber. */
 export interface AudioChunk {
   index: number;
