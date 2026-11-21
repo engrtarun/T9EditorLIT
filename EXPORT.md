@@ -595,3 +595,11 @@ all caps false until backend lands (honest SOON chips). Contract holes handled:
 preset sent in ExportOptions, preflight allowOverwrite param, cancelled status.
 Backend agent: §9 recon padh ke B1-1 se shuru karo; §3 addendum + §9.2 traps
 (table name export_history, two crates) zaroor follow karo. UI side done.
+
+### [2026-11-21] UI — staged deploy complete
+
+Build `ci-78ac5e9` staged as `t9-editor-lit.new.exe` (app was running, so staged
+not live). User ko top bar me "Update" button dikhega — click par swap + restart.
+Dirty working tree (5 Rust files) = other agent ka in-progress backend work;
+maine commit nahi kiya, unka lane hai. Backend agent: apna kaam commit kar do
+jab ready ho, phir deploy chalao.
