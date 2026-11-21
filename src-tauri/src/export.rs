@@ -133,6 +133,31 @@ pub struct ExportOptions {
     pub apply_cuts: bool,
     /// ID3 title for an audio export.
     pub title: Option<String>,
+    /// Quick preset id chosen in the panel: `youtube` · `shorts` · `4k` ·
+    /// `custom`. Recorded in the history row; it never changes the render.
+    #[serde(default)]
+    pub preset: Option<String>,
+    /// Output frame rate. `None` keeps the source's own rate.
+    #[serde(default)]
+    pub fps: Option<f64>,
+    /// Encoder family override: `h264` · `h265` · `av1`.
+    #[serde(default)]
+    pub codec: Option<String>,
+    /// Container override: `mp4` · `mov` · `mkv` · `webm`.
+    #[serde(default)]
+    pub container: Option<String>,
+    /// `false` drops the sound track entirely (`-an` + no audio mux).
+    #[serde(default)]
+    pub include_audio: bool,
+    /// Constant-rate-factor override (0-51) for encoded video.
+    #[serde(default)]
+    pub crf: Option<u8>,
+    /// Average video bitrate target, in kbps.
+    #[serde(default)]
+    pub video_bitrate_kbps: Option<u32>,
+    /// Two-pass encode. Only honoured when the render is one encode pass.
+    #[serde(default)]
+    pub two_pass: bool,
 }
 
 impl Default for ExportOptions {
@@ -150,7 +175,60 @@ impl Default for ExportOptions {
             normalize: false,
             apply_cuts: true,
             title: None,
+            preset: None,
+            fps: None,
+            codec: None,
+            container: None,
+            include_audio: true,
+            crf: None,
+            video_bitrate_kbps: None,
+            two_pass: false,
         }
+    }
+}
+
+/// Pure, unit-testable rate-control state derived from `ExportOptions`.
+/// Kept on the plan so the renderer never has to re-read the request.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodeTune {
+    pub crf: Option<u8>,
+    pub video_bitrate_kbps: Option<u32>,
+    pub two_pass: bool,
+}
+
+impl EncodeTune {
+    /// Bitrate wins when both knobs are set — a CRF flag alongside `-b:v`
+    /// silently changes what x264 thinks the user asked for.
+    pub fn from_options(opts: &ExportOptions) -> (Self, Vec<String>) {
+        let mut warnings = Vec::new();
+        let crf = opts.crf.map(|c| c.min(51));
+        if let Some(c) = opts.crf {
+            if c > 51 {
+                warnings.push(format!("CRF {c} is out of range — using 51"));
+            }
+        }
+        if crf.is_some() && opts.video_bitrate_kbps.is_some() {
+            warnings.push(
+                "CRF and video bitrate were both set — bitrate wins".to_string(),
+            );
+        }
+        let two_pass = opts.two_pass && opts.video_bitrate_kbps.is_some();
+        if opts.two_pass && opts.video_bitrate_kbps.is_none() {
+            warnings.push("two-pass needs a video bitrate — running single pass".to_string());
+        }
+        (
+            Self {
+                crf: if opts.video_bitrate_kbps.is_some() {
+                    None
+                } else {
+                    crf
+                },
+                video_bitrate_kbps: opts.video_bitrate_kbps,
+                two_pass,
+            },
+            warnings,
+        )
     }
 }
 
@@ -212,6 +290,13 @@ pub struct ExportPlan {
     /// The sequence canvas every piece was rendered onto, when one was asked
     /// for. The parts of a multi-clip export have to share it exactly.
     pub canvas: Option<[u32; 2]>,
+    /// Effective rate-control settings (with the impossible combinations
+    /// already resolved into warnings).
+    pub tune: EncodeTune,
+    /// Chosen container, when it overrides the output extension.
+    pub container: Option<String>,
+    /// `false` means the render carries no audio track.
+    pub include_audio: bool,
     pub warnings: Vec<String>,
 }
 
@@ -681,6 +766,8 @@ pub fn build_plan(
     let any_gain = segments.iter().any(|s| (s.gain - 1.0).abs() > 1e-6);
 
     let mut warnings = Vec::new();
+    let (mut tune, tune_warnings) = EncodeTune::from_options(&req.options);
+    warnings.extend(tune_warnings);
     // Light files (small and short) re-encode outright â€” no keyframe grid,
     // no family-mixing restriction, exact cut points. Heavy files use the
     // keyframe-cached hybrid path that stream-copies aligned cuts.
@@ -844,6 +931,14 @@ pub fn build_plan(
         audio_copy = false;
     }
 
+    // Two passes over 30 one-second micro-encodes costs twice the CPU for no
+    // quality gain. Honour it only when the whole render is one encode pass.
+    let single_encode = outcome.pieces.len() == 1 && outcome.pieces[0].kind == PieceKind::Encode;
+    if tune.two_pass && !single_encode {
+        warnings.push("two-pass needs one whole encode pass — running single pass".to_string());
+        tune.two_pass = false;
+    }
+
     let output_duration_secs = outcome.pieces.iter().map(|p| p.duration_secs).sum();
 
     Ok(ExportPlan {
@@ -866,11 +961,19 @@ pub fn build_plan(
         encoder,
         keyframe_count: keyframes.len(),
         audio_copied: audio_copy,
-        estimated_size_bytes: estimate_size(info, &outcome.pieces, scale_factor),
+        estimated_size_bytes: match req.options.video_bitrate_kbps {
+            Some(kbps) if kbps > 0 => {
+                ((kbps as f64 * 1000.0 / 8.0) * output_duration_secs).round() as u64
+            }
+            _ => estimate_size(info, &outcome.pieces, scale_factor),
+        },
         quality: req.options.quality.clone(),
         resolution: req.options.resolution.clone(),
         scale,
         canvas: canvas.map(|(w, h)| [w, h]),
+        tune,
+        container: req.options.container.clone(),
+        include_audio: req.options.include_audio,
         warnings,
         pieces: outcome.pieces,
     })
@@ -892,6 +995,14 @@ impl ExportOptions {
             normalize: self.normalize,
             apply_cuts: self.apply_cuts,
             title: self.title.clone(),
+            preset: self.preset.clone(),
+            fps: self.fps,
+            codec: self.codec.clone(),
+            container: self.container.clone(),
+            include_audio: self.include_audio,
+            crf: self.crf,
+            video_bitrate_kbps: self.video_bitrate_kbps,
+            two_pass: self.two_pass,
         }
     }
 }
@@ -2443,6 +2554,14 @@ mod tests {
             normalize: false,
             apply_cuts: true,
             title: None,
+            preset: None,
+            fps: None,
+            codec: None,
+            container: None,
+            include_audio: true,
+            crf: None,
+            video_bitrate_kbps: None,
+            two_pass: false,
         }
     }
 
