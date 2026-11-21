@@ -16,6 +16,8 @@
   import BatchQueuePanel from './lib/components/dashboard/BatchQueuePanel.svelte';
   import BrowserView from './lib/components/browser/BrowserView.svelte';
   import BackgroundVideo from './lib/components/BackgroundVideo.svelte';
+  import { whatsNew } from './lib/stores/whatsnew.svelte';
+  import WhatsNewModal from './lib/components/WhatsNewModal.svelte';
   import { mode } from './lib/stores/mode.svelte';
   import { chrome } from './lib/stores/chrome.svelte';
   import { app } from './lib/stores/app.svelte';
@@ -255,6 +257,16 @@
     // back once at the root. A list that vanished on restart was the whole
     // complaint behind "30 files, kisi ka pata nahi chala".
     void batch.hydrate();
+    // If a newer build is staged, show What's New on open.
+    void (async () => {
+      try {
+        const { installedBuild } = await import('./lib/ipc');
+        const b = await installedBuild();
+        if (b && b.updateReady) whatsNew.show();
+      } catch {
+        /* dev build / no marker */
+      }
+    })();
     // Tab chips now live in EVERY top bar (Home, Studio, browser), so the
     // strip has to exist before the browser is ever opened: restore the
     // metadata at shell attach. This only reads SQLite and writes tab
@@ -768,6 +780,7 @@
 <CommandPalette />
 <SettingsPanel />
 <Toasts />
+<WhatsNewModal />
 <!-- One usage panel for both triggers (the T9 Cloud card and the editor's
      quota chip). Mounted here because mode isolation unmounts every screen
      below it — a dialog living inside a screen could not outlive it. -->

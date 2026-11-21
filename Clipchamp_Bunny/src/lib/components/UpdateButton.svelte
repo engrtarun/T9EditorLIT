@@ -20,6 +20,7 @@
    */
   import { applyStagedUpdate, installedBuild, isTauri } from '../ipc';
   import { toast } from '../stores/toast.svelte';
+  import { whatsNew } from '../stores/whatsnew.svelte';
 
   let updateReady = $state(false);
   let applying = $state(false);
@@ -82,25 +83,40 @@
 </script>
 
 {#if updateReady}
-  <button
-    onclick={restartIntoNewBuild}
-    disabled={applying}
-    class="group mr-1 flex shrink-0 items-center rounded-md border border-nc-line bg-nc-panel-2 px-2 py-[3px] text-[11px] leading-4 font-medium text-nc-mut transition-colors hover:border-nc-brand/50 hover:text-nc-brand disabled:opacity-50"
-    title={stagedBuild
-      ? `Build ${stagedBuild} is staged. Click to restart into it.`
-      : 'A newer build is staged. Click to restart into it.'}
-  >
-    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true" class="shrink-0">
-      <path
-        d="M7 11V3M3.5 7.63128L7 11L10.5 7.63128"
-        stroke="currentColor"
-        stroke-width="1.4"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-    </svg>
-    <span class="ms-1.5 me-px transition-colors duration-150 group-hover:text-nc-brand">
-      {applying ? 'Restarting...' : 'Update'}
-    </span>
-  </button>
+  <div class="mr-1 flex shrink-0 items-center gap-1">
+    <button
+      onclick={restartIntoNewBuild}
+      disabled={applying}
+      class="group flex items-center rounded-md border border-nc-line bg-nc-panel-2 px-2 py-[3px] text-[11px] leading-4 font-medium text-nc-mut transition-colors hover:border-nc-brand/50 hover:text-nc-brand disabled:opacity-50"
+      title={stagedBuild
+        ? `Build ${stagedBuild} is staged. Click to restart into it.`
+        : 'A newer build is staged. Click to restart into it.'}
+    >
+      <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true" class="shrink-0">
+        <path
+          d="M7 11V3M3.5 7.63128L7 11L10.5 7.63128"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+      <span class="ms-1.5 me-px transition-colors duration-150 group-hover:text-nc-brand">
+        {applying ? 'Restarting...' : 'Update'}
+      </span>
+    </button>
+    <button
+      type="button"
+      onclick={() => whatsNew.show()}
+      class="grid h-[22px] w-[22px] place-items-center rounded-md border border-nc-line bg-nc-panel-2 text-nc-mut transition-colors hover:border-nc-brand/50 hover:text-nc-brand"
+      title="What's New - is build me kya naya hai"
+      aria-label="What's New"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <path d="M14 2v6h6" />
+        <path d="M9 13h6M9 17h4" />
+      </svg>
+    </button>
+  </div>
 {/if}
