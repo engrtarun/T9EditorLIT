@@ -14,18 +14,18 @@ bun $wh off <name> --owner <agent>         # release when done
 
 ## The stack
 
-| Need | Skill | Source | What it enforces |
-|---|---|---|---|
-| Time pressure | `timeboxed-work` | GitHub `Gzh0821/timeboxed-work` @ `88b8846` | bounded/stretch intent, soft/guarded/hard modes, must/should/could, isolated timers, finalization buffer, honest handoff. **Local PowerShell port** — no Python. See `docs/TIMEBOXED_WORK_REFERENCE.md`. |
-| "Should I delegate?" | `codex-dispatch` | GitHub `yinguangyao/codex-dispatch-skill` @ `00630de` | Mandatory visible decision `Dispatch: Direct \| Single \| Parallel \| Sequential` before the first child-work call. Hard delegation gates, max 3 children per decision, explicit child contract, no overlapping files, no grandchildren. |
-| "Delegate everything + verify" | `sub-agent-forced` | GitHub `float1122/sub-agent-forced` @ `f245e93` | Main agent = orchestrator only. Decompose → dispatch → **verify one load-bearing fact yourself** (build/test/grep/read/diff) → report. Re-dispatch with the discrepancy when a claim fails your check. |
-| Web evidence | `web-research` | local vault | Decompose into 2–4 sub-questions, prefer primary sources, cross-check numbers, inline links + "what I could not verify". Uses built-in `websearch`/`webfetch` — no MCP. |
-| Parallel dispatch gate | `dispatching-parallel-agents` | local vault | Use when 2+ independent tasks have no shared state or sequential dependency. |
-| Deep research → playbook | `deep-research` | GitHub `webcpu/deep-research-skill` @ `a70f438` | Launches 3–5 parallel research agents from distinct angles (docs, practitioners, gotchas, ecosystem), then writes/updates a sourced markdown playbook. Pure markdown. |
-| Heavy deep research | `sn-deep-research` | local vault (Python) | Multi-agent orchestration: quick / normal / heavy tiers, evidence JSON, review, perspectives, supplement research, citation rendering. Needs Python (3.14.5 available globally) and web search. |
-| Task accounting | `todo-tracker` | local vault | Persistent `TODO.md`, add/done/list/summary. Use `TODO_FILE` to scope it to a task folder. |
-| Task breakdown | `to-tickets` | local vault | Turns a plan/spec/conversation into tracer-bullet tickets with blocking edges. |
-| Big multi-session work | `wayfinder` | local vault | Shared map of decision tickets, resolve one at a time. |
+| Need                           | Skill                         | Source                                                | What it enforces                                                                                                                                                                                                                         |
+| ------------------------------ | ----------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Time pressure                  | `timeboxed-work`              | GitHub `Gzh0821/timeboxed-work` @ `88b8846`           | bounded/stretch intent, soft/guarded/hard modes, must/should/could, isolated timers, finalization buffer, honest handoff. **Local PowerShell port** — no Python. See `docs/TIMEBOXED_WORK_REFERENCE.md`.                                 |
+| "Should I delegate?"           | `codex-dispatch`              | GitHub `yinguangyao/codex-dispatch-skill` @ `00630de` | Mandatory visible decision `Dispatch: Direct \| Single \| Parallel \| Sequential` before the first child-work call. Hard delegation gates, max 3 children per decision, explicit child contract, no overlapping files, no grandchildren. |
+| "Delegate everything + verify" | `sub-agent-forced`            | GitHub `float1122/sub-agent-forced` @ `f245e93`       | Main agent = orchestrator only. Decompose → dispatch → **verify one load-bearing fact yourself** (build/test/grep/read/diff) → report. Re-dispatch with the discrepancy when a claim fails your check.                                   |
+| Web evidence                   | `web-research`                | local vault                                           | Decompose into 2–4 sub-questions, prefer primary sources, cross-check numbers, inline links + "what I could not verify". Uses built-in `websearch`/`webfetch` — no MCP.                                                                  |
+| Parallel dispatch gate         | `dispatching-parallel-agents` | local vault                                           | Use when 2+ independent tasks have no shared state or sequential dependency.                                                                                                                                                             |
+| Deep research → playbook       | `deep-research`               | GitHub `webcpu/deep-research-skill` @ `a70f438`       | Launches 3–5 parallel research agents from distinct angles (docs, practitioners, gotchas, ecosystem), then writes/updates a sourced markdown playbook. Pure markdown.                                                                    |
+| Heavy deep research            | `sn-deep-research`            | local vault (Python)                                  | Multi-agent orchestration: quick / normal / heavy tiers, evidence JSON, review, perspectives, supplement research, citation rendering. Needs Python (3.14.5 available globally) and web search.                                          |
+| Task accounting                | `todo-tracker`                | local vault                                           | Persistent `TODO.md`, add/done/list/summary. Use `TODO_FILE` to scope it to a task folder.                                                                                                                                               |
+| Task breakdown                 | `to-tickets`                  | local vault                                           | Turns a plan/spec/conversation into tracer-bullet tickets with blocking edges.                                                                                                                                                           |
+| Big multi-session work         | `wayfinder`                   | local vault                                           | Shared map of decision tickets, resolve one at a time.                                                                                                                                                                                   |
 
 ## Two delegation skills — how they coexist
 
@@ -38,7 +38,7 @@ They disagree by design, so use them by intent:
 - **`sub-agent-forced` is opt-in for "pure orchestration" tasks.** Its HARD
   RULE forbids the main agent from doing any real work directly. Trigger it
   when the user explicitly wants the whole job routed through subagents, e.g.
-  *"sub-agent-forced se karo"*. Do not let its rule override normal small
+  _"sub-agent-forced se karo"_. Do not let its rule override normal small
   edits — it even forbids one-line fixes by the main agent.
 
 Both agree on the important part: **a subagent's "done" is a claim, not a
@@ -56,10 +56,10 @@ fact** — verify it yourself before reporting success.
 
 ## Installed but OFF (need API keys)
 
-| Skill | Source | Why off |
-|---|---|---|
+| Skill                                    | Source                                            | Why off                                                                                                |
+| ---------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `searchcans-deep-research` (+6 siblings) | GitHub `SearchCans/searchcans-skills` @ `32b5cbf` | Needs `SEARCHCANS_API_KEY` for SERP + Reader APIs. 7 skills installed; lease them once the key is set. |
-| `firecrawl-*` | GitHub `firecrawl/skills` | Needs Firecrawl CLI + `FIRECRAWL_API_KEY`; not installed here yet. |
+| `firecrawl-*`                            | GitHub `firecrawl/skills`                         | Needs Firecrawl CLI + `FIRECRAWL_API_KEY`; not installed here yet.                                     |
 
 Also in the vault but off: `sn-deepresearch-cli` (needs an API key and installs
 a CLI) — skip unless explicitly requested.
@@ -81,7 +81,7 @@ a CLI) — skip unless explicitly requested.
   work" rule — read it before leaning on it (`bun $wh cat sub-agent-forced`).
 - `codex-dispatch` names Codex-style agents (`luna-explorer`, `terra-worker`,
   `terra-debugger`, `sol-reviewer`); on OpenCode map these to the available
-  `explore` / `general` subagents, keeping the *decision* framework intact.
+  `explore` / `general` subagents, keeping the _decision_ framework intact.
 - Neither skill installs anything or needs Python; both are pure markdown.
 - `wh update <pack>` re-downloads upstream — the `timeboxed-work` PowerShell
   port must be re-applied after an update (see its reference doc).

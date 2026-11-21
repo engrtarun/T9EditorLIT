@@ -1,13 +1,13 @@
 # TODO — Harry-style 60fps film + agent-proof system
 
-*Last updated: 2026-11-21, after the measured-research round*
+_Last updated: 2026-11-21, after the measured-research round_
 
 ## What the user actually said
 
 > "bro maja nahi aaya" — motion slow/boring, style galat, cuts nahi (ek hi take).
 > Fix scope: **kam time + quality motion frames** (dono).
 
-Then, on the research sprint: *"fayda banane me nahi h, use karne me h"* — the
+Then, on the research sprint: _"fayda banane me nahi h, use karne me h"_ — the
 numbers only count once they change the film.
 
 ## 🔴 Now
@@ -23,15 +23,15 @@ numbers only count once they change the film.
 
 ## ✅ Research sprint → what changed (5/5 answers in)
 
-| Finding | Applied |
-|---|---|
-| Reference mean motion is **1.233**, not 2.75 | SKILL.md + never-do-this §J corrected; `motion-report` verdict rescaled (mean < 1.0 = frozen) |
-| Reference beats every **2.5–3.0 s**; ours was 4.75 s | staged lines spread 0/0.45/0.9/1.35 s, annot at +1.6 s, `stamp` at ~2.6 s on 15 of 16 cards |
-| Reference ink **2.7 %**; ours 0.37 % → 1.91 % | `cardScale` 1.35 → 1.48, `zoom` 1.4 → 1.46, act zoom spread |
-| A cut you cannot see measured **19.63** (cut = >20) | act zoom ±9 % + per-act Y offset → cut now measures **20.48** and `cuts 1` |
-| PNG capture was 772 ms/frame; `seek()` is 0.5 ms | `--capture jpeg` q90 (SSIM 0.9959) → **207–264 ms/frame** |
-| 2× supersample buys nothing | measured 1× edge energy 4.190 vs 2× 4.174, SSIM 0.9948 → **1× is the default** |
-| `pushIn` 4.5 % was on in this project | removed — the reference has no zoom at all, and per-frame `scale()` costs +340 ms/f |
+| Finding                                              | Applied                                                                                       |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Reference mean motion is **1.233**, not 2.75         | SKILL.md + never-do-this §J corrected; `motion-report` verdict rescaled (mean < 1.0 = frozen) |
+| Reference beats every **2.5–3.0 s**; ours was 4.75 s | staged lines spread 0/0.45/0.9/1.35 s, annot at +1.6 s, `stamp` at ~2.6 s on 15 of 16 cards   |
+| Reference ink **2.7 %**; ours 0.37 % → 1.91 %        | `cardScale` 1.35 → 1.48, `zoom` 1.4 → 1.46, act zoom spread                                   |
+| A cut you cannot see measured **19.63** (cut = >20)  | act zoom ±9 % + per-act Y offset → cut now measures **20.48** and `cuts 1`                    |
+| PNG capture was 772 ms/frame; `seek()` is 0.5 ms     | `--capture jpeg` q90 (SSIM 0.9959) → **207–264 ms/frame**                                     |
+| 2× supersample buys nothing                          | measured 1× edge energy 4.190 vs 2× 4.174, SSIM 0.9948 → **1× is the default**                |
+| `pushIn` 4.5 % was on in this project                | removed — the reference has no zoom at all, and per-frame `scale()` costs +340 ms/f           |
 
 ## ✅ System (the part other agents use)
 

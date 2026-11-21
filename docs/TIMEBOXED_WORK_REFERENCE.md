@@ -3,14 +3,14 @@
 Skill for "agent ko time pressure ke saath kaam dena". Installed from GitHub
 into the local vault, so any agent on this machine can pick it up.
 
-| Field | Value |
-|---|---|
-| Vault item | `timeboxed-work` (currently **ON**, global) |
-| Source | `Gzh0821/timeboxed-work` — https://github.com/Gzh0821/timeboxed-work |
-| Installed commit | `88b8846` |
-| Local path | `C:\Users\pocot\.opencode\vault\packs\timeboxed-work\skills\timeboxed-work\` |
-| Tags | `powershell windows no-python deadline time-pressure timebox hard-deadline agent-timebox` |
-| License | Apache-2.0 (see `LICENSE` in the pack) |
+| Field            | Value                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------- |
+| Vault item       | `timeboxed-work` (currently **ON**, global)                                               |
+| Source           | `Gzh0821/timeboxed-work` — https://github.com/Gzh0821/timeboxed-work                      |
+| Installed commit | `88b8846`                                                                                 |
+| Local path       | `C:\Users\pocot\.opencode\vault\packs\timeboxed-work\skills\timeboxed-work\`              |
+| Tags             | `powershell windows no-python deadline time-pressure timebox hard-deadline agent-timebox` |
+| License          | Apache-2.0 (see `LICENSE` in the pack)                                                    |
 
 ## How an agent gets it from wh
 
@@ -44,24 +44,25 @@ deadline", "use the full time / keep improving until the deadline", "stop at
 The skill is built to protect a **small, verified core**, not to maximise
 output per minute:
 
-| Guardrail | What it does to quality |
-|---|---|
-| `must / should / could` plan | The `must` is a *verifiable* result. When behind, `could` is cut first, then `should` — the verified core is protected last. |
-| Finalization buffer | 1–2 min for boxes <10 min; otherwise `max(5 min, min(10 min, 10%))`. No new broad changes once `finalizing`; only validation, cleanup, handoff. |
-| `bounded` intent (default) | Stop when the useful task is done — do **not** fill remaining time with junk work. No padding, no fake activity. |
-| `stretch` intent | Only useful, low-risk work in a fixed order: correctness/edge cases → tests → real complexity cleanup → docs/handoff → small polish. Explicitly forbids inventing work and broad refactors near the deadline. |
-| Checkpoints | Before each phase, compare progress to the plan; cut low-priority scope deliberately instead of rushing the core. |
-| `soft` mode (default) | Never kills a running command; at the deadline it stops starting new work and summarises. A test or build is not severed mid-run. |
-| Honest handoff | On expiry it reports what is done, what is unverified and what remains — it does not silently disappear. |
+| Guardrail                    | What it does to quality                                                                                                                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `must / should / could` plan | The `must` is a _verifiable_ result. When behind, `could` is cut first, then `should` — the verified core is protected last.                                                                                  |
+| Finalization buffer          | 1–2 min for boxes <10 min; otherwise `max(5 min, min(10 min, 10%))`. No new broad changes once `finalizing`; only validation, cleanup, handoff.                                                               |
+| `bounded` intent (default)   | Stop when the useful task is done — do **not** fill remaining time with junk work. No padding, no fake activity.                                                                                              |
+| `stretch` intent             | Only useful, low-risk work in a fixed order: correctness/edge cases → tests → real complexity cleanup → docs/handoff → small polish. Explicitly forbids inventing work and broad refactors near the deadline. |
+| Checkpoints                  | Before each phase, compare progress to the plan; cut low-priority scope deliberately instead of rushing the core.                                                                                             |
+| `soft` mode (default)        | Never kills a running command; at the deadline it stops starting new work and summarises. A test or build is not severed mid-run.                                                                             |
+| Honest handoff               | On expiry it reports what is done, what is unverified and what remains — it does not silently disappear.                                                                                                      |
 
 **The honest limit:** a timebox cannot create time. If the budget is shorter
-than the `must` itself, something *will* be handed off unfinished — the skill
+than the `must` itself, something _will_ be handed off unfinished — the skill
 makes that visible instead of pretending success. It also does not enforce your
 project's own quality gates: put verification in the `must` explicitly, e.g.
 "must = fix + `npm run check` + page renders", otherwise a time-pressured agent
 may treat the check as `should`.
 
 **What can actually hurt quality:**
+
 - `hard` mode + `run_with_deadline.ps1` can terminate a wrapped child command
   mid-flight → partial artifacts and unverified state. Use `hard` only when the
   user explicitly says "must stop exactly on time", and wrap only long

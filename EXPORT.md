@@ -586,7 +586,9 @@ Extra diya: `tools/export-contract-audit.mjs` (aaj 88 commands / 89 invoke sites
 export.md v1 likha. Backend agent ke liye §4 me B1-1…B1-6 ready hain —
 shuru B1-1 (export history) se karo, sabse zyada UI ko unblock karta hai.
 Contract §3 me exact names hai, improvise mat karna. UI naya Export screen
+
 ### [2026-11-21] UI — new Export screen shipped
+
 Naya ExportMode.svelte (image-approved design) + ExportSelect + ExportHistoryPanel.
 svelte-check 0/0, lint clean, 232 tests pass. Caps probe via export_capabilities;
 all caps false until backend lands (honest SOON chips). Contract holes handled:
