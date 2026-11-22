@@ -195,6 +195,8 @@ pub struct EncodeTune {
     pub crf: Option<u8>,
     pub video_bitrate_kbps: Option<u32>,
     pub two_pass: bool,
+    /// Output frame rate for encoded pieces; `None` keeps the source rate.
+    pub fps: Option<f64>,
 }
 
 impl EncodeTune {
@@ -217,6 +219,14 @@ impl EncodeTune {
         if opts.two_pass && opts.video_bitrate_kbps.is_none() {
             warnings.push("two-pass needs a video bitrate — running single pass".to_string());
         }
+        let fps = match opts.fps {
+            Some(f) if f.is_finite() && (1.0..=240.0).contains(&f) => Some(f),
+            Some(f) => {
+                warnings.push(format!("frame rate {f} is out of range — keeping the source"));
+                None
+            }
+            None => None,
+        };
         (
             Self {
                 crf: if opts.video_bitrate_kbps.is_some() {
@@ -226,6 +236,7 @@ impl EncodeTune {
                 },
                 video_bitrate_kbps: opts.video_bitrate_kbps,
                 two_pass,
+                fps,
             },
             warnings,
         )
@@ -680,6 +691,9 @@ fn family_of(video_codec: &str) -> Option<&'static str> {
 fn pick_encoder(family: &str) -> Result<(Option<String>, Option<String>), String> {
     let (hw, cpu) = match family {
         "hevc" => (vec!["hevc_qsv", "hevc_nvenc", "hevc_amf"], Some("libx265")),
+        // AV1 hardware is rare (RTX 40 series / recent ARC). libsvtav1 is the
+        // honest CPU fallback; if neither works we fail here, not mid-render.
+        "av1" => (vec!["av1_nvenc", "av1_qsv"], Some("libsvtav1")),
         _ => (vec!["h264_qsv", "h264_nvenc", "h264_amf"], Some("libx264")),
     };
 
@@ -704,15 +718,21 @@ fn pick_encoder(family: &str) -> Result<(Option<String>, Option<String>), String
 
 /// Audio handling, decided once for the whole export: a concat must not change
 /// codec midway, and MP4 refuses some source audio codecs outright.
-fn audio_copied(info: &MediaInfo, output: &Path) -> (bool, Vec<String>) {
+fn audio_copied(info: &MediaInfo, output: &Path, container: Option<&str>) -> (bool, Vec<String>) {
     if !info.has_audio {
         return (false, Vec::new());
     }
     let codec = info.audio_codec.as_deref().unwrap_or("");
-    let wants_mp4 = output
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
+    let ext = container
+        .map(str::to_string)
+        .or_else(|| {
+            output
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let wants_mp4 = ext.eq_ignore_ascii_case("mp4") || ext.eq_ignore_ascii_case("mov");
     // What MP4 can hold natively; anything else (PCM, TrueHD, â€¦) goes to AAC
     // in every piece so the stream stays one codec end to end.
     let mp4_native = ["aac", "mp3", "opus", "ac3", "eac3", "alac"];
@@ -768,6 +788,15 @@ pub fn build_plan(
     let mut warnings = Vec::new();
     let (mut tune, tune_warnings) = EncodeTune::from_options(&req.options);
     warnings.extend(tune_warnings);
+    let container = req.options.container.as_deref().and_then(|c| {
+        let lower = c.to_ascii_lowercase();
+        if ["mp4", "mov", "mkv", "webm"].contains(&lower.as_str()) {
+            Some(lower)
+        } else {
+            warnings.push(format!("unknown container '{c}' - using the output extension"));
+            None
+        }
+    });
     // Light files (small and short) re-encode outright â€” no keyframe grid,
     // no family-mixing restriction, exact cut points. Heavy files use the
     // keyframe-cached hybrid path that stream-copies aligned cuts.
@@ -841,6 +870,39 @@ pub fn build_plan(
         }
     }
 
+    // Both a frame-rate change and a codec change need a filter/encoder; a
+    // stream copy can do neither, so they force a full encode with a warning.
+    if tune.fps.is_some() && effective_mode != "encode" {
+        warnings.push(
+            "frame rate conversion re-encodes every piece - a stream copy cannot change fps"
+                .to_string(),
+        );
+        effective_mode = "encode".to_string();
+    }
+
+    let mut forced_family: Option<&str> = None;
+    match req
+        .options
+        .codec
+        .as_deref()
+        .map(|c| c.to_ascii_lowercase())
+    {
+        Some(c) if c == "h264" => forced_family = Some("h264"),
+        Some(c) if c == "h265" || c == "hevc" => forced_family = Some("hevc"),
+        Some(c) if c == "av1" => forced_family = Some("av1"),
+        Some(other) => warnings.push(format!("unknown codec '{other}' - keeping the source family")),
+        None => {}
+    }
+    if let Some(family) = forced_family {
+        let source_family = family_of(info.video_codec.as_deref().unwrap_or(""));
+        if source_family != Some(family) && effective_mode != "encode" {
+            warnings.push(format!(
+                "codec {family} cannot be mixed with stream-copied pieces - every piece is re-encoded"
+            ));
+            effective_mode = "encode".to_string();
+        }
+    }
+
     let mut outcome = plan_pieces(
         &segments,
         &keyframes,
@@ -851,7 +913,11 @@ pub fn build_plan(
     // 30 fps canvas, so its own grid is not the source's â€” the single-source
     // pipeline is the only place the source frame rate is the authority.
     if canvas.is_none() {
-        snap_pieces_to_frames(&mut outcome.pieces, info.fps.unwrap_or(0.0), duration);
+        snap_pieces_to_frames(
+            &mut outcome.pieces,
+            tune.fps.unwrap_or(info.fps.unwrap_or(0.0)),
+            duration,
+        );
     }
 
     if outcome.pieces.is_empty() {
@@ -870,7 +936,9 @@ pub fn build_plan(
         let family = if req.options.canvas.is_some() {
             "h264"
         } else {
-            family_of(info.video_codec.as_deref().unwrap_or("")).unwrap_or("h264")
+            forced_family
+                .or_else(|| family_of(info.video_codec.as_deref().unwrap_or("")))
+                .unwrap_or("h264")
         };
         let (primary, fallback) = pick_encoder(family)?;
         let primary_is_hardware = primary
@@ -910,7 +978,7 @@ pub fn build_plan(
     let (mut audio_copy, audio_warnings) = if canvas.is_some() {
         (false, Vec::new())
     } else {
-        audio_copied(info, Path::new(&req.output))
+        audio_copied(info, Path::new(&req.output), req.options.container.as_deref())
     };
     warnings.extend(audio_warnings);
     if any_gain && canvas.is_none() {
@@ -972,7 +1040,7 @@ pub fn build_plan(
         scale,
         canvas: canvas.map(|(w, h)| [w, h]),
         tune,
-        container: req.options.container.clone(),
+        container,
         include_audio: req.options.include_audio,
         warnings,
         pieces: outcome.pieces,
@@ -1089,6 +1157,7 @@ fn piece_args(
     quality: &str,
     scale: Option<&str>,
     canvas: Option<(u32, u32)>,
+    tune: &EncodeTune,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
@@ -1148,17 +1217,25 @@ fn piece_args(
             let enc = encoder.unwrap_or("libx264");
             args.push("-c:v".into());
             args.push(enc.to_string());
-            args.extend(encoder_args(enc, quality));
+            args.extend(encoder_args(enc, quality, tune));
             if let Some(fmt) = pix_fmt {
                 args.push("-pix_fmt".into());
                 args.push(fmt.to_string());
             }
+            // A sequence canvas already carries `fps=30` in its own filter.
+            let mut filters: Vec<String> = Vec::new();
+            if let Some(fps) = tune.fps.filter(|_| canvas.is_none()) {
+                filters.push(format!("fps={fps}"));
+            }
+            if let Some(filter) = scale {
+                filters.push(filter.to_string());
+            }
+            if !filters.is_empty() {
+                args.push("-vf".into());
+                args.push(filters.join(","));
+            }
             // A rescaled export needs every piece at the new size â€” a stream
             // copy cannot be resized, so the planner never mixes the two.
-            if let Some(filter) = scale {
-                args.push("-vf".into());
-                args.push(filter.to_string());
-            }
         }
     }
 
@@ -1204,36 +1281,50 @@ fn piece_args(
 /// default, `balanced` trades a little fidelity for a smaller file, and
 /// `small` optimises hard for size. Micro-encodes are 1â€“2 s long, so even the
 /// generous presets cost little CPU â€” the boundary fidelity is what matters.
-fn encoder_args(encoder: &str, quality: &str) -> Vec<String> {
+fn encoder_args(encoder: &str, quality: &str, tune: &EncodeTune) -> Vec<String> {
     // CRF ladder per preset, indexed by the tables below. Lower = better
-    // quality / bigger file.
-    let crf = match quality {
+    // quality / bigger file. A user-set CRF overrides the ladder.
+    let crf = tune.crf.unwrap_or(match quality {
         "original" => 14,
         "balanced" => 23,
         "small" => 28,
         _ => 18, // "high" and anything unknown
-    };
+    }) as i32;
     let mut v: Vec<String> = Vec::new();
     let add = |v: &mut Vec<String>, k: &str, val: &str| {
         v.push(k.to_string());
         v.push(val.to_string());
     };
+
+    // Bitrate-based rate control wins when both knobs were set. A bounded VBR
+    // keeps "-b:v" a *target* instead of an unlimited bitrate.
+    if let Some(kbps) = tune.video_bitrate_kbps {
+        if kbps > 0 {
+            add(&mut v, "-b:v", &format!("{kbps}k"));
+            add(&mut v, "-maxrate", &format!("{kbps}k"));
+            add(&mut v, "-bufsize", &format!("{}k", kbps.saturating_mul(2)));
+        }
+        return v;
+    }
+
     match encoder {
         "libx264" => add(&mut v, "-crf", &crf.to_string()),
-        "libx265" => add(&mut v, "-crf", &(crf + 3).to_string()),
+        "libx265" => add(&mut v, "-crf", &(crf + 3).min(51).to_string()),
         "h264_qsv" | "hevc_qsv" => {
             add(&mut v, "-preset", "medium");
-            add(&mut v, "-global_quality", &(crf + 4).to_string());
+            add(&mut v, "-global_quality", &(crf + 4).min(51).to_string());
         }
         "h264_nvenc" | "hevc_nvenc" => {
             add(&mut v, "-preset", "p4");
             add(&mut v, "-rc", "vbr");
-            add(&mut v, "-cq", &(crf + 5).to_string());
+            add(&mut v, "-cq", &(crf + 5).min(51).to_string());
         }
         "h264_amf" | "hevc_amf" => {
             add(&mut v, "-usage", "transcoding");
             add(&mut v, "-quality", "quality");
         }
+        // `svt-av1` has no CRF flag; `-crf` is accepted as an alias on some
+        // builds but not all. Keep the default and warn in the planner.
         _ => {}
     }
     v
@@ -1309,6 +1400,7 @@ fn piece_video_args(
     quality: &str,
     scale: Option<&str>,
     pix_fmt: Option<&str>,
+    tune: &EncodeTune,
 ) -> Vec<String> {
     let mut args = base_args();
     let length = piece.duration_secs;
@@ -1354,6 +1446,9 @@ fn piece_video_args(
                 chain.push(',');
                 chain.push_str(filter);
             }
+            if let Some(fps) = tune.fps {
+                chain.push_str(&format!(",fps={fps}"));
+            }
 
             args.push("-ss".into());
             args.push(time_arg(seek));
@@ -1367,7 +1462,7 @@ fn piece_video_args(
             let enc = encoder.unwrap_or("libx264");
             args.push("-c:v".into());
             args.push(enc.to_string());
-            args.extend(encoder_args(enc, quality));
+            args.extend(encoder_args(enc, quality, tune));
             if let Some(fmt) = pix_fmt {
                 args.push("-pix_fmt".into());
                 args.push(fmt.to_string());
@@ -1465,7 +1560,12 @@ fn audio_args(source: &Path, filter: &str, output: &Path) -> Vec<String> {
 }
 
 /// Mux the finished tracks. A stream copy: nothing is re-encoded a second time.
-fn mux_args(video: &Path, audio: Option<&Path>, output: &Path) -> Vec<String> {
+fn mux_args(
+    video: &Path,
+    audio: Option<&Path>,
+    output: &Path,
+    container: Option<&str>,
+) -> Vec<String> {
     let mut args = base_args();
     args.push("-i".into());
     args.push(video.to_string_lossy().into_owned());
@@ -1481,10 +1581,16 @@ fn mux_args(video: &Path, audio: Option<&Path>, output: &Path) -> Vec<String> {
     }
     args.push("-c".into());
     args.push("copy".into());
-    let mp4 = output
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("mp4") || e.eq_ignore_ascii_case("mov"));
+    let ext = container
+        .map(str::to_string)
+        .or_else(|| {
+            output
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let mp4 = ext.eq_ignore_ascii_case("mp4") || ext.eq_ignore_ascii_case("mov");
     if mp4 {
         // The index goes to the head, so playback starts without reading the
         // whole file first.
@@ -1753,7 +1859,7 @@ fn cut_and_concat(
     let total_dur: f64 = plan.pieces.iter().map(|p| p.duration_secs).sum();
     let total_dur = if total_dur > 0.0 { total_dur } else { 1.0 };
     let piece_count = plan.pieces.len();
-    let has_audio = info.has_audio;
+    let has_audio = info.has_audio && plan.include_audio;
     let mut done_dur = 0.0f64;
     let mut used_encoder = plan.encoder.clone();
 
@@ -1955,11 +2061,11 @@ fn run_piece(
     } else {
         info.pix_fmt.as_deref()
     };
-    let args = piece_args(
+    let mut args = piece_args(
         source,
         piece,
         file,
-        info.has_audio,
+        info.has_audio && plan.include_audio,
         plan.audio_copied,
         plan.segments
             .get(piece.segment_index)
@@ -1970,7 +2076,46 @@ fn run_piece(
         &plan.quality,
         plan.scale.as_deref(),
         plan.canvas.map(|[w, h]| (w, h)),
+        &plan.tune,
     );
+
+    // Real two-pass ABR, reached only for a single whole encode. Pass 1 is a
+    // throwaway analysis into NUL; pass 2 writes the piece using its stats.
+    if plan.tune.two_pass && piece.kind == PieceKind::Encode {
+        let passlog = file.with_extension("passlog").to_string_lossy().into_owned();
+        let mut pass1 = args.clone();
+        pass1.pop(); // the real output goes to NUL for the analysis pass
+        pass1.extend([
+            "-an".to_string(),
+            "-f".to_string(),
+            "null".to_string(),
+            "NUL".to_string(),
+            "-pass".to_string(),
+            "1".to_string(),
+            "-passlogfile".to_string(),
+            passlog.clone(),
+        ]);
+        let analysis = run_streaming("ffmpeg", &pass1, Some(Arc::clone(cancel)), |_| {})?;
+        if analysis.cancelled || cancelled(cancel) {
+            return Err("export cancelled".to_string());
+        }
+        if analysis.status != 0 {
+            return Err(format!(
+                "two-pass analysis failed (exit {}): {}",
+                analysis.status,
+                analysis.stderr_tail.trim()
+            ));
+        }
+        let output = args.pop().unwrap_or_default();
+        args.extend([
+            "-pass".to_string(),
+            "2".to_string(),
+            "-passlogfile".to_string(),
+            passlog,
+            output,
+        ]);
+    }
+
     let piece_dur = piece.duration_secs.max(0.001);
     let mut last_out = 0.0f64;
     let piece_index = piece.index + 1;
@@ -2026,6 +2171,7 @@ fn run_video_piece(
         &plan.quality,
         plan.scale.as_deref(),
         pix_fmt,
+        &plan.tune,
     );
     let piece_dur = piece.duration_secs.max(0.001);
     let mut last_out = 0.0f64;
@@ -2233,7 +2379,7 @@ fn cut_and_stitch(
 
     // â”€â”€ audio, one pass â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     let audio_file = work.join("audio.m4a");
-    let audio = if info.has_audio {
+    let audio = if info.has_audio && plan.include_audio {
         let gains: Vec<f64> = plan
             .pieces
             .iter()
@@ -2305,7 +2451,12 @@ fn cut_and_stitch(
         },
     );
 
-    let args = mux_args(&video, audio.as_deref(), output);
+    let args = mux_args(
+        &video,
+        audio.as_deref(),
+        output,
+        plan.container.as_deref(),
+    );
     let mut last = 0.0f64;
     let out = run_streaming("ffmpeg", &args, Some(Arc::clone(cancel)), |line| {
         if let Some(ProgressLine::OutTime(t)) = parse_progress_line(line) {
@@ -2824,6 +2975,7 @@ mod tests {
             "high",
             None,
             None,
+            &EncodeTune::default(),
         );
         let joined = args.join(" ");
         assert!(joined.contains("-ss 3.000000"), "{joined}");
@@ -2859,6 +3011,7 @@ mod tests {
             "high",
             None,
             None,
+            &EncodeTune::default(),
         );
         let joined = args.join(" ");
         assert!(joined.contains("-af volume=0.500000"), "{joined}");
@@ -2878,6 +3031,7 @@ mod tests {
             "high",
             None,
             None,
+            &EncodeTune::default(),
         )
         .join(" ");
         assert!(!plain.contains("-af"), "{plain}");
@@ -2909,6 +3063,7 @@ mod tests {
                 "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
             ),
             Some((1920, 1080)),
+            &EncodeTune::default(),
         );
         let joined = args.join(" ");
         assert!(
@@ -2958,6 +3113,7 @@ mod tests {
             "high",
             None,
             None,
+            &EncodeTune::default(),
         );
         let joined = args.join(" ");
         assert!(joined.contains("-ss 4.000001"), "{joined}");
@@ -3111,6 +3267,7 @@ mod tests {
             "high",
             None,
             None,
+            &EncodeTune::default(),
         );
         let joined = args.join(" ");
         assert!(joined.contains("-ss 2.000041"), "{joined}");
@@ -3136,6 +3293,7 @@ mod tests {
             "high",
             None,
             Some("yuv420p"),
+            &EncodeTune::default(),
         );
         let joined = args.join(" ");
         assert!(joined.contains("-ss 9.999220"), "{joined}");
@@ -3197,6 +3355,7 @@ mod tests {
             Path::new("video.ts"),
             Some(Path::new("audio.m4a")),
             Path::new("out.mp4"),
+            None,
         );
         let joined = args.join(" ");
         assert!(joined.contains("-map 0:v:0"), "{joined}");
@@ -3204,7 +3363,7 @@ mod tests {
         assert!(joined.contains("-c copy"), "{joined}");
         assert!(joined.contains("-movflags +faststart"), "{joined}");
 
-        let mkv = mux_args(Path::new("video.ts"), None, Path::new("out.mkv")).join(" ");
+        let mkv = mux_args(Path::new("video.ts"), None, Path::new("out.mkv"), None).join(" ");
         assert!(!mkv.contains("+faststart"), "{mkv}");
         assert!(!mkv.contains("-map 1:a:0"), "{mkv}");
     }

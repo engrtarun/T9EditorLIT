@@ -73,7 +73,8 @@ fn open_history(db_path: Option<&str>) -> Result<Connection, String> {
     }
     let conn = crate::transcript::open_db(Path::new(path))?;
     conn.execute_batch(HISTORY_SCHEMA)
-        .map_err(|e| format!("could not init export history schema: {e}"))
+        .map_err(|e| format!("could not init export history schema: {e}"))?;
+    Ok(conn)
 }
 
 /// Best-effort write. A failed history insert must never fail an export, so

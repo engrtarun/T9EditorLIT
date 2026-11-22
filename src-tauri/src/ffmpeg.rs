@@ -4,13 +4,131 @@
 //! this process's address space — that is the entire point of the architecture.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/* ------------------------------------------------------------- export log */
+
+/// Last-200-KB-per-file log of FFmpeg argv + stderr for the running export.
+///
+/// Sitting here (rather than in every engine call site) is deliberate: all
+/// export children funnel through `run` / `run_streaming`, so one hook covers
+/// the whole pipeline. Lines are appended as they arrive — never buffered as
+/// a second copy of the stderr in the heap.
+const EXPORT_LOG_MAX: u64 = 200 * 1024;
+const EXPORT_LOG_READ_MAX: usize = 204 * 1024;
+
+struct LogFile {
+    file: Option<std::fs::File>,
+    path: PathBuf,
+    bytes: u64,
+}
+
+static EXPORT_LOG: OnceLock<Mutex<Option<LogFile>>> = OnceLock::new();
+static LAST_EXPORT_LOG: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+fn export_log() -> &'static Mutex<Option<LogFile>> {
+    EXPORT_LOG.get_or_init(|| Mutex::new(None))
+}
+fn last_export_log() -> &'static Mutex<Option<PathBuf>> {
+    LAST_EXPORT_LOG.get_or_init(|| Mutex::new(None))
+}
+fn log_stamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/** Start a fresh log. Best-effort: a log failure never stops an export. */
+pub fn begin_export_log(dir: &Path) {
+    let _ = std::fs::create_dir_all(dir);
+    let path = dir.join(format!("export-{}.log", log_stamp()));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok();
+    if let Ok(mut guard) = last_export_log().lock() {
+        *guard = Some(path.clone());
+    }
+    if let Ok(mut guard) = export_log().lock() {
+        *guard = Some(LogFile {
+            file,
+            path,
+            bytes: 0,
+        });
+    }
+    log_line(&format!("--- export started {} ---", log_stamp()));
+}
+
+/** Stop appending; the file stays on disk for `read_export_log`. */
+pub fn end_export_log() {
+    if let Ok(mut guard) = export_log().lock() {
+        *guard = None;
+    }
+}
+
+/** The tail of the most recent log, or `None` when no export has logged yet. */
+pub fn read_last_export_log() -> Option<String> {
+    let path = last_export_log().lock().ok()?.clone()?;
+    let bytes = std::fs::read(path).ok()?;
+    let tail = if bytes.len() > EXPORT_LOG_READ_MAX {
+        &bytes[bytes.len() - EXPORT_LOG_READ_MAX..]
+    } else {
+        &bytes
+    };
+    Some(String::from_utf8_lossy(tail).into_owned())
+}
+
+/// Append one line, rotating at 200 KB so the file never becomes a second
+/// unbounded buffer. Rotation writes `export-<ts>.log.1` and replaces it.
+fn log_line(line: &str) {
+    let Ok(mut guard) = export_log().lock() else {
+        return;
+    };
+    let Some(state) = guard.as_mut() else {
+        return;
+    };
+    if state.bytes >= EXPORT_LOG_MAX {
+        state.file.take();
+        let name = state
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let rotated = state.path.with_file_name(format!("{name}.1"));
+        let _ = std::fs::remove_file(&rotated);
+        let _ = std::fs::rename(&state.path, &rotated);
+        state.bytes = 0;
+    }
+    if state.file.is_none() {
+        state.file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&state.path)
+            .ok();
+    }
+    if let Some(file) = state.file.as_mut() {
+        if writeln!(file, "{line}").is_ok() {
+            state.bytes += line.len() as u64 + 1;
+        }
+    }
+}
+
+fn log_argv<A: AsRef<std::ffi::OsStr>>(program: &str, args: &[A]) {
+    let joined = args
+        .iter()
+        .map(|a| format!("{:?}", a.as_ref().to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    log_line(&format!("$ {program} {joined}"));
+}
 
 /// A completed child-process run.
 pub struct RunOutput {
@@ -198,6 +316,7 @@ pub fn run(program: &str, args: &[&str]) -> Result<RunOutput, String> {
     // no real workload — they would only add noise to the child metrics.
     let trivial = is_trivial_probe(args);
     let started = Instant::now();
+    log_argv(program, args);
     let mut child = silent(program)
         .args(args)
         .stdin(Stdio::null())
@@ -228,6 +347,7 @@ pub fn run(program: &str, args: &[&str]) -> Result<RunOutput, String> {
     let stderr_thread = std::thread::spawn(move || {
         if let Some(s) = stderr_pipe {
             for line in BufReader::new(s).lines().map_while(Result::ok) {
+                log_line(&line);
                 let mut buf = match stderr_tail_writer.lock() {
                     Ok(b) => b,
                     Err(poisoned) => poisoned.into_inner(),
@@ -403,6 +523,7 @@ pub fn run_streaming<A: AsRef<std::ffi::OsStr>>(
     cancel: Option<Arc<AtomicBool>>,
     mut on_line: impl FnMut(&str),
 ) -> Result<StreamOutput, String> {
+    log_argv(program, args);
     let started = Instant::now();
     let mut child = silent(program)
         .args(args)
@@ -425,6 +546,7 @@ pub fn run_streaming<A: AsRef<std::ffi::OsStr>>(
         let tail = Arc::clone(&tail);
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                log_line(&line);
                 let mut buf = match tail.lock() {
                     Ok(b) => b,
                     Err(poisoned) => poisoned.into_inner(),

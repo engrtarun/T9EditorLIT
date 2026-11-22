@@ -10,7 +10,7 @@
 
 #[cfg(windows)]
 #[link(name = "kernel32")]
-extern "system" {
+unsafe extern "system" {
     fn SetThreadExecutionState(es_flags: u32) -> u32;
 }
 
