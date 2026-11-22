@@ -9,6 +9,7 @@
   import { wordCutPreview } from '../../stores/wordCutPreview.svelte';
   import { spokenPartsFor } from '../../spoken-word';
   import { toast } from '../../stores/toast.svelte';
+  import { openPath } from '../../ipc';
   import AmbientGlow from './AmbientGlow.svelte';
   import WordCutToolbar from './WordCutToolbar.svelte';
 
@@ -33,6 +34,25 @@
   let resume = false;
 
   /**
+   * The `<video>` element refused this source.
+   *
+   * Set by the element's own `error` event, so a codec WebView2 cannot decode
+   * never leaves a silent black rectangle that looks like a frozen app — the
+   * stage says so and offers a way to watch it now.
+   */
+  let videoFailed = $state(false);
+
+  /** Hand the original file to whatever player the user has installed. */
+  async function openInPlayer() {
+    const path = project.sourcePath;
+    if (!path) return;
+    const ok = await openPath(path);
+    if (!ok) {
+      toast.push('warn', 'Player nahi khula — file Explorer se kholo.');
+    }
+  }
+
+  /**
    * The word-cut hint shows for 3 s, then slides/fades out over 2 s using the
    * same fast wipe easing as the browser. One shot, not a repeating blink.
    */
@@ -53,6 +73,15 @@
   const isImage = $derived(activeClip?.kind === 'image');
   /** The file this frame is showing: the main source or the active clip. */
   const src = $derived(activeClip?.url ?? project.media?.url ?? '');
+
+  /**
+   * A new source deserves a fresh verdict from the decoder. Without this, one
+   * unplayable file would keep the failure card on screen for the next one.
+   */
+  $effect(() => {
+    void src;
+    videoFailed = false;
+  });
 
   /**
    * A new clip reuses the same `<video>` element, so the browser starts the
@@ -557,7 +586,75 @@
             onpause={onPause}
             onended={advance}
             onclick={() => player.toggle()}
+            onerror={() => (videoFailed = true)}
           ></video>
+        {/if}
+
+        {#if project.preview.kind === 'preparing' || project.preview.kind === 'failed' || videoFailed}
+          <!-- The decoder cannot show this file yet — or at all. The stage says
+               so with a real number and a reason, instead of a silent black
+               rectangle that reads as a frozen app. The original file is still
+               fully usable: transcript, waveform, cuts and export never needed
+               the preview. -->
+          <div
+            class="absolute inset-0 z-30 grid place-items-center bg-nc-bg/94 px-6 backdrop-blur-sm"
+            role="status"
+            aria-live="polite"
+          >
+            <div class="w-full max-w-sm text-center">
+              {#if project.preview.kind === 'preparing'}
+                <div
+                  class="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-full border-2 border-nc-brand/25"
+                >
+                  <span class="font-mono text-[11px] font-bold text-nc-brand">
+                    {Math.round(project.preview.pct)}%
+                  </span>
+                </div>
+                <p class="text-sm font-semibold text-nc-txt">Preview ban raha hai…</p>
+                <p class="mt-1.5 text-[11px] leading-relaxed text-nc-mut">{project.preview.note}</p>
+                <div
+                  class="mx-auto mt-3 h-1 w-full max-w-[240px] overflow-hidden rounded-full bg-nc-line"
+                >
+                  <div
+                    class="h-full rounded-full bg-nc-brand transition-[width] duration-500"
+                    style="width:{Math.max(2, project.preview.pct)}%"
+                  ></div>
+                </div>
+                <p class="mt-3 text-[10px] leading-relaxed text-nc-mut-2">
+                  Transcript aur waveform original file se ban rahe hain — intezaar sirf picture ka
+                  hai.
+                </p>
+              {:else}
+                <p class="text-sm font-semibold text-nc-red">Yeh file preview me nahi chal rahi.</p>
+                <p class="mt-1.5 text-[11px] leading-relaxed text-nc-mut">
+                  {project.preview.kind === 'failed'
+                    ? project.preview.note
+                    : 'WebView2 is codec ko decode nahi kar sakta.'}
+                </p>
+              {/if}
+              <button
+                type="button"
+                onclick={openInPlayer}
+                class="mt-4 inline-flex items-center gap-2 rounded-md border border-nc-line-2 px-3 py-1.5
+                       text-[11px] font-semibold text-nc-txt transition-colors hover:border-nc-brand
+                       hover:text-nc-brand"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    d="M14 3h7v7M21 3l-9 9M10 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-5"
+                  />
+                </svg>
+                External player me kholo
+              </button>
+            </div>
+          </div>
         {/if}
 
         {#if curLine?.keep === 'cut'}

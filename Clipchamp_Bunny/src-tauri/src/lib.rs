@@ -73,6 +73,10 @@ mod shell_menu;
 /// Where the background video is on disk (the frontend only ever gets a path).
 mod background_video;
 
+/// What the preview plays when WebView2 cannot decode the source: a cached
+/// H.264 proxy, built by FFmpeg on disk and streamed back by range request.
+mod preview_proxy;
+
 /// The in-built browser's native half: one WebView2 child per live tab.
 mod browser;
 
@@ -1899,6 +1903,10 @@ pub fn run() {
             background_video::background_import,
             background_video::background_reset,
             background_video::background_cancel,
+            preview_proxy::preview_plan,
+            preview_proxy::build_preview_proxy,
+            preview_proxy::cancel_preview_proxy,
+            preview_proxy::clear_preview_proxy,
             account_display_name,
             canonical_source_path,
             measure_network_speed,

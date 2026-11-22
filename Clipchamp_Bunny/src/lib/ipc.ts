@@ -444,6 +444,68 @@ export function checkFfmpeg(): Promise<string> {
   return invoke<string>('check_ffmpeg');
 }
 
+/* ----------------------------------------------------------- preview proxy */
+
+/**
+ * What the preview surface can do with one source.
+ *
+ * `native` — the file itself streams into the `<video>`.
+ * `remux`  — the picture is already H.264 8-bit, only the container or the
+ *            audio is wrong: FFmpeg copies every frame into an MP4 in seconds.
+ * `transcode` — WebView2 cannot decode the picture at all (HEVC, 10-bit,
+ *            ProRes…), so a small H.264 proxy is built on disk.
+ */
+export interface PreviewPlan {
+  kind: 'native' | 'remux' | 'transcode' | string;
+  /** A sentence for the UI — why the preview needs help, or that it does not. */
+  reason: string;
+  /** An already-built proxy for these exact bytes, if one is cached. */
+  proxy: string | null;
+  /** Source length in seconds, so the UI can be honest about the wait. */
+  seconds: number;
+  hasVideo: boolean;
+}
+
+/**
+ * Ask the engine how this source should be previewed.
+ *
+ * A header read, not a decode: it costs the same on a 50 MB clip and a 5 GB
+ * episode. Call it after `probeMedia`, before the first frame is expected.
+ */
+export function previewPlan(path: string): Promise<PreviewPlan> {
+  return invoke<PreviewPlan>('preview_plan', { path });
+}
+
+/**
+ * Build the proxy the plan asked for and return its path.
+ *
+ * Idempotent — an existing proxy for the same bytes comes back instantly. The
+ * work runs in a Rust worker with FFmpeg as a child process, so nothing large
+ * ever enters this process's heap, and `cancelPreviewProxy` hard-kills it.
+ */
+export function buildPreviewProxy(path: string): Promise<string> {
+  return invoke<string>('build_preview_proxy', { path });
+}
+
+/** Stop a proxy that is still encoding (project switched, mode left). */
+export function cancelPreviewProxy(): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('cancel_preview_proxy').catch(() => {});
+}
+
+/** Delete one source's cached proxy — its file changed on disk. */
+export function clearPreviewProxy(path: string): Promise<boolean> {
+  if (!isTauri()) return Promise.resolve(false);
+  return invoke<boolean>('clear_preview_proxy', { path }).catch(() => false);
+}
+
+/** Encode progress: percent plus the stage (`remux` · `convert` · `done`). */
+export function onPreviewProgress(
+  cb: (p: { pct: number; stage: string }) => void
+): Promise<() => void> {
+  return listen<{ pct: number; stage: string }>('preview:progress', (e) => cb(e.payload));
+}
+
 /**
  * Live progress from the Rust chunk splitter: how many `chunk_*.wav` files
  * FFmpeg has closed so far. The UI maps it into the transcript bar, so the

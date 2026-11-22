@@ -123,7 +123,9 @@ import {
 import { settings } from './settings.svelte';
 import {
   assetUrl,
+  buildPreviewProxy,
   canonicalSourcePath,
+  cancelPreviewProxy,
   cleanChunkDir,
   defaultDbPath,
   demoSourcePath,
@@ -136,8 +138,10 @@ import {
   loadTranscript,
   logAppEvent,
   logEditAction,
+  onPreviewProgress,
   onTranscriptProgress,
   probeMedia,
+  previewPlan,
   readTranscriptFile,
   rememberSourceFingerprint,
   removeAudioChunk,
@@ -152,7 +156,7 @@ import {
   transcriptByHash,
   updateProjectOpened
 } from '../ipc';
-import type { RustProject, RustTranscriptLine } from '../ipc';
+import type { PreviewPlan, RustProject, RustTranscriptLine } from '../ipc';
 
 /**
  * Undo snapshot. Holds the whole line array, not just the keep flags —
@@ -349,6 +353,105 @@ class ProjectStore {
    */
   name = $state('');
   media = $state<MediaAsset | null>(null);
+
+  /**
+   * What the preview surface is doing right now.
+   *
+   * This is deliberately **separate** from `media`: `media.url` is what the
+   * `<video>` streams, and it stays on the original file until a proxy is
+   * really on disk. A source WebView2 cannot decode (HEVC, 10-bit, MKV) gets
+   * `preparing` with a real percentage, then `ready` and a swapped URL — the
+   * source path, the transcript, the waveform and the export never move.
+   */
+  preview = $state<{
+    kind: 'native' | 'preparing' | 'ready' | 'failed';
+    /** 0–100 while `preparing`; 100 once `ready`. */
+    pct: number;
+    /** Why the preview needed help — a sentence, shown under the bar. */
+    note: string;
+    /** The proxy file on disk, once it exists. */
+    proxyPath: string | null;
+  }>({ kind: 'native', pct: 0, note: '', proxyPath: null });
+
+  /** Unsubscribe handle for the proxy's progress event. */
+  private previewStop: (() => void) | null = null;
+
+  /**
+   * Decide how the preview plays this source, and build a proxy if needed.
+   *
+   * Never blocks the load: the probe, waveform, filmstrip and transcription
+   * all read the ORIGINAL file and are already running. The proxy only swaps
+   * the URL the `<video>` streams, and only after FFmpeg has finished writing
+   * it — a half-written MP4 would show a black frame with a duration of zero.
+   */
+  private async preparePreview(path: string) {
+    this.previewStop?.();
+    this.previewStop = null;
+    void cancelPreviewProxy();
+
+    // The browser preview has no Rust engine and no real file paths; the baked
+    // demo is H.264 MP4, which plays natively anyway.
+    if (!isTauri()) {
+      this.preview = { kind: 'native', pct: 0, note: '', proxyPath: null };
+      return;
+    }
+
+    let plan: PreviewPlan;
+    try {
+      plan = await previewPlan(path);
+    } catch {
+      // A plan that cannot be read is not a broken file. Keep the source and
+      // let the <video> try — its own error state is the honest report.
+      this.preview = { kind: 'native', pct: 0, note: '', proxyPath: null };
+      return;
+    }
+
+    if (plan.kind === 'native') {
+      this.preview = { kind: 'native', pct: 0, note: plan.reason, proxyPath: null };
+      return;
+    }
+
+    if (plan.proxy) {
+      this.useProxy(plan.proxy);
+      this.preview = { kind: 'ready', pct: 100, note: plan.reason, proxyPath: plan.proxy };
+      return;
+    }
+
+    this.preview = { kind: 'preparing', pct: 0, note: plan.reason, proxyPath: null };
+    this.previewStop = await onPreviewProgress((p) => {
+      if (this.preview.kind === 'preparing') this.preview.pct = p.pct;
+    });
+
+    try {
+      const made = await buildPreviewProxy(path);
+      this.useProxy(made);
+      this.preview = { kind: 'ready', pct: 100, note: plan.reason, proxyPath: made };
+    } catch (e) {
+      this.preview = {
+        kind: 'failed',
+        pct: 0,
+        note: e instanceof Error ? e.message : String(e),
+        proxyPath: null
+      };
+    } finally {
+      this.previewStop?.();
+      this.previewStop = null;
+    }
+  }
+
+  /**
+   * Point the preview at the proxy. `sourcePath` stays the original file, so
+   * export, transcription and every cache key keep pointing at the truth.
+   */
+  private useProxy(proxyPath: string) {
+    const url = assetUrl(proxyPath);
+    if (this.media) this.media.url = url;
+    if (this.sourcePath) {
+      const entry = media.byPath(this.sourcePath);
+      // The library tile streams the same URL; the proxy keeps its poster.
+      if (entry) media.probed(entry.asset.id, { url });
+    }
+  }
   /**
    * The transcript rows — **non-deep reactive** on purpose.
    *
@@ -819,6 +922,11 @@ class ProjectStore {
     this.sourcePath = canonical;
     setSourcePath(canonical);
     setSourceUrl(this.media.url);
+    // How will the preview play THIS file? WebView2 decodes H.264 8-bit in an
+    // MP4 and nothing else, so an MKV/HEVC/10-bit source would show a black
+    // screen. The decision is a header read; a proxy is built beside the load,
+    // never in front of it.
+    void this.preparePreview(canonical);
     // The import gate runs beside the project load: a probe is one child
     // process, and the project must not wait for it to be editable. The chip
     // appears when the measurement is in.
