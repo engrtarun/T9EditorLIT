@@ -553,7 +553,7 @@
   }
 </script>
 
-<div class="flex min-w-0 flex-1 flex-col">
+<div class="flex min-h-0 min-w-0 flex-1 flex-col bg-nc-bg">
   <!-- header -->
   <header class="flex shrink-0 items-start gap-3 border-b border-nc-line bg-nc-panel px-5 py-3">
     <span

@@ -34,6 +34,8 @@
     browserMediaState,
     isTauri,
     mediaFlyoutClose,
+    mediaFlyoutPin,
+    mediaFlyoutPinned,
     onBrowserMedia,
     type BrowserMediaSnapshot
   } from '../../ipc';
@@ -45,6 +47,8 @@
   let dragging = $state(false);
   /** Last artwork URL the browser failed to load (CSP, expired CDN link). */
   let artFailed = $state('');
+  /** Pinned: the card stays on screen instead of hiding after 5 s. */
+  let pinned = $state(false);
 
   let basePos = 0;
   let baseAt = 0;
@@ -114,6 +118,9 @@
       void browserMediaState().then((initial) => {
         if (!dead && initial) apply(initial);
       });
+      void mediaFlyoutPinned().then((v) => {
+        if (!dead) pinned = v;
+      });
     }
 
     // Reports arrive every ~1.6 s; the clock and thumb need to move in
@@ -138,6 +145,10 @@
     value?: number
   ): void {
     void browserMediaAction(action, value);
+  }
+
+  function togglePin(): void {
+    void mediaFlyoutPin(!pinned).then((v) => (pinned = v));
   }
 
   function toggle(): void {
@@ -293,6 +304,39 @@
             stroke-linecap="round"
           >
             <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+
+        <!-- Pin — X ke right, so the card survives opening other apps instead
+             of hiding after 5 s. Pinned state is remembered across the idle
+             destroy and an app restart. -->
+        <button
+          type="button"
+          onclick={togglePin}
+          class="grid h-7 w-7 place-items-center rounded-full transition-colors {pinned
+            ? 'bg-nc-brand/15 text-nc-brand'
+            : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
+          title={pinned ? 'Unpin — 5 s baad card chala jayega' : 'Pin — card ko screen par rakho'}
+          aria-label={pinned ? 'Unpin media card' : 'Pin media card'}
+          aria-pressed={pinned}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            {#if pinned}
+              <path d="M12 17v5" />
+              <path d="M9 12l-3 3v2h12v-2l-3-3-1-7h-4l-1 7z" />
+            {:else}
+              <path d="M12 17v5" />
+              <path d="M9 12l-3 3v2h12v-2l-3-3-1-7h-4l-1 7z" opacity="0.55" />
+            {/if}
           </svg>
         </button>
       </div>

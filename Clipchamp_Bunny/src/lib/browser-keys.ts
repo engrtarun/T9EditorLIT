@@ -61,6 +61,10 @@ export interface BrowserKeyDeps {
   /** Firefox's F11: the whole window, chrome included, goes fullscreen. */
   toggleFullscreen(): void;
   openHelp(): void;
+  /** F12 / Ctrl+Shift+I — WebView2's own DevTools window for this tab. */
+  devTools(): void;
+  /** Ctrl+M — mute/unmute this tab (Firefox's mute chord). */
+  toggleMute(): void;
 }
 
 /** An action's name + all Firefox combos that fire it. */
@@ -116,10 +120,13 @@ export const BINDINGS: Entry[] = [
   B('reload', ['ctrl+f5', 'ctrl+shift+r'], true), // force reload (same nudge, force anyway)
   B('stopLoading', ['escape']),
   B('goHome', ['alt+home']),
-  B('focusUrlbar', ['ctrl+l', 'alt+d', 'f6'], true),
+  // Alt+K is the user's own chord: Ctrl+K is the app-wide command palette, so
+  // the address-bar search needed a key that does not fight it. Ctrl+L / Alt+D
+  // stay (Firefox's own two), Alt+K sits beside them.
+  B('focusUrlbar', ['ctrl+l', 'alt+d', 'alt+k', 'ctrl+e', 'f6'], true),
   // ── page & panels ───────────────────────────────────────────────────────
-  B('downloads', ['ctrl+j'], true),
-  B('history', ['ctrl+h']),
+  B('downloads', ['ctrl+j', 'ctrl+shift+y'], true),
+  B('history', ['ctrl+h', 'ctrl+shift+h']),
   B('clearHistory', ['ctrl+shift+delete']),
   B('bookmark', ['ctrl+d']),
   B('bookmarkAllTabs', ['ctrl+shift+d']),
@@ -137,7 +144,10 @@ export const BINDINGS: Entry[] = [
   // never inserts text, so there is no reason to make the user click the page
   // first. The settings switch gates the action, not the binding.
   B('toggleFullscreen', ['f11'], true),
-  B('openHelp', ['f1'], true)
+  B('openHelp', ['f1'], true),
+  // ── devtools & media (Firefox chords) ────────────────────────────────
+  B('devTools', ['f12', 'ctrl+shift+i'], true),
+  B('toggleMute', ['ctrl+m'], true)
 ];
 
 const norm = (key: string): string => {
@@ -286,8 +296,9 @@ export const BROWSER_GROUPS: Array<{ title: string; rows: BrowserSheetRow[] }> =
       { keys: 'Alt + Home', action: 'Speed dial (home page)' },
       // Ctrl+K deliberately ABSENT: it is the command palette on every
       // screen now, so listing it here would be a promise the browser does
-      // not keep ("jaha se user samjh sake ki kya hai kya nahi").
-      { keys: 'Ctrl + L  /  Alt + D', action: 'Address bar fokus' }
+      // not keep ("jaha se user samjh sake ki kya hai kya nahi"). Alt+K is
+      // the address-bar/search key instead.
+      { keys: 'Ctrl + L  /  Alt + D  /  Alt + K  /  Ctrl + E', action: 'Address bar fokus (search)' }
     ]
   },
   {
@@ -296,14 +307,15 @@ export const BROWSER_GROUPS: Array<{ title: string; rows: BrowserSheetRow[] }> =
       { keys: 'Ctrl + D', action: 'Is page ko bookmark (dial me)' },
       { keys: 'Ctrl + Shift + D', action: 'Saare tabs bookmark' },
       { keys: 'Ctrl + B  /  Ctrl + Shift + O', action: 'Bookmarks = speed dial kholo' },
-      { keys: 'Ctrl + J', action: 'Downloads panel' },
-      { keys: 'Ctrl + H', action: 'History panel' },
+      { keys: 'Ctrl + J  /  Ctrl + Shift + Y', action: 'Downloads panel' },
+      { keys: 'Ctrl + H  /  Ctrl + Shift + H', action: 'History panel' },
       { keys: 'Ctrl + Shift + Del', action: 'Browsing data + T9 history saaf' },
       { keys: 'Ctrl + S', action: 'Page save (daemon downloader)' },
       { keys: 'Ctrl + O', action: 'File import dialog' },
       { keys: 'Ctrl + P', action: 'Print (WebView2 print dialog)' },
       { keys: 'Ctrl + U', action: 'Page source (view-source)' },
-      { keys: 'Ctrl + +  /  Ctrl + -  /  Ctrl + 0', action: 'Page zoom in / out / reset' }
+      { keys: 'Ctrl + +  /  Ctrl + -  /  Ctrl + 0', action: 'Page zoom in / out / reset' },
+      { keys: 'Ctrl + M', action: 'Tab mute / unmute' }
     ]
   },
   {
@@ -315,7 +327,8 @@ export const BROWSER_GROUPS: Array<{ title: string; rows: BrowserSheetRow[] }> =
         note: 'WebView2 me find API nahi hai — T9 me toast bata deta hai'
       },
       { keys: 'F3  /  Ctrl + G  /  Shift + F3', action: 'Find again / previous', note: 'same' },
-      { keys: 'F1', action: 'Ye shortcut list' }
+      { keys: 'F1', action: 'Ye shortcut list' },
+      { keys: 'F12  /  Ctrl + Shift + I', action: 'DevTools (page inspector / console)' }
     ]
   }
 ];

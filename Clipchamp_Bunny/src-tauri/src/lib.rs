@@ -35,8 +35,12 @@ mod cache;
 mod env;
 #[path = "../../../src-tauri/src/export.rs"]
 mod export;
+#[path = "../../../src-tauri/src/export_extra.rs"]
+mod export_extra;
 #[path = "../../../src-tauri/src/ffmpeg.rs"]
 mod ffmpeg;
+#[path = "../../../src-tauri/src/sleep_guard.rs"]
+mod sleep_guard;
 #[path = "../../../src-tauri/src/gif.rs"]
 mod gif;
 #[path = "../../../src-tauri/src/keyframes.rs"]
@@ -1072,14 +1076,31 @@ async fn start_export(
     let app_clone = app.clone();
 
     let result = tauri::async_runtime::spawn_blocking(move || {
+        // Wake-lock the machine for the whole render; the guard clears it on
+        // every normal exit path, including cancellation and errors.
+        let _sleep = sleep_guard::SleepGuard::acquire();
         let started = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         let project = request.source.clone();
-        let preset = request.options.quality.clone();
-        let out_path = request.output.clone();
+        let quality = request.options.quality.clone();
+        let preset = request
+            .options
+            .preset
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "custom".to_string());
+        let resolution = request.options.resolution.clone();
         let format = request.options.format.clone();
+        let history_db = request.db_path.clone();
+        let out_path = request.output.clone();
+        let downloads = app_clone.path().download_dir().ok();
+        let resolved_out = export_extra::resolve_output(&out_path, downloads.as_deref());
+        if let Ok(dir) = cache_root(&app_clone) {
+            ffmpeg::begin_export_log(&dir.join("logs"));
+        }
+
         stats::set_phase("exporting");
         let res = match format.as_str() {
             "mp3" => mp3::run_mp3_export(&app_clone, cancel_flag, request),
@@ -1087,18 +1108,67 @@ async fn start_export(
             _ => export::run_export(app_clone, cancel_flag, request),
         };
         stats::set_phase("idle");
+        ffmpeg::end_export_log();
+
         match &res {
-            Ok(r) => stats::log_export(
-                &project,
-                &preset,
-                &out_path,
-                r.size_bytes as i64,
-                "done",
-                started,
-            ),
+            Ok(r) => {
+                stats::log_export(
+                    &project,
+                    &quality,
+                    &out_path,
+                    r.size_bytes as i64,
+                    "done",
+                    started,
+                );
+                if let Some(db) = history_db.as_deref() {
+                    // The engines resolve bare names (Downloads) and return
+                    // the real path in `r.output` — record that, never the
+                    // raw request path.
+                    let path = if r.output.trim().is_empty() {
+                        resolved_out.to_string_lossy().into_owned()
+                    } else {
+                        r.output.clone()
+                    };
+                    if let Err(e) = export_extra::record(
+                        Some(db),
+                        &path,
+                        r.size_bytes as i64,
+                        r.duration_secs,
+                        &format,
+                        &resolution,
+                        &preset,
+                        "done",
+                        None,
+                    ) {
+                        let _ = stats::log_event(
+                            "warn",
+                            "export",
+                            &format!("history write failed: {e}"),
+                        );
+                    }
+                }
+            }
             Err(e) => {
-                stats::log_export(&project, &preset, &out_path, 0, "failed", started);
+                stats::log_export(&project, &quality, &out_path, 0, "failed", started);
                 stats::log_event("error", "export", e);
+                if let Some(db) = history_db.as_deref() {
+                    let status = if e.contains("cancelled") {
+                        "cancelled"
+                    } else {
+                        "failed"
+                    };
+                    let _ = export_extra::record(
+                        Some(db),
+                        &resolved_out.to_string_lossy(),
+                        0,
+                        0.0,
+                        &format,
+                        &resolution,
+                        &preset,
+                        status,
+                        Some(e),
+                    );
+                }
             }
         }
         res
@@ -1145,6 +1215,61 @@ async fn plan_export(app: tauri::AppHandle, request: ExportRequest) -> Result<Ex
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// What the installed engine actually understands (EXPORT.md §3 addendum).
+#[tauri::command]
+fn export_capabilities() -> Result<export_extra::ExportCapabilities, String> {
+    Ok(export_extra::ExportCapabilities::default())
+}
+
+/// Disk space + overwrite check before a render (B1-3). Read-only: no folder
+/// is created here, that stays in the engines.
+#[tauri::command]
+fn preflight_export(
+    app: tauri::AppHandle,
+    path: String,
+    estimated_bytes: u64,
+    allow_overwrite: Option<bool>,
+) -> Result<export_extra::PreflightResult, String> {
+    let downloads = app.path().download_dir().ok();
+    let resolved = export_extra::resolve_output(&path, downloads.as_deref());
+    let probe_dir = resolved
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let free = sysinfo_ext::drive_space(&probe_dir)
+        .map(|d| d.free_bytes)
+        .unwrap_or(0);
+    let exists = resolved.is_file();
+    Ok(export_extra::decide(
+        free,
+        estimated_bytes,
+        exists,
+        allow_overwrite.unwrap_or(false),
+    ))
+}
+
+/// Previous exports, newest first (B1-1).
+#[tauri::command]
+fn list_export_history(
+    db_path: String,
+    limit: Option<i64>,
+) -> Result<Vec<export_extra::ExportHistoryRow>, String> {
+    export_extra::list(&db_path, limit.unwrap_or(50))
+}
+
+/// Delete history rows only — exported files are never touched.
+#[tauri::command]
+fn clear_export_history(db_path: String) -> Result<u32, String> {
+    export_extra::clear(&db_path)
+}
+
+/// Last export's FFmpeg argv + stderr tail, or `None` before the first run.
+#[tauri::command]
+fn read_export_log() -> Result<Option<String>, String> {
+    Ok(ffmpeg::read_last_export_log())
 }
 
 /* ================================================================== runner */
@@ -1828,6 +1953,11 @@ pub fn run() {
             start_export,
             cancel_export,
             plan_export,
+            export_capabilities,
+            preflight_export,
+            list_export_history,
+            clear_export_history,
+            read_export_log,
             concat_parts,
             still_clip,
             polish_render,
@@ -1842,12 +1972,16 @@ pub fn run() {
             browser::browser_set_visible,
             browser::browser_ublock_call,
             browser::browser_stop,
+            browser::browser_devtools,
+            browser::browser_toggle_mute,
             browser::browser_media_action,
             browser::browser_media_state,
             dl_settings::dl_settings_get,
             dl_settings::dl_settings_save,
             notify::app_notify,
             media_flyout::media_flyout_close,
+            media_flyout::media_flyout_pin,
+            media_flyout::media_flyout_pinned,
         ])
         .on_window_event(|window, event| {
             if window.label() == "media-flyout" {

@@ -1583,6 +1583,18 @@ export function mediaFlyoutClose(): Promise<void> {
   return invoke<void>('media_flyout_close').catch(() => {});
 }
 
+/** Pin the OSD card: it stays on screen instead of hiding after 5 s. */
+export function mediaFlyoutPin(pinned: boolean): Promise<boolean> {
+  if (!isTauri()) return Promise.resolve(pinned);
+  return invoke<boolean>('media_flyout_pin', { pinned }).catch(() => pinned);
+}
+
+/** The remembered pin state (survives the idle destroy and an app restart). */
+export function mediaFlyoutPinned(): Promise<boolean> {
+  if (!isTauri()) return Promise.resolve(false);
+  return invoke<boolean>('media_flyout_pinned').catch(() => false);
+}
+
 /**
  * Move the live webview onto the content rectangle the frontend measured
  * (`[data-focus="browser-content"]`). Keep this in an effect on the
@@ -1739,6 +1751,16 @@ function tabLabel(id: string): string {
 export function browserPrint(id: string): Promise<void> {
   if (!isTauri()) return Promise.resolve();
   return invoke<void>('plugin:webview|print', { label: tabLabel(id) }).catch(() => {});
+}
+
+export function browserDevTools(id: string): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  return invoke<void>('browser_devtools', { id }).catch(() => {});
+}
+
+export function browserToggleMute(id: string): Promise<boolean> {
+  if (!isTauri()) return Promise.resolve(false);
+  return invoke<boolean>('browser_toggle_mute', { id }).catch(() => false);
 }
 
 /** Ctrl+= / Ctrl+- / Ctrl+0 — the page zoom (absolute scale, 0.2 … 10). */

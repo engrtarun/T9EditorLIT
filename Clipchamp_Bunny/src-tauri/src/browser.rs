@@ -1868,6 +1868,15 @@ pub async fn browser_set_visible(app: tauri::AppHandle, visible: bool) -> Result
     // then T9 Editor LIT". A 1x1 resize is cheap and needs no COM, so it can
     // never stall the way `close()` can.
     if !visible {
+        // Record the truth *before* the early return below. It used to be set
+        // only on the restore path, so after a park `parked` stayed false and
+        // the guard at the top of this function treated the very next
+        // `browser_set_visible(true)` as a duplicate: the page stayed at 1x1
+        // and the content box came back empty — the blank screen after closing
+        // the `?` sheet, with YouTube still playing audio behind it. The same
+        // stale flag also let `browser_set_rect` re-lay the page over an open
+        // overlay, which is the overlap the park exists to prevent.
+        state.parked.store(true, Ordering::Relaxed);
         let mut parked = 0usize;
         for page in window.webviews() {
             if page.label().starts_with("tab-") {
@@ -2235,6 +2244,90 @@ pub async fn browser_stop(app: tauri::AppHandle, id: String) -> Result<(), Strin
     });
     diag(&format!("stop {id}"));
     Ok(())
+}
+
+/// F12 / Ctrl+Shift+I — WebView2's own DevTools window for this tab.
+///
+/// Firefox opens the page inspector on these chords, and the in-app browser
+/// is the only place the user can debug a page (localhost included) without
+/// leaving T9. WebView2's `AreDevToolsEnabled` is flipped on first, because
+/// the release build turns it off by default and `OpenDevToolsWindow` would
+/// otherwise be a silent no-op.
+#[tauri::command]
+pub async fn browser_devtools(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let Some(window) = app.get_window("main") else {
+        return Ok(());
+    };
+    let Some(webview) = find_tab(&window, &label_for(&id)) else {
+        return Ok(());
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    let posted = webview.with_webview(move |pw| {
+        let mut opened = false;
+        unsafe {
+            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
+            if let Ok(core) = pw.controller().CoreWebView2() {
+                if let Ok(settings) = core.Settings() {
+                    let _ = settings.SetAreDevToolsEnabled(true);
+                }
+                if core.OpenDevToolsWindow().is_ok() {
+                    opened = true;
+                }
+            }
+        }
+        let _ = tx.send(opened);
+    });
+    if posted.is_err() {
+        return Err("webview was not available".into());
+    }
+    let opened = rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap_or(false);
+    diag(&format!("devtools {id} opened={opened}"));
+    if opened {
+        Ok(())
+    } else {
+        Err("DevTools nahi khul paaya".into())
+    }
+}
+
+/// Ctrl+M — mute/unmute this tab (Firefox's mute chord). Returns the new
+/// state so the caller can toast it.
+#[tauri::command]
+pub async fn browser_toggle_mute(app: tauri::AppHandle, id: String) -> Result<bool, String> {
+    let Some(window) = app.get_window("main") else {
+        return Ok(false);
+    };
+    let Some(webview) = find_tab(&window, &label_for(&id)) else {
+        return Ok(false);
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    let posted = webview.with_webview(move |pw| {
+        let mut muted = false;
+        unsafe {
+            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8;
+            use windows::core::BOOL;
+            if let Ok(core) = pw.controller().CoreWebView2() {
+                if let Ok(core8) = core.cast::<ICoreWebView2_8>() {
+                    let mut cur = BOOL(0);
+                    let _ = core8.IsMuted(&mut cur);
+                    let next = !cur.as_bool();
+                    if core8.SetIsMuted(next).is_ok() {
+                        muted = next;
+                    }
+                }
+            }
+        }
+        let _ = tx.send(muted);
+    });
+    if posted.is_err() {
+        return Ok(false);
+    }
+    let muted = rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap_or(false);
+    diag(&format!("mute {id} -> {muted}"));
+    Ok(muted)
 }
 
 /// Diagnostic lane (`T9_BROWSER_SMOKE=1`): build one real tab webview with

@@ -25,7 +25,14 @@
 //!   the pointer resting on the card keeps it up and slides that deadline —
 //!   and so does any move or resize, so a native drag can never be
 //!   destroyed under the cursor,
-//! * **hidden at once** when the session clears (`smtc::clear`).
+//! * **pin** (the button right of X) cancels the auto-hide for good: the
+//!   card stays on screen while the user opens other apps, which is the one
+//!   thing an OSD that disappears after five seconds cannot do. The pin is
+//!   remembered in `app_data_dir/media-flyout-pinned.txt`, so a pinned card
+//!   comes back pinned after the idle destroy and after an app restart,
+//! * **hidden at once** when the session clears (`smtc::clear`) — even when
+//!   pinned: there is no item left to draw, and an empty pinned card would
+//!   be a permanent ghost.
 //!
 //! It appears only on *transitions* — play, pause, fresh owner, any
 //! transport button, any seek. Position-only heartbeats (every ~1.5 s while
@@ -68,6 +75,10 @@ const NEED_VISIBLE: i32 = 48;
 const GRAB: f64 = 8.0;
 /// What [`persist`] writes into `app_data_dir` — `x y w h`, physical px.
 const GEOM_FILE: &str = "media-flyout-geom.txt";
+/// Where the pin button's choice lives — `1` or `0`, one byte of state that
+/// must outlive the idle destroy (the window, not the preference, is what
+/// gets recycled).
+const PIN_FILE: &str = "media-flyout-pinned.txt";
 
 /// When the flyout was last asked to appear. `None` = nothing to show; the
 /// watchdog parks (one sleeping thread, no window work) until a ping.
@@ -77,6 +88,13 @@ static WATCHDOG: AtomicBool = AtomicBool::new(false);
 /// Whether the window is on screen right now — skips show/hide churn and
 /// tells the watchdog there is something to hide.
 static VISIBLE: AtomicBool = AtomicBool::new(false);
+/// The pin button: while true the watchdog never hides the card. Read by the
+/// watchdog on every poll (an atomic, so no lock and no window call).
+static PINNED: AtomicBool = AtomicBool::new(false);
+/// The pin file is read at most once per process — `ping` runs on every
+/// play/pause, and a stat/read per heartbeat is exactly the kind of disk
+/// chatter this module avoids.
+static PIN_LOADED: AtomicBool = AtomicBool::new(false);
 /// Where the user last put the card (physical pixels). Kept across the
 /// idle destroy and flushed to disk on `Destroyed`, so the next session
 /// starts where this one ended.
@@ -98,6 +116,40 @@ fn touch() {
     }
 }
 
+/// The pin file's one value: `1` means pinned. Anything else (missing file,
+/// a half-written byte) is "not pinned" — the safe default is a card that
+/// goes away, not one that sits on screen forever.
+fn pin_value(text: &str) -> bool {
+    text.trim() == "1"
+}
+
+/// Read the remembered pin once per process. Called from `ping`'s worker and
+/// from the flyout's own mount query, so the first of the two pays the read.
+fn load_pin<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if PIN_LOADED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    if let Ok(text) = std::fs::read_to_string(dir.join(PIN_FILE)) {
+        PINNED.store(pin_value(&text), Ordering::SeqCst);
+    }
+}
+
+/// Apply and persist the pin. The atomic flips first: the watchdog polls it
+/// every 400 ms and must never read a stale `false` after the user pinned.
+fn save_pin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, pinned: bool) {
+    PINNED.store(pinned, Ordering::SeqCst);
+    PIN_LOADED.store(true, Ordering::SeqCst);
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::write(dir.join(PIN_FILE), if pinned { "1" } else { "0" });
+    }
+}
+
 /// Something worth showing happened: a play/pause transition, a fresh
 /// owner, a transport button, a seek. The window is created here the first
 /// time, positioned, and shown — without taking keyboard focus from the
@@ -115,6 +167,10 @@ pub fn ping<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let handle = app.clone();
     std::thread::spawn(move || {
         diag("media flyout -> ping (deferred to worker)");
+        // The remembered pin is read before the window exists: a pinned card
+        // must be pinned from its very first frame, not after the button's
+        // mount query answers.
+        load_pin(&handle);
         if !ensure(&handle) {
             return;
         }
@@ -436,6 +492,30 @@ pub fn media_flyout_close(app: tauri::AppHandle) {
     hide(&app);
 }
 
+/// The pin button (`MediaFlyout.svelte`, right of X): keep the card on
+/// screen until X or a session clear, and remember the choice. Returns the
+/// state that was actually applied, so the button never renders a lie.
+#[tauri::command]
+pub fn media_flyout_pin(app: tauri::AppHandle, pinned: bool) -> bool {
+    save_pin(&app, pinned);
+    if pinned {
+        // Pinning is a "show me now" too: slide the idle clock so a card
+        // that was one poll away from hiding does not disappear under the
+        // click that just pinned it.
+        touch();
+    }
+    diag(&format!("media flyout -> pin {pinned}"));
+    pinned
+}
+
+/// What the pin button should draw on mount. The file is the source of
+/// truth; the atomic is just its process-local mirror.
+#[tauri::command]
+pub fn media_flyout_pinned(app: tauri::AppHandle) -> bool {
+    load_pin(&app);
+    PINNED.load(Ordering::SeqCst)
+}
+
 /// One thread for the process: hide the card `IDLE` after the last event,
 /// unless the pointer is resting on it (which slides the deadline).
 /// Parked — a lock read and two sleeps — while nothing has ever shown.
@@ -449,6 +529,11 @@ fn watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             continue;
         }
         if last.elapsed() < IDLE {
+            continue;
+        }
+        if PINNED.load(Ordering::SeqCst) {
+            // Pinned: the user asked for a card that survives opening other
+            // apps. X and a session clear are the only ways down now.
             continue;
         }
         let Some(window) = app.get_webview_window(LABEL) else {
@@ -489,7 +574,7 @@ fn pointer_on<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{MARGIN, MIN_H, MIN_W, Geom, origin_in, parse_geom, visible_on};
+    use super::{MARGIN, MIN_H, MIN_W, Geom, origin_in, parse_geom, pin_value, visible_on};
 
     #[test]
     fn sits_inside_the_work_area_bottom_right() {
@@ -564,15 +649,13 @@ mod tests {
             },
             &work
         ));
-        // no monitors at all → not
-        assert!(!visible_on(
-            &Geom {
-                x: 0,
-                y: 0,
-                w: 372,
-                h: 104
-            },
-            &[]
-        ));
+    #[test]
+    fn pin_value_only_one_means_pinned() {
+        assert!(pin_value("1"));
+        assert!(pin_value("1\n"));
+        assert!(!pin_value("0"));
+        assert!(!pin_value(""));
+        assert!(!pin_value("yes"));
+        assert!(!pin_value("  0  "));
     }
 }

@@ -123,7 +123,26 @@
 
   const mediaElement = () => {
     try {
-      return document.querySelector('video') || document.querySelector('audio');
+      // Prefer the element that has actually played: YouTube keeps hidden
+      // hover-preview <video>s in the DOM, and querySelector('video') can
+      // return one of those (wrong duration, wrong poster, old video). A
+      // playing element is always the truth; otherwise the one that played
+      // last; only then fall back to the first element in the document.
+      const all = document.querySelectorAll('video, audio');
+      let playing = null;
+      let lastPlayed = null;
+      for (const el of all) {
+        if (!el || !el.isConnected) continue;
+        if (!el.paused && !el.ended) {
+          if (!el.muted) return el;
+          if (!playing) playing = el;
+        }
+        if (playedEl === el) lastPlayed = el;
+      }
+      if (playing) return playing;
+      if (lastPlayed) return lastPlayed;
+      if (playedEl && playedEl.isConnected) return playedEl;
+      return all.length ? all[0] : null;
     } catch (e) {
       return null;
     }
@@ -243,7 +262,7 @@
     const prev = !!mediaHandlers.previoustrack || !!document.querySelector('.ytp-prev-button');
     // Position-only heartbeats: the key ignores position/time, so a moving
     // timeline never repaints the flyout's metadata.
-    const key = [state, title, artist, artwork, next, prev].join('|');
+    const key = [state, title, artist, artwork, next, prev, Math.round(duration)].join('|');
     const now = Date.now();
     if (key === mediaKey && now - mediaSentAt < 1400) {
       if (state === 'playing') mediaTimer = setTimeout(reportMedia, 300);
@@ -619,9 +638,13 @@
     ['alt+home', 'goHome', 0, false],
     ['ctrl+l', 'focusUrlbar', 0, true],
     ['alt+d', 'focusUrlbar', 0, true],
+    ['alt+k', 'focusUrlbar', 0, true],
+    ['ctrl+e', 'focusUrlbar', 0, true],
     ['f6', 'focusUrlbar', 0, true],
     ['ctrl+j', 'downloads', 0, true],
+    ['ctrl+shift+y', 'downloads', 0, true],
     ['ctrl+h', 'history', 0, false],
+    ['ctrl+shift+h', 'history', 0, false],
     ['ctrl+shift+delete', 'clearHistory', 0, false],
     ['ctrl+d', 'bookmark', 0, false],
     ['ctrl+shift+d', 'bookmarkAllTabs', 0, false],
@@ -631,6 +654,7 @@
     ['ctrl+o', 'openFile', 0, true],
     ['ctrl+p', 'printPage', 0, false],
     ['ctrl+u', 'viewSource', 0, false],
+    ['ctrl+m', 'toggleMute', 0, true],
     ['ctrl+f', 'findInPage', 0, false],
     ['f3', 'findInPage', 0, false],
     ['shift+f3', 'findInPage', 0, false],
@@ -642,7 +666,9 @@
     ['ctrl+-', 'zoom', -1, false],
     ['ctrl+0', 'zoom', 0, false],
     ['f11', 'toggleFullscreen', 0, true],
-    ['f1', 'openHelp', 0, true]
+    ['f1', 'openHelp', 0, true],
+    ['f12', 'devTools', 0, true],
+    ['ctrl+shift+i', 'devTools', 0, true]
   ];
 
   function grab(e) {

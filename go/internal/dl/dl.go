@@ -562,6 +562,45 @@ func (m *Manager) forget(id string) {
 	m.mu.Unlock()
 }
 
+// signedURLExpiry reads the expiry a signed URL carries, when it carries one.
+//
+// File hosts hand out time-limited links: R2/S3 v4 (`X-Amz-Date` +
+// `X-Amz-Expires`), CloudFront/S3 v2 (`Expires`, unix seconds). A row resumed
+// after that moment can only ever answer 403 — the bytes are still on disk,
+// but the link is dead, and the signature cannot be refreshed from inside the
+// daemon (it never sees the secret). Saying "link expire ho gaya" at the moment
+// the user clicks Retry is the difference between a zombie row and a clear
+// instruction. Not every host signs; `ok=false` means "no expiry to enforce".
+func signedURLExpiry(rawURL string) (time.Time, bool) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return time.Time{}, false
+	}
+	q := u.Query()
+	if d := q.Get("X-Amz-Date"); d != "" {
+		if signedAt, err := time.Parse("20060102T150405Z", d); err == nil {
+			if secs, err := strconv.Atoi(q.Get("X-Amz-Expires")); err == nil && secs > 0 {
+				return signedAt.Add(time.Duration(secs) * time.Second), true
+			}
+		}
+	}
+	for _, key := range []string{"Expires", "expires"} {
+		if raw := q.Get(key); raw != "" {
+			if secs, err := strconv.ParseInt(raw, 10, 64); err == nil && secs > 0 {
+				return time.Unix(secs, 0), true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+// expiredLinkError is the one sentence both Start and resume return for a
+// signature that is past its expiry.
+func expiredLinkError(exp time.Time) error {
+	return fmt.Errorf("yeh download link %s baje expire ho gaya — page se dobara download karo",
+		exp.Local().Format("02 Jan 15:04"))
+}
+
 // Start probes the URL and begins downloading it.
 //
 // The probe is synchronous — one round trip that learns the size, the range
@@ -571,6 +610,12 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return nil, errors.New("sirf http/https URL chalega")
+	}
+	// A signature that is already past its expiry can only answer 403. Fail
+	// before the probe so the panel shows the reason, not a retry loop.
+	if exp, ok := signedURLExpiry(rawURL); ok && time.Now().After(exp) {
+		diagf("start refused %s err=link expired at %s", parsed.Host, exp.Format(time.RFC3339))
+		return nil, expiredLinkError(exp)
 	}
 
 	// Same link, same queue: a row we already hold for it - running, paused,
@@ -1607,6 +1652,13 @@ func (d *download) run() {
 	// a socket immediately.
 	d.lastLimit.Store(time.Now().UnixNano())
 
+	// A 2.8 GB file at 100 KB/s is hours of wall-clock. Windows' idle sleep
+	// used to freeze the transfer mid-row; the next start then found a dead
+	// signed URL, which is exactly the row that looked "stuck at 104 KB" for
+	// days. The lock is released when run() returns, whichever way it ends.
+	release := acquireWakeLock()
+	defer release()
+
 	// Flush the resume state while the bytes are still moving. Until this
 	// existed the sidecar was only written on pause and on error, so a crash
 	// (or a kill from the updater) lost every offset since the last pause - and
@@ -1945,12 +1997,19 @@ func (d *download) slowDown() {
 // It never goes above the number of segments, so nothing over-connects.
 func (d *download) speedUp() {
 	d.gateMu.Lock()
-	if d.concLimit < len(d.segs) {
+	grew := d.concLimit < len(d.segs)
+	if grew {
 		d.concLimit++
 	}
 	limit := d.concLimit
 	d.gateMu.Unlock()
-	diagf("speedup id=%s sockets=%d", d.id, limit)
+	// `maybeSpeedUp` calls this every 20s once the rate limit goes quiet, so
+	// logging unconditionally wrote "speedup ... sockets=24" forever on a row
+	// that was already at its ceiling — 880 KB of diag that said "nothing
+	// changed". One line per socket actually handed out.
+	if grew {
+		diagf("speedup id=%s sockets=%d", d.id, limit)
+	}
 }
 
 // limitRecoverAfter is how long a host must stay quiet (no 429, bytes still
@@ -2373,6 +2432,19 @@ func (d *download) resume() error {
 	if d.status != StatusPaused && d.status != StatusError {
 		d.mu.Unlock()
 		return ErrBusy
+	}
+	// The bytes survived, the link did not. Resume is the exact moment the
+	// user asks "why is this stuck?", so answer that instead of firing eight
+	// requests that can only come back 403.
+	if exp, ok := signedURLExpiry(d.url); ok && time.Now().After(exp) {
+		msg := expiredLinkError(exp).Error()
+		d.status = StatusError
+		d.errText = msg
+		d.finishedAt = time.Now()
+		d.saveSidecarLocked()
+		d.mu.Unlock()
+		diagf("resume refused id=%s expired=%s", d.id, exp.Format(time.RFC3339))
+		return errors.New(msg)
 	}
 	// pause() and fail() close the handle while the row is dead (the file
 	// manager must be able to delete the `.part`), so a resume always opens

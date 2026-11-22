@@ -162,7 +162,13 @@ describe('browser keys — the Firefox map', () => {
     assert.equal(calls.at(-1)!.action, 'stopLoading');
     dispatchBrowserKey(asEvt(ev('Home', { altKey: true })), deps);
     assert.equal(calls.at(-1)!.action, 'goHome');
-    for (const combo of [ev('l', { ctrlKey: true }), ev('d', { altKey: true })]) {
+    for (const combo of [
+      ev('l', { ctrlKey: true }),
+      ev('d', { altKey: true }),
+      // The user's own chord: Ctrl+K became the command palette, so Alt+K is
+      // how the address bar (and its search) is reached now.
+      ev('k', { altKey: true })
+    ]) {
       dispatchBrowserKey(asEvt(combo), deps);
       assert.equal(calls.at(-1)!.action, 'focusUrlbar');
     }

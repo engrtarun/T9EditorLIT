@@ -463,7 +463,20 @@ mod win {
         }
         // Play / pause / a fresh owner put the OSD flyout on screen.
         // Position-only heartbeats deliberately stay out of here.
-        if started || paused_fresh || took_over {
+        // A title or artwork change while playing is a new item (YouTube's
+        // next/prev, an ad ending, a SPA navigation). It must re-show the
+        // OSD flyout, otherwise the card keeps the old video's metadata.
+        let fresh_item = state
+            .last
+            .lock()
+            .ok()
+            .map(|last| {
+                kind == "playing"
+                    && !last.title.trim().is_empty()
+                    && (last.title != report.title || last.artwork != report.artwork)
+            })
+            .unwrap_or(false);
+        if started || paused_fresh || took_over || fresh_item {
             crate::media_flyout::ping(app);
         }
 
@@ -536,18 +549,26 @@ mod win {
             let _ = controls.SetPlaybackRate(report.rate.clamp(0.25, 4.0));
         }
 
-        if report.duration.is_finite() && report.duration > 0.0 {
-            let ticks = |seconds: f64| TimeSpan {
-                Duration: (seconds.max(0.0) * 10_000_000.0) as i64,
-            };
-            if let Ok(timeline) = SystemMediaTransportControlsTimelineProperties::new() {
-                let _ = timeline.SetStartTime(TimeSpan { Duration: 0 });
-                let _ = timeline.SetMinSeekTime(TimeSpan { Duration: 0 });
-                let _ = timeline.SetMaxSeekTime(ticks(report.duration));
-                let _ = timeline.SetEndTime(ticks(report.duration));
-                let _ = timeline.SetPosition(ticks(report.position));
-                let _ = controls.UpdateTimelineProperties(&timeline);
-            }
+        // The timeline is updated on every report, not only on duration
+        // changes: a next/prev that landed on a video whose metadata has not
+        // resolved yet must clear the *previous* video's duration, otherwise
+        // the Win+A card keeps showing the old length (the "duration galat"
+        // report). A zero duration is honest ("unknown") and disables seek.
+        let end = if report.duration.is_finite() && report.duration > 0.0 {
+            report.duration
+        } else {
+            0.0
+        };
+        let ticks = |seconds: f64| TimeSpan {
+            Duration: (seconds.max(0.0) * 10_000_000.0) as i64,
+        };
+        if let Ok(timeline) = SystemMediaTransportControlsTimelineProperties::new() {
+            let _ = timeline.SetStartTime(TimeSpan { Duration: 0 });
+            let _ = timeline.SetMinSeekTime(TimeSpan { Duration: 0 });
+            let _ = timeline.SetMaxSeekTime(ticks(end));
+            let _ = timeline.SetEndTime(ticks(end));
+            let _ = timeline.SetPosition(ticks(report.position.min(end.max(0.0))));
+            let _ = controls.UpdateTimelineProperties(&timeline);
         }
     }
 
@@ -690,10 +711,12 @@ mod win {
             _ => format!("window.__t9MediaAction&&window.__t9MediaAction({action:?});"),
         };
         let _ = webview.eval(&script);
-        // Every transport press re-raises the OSD: media keys, the earbud,
-        // the Win+A card and the OSD's own buttons all want the timeline
-        // visible right after they act.
-        crate::media_flyout::ping(app);
+        // A next/prev press must NOT re-raise the flyout with the *old*
+        // metadata: the card would flash the previous video until the new
+        // page reports. The fresh item's report (title change) pings instead.
+        if !matches!(action, "next" | "prev") {
+            crate::media_flyout::ping(app);
+        }
         diag(&format!("media button {action} -> {id}"));
     }
 

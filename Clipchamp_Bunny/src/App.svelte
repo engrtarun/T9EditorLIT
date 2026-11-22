@@ -35,6 +35,8 @@
   import {
     browserPrint,
     browserClearBrowsingData,
+    browserDevTools,
+    browserToggleMute,
     onBrowserKey,
     browserNote,
     browserFocusShell,
@@ -219,6 +221,17 @@
     zoom: (dir: -1 | 0 | 1) => browser.applyZoom(dir),
     findInPage: () => {
       toast.push('info', '⌕ Find-in-page webview ka API is build me nahi hai');
+    },
+    devTools: () => {
+      const tab = browser.active;
+      if (tab) void browserDevTools(tab.id);
+    },
+    toggleMute: () => {
+      const tab = browser.active;
+      if (!tab) return;
+      void browserToggleMute(tab.id).then((muted) =>
+        toast.push('info', muted ? '🔇 Tab mute ho gaya' : '🔊 Tab unmute ho gaya')
+      );
     },
     toggleFullscreen: () => {
       // The settings switch gates the action, not the key: when it is off,
@@ -771,6 +784,14 @@
           <RightRail />
         </div>
       {/key}
+
+      <!--
+        Batch transcript lives in the studio only. Mounted inside this branch
+        (outside the mode `{#key}`) so it survives a Cut ↔ Export switch but is
+        torn down the moment the user goes Home or into the browser — the Home
+        screen has no batch entry point any more.
+      -->
+      <BatchQueuePanel />
     </div>
   {/if}
 </div>
@@ -785,7 +806,6 @@
      quota chip). Mounted here because mode isolation unmounts every screen
      below it — a dialog living inside a screen could not outlive it. -->
 <UsageDialog />
-<BatchQueuePanel />
 
 <!-- The one menu, rendered at the app root so nothing can hide it. -->
 {#if menu.current}
