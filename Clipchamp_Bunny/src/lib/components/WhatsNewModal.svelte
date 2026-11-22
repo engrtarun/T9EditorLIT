@@ -1,15 +1,13 @@
 <script lang="ts">
   import { installedBuild } from '../ipc';
   import { whatsNew } from '../stores/whatsnew.svelte';
-  import { WHATS_NEW } from '../whatsnew';
-
-  const release = WHATS_NEW;
+  import { whatsNewFor } from '../whatsnew';
 
   /**
    * The only facts on this sheet: the build the app is actually holding.
    * Read from the on-disk marker every time the sheet opens, so it can never
-   * show a stale identity after a deploy. The prose below is hand-written
-   * reference, and says so - it is not a generated changelog.
+   * show a stale identity after a deploy. Notes are looked up by that exact
+   * build id — an unknown build gets "no verified notes", never an old list.
    */
   let facts = $state<{
     buildId: string;
@@ -17,6 +15,8 @@
     builtAt: string;
     version: string;
   } | null>(null);
+
+  const release = $derived(whatsNewFor(facts?.buildId));
 
   $effect(() => {
     if (!whatsNew.open) return;
@@ -70,7 +70,7 @@
               What's New
             </h1>
             <p class="text-[12px] text-nc-mut">
-              Hand-written reference notes - is build ki asli identity niche hai
+              Sirf is exact build ke verified notes - niche build identity hai
             </p>
           </div>
         </div>

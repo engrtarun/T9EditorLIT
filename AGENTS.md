@@ -638,3 +638,27 @@ Rules:
   `bun $wh status` — it prints active items, leases and the context budget.
 - **Do not enable more than 2 extra skills per task**, and turn them off when
   the task ends. Context budget is 8000 tokens (`bun $wh budget`).
+
+---
+
+## 15. What's New — no stale notes, ever (STRICT)
+
+`Clipchamp_Bunny/src/lib/whatsnew.ts` is **not** a running feature list. It is a
+set of notes bound to the exact staged `buildId` they were written from.
+
+1. A release block MUST carry the `buildId` of the commit whose diff you actually
+   read. Never write a "reference"/"evergreen" block that appears on every
+   build — that is how old and now-false notes reached the user (e.g. the
+   "YouTube default pin" line after pin behaviour changed).
+2. **One note per verified change.** Before adding a note, confirm the shipped
+   diff contains that change and that the wording still matches the current
+   code. If you change/remove a feature, edit or delete its note in the **same
+   commit**, even if another agent wrote it.
+3. The modal uses `whatsNewFor(facts.buildId)` from the on-disk marker. An
+   unknown build shows the explicit "no verified notes" state. Never add a
+   fallback that shows an older release's notes, and never widen the match
+   (prefix/partial build ids are forbidden).
+4. If a build ships without notes, ship the honest empty state. Do not fill it
+   by copying the previous release's text.
+5. Every agent owns the notes for the features it ships. A deploy with notes
+   that describe another build is a defect, not a cosmetic issue.
