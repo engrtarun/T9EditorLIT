@@ -116,11 +116,37 @@
 <div
   class="relative flex h-full min-h-0 flex-col overflow-y-auto bg-gradient-to-b from-nc-bg via-nc-bg to-nc-panel/40 px-6 py-8"
 >
-  <!-- one soft brand glow, behind everything, pointer-inert -->
+  <!-- one soft brand glow, behind everything, pointer-inert, roaming for a premium feel -->
   <div
-    class="pointer-events-none absolute -top-24 left-1/2 h-64 w-[560px] -translate-x-1/2 rounded-full bg-nc-brand/10 blur-3xl"
+    class="pointer-events-none absolute left-1/2 top-1/3 h-64 w-[560px] -translate-x-1/2 rounded-full bg-nc-brand/10 blur-3xl glow-drift"
     aria-hidden="true"
   ></div>
+
+<style>
+  .glow-drift {
+    animation: glow-drift 16s ease-in-out infinite;
+    will-change: transform, opacity;
+  }
+  @keyframes glow-drift {
+    0%, 100% {
+      transform: translate(-50%, -35%) scale(1);
+      opacity: 0.85;
+    }
+    33% {
+      transform: translate(15%, 15%) scale(1.12);
+      opacity: 1;
+    }
+    66% {
+      transform: translate(-115%, 25%) scale(0.92);
+      opacity: 0.75;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .glow-drift {
+      animation: none;
+    }
+  }
+</style>
 
   <div class="relative mx-auto w-full max-w-[660px]">
     <!-- hero: greeting + live clock -->
