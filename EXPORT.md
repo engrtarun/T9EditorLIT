@@ -137,7 +137,7 @@ Ye addendum COMMS entry ke baad likha gaya hai (contract protocol §6.3).
 > Order me jao. Har task ka DoD: `cargo check` clean (local), `#[cfg(test)]`
 > unit test pure functions ke liye likho (CI chalayega), COMMS entry update.
 
-### B1-1 · Export history — `todo`
+### B1-1 · Export history - `done`
 
 **Features:** #89 history, #86 completion notification (UI side), #88 show-in-folder.
 SQLite table `export_history` (same DB as projects, `default_db_path`).
@@ -147,7 +147,7 @@ Columns: `id, created_at, path, size_bytes, duration_secs, format, resolution, p
 optional `clear_export_history`. Serde camelCase.
 **Unblocks:** UI ka "Export History" panel.
 
-### B1-2 · `fps` + `codec` + `container` options — `todo`
+### B1-2 · `fps` + `codec` + `container` options - `done`
 
 **Features:** #28 frame rate, #19-23 codecs, #13-16 containers, #46 faststart, #25 codec detection.
 
@@ -157,14 +157,14 @@ optional `clear_export_history`. Serde camelCase.
 - Sab `Option` + `#[serde(default)]`. Fallback hamesha `warnings` me.
   **Unblocks:** UI ki Format / Frame Rate / Codec rows (Quick + Advanced dono).
 
-### B1-3 · Preflight: disk space + file exists — `todo`
+### B1-3 · Preflight: disk space + file exists - `done`
 
 **Features:** #100 disk space check, #67 overwrite protection, #101 temp output.
 Command `preflight_export { path, estimatedBytes } → { freeBytes, exists, ok, reason }`
 (fs stats only, koi buffer nahi). Estimated bytes `plan_export` se aayega.
 **Unblocks:** UI ka "Ready to Export" pre-flight warning + overwrite confirm.
 
-### B1-4 · Quality knobs: `crf` / `videoBitrateKbps` / `twoPass` — `todo`
+### B1-4 · Quality knobs: `crf` / `videoBitrateKbps` / `twoPass` - `done`
 
 **Features:** #31 CRF, #32-34 bitrate modes + 2-pass, #35 encoder preset.
 `encoder_args()` me overrides: `crf` → ladder ko override kare; `videoBitrateKbps`
@@ -172,7 +172,7 @@ Command `preflight_export { path, estimatedBytes } → { freeBytes, exists, ok, 
 Pure fn (`encoder_args`) hi unit-test karo.
 **Unblocks:** UI Advanced tab ka Quality section.
 
-### B1-5 · Export log file — `todo`
+### B1-5 · Export log file - `done`
 
 **Features:** #90 error logs.
 Har export ke ffmpeg commands + stderr tail ko `cache_root/logs/export-<ts>.log`
@@ -180,7 +180,7 @@ me likho (last 200 KB cap, zero-RAM: stream se append, buffer nahi).
 Command `read_export_log → String | null` (sabse recent).
 **Unblocks:** UI ka "Error Logs" viewer (failure ke baad).
 
-### B1-6 · Prevent sleep during export — `todo` (chhota, optional)
+### B1-6 · Prevent sleep during export - `done` (chhota, optional)
 
 **Features:** #99. Export start par `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`,
 khatam/cancel/failure par reset. Drop-in Rust (windows crate), no new dep if avoidable.
@@ -557,6 +557,34 @@ dikhati hai.
 ---
 
 ## COMMS
+
+### [2026-11-21] Backend — B1-1…B1-6 implemented (cargo check green)
+
+Poora Batch 1 land ho gaya. New files: `src-tauri/src/export_extra.rs`
+(history/preflight/caps, pure `decide()` + tests), `src-tauri/src/sleep_guard.rs`
+(raw kernel32 wake lock, zero new dependency). `ffmpeg.rs` me bounded log sink
+(200 KB rotation, argv + stderr tail) — sab children ek hi hook se cover.
+
+- **B1-1:** `export_history` table `nanamicut.db` me (`exports` naam _nahi_ —
+  legacy sweeper use drop karta hai). Row `start_export` ke success/failure
+  branches me; success me `r.output` (real resolved path), failure me shared
+  `resolve_output()` + `cancelled` status. Commands: `list_export_history`,
+  `clear_export_history`.
+- **B1-2:** `fps`, `codec`, `container`, `includeAudio`, `preset` fields;
+  fps/codec force encode + warning, AV1 (`av1_nvenc`/`libsvtav1`) probe, container
+  drives faststart, `-an` when audio dropped. `export_capabilities` truthful flags.
+- **B1-3:** `preflight_export` reuses `sysinfo_ext::drive_space`, 2× estimate +
+  64 MB floor, read-only, overwrite via force path.
+- **B1-4:** `EncodeTune` pure struct, CRF ladder override, ABR with cap, real
+  two-pass only for a single whole encode (warn + disable otherwise), estimate
+  reflects bitrate.
+- **B1-5:** `read_export_log` returns last 200 KB.
+- **B1-6:** RAII sleep guard, `ES_CONTINUOUS | ES_SYSTEM_REQUIRED`, reset on all paths.
+
+Verify: `cargo check --tests` dono crates ke liye green (app + root), contract
+audit **0 FAIL** aur saare planned fields/commands `yes`. Unit tests CI chalayega
+(local `cargo test` banned). **Not shipped** — `deploy.ps1 -Ci` abhi nahi chalaya;
+desktop par tabhi pahunchega jab CI green ho kar install ho.
 
 ### [2026-11-21] Recon (DeepSeek V4.1 Flash Free) — poora dossier + skill protocol + banner
 

@@ -240,6 +240,106 @@
   .nc-scroll-none::-webkit-scrollbar {
     display: none;
   }
+
+  /* =========================================================
+     EXPORT SCREEN — the visual identity lives here.
+
+     Same rules as MOTION below: lifts are transform-only, entrances are
+     short and one-shot, and nothing loops except the progress bar, which
+     only exists while FFmpeg is genuinely working.
+     ========================================================= */
+
+  /**
+   * The screen's headline. A gradient runs from white into the brand blue
+   * so the title has a light source instead of being flat white text.
+   */
+  .nc-display {
+    background-image: linear-gradient(
+      100deg,
+      var(--color-nc-txt) 0%,
+      var(--color-nc-txt) 45%,
+      color-mix(in oklab, var(--color-nc-brand) 75%, white) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /** Hover lift for rows and cards — transform only, so it never repaints. */
+  .nc-hover-lift {
+    transition-property: transform, border-color, background-color, box-shadow;
+    transition-duration: 160ms;
+    transition-timing-function: ease-out;
+  }
+  .nc-hover-lift:hover {
+    transform: translate3d(0, -1px, 0);
+  }
+
+  /** The four preset cards arriving, staggered by their index. */
+  .nc-card-in {
+    animation: t9-card-in 220ms ease-out backwards;
+    animation-delay: calc(var(--i, 0) * 45ms);
+  }
+
+  /** A soft halo behind the segmented control's active pill. */
+  .nc-segmented {
+    box-shadow: inset 0 1px 0 color-mix(in oklab, white 5%, transparent);
+  }
+
+  /** The "Ready" tile breathing — one-shot on mount, then it holds still. */
+  .nc-pulse {
+    animation: t9-glow 2.4s ease-in-out 1;
+  }
+
+  /** The hero card's own halo, so the CTA sits in light rather than on gray. */
+  .nc-ready {
+    box-shadow:
+      inset 0 1px 0 color-mix(in oklab, white 6%, transparent),
+      0 24px 48px -32px color-mix(in oklab, var(--color-nc-brand) 70%, transparent);
+  }
+
+  /**
+   * The sheen on the export button is hover-driven (see the markup), so this
+   * only supplies the resting glow and the press feedback.
+   */
+  .nc-cta:active:not(:disabled) {
+    transform: translate3d(0, 1px, 0);
+  }
+
+  /**
+   * Progress bar: the one legitimate loop — it runs only while a child
+   * process is rendering, i.e. exactly the "really waiting" case.
+   */
+  .nc-bar {
+    background-image: linear-gradient(
+      100deg,
+      transparent 0%,
+      transparent 40%,
+      color-mix(in oklab, white 38%, transparent) 50%,
+      transparent 60%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    animation: nc-bar-sweep 1.4s linear infinite;
+  }
+
+  /** Spec chips appearing under the estimate, one after another. */
+  .nc-chip {
+    animation: t9-fade-in 200ms ease-out backwards;
+  }
+  .nc-chip:nth-child(1) {
+    animation-delay: 40ms;
+  }
+  .nc-chip:nth-child(2) {
+    animation-delay: 80ms;
+  }
+  .nc-chip:nth-child(3) {
+    animation-delay: 120ms;
+  }
+  .nc-chip:nth-child(4) {
+    animation-delay: 160ms;
+  }
 }
 
 /* =========================================================
@@ -306,6 +406,31 @@
 @keyframes t9-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/**
+ * A halo brightening once and settling. Opacity only — the "Ready" tile
+ * acknowledges that it mounted and then stops, so the screen never idles
+ * with something blinking at the user.
+ */
+@keyframes t9-glow {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.62;
+  }
+}
+
+/** Light travelling along the progress bar while FFmpeg runs. */
+@keyframes nc-bar-sweep {
+  from {
+    background-position: -100% 0;
+  }
+  to {
+    background-position: 100% 0;
   }
 }
 

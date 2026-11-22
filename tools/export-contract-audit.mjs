@@ -41,6 +41,7 @@ const JSON_OUT = process.argv.includes("--json");
 const APP_LIB_RS = join(ROOT, "Clipchamp_Bunny", "src-tauri", "src", "lib.rs");
 const LIB_RS = existsSync(APP_LIB_RS) ? APP_LIB_RS : join(ROOT, "src-tauri", "src", "lib.rs");
 const EXPORT_RS = join(ROOT, "src-tauri", "src", "export.rs");
+const EXPORT_EXTRA_RS = join(ROOT, "src-tauri", "src", "export_extra.rs");
 const IPC_TS = join(ROOT, "Clipchamp_Bunny", "src", "lib", "ipc.ts");
 const TYPES_TS = join(ROOT, "Clipchamp_Bunny", "src", "lib", "types.ts");
 const UI_SRC = join(ROOT, "Clipchamp_Bunny", "src");
@@ -137,6 +138,7 @@ function uiInvocations(dir) {
 
 const libRs = read(LIB_RS);
 const exportRs = read(EXPORT_RS);
+const exportExtraRs = existsSync(EXPORT_EXTRA_RS) ? read(EXPORT_EXTRA_RS) : "";
 const ipcTs = read(IPC_TS);
 const typesTs = existsSync(TYPES_TS) ? read(TYPES_TS) : "";
 const exportMd = existsSync(EXPORT_MD) ? read(EXPORT_MD) : "";
@@ -236,7 +238,9 @@ const plannedRows = PLANNED_FIELDS.map((field) => ({
 }));
 
 // 5 ── history / preflight mirrors, when they start to exist ──────────────
-const rustHistory = rustStructFields(exportRs, "ExportHistoryRow");
+const rustHistory =
+  rustStructFields(exportRs, "ExportHistoryRow") ??
+  rustStructFields(exportExtraRs, "ExportHistoryRow");
 const tsHistory = tsInterfaceFields(typesTs, "ExportHistoryRow");
 if (rustHistory || tsHistory) {
   if (rustHistory && !tsHistory) {

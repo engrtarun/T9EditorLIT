@@ -18,6 +18,7 @@
     value,
     display,
     icon,
+    tint = 'text-nc-mut bg-nc-panel-2',
     options,
     soon = false,
     disabled = false,
@@ -28,6 +29,8 @@
     value: string;
     display?: string;
     icon: Snippet;
+    /** Accent classes for the icon tile, so each row has its own colour. */
+    tint?: string;
     options: Array<{
       value: string;
       label: string;
@@ -77,27 +80,30 @@
     aria-expanded={open}
     aria-haspopup="listbox"
     onclick={() => (open = !open)}
-    class="flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors
+    class="nc-hover-lift group flex w-full items-center gap-3.5 rounded-2xl border px-3.5 py-3 text-left transition-all duration-150
            {open
-      ? 'border-nc-brand/60 bg-nc-panel-2'
-      : 'border-nc-line bg-nc-panel hover:border-nc-line-2'}
+      ? 'border-nc-brand/60 bg-nc-panel-2 shadow-[0_0_0_3px_rgba(77,141,255,0.12)]'
+      : 'border-nc-line/80 bg-nc-panel/80 hover:border-nc-line-2 hover:shadow-lg hover:shadow-black/25'}
            disabled:cursor-not-allowed disabled:opacity-50"
   >
     <span
-      class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-nc-panel-2 text-nc-mut"
+      class="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/5 {tint}"
       aria-hidden="true"
     >
       {@render icon()}
     </span>
     <span class="min-w-0 flex-1">
-      <span class="block text-[11px] leading-tight text-nc-mut">{label}</span>
-      <span class="block truncate text-sm font-semibold leading-tight text-nc-txt">
+      <span
+        class="block text-[10.5px] font-semibold uppercase tracking-wider leading-tight text-nc-mut"
+        >{label}</span
+      >
+      <span class="mt-0.5 block truncate text-[14px] font-semibold leading-tight text-nc-txt">
         {display ?? selected?.label ?? value}
       </span>
     </span>
     {#if soon}
       <span
-        class="shrink-0 rounded bg-nc-amber/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-nc-amber"
+        class="shrink-0 rounded-md border border-nc-amber/30 bg-nc-amber/12 px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-nc-amber"
         title="Ye choice tab apply hogi jab engine me aa jaye (EXPORT.md)"
       >
         SOON
@@ -105,7 +111,9 @@
     {/if}
     <svg
       viewBox="0 0 24 24"
-      class="h-4 w-4 shrink-0 text-nc-mut transition-transform {open ? 'rotate-180' : ''}"
+      class="h-4 w-4 shrink-0 text-nc-mut-2 transition-all duration-200 {open
+        ? 'rotate-180 text-nc-brand'
+        : 'group-hover:text-nc-mut'}"
       fill="none"
       stroke="currentColor"
       stroke-width="2"
@@ -120,7 +128,7 @@
   {#if open}
     <ul
       role="listbox"
-      class="absolute inset-x-0 top-full z-30 mt-1.5 overflow-hidden rounded-xl border border-nc-line bg-nc-panel-2 shadow-xl shadow-black/40"
+      class="absolute inset-x-0 top-full z-30 mt-2 overflow-hidden rounded-2xl border border-nc-line bg-nc-panel-2 shadow-2xl shadow-black/60"
     >
       {#each options as opt (opt.value)}
         <li role="option" aria-selected={opt.value === value}>
@@ -128,11 +136,11 @@
             type="button"
             disabled={opt.disabled}
             onclick={() => pick(opt.value)}
-            class="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors
+            class="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[12.5px] transition-colors
                    {opt.disabled
               ? 'cursor-not-allowed text-nc-mut-2'
               : opt.value === value
-                ? 'bg-nc-brand/10 text-nc-txt'
+                ? 'bg-nc-brand/12 font-semibold text-nc-txt'
                 : 'text-nc-mut hover:bg-nc-panel hover:text-nc-txt'}"
           >
             <span class="min-w-0 flex-1 truncate">
