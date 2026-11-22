@@ -477,6 +477,24 @@ class ProjectStore {
       if (entry) media.probed(entry.asset.id, { url });
     }
   }
+
+  /**
+   * Drop whatever the preview was doing for the previous project.
+   *
+   * Starting a new project mid-encode must stop the FFmpeg child *and* make
+   * sure its result cannot land in the new, empty project: bumping the
+   * generation is what makes the in-flight `preparePreview` return without
+   * writing `preview` or `media.url`. Without it the old build keeps burning
+   * CPU for a file nobody is looking at, then reports "ready" over a project
+   * that has no source at all.
+   */
+  private abandonPreview() {
+    this.previewGen += 1;
+    this.previewStop?.();
+    this.previewStop = null;
+    void cancelPreviewProxy();
+    this.preview = { kind: 'native', pct: 0, note: '', proxyPath: null };
+  }
   /**
    * The transcript rows — **non-deep reactive** on purpose.
    *
@@ -857,6 +875,7 @@ class ProjectStore {
    */
   async startNew(name: string, frame: ProjectFrame): Promise<void> {
     await this.flush();
+    this.abandonPreview();
     this.resetEditState();
     this.media = null;
     this.sourcePath = null;

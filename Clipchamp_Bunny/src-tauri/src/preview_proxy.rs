@@ -811,4 +811,98 @@ mod tests {
         };
         assert!(video_filter(&small).contains("scale=640:360"));
     }
+
+    /// A plain 1080p H.264 file that Chromium would decode perfectly — only
+    /// the container and the sound are wrong.
+    fn h264_1080p_mkv() -> Source {
+        Source {
+            container: "matroska,webm".into(),
+            video: "h264".into(),
+            pix: "yuv420p".into(),
+            transfer: "bt709".into(),
+            audio: Some("dts".into()),
+            width: 1920,
+            height: 1080,
+            fps: 23.976,
+            seconds: 2643.0,
+            has_video: true,
+        }
+    }
+
+    #[test]
+    fn a_1080p_h264_mkv_is_only_repackaged() {
+        // The whole point of the remux path: a 3.5 GB episode must not pay for
+        // a re-encode when the picture is already playable.
+        let plan = decide(&h264_1080p_mkv(), None);
+        assert_eq!(plan.kind, "remux", "{}", plan.reason);
+        assert!(plan.reason.contains("dts"), "{}", plan.reason);
+    }
+
+    #[test]
+    fn a_4k_h264_file_is_a_proxy_not_a_copy() {
+        // A remux keeps every pixel, so 4K stays 4K and WebView2 has to decode
+        // it — the stutter this app exists to avoid.
+        let four_k = Source {
+            width: 3840,
+            height: 2160,
+            ..h264_1080p_mkv()
+        };
+        let plan = decide(&four_k, None);
+        assert_eq!(plan.kind, "transcode", "{}", plan.reason);
+        assert!(plan.reason.contains("3840x2160"), "{}", plan.reason);
+    }
+
+    #[test]
+    fn ten_bit_hevc_needs_a_full_proxy() {
+        let hevc = Source {
+            video: "hevc".into(),
+            pix: "yuv420p10le".into(),
+            audio: Some("eac3".into()),
+            ..h264_1080p_mkv()
+        };
+        let plan = decide(&hevc, None);
+        assert_eq!(plan.kind, "transcode");
+        assert!(plan.reason.contains("hevc"), "{}", plan.reason);
+        assert!(plan.reason.contains("10-bit"), "{}", plan.reason);
+    }
+
+    #[test]
+    fn an_audio_only_file_is_left_alone() {
+        let audio = Source {
+            video: String::new(),
+            pix: String::new(),
+            audio: Some("aac".into()),
+            width: 0,
+            height: 0,
+            has_video: false,
+            ..h264_1080p_mkv()
+        };
+        assert_eq!(decide(&audio, None).kind, "native");
+    }
+
+    #[test]
+    fn a_cached_proxy_is_reported_with_the_plan() {
+        let plan = decide(
+            &Source {
+                video: "hevc".into(),
+                pix: "yuv420p10le".into(),
+                ..h264_1080p_mkv()
+            },
+            Some("C:/cache/proxy/abc.mp4".into()),
+        );
+        assert_eq!(plan.kind, "transcode");
+        assert_eq!(plan.proxy.as_deref(), Some("C:/cache/proxy/abc.mp4"));
+    }
+
+    #[test]
+    fn a_playable_mp4_is_native_and_needs_no_proxy() {
+        let mp4 = Source {
+            container: "mov,mp4,m4a,3gp,3g2,mj2".into(),
+            audio: Some("aac".into()),
+            ..h264_1080p_mkv()
+        };
+        let plan = decide(&mp4, None);
+        assert_eq!(plan.kind, "native", "{}", plan.reason);
+        assert!(plan.proxy.is_none());
+    }
 }
