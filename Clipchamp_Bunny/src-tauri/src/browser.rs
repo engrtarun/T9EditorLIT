@@ -2265,7 +2265,6 @@ pub async fn browser_devtools(app: tauri::AppHandle, id: String) -> Result<(), S
     let posted = webview.with_webview(move |pw| {
         let mut opened = false;
         unsafe {
-            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
             if let Ok(core) = pw.controller().CoreWebView2() {
                 if let Ok(settings) = core.Settings() {
                     let _ = settings.SetAreDevToolsEnabled(true);
@@ -2306,6 +2305,7 @@ pub async fn browser_toggle_mute(app: tauri::AppHandle, id: String) -> Result<bo
         let mut muted = false;
         unsafe {
             use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8;
+            use windows::core::Interface;
             use windows::core::BOOL;
             if let Ok(core) = pw.controller().CoreWebView2() {
                 if let Ok(core8) = core.cast::<ICoreWebView2_8>() {
