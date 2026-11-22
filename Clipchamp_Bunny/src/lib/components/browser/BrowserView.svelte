@@ -29,6 +29,7 @@
   import { layout } from '../../stores/layout.svelte';
   import { menu } from '../../stores/menu.svelte';
   import { chrome } from '../../stores/chrome.svelte';
+  import { whatsNew } from '../../stores/whatsnew.svelte';
   import {
     isTauri,
     browserViewClosed,
@@ -298,6 +299,10 @@
       layout.helpOpen ||
       browser.searchPickerOpen ||
       ublock.panelOpen ||
+      // What's New is app-level (mounted at the root), so it also crosses the
+      // page rect: without this the native webview painted over it and only
+      // the modal's top edge showed behind the page.
+      whatsNew.open ||
       !!menu.current;
     if (!isTauri()) return;
     const visible = !open;
@@ -315,6 +320,7 @@
         layout.helpOpen && 'help',
         browser.searchPickerOpen && 'search-picker',
         ublock.panelOpen && 'ublock',
+        whatsNew.open && 'whats-new',
         !!menu.current && 'menu'
       ]
         .filter(Boolean)

@@ -1,8 +1,35 @@
 <script lang="ts">
+  import { installedBuild } from '../ipc';
   import { whatsNew } from '../stores/whatsnew.svelte';
   import { WHATS_NEW } from '../whatsnew';
 
   const release = WHATS_NEW;
+
+  /**
+   * The only facts on this sheet: the build the app is actually holding.
+   * Read from the on-disk marker every time the sheet opens, so it can never
+   * show a stale identity after a deploy. The prose below is hand-written
+   * reference, and says so - it is not a generated changelog.
+   */
+  let facts = $state<{
+    buildId: string;
+    runningBuildId: string;
+    builtAt: string;
+    version: string;
+  } | null>(null);
+
+  $effect(() => {
+    if (!whatsNew.open) return;
+    let dead = false;
+    void installedBuild()
+      .then((b) => {
+        if (!dead && b) facts = b;
+      })
+      .catch(() => {});
+    return () => {
+      dead = true;
+    };
+  });
 </script>
 
 {#if whatsNew.open}
@@ -23,7 +50,16 @@
             class="grid h-9 w-9 place-items-center rounded-lg bg-nc-brand/15 text-nc-brand"
             aria-hidden="true"
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
               <path d="M14 2v6h6" />
               <path d="M9 13h6M9 17h4" />
@@ -34,11 +70,23 @@
               What's New
             </h1>
             <p class="text-[12px] text-nc-mut">
-              {release.version ?? 'Naya build'} - {release.items.length} changes, deep detail ke saath
+              Hand-written reference notes - is build ki asli identity niche hai
             </p>
           </div>
         </div>
         <h2 class="mt-3 text-[15px] font-medium text-nc-brand">{release.headline}</h2>
+        {#if facts}
+          <dl
+            class="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[11px] text-nc-mut"
+          >
+            <dt>staged build</dt>
+            <dd class="break-all text-nc-txt">{facts.buildId}</dd>
+            <dt>running</dt>
+            <dd class="break-all">{facts.runningBuildId || 'unknown'}</dd>
+            <dt>built</dt>
+            <dd>{facts.builtAt} · v{facts.version}</dd>
+          </dl>
+        {/if}
       </header>
 
       <!-- Body -->
@@ -54,7 +102,8 @@
                 {item.detail}
               </p>
               <p class="mt-2 text-[12px] leading-relaxed text-nc-mut">
-                <span class="font-semibold text-nc-brand">Reason:</span> {item.reason}
+                <span class="font-semibold text-nc-brand">Reason:</span>
+                {item.reason}
               </p>
             </section>
           {/each}
@@ -62,7 +111,9 @@
       </div>
 
       <!-- Footer -->
-      <footer class="shrink-0 flex items-center justify-end gap-2 border-t border-nc-line bg-nc-panel-2 px-6 py-3">
+      <footer
+        class="shrink-0 flex items-center justify-end gap-2 border-t border-nc-line bg-nc-panel-2 px-6 py-3"
+      >
         <button
           type="button"
           onclick={() => whatsNew.hide()}

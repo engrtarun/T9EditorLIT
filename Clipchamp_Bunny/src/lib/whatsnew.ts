@@ -23,15 +23,15 @@ export interface WhatsNewRelease {
 
 export const WHATS_NEW_RELEASES: WhatsNewRelease[] = [
   {
-    version: 'latest staged build',
-    headline: 'Is build me kya naya hai - deep detail ke saath',
+    version: 'reference',
+    headline: 'Release notes (hand-written reference)',
     items: [
       {
         title: 'Export screen poori tarah naya (image-approved)',
         detail:
-          'Export ab ek dedicated screen hai jisme Fast / Quality presets, exact-cut join aur gapless 60fps output ek saath milta hai. Ek hi FFmpeg pass me audio graph build hota hai (concat clause \';\' ke peeche), aur native notification bhejta hai jab render complete ho. History panel me last export ka FFmpeg command + stderr tail bhi dekh sakte ho.',
+          "Export ab ek dedicated screen hai jisme Fast / Quality presets, exact-cut join aur gapless 60fps output ek saath milta hai. Ek hi FFmpeg pass me audio graph build hota hai (concat clause ';' ke peeche), aur native notification bhejta hai jab render complete ho. History panel me last export ka FFmpeg command + stderr tail bhi dekh sakte ho.",
         reason:
-          'Purana export join path relative paths use karta tha, isliye bare output name Downloads me nahi land karta tha aur concat entries mismatch hoti thi. Absolute paths + ek extra \';\' se exact ms cuts ab gapless join hote hain.'
+          "Purana export join path relative paths use karta tha, isliye bare output name Downloads me nahi land karta tha aur concat entries mismatch hoti thi. Absolute paths + ek extra ';' se exact ms cuts ab gapless join hote hain."
       },
       {
         title: 'Browser = Firefox F11 parity (fullscreen)',
@@ -41,7 +41,8 @@ export const WHATS_NEW_RELEASES: WhatsNewRelease[] = [
           'User ne Firefox jaisa fullscreen behavior maanga tha - accidental exit aur stuck fullscreen dono problems the; ab Esc sirf collapse karta hai, F11 hi exit karta hai.'
       },
       {
-        title: 'AI: user-run Gemini analysis + spoken-word bold + custom accent + YouTube default pin',
+        title:
+          'AI: user-run Gemini analysis + spoken-word bold + custom accent + YouTube default pin',
         detail:
           'Gemini analysis ab user khud trigger karta hai (auto nahi). Transcript me spoken words bold render hote hain. Accent color custom set kar sakte ho. YouTube tabs by default pinned hote hain taaki background me chale.',
         reason:
@@ -104,11 +105,11 @@ export const WHATS_NEW_RELEASES: WhatsNewRelease[] = [
           'Reload pe page webview dashboard ke upar paint hota tha - sweep + storage skip se startup clean aur debuggable.'
       },
       {
-        title: 'Update flow: staged build swap + What\'s New',
+        title: "Update flow: staged build swap + What's New",
         detail:
-          'Jab naya build stage hota hai, top bar me Update button + doc icon dikhata hai. App open pe What\'s New page automatically khulta hai detailed changes ke saath. Update Now se restart, Skip se dismiss - button nahi hat ta.',
+          "Jab naya build stage hota hai, top bar me Update button + doc icon dikhata hai. App open pe What's New page automatically khulta hai detailed changes ke saath. Update Now se restart, Skip se dismiss - button nahi hat ta.",
         reason:
-          'User ko bina restart ke bhi changes dekhne chahiye; doc icon se running app me bhi What\'s New access hota hai.'
+          "User ko bina restart ke bhi changes dekhne chahiye; doc icon se running app me bhi What's New access hota hai."
       }
     ]
   }
