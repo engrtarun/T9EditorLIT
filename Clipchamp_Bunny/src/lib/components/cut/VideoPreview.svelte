@@ -7,6 +7,7 @@
   import { framePreset } from '../../project-frame';
   import { watchWordSelection, wordCount, type WordSelection } from '../../word-selection';
   import { wordCutPreview } from '../../stores/wordCutPreview.svelte';
+  import { spokenPartsFor } from '../../spoken-word';
   import { toast } from '../../stores/toast.svelte';
   import AmbientGlow from './AmbientGlow.svelte';
   import WordCutToolbar from './WordCutToolbar.svelte';
@@ -334,6 +335,10 @@
   }
 
   const curLine = $derived(activeClip ? undefined : project.lines[project.cursor]);
+  /** Same live word as the transcript row, highlighted the same way. */
+  const previewParts = $derived(
+    curLine ? spokenPartsFor(curLine, player.currentTime, curLine.id) : []
+  );
   const inCut = $derived(!activeClip && project.isCutAt(player.currentTime));
 
   /**
@@ -654,7 +659,10 @@
               dir="auto"
               title="Words drag karke cut karo — Enter ya Delete se confirm"
             >
-              {curLine.text}
+              {#each previewParts as part, i (i)}{#if part.spoken}<b
+                    class="t9-spoken-word rounded-[3px] px-[1px] font-bold"
+                    data-spoken-word>{part.text}</b
+                  >{:else}{part.text}{/if}{/each}
             </p>
             <div class="flex shrink-0 items-center gap-1">
               <button
@@ -854,3 +862,16 @@
     </div>
   {/if}
 </div>
+
+<style>
+  /* Live spoken word — same warm halo as the transcript row, a little softer
+     because it sits over the dark preview caption. */
+  .t9-spoken-word {
+    color: #ffdcae;
+    background: rgba(224, 169, 79, 0.14);
+    box-shadow: inset 0 0 0 1px rgba(224, 169, 79, 0.26);
+    text-shadow:
+      0 0 5px rgba(224, 169, 79, 0.45),
+      0 0 11px rgba(224, 169, 79, 0.2);
+  }
+</style>

@@ -10,7 +10,7 @@
  */
 
 /** What kind of file comes out. */
-export type ExportFormat = 'video' | 'gif' | 'mp3';
+export type ExportFormat = 'video' | 'gif' | 'mp3' | 'wav';
 
 export interface FormatPreset {
   id: ExportFormat;
@@ -26,11 +26,52 @@ export const FORMATS: FormatPreset[] = [
   { id: 'gif', label: 'GIF', ext: 'gif', note: 'a short looping clip' },
   {
     id: 'mp3',
-    label: 'Audio only',
+    label: 'Audio only · MP3',
     ext: 'mp3',
-    note: 'music, voiceover, dialogue — no picture at all'
+    note: 'small, universal — music, voiceover, dialogue'
+  },
+  {
+    id: 'wav',
+    label: 'Audio only · WAV',
+    ext: 'wav',
+    note: 'lossless PCM — for editing and archiving'
   }
 ];
+
+/**
+ * Video containers offered when the engine supports them (caps.container).
+ * MP4 stays the default; MKV/MOV/WEBM are one dropdown away.
+ */
+export interface ContainerPreset {
+  id: string;
+  label: string;
+  ext: string;
+  note: string;
+}
+
+export const CONTAINERS: ContainerPreset[] = [
+  { id: 'mp4', label: 'MP4', ext: 'mp4', note: 'best compatibility' },
+  { id: 'mkv', label: 'MKV', ext: 'mkv', note: 'most flexible' },
+  { id: 'mov', label: 'MOV', ext: 'mov', note: 'Apple / Final Cut' },
+  { id: 'webm', label: 'WebM', ext: 'webm', note: 'web delivery' }
+];
+
+/**
+ * What the app picks for you the moment Export opens. "Best" means quality
+ * first without wrecking compatibility — every field is still editable.
+ */
+export const RECOMMENDED_EXPORT = {
+  format: 'video' as ExportFormat,
+  container: 'mp4',
+  codec: 'h264',
+  crf: 18,
+  fps: null,
+  includeAudio: true,
+  bitrate: 320,
+  sampleRate: 48000,
+  channels: 2,
+  twoPass: false
+};
 
 /** The video resolutions, in the order Clipchamp lists them. */
 export type ResolutionId = 'source' | '480p' | '720p' | '1080p' | '4k';
@@ -120,6 +161,8 @@ export function defaultFileName(projectName: string, format: ExportFormat): stri
       return `${base}.gif`;
     case 'mp3':
       return `${base} (audio).mp3`;
+    case 'wav':
+      return `${base} (audio).wav`;
     default:
       return `${base} (cut).mp4`;
   }
@@ -129,6 +172,16 @@ export function defaultFileName(projectName: string, format: ExportFormat): stri
 export function estimateMp3Bytes(durationSecs: number, bitrateKbps: number): number {
   if (durationSecs <= 0 || bitrateKbps <= 0) return 0;
   return Math.round((durationSecs * bitrateKbps * 1000) / 8);
+}
+
+/** 16-bit PCM: duration × rate × channels × 2 bytes. */
+export function estimateWavBytes(
+  durationSecs: number,
+  sampleRate: number,
+  channels: number
+): number {
+  if (durationSecs <= 0 || sampleRate <= 0 || channels <= 0) return 0;
+  return Math.round(durationSecs * sampleRate * channels * 2);
 }
 
 /**
@@ -272,6 +325,8 @@ export function formatValueLabel(format: ExportFormat): string {
       return 'GIF';
     case 'mp3':
       return 'MP3';
+    case 'wav':
+      return 'WAV';
     default:
       return 'MP4';
   }

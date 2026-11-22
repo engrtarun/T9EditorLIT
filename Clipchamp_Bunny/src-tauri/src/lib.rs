@@ -61,6 +61,8 @@ mod thumbnail;
 mod transcript;
 #[path = "../../../src-tauri/src/waveform.rs"]
 mod waveform;
+#[path = "../../../src-tauri/src/wav.rs"]
+mod wav;
 
 mod sysinfo_ext;
 
@@ -1104,6 +1106,7 @@ async fn start_export(
         stats::set_phase("exporting");
         let res = match format.as_str() {
             "mp3" => mp3::run_mp3_export(&app_clone, cancel_flag, request),
+            "wav" => wav::run_wav_export(&app_clone, cancel_flag, request),
             "gif" => gif::run_gif_export(&app_clone, cancel_flag, request),
             _ => export::run_export(app_clone, cancel_flag, request),
         };

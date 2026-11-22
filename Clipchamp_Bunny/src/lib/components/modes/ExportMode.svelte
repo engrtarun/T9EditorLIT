@@ -20,6 +20,8 @@
   import { thumbUrl } from '../../media';
   import {
     BITRATES,
+    CONTAINERS,
+    RECOMMENDED_EXPORT,
     FORMATS,
     FRAME_RATES,
     GIF_FPS,
@@ -30,6 +32,7 @@
     defaultFileName,
     estimateGifBytes,
     estimateMp3Bytes,
+    estimateWavBytes,
     FALLBACK_CAPS,
     formatPreset,
     formatValueLabel,
@@ -92,10 +95,7 @@
    * different places to publish instead of four identical gray boxes.
    * The class strings live here as literals so Tailwind can see them.
    */
-  const CARD_SKIN: Record<
-    string,
-    { active: string; hover: string; glow: string; icon: string }
-  > = {
+  const CARD_SKIN: Record<string, { active: string; hover: string; glow: string; icon: string }> = {
     youtube: {
       active: 'border-[#ff4d4d]/70 bg-[#ff4d4d]/5',
       hover: 'hover:border-[#ff4d4d]/45 hover:bg-[#ff4d4d]/5',
@@ -129,9 +129,10 @@
   const activePreset = $derived(
     PRESETS.find((p) => p.engine === engine && p.quality === quality)?.id ?? null
   );
-  let bitrate = $state<number>(192);
-  let sampleRate = $state<number>(44100);
-  let channels = $state<number>(2);
+  // App-recommended defaults: quality first, still fully editable.
+  let bitrate = $state<number>(RECOMMENDED_EXPORT.bitrate);
+  let sampleRate = $state<number>(RECOMMENDED_EXPORT.sampleRate);
+  let channels = $state<number>(RECOMMENDED_EXPORT.channels);
   let normalize = $state(false);
   let applyCuts = $state(true);
   let output = $state('');
@@ -152,12 +153,13 @@
   let tab = $state<'quick' | 'advanced'>('quick');
   let moreOpen = $state(false);
   let canvasOverride = $state<[number, number] | null>(null);
-  let fps = $state<number | null>(null);
-  let includeAudio = $state(true);
-  let codecChoice = $state('source');
-  let crf = $state<number | null>(null);
-  let twoPass = $state(false);
+  let fps = $state<number | null>(RECOMMENDED_EXPORT.fps);
+  let includeAudio = $state(RECOMMENDED_EXPORT.includeAudio);
+  let codecChoice = $state(RECOMMENDED_EXPORT.codec);
+  let crf = $state<number | null>(RECOMMENDED_EXPORT.crf);
+  let twoPass = $state(RECOMMENDED_EXPORT.twoPass);
   let videoBitrate = $state<number | null>(null);
+  let containerChoice = $state(RECOMMENDED_EXPORT.container);
   let caps = $state<ExportCaps>(FALLBACK_CAPS);
   let historyOpen = $state(false);
   let logText = $state<string | null>(null);
@@ -197,6 +199,7 @@
   const gifTooLong = $derived(project.keptSec > GIF_MAX_SECS);
   const estimated = $derived.by(() => {
     if (format === 'mp3') return estimateMp3Bytes(audioSecs, bitrate);
+    if (format === 'wav') return estimateWavBytes(audioSecs, sampleRate, channels);
     if (format === 'gif')
       return estimateGifBytes(audioSecs, GIF_FPS, GIF_WIDTH, project.media?.height ?? 270);
     if (!project.media || project.media.sizeBytes <= 0) return 0;
@@ -250,8 +253,19 @@
   });
 
   $effect(() => {
-    const path = exportDefaults.pathFor(defaultFileName(project.name, format));
-    if (!outputTouched) output = path;
+    const wanted =
+      format === 'video'
+        ? (CONTAINERS.find((c) => c.id === containerChoice)?.ext ?? preset.ext)
+        : preset.ext;
+    const ext = output.split('.').pop()?.toLowerCase() ?? '';
+    // A format switch must never leave a stale .mp4 name on an MP3/WAV job:
+    // the audio engine rejects every extension but its own. The container
+    // choice decides the video extension so FFmpeg picks the right muxer.
+    if (!outputTouched || ext !== wanted) {
+      const path = exportDefaults.pathFor(defaultFileName(project.name, format));
+      output = wanted === preset.ext ? path : path.replace(/\.[^.]+$/, `.${wanted}`);
+      outputTouched = false;
+    }
   });
 
   async function chooseOutput() {
@@ -483,7 +497,7 @@
         fps: fps ?? undefined,
         includeAudio,
         codec: codecChoice === 'source' ? undefined : codecChoice,
-        container: undefined,
+        container: format === 'video' && caps.container ? containerChoice : undefined,
         crf: crf ?? undefined,
         videoBitrateKbps: videoBitrate ?? undefined,
         twoPass
@@ -592,14 +606,13 @@
 <div class="relative flex min-h-0 min-w-0 flex-1 flex-col bg-nc-bg">
   <!-- ambient light: two soft brand glows so the screen has a light source -->
   <div class="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-    <div
-      class="absolute -left-24 -top-32 h-96 w-96 rounded-full bg-nc-brand/16 blur-[110px]"
-    ></div>
+    <div class="absolute -left-24 -top-32 h-96 w-96 rounded-full bg-nc-brand/16 blur-[110px]"></div>
     <div
       class="absolute -right-32 top-1/3 h-80 w-80 rounded-full bg-[#7b5cff]/12 blur-[110px]"
     ></div>
-    <div class="absolute inset-0 bg-[radial-gradient(circle_at_50%_-10%,transparent,nc-bg_70%)]">
-    </div>
+    <div
+      class="absolute inset-0 bg-[radial-gradient(circle_at_50%_-10%,transparent,var(--color-nc-bg)_72%)]"
+    ></div>
   </div>
 
   <!-- header -->
@@ -639,17 +652,7 @@
             + {extraClips.length} clip{extraClips.length === 1 ? '' : 's'}
           </span>
         {/if}
-        {#if !isTauri()}
-          <span class="text-[10px] text-nc-mut-2">
-            {browserCanExport
-              ? 'Dev server FFmpeg se render hota hai'
-              : 'Desktop app me chalta hai'}
-          </span>
-        {/if}
       </div>
-      <p class="mt-1 text-[12px] italic text-nc-mut">
-        Share your creativity with the world ✨
-      </p>
       <p class="mt-1 flex items-center gap-2 font-mono text-[10px] tracking-wide text-nc-mut-2">
         <span class="inline-block h-1 w-1 rounded-full bg-nc-green"></span>
         FINAL {fmtHuman(finalSecs)}
@@ -691,8 +694,8 @@
           class="nc-segmented relative flex rounded-2xl border border-nc-line/80 bg-nc-panel/60 p-1.5 backdrop-blur"
         >
           <span
-            class="absolute bottom-1.5 top-1.5 w-[calc(50%-0.375rem)] rounded-xl bg-gradient-to-r from-nc-brand to-[#6a5cff] shadow-[0_6px_20px_-6px_rgba(77,141,255,0.9)] transition-transform duration-300 ease-out
-            {tab === 'quick' ? 'translate-x-1.5' : 'translate-x-[calc(100%+0.75rem)]'}"
+            class="absolute bottom-1.5 left-1.5 top-1.5 w-[calc(50%-0.375rem)] rounded-xl bg-gradient-to-r from-nc-brand to-[#6a5cff] shadow-[0_6px_20px_-6px_rgba(77,141,255,0.9)] transition-transform duration-300 ease-out
+            {tab === 'quick' ? 'translate-x-0' : 'translate-x-full'}"
             aria-hidden="true"
           ></span>
           <button
@@ -734,13 +737,14 @@
 
         <!-- preset cards: each destination keeps its own colour + frame shape -->
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {#each QUICK_PRESETS as p (p.id)}
+          {#each QUICK_PRESETS as p, i (p.id)}
             {@const selected = activeCard === p.id}
             {@const skin = CARD_SKIN[p.id]}
             <button
               type="button"
               onclick={() => selectPreset(p.id)}
               aria-pressed={selected}
+              style="--i:{i}"
               class="nc-card-in group relative flex flex-col items-stretch gap-3 overflow-hidden rounded-2xl border p-3.5 text-left transition-all duration-200
                      {selected
                 ? `${skin.active} ${skin.glow}`
@@ -752,7 +756,8 @@
                 aria-hidden="true"
               >
                 {#if p.id === 'shorts'}
-                  <span class="h-10 w-[22px] rounded-[5px] border-2 border-current {skin.icon}"></span>
+                  <span class="h-10 w-[22px] rounded-[5px] border-2 border-current {skin.icon}"
+                  ></span>
                 {:else if p.id === 'youtube'}
                   <span class="h-[30px] w-[52px] rounded-[5px] border-2 border-current {skin.icon}"
                   ></span>
@@ -825,6 +830,21 @@
               disabled: multiClip && f.id !== 'video'
             }))}
             onselect={(v: string) => (format = v as ExportFormat)}
+          />
+          <ExportSelect
+            label="Container"
+            value={containerChoice}
+            display={containerChoice.toUpperCase()}
+            soon={!caps.container}
+            disabled={format !== 'video'}
+            icon={monitorIcon}
+            tint="bg-nc-green/14 text-nc-green"
+            options={CONTAINERS.map((c) => ({
+              value: c.id,
+              label: c.label,
+              note: `.${c.ext} · ${c.note}`
+            }))}
+            onselect={(v: string) => (containerChoice = v)}
           />
           <ExportSelect
             label="Resolution"
@@ -921,11 +941,16 @@
         {#if showExtra}
           <div class="space-y-4">
             {#if format === 'video'}
-              <section class="rounded-xl border border-nc-line bg-nc-panel p-4">
-                <h3 class="mb-2 text-[10px] font-bold tracking-widest text-nc-mut">
-                  SPEED · QUALITY
+              <section
+                class="rounded-2xl border border-nc-line/80 bg-nc-panel/80 p-4 shadow-[0_10px_30px_-24px_rgba(0,0,0,0.9)]"
+              >
+                <h3
+                  class="mb-3 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-nc-mut"
+                >
+                  <span class="h-3 w-1 rounded-full bg-nc-brand"></span>
+                  Speed · Quality
                 </h3>
-                <div class="grid grid-cols-2 gap-2">
+                <div class="grid grid-cols-2 gap-2.5">
                   {#each PRESETS as p (p.id)}
                     <button
                       type="button"
@@ -934,22 +959,28 @@
                         quality = p.quality;
                       }}
                       aria-pressed={activePreset === p.id}
-                      class="rounded-lg border px-3 py-2.5 text-left transition-colors
+                      class="rounded-xl border px-3.5 py-3 text-left transition-all duration-150
                              {activePreset === p.id
-                        ? 'border-nc-brand bg-nc-brand/5'
-                        : 'border-nc-line bg-nc-panel-2 hover:border-nc-line-2'}"
+                        ? 'border-nc-brand/70 bg-nc-brand/8 shadow-[0_0_24px_-10px_rgba(77,141,255,0.9)]'
+                        : 'border-nc-line/80 bg-nc-panel-2/60 hover:border-nc-line-2'}"
                     >
-                      <span class="block text-xs font-semibold">{p.label}</span>
-                      <span class="mt-0.5 block text-[10px] leading-snug text-nc-mut">{p.note}</span
+                      <span class="block text-[12.5px] font-bold">{p.label}</span>
+                      <span class="mt-1 block text-[10.5px] leading-snug text-nc-mut">{p.note}</span
                       >
                     </button>
                   {/each}
                 </div>
                 {#if estimated > 0}
-                  <p class="mt-2 font-mono text-[10px] text-nc-mut-2">≈ {fmtSize(estimated)}</p>
+                  <p class="mt-2.5 font-mono text-[10.5px] text-nc-mut-2">
+                    ≈ {fmtSize(estimated)}
+                  </p>
                 {/if}
-                <details class="mt-3 rounded-lg border border-nc-line bg-nc-panel-2/40 px-3 py-2">
-                  <summary class="cursor-pointer select-none text-[11px] text-nc-mut">
+                <details
+                  class="mt-3 rounded-xl border border-nc-line/70 bg-nc-panel-2/40 px-3.5 py-2.5"
+                >
+                  <summary
+                    class="cursor-pointer select-none text-[11.5px] font-medium text-nc-mut transition-colors hover:text-nc-txt"
+                  >
                     Advanced — engine &amp; encoder quality
                     {#if activePreset === null}<span class="text-nc-brand">· custom</span>{/if}
                   </summary>
@@ -999,36 +1030,74 @@
                 </details>
               </section>
 
-              <section class="rounded-xl border border-nc-line bg-nc-panel p-4">
+              <section
+                class="rounded-2xl border border-nc-line/80 bg-nc-panel/80 p-4 shadow-[0_10px_30px_-24px_rgba(0,0,0,0.9)]"
+              >
                 <div class="flex items-center justify-between gap-2">
-                  <h3 class="text-[10px] font-bold tracking-widest text-nc-mut">
-                    CODEC &amp; RATE CONTROL
+                  <h3
+                    class="mb-3 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-nc-mut"
+                  >
+                    <span class="h-3 w-1 rounded-full bg-[#7b5cff]"></span>
+                    Codec &amp; Rate Control
                   </h3>
                   <span
-                    class="rounded bg-nc-amber/15 px-1.5 py-0.5 text-[9px] font-bold text-nc-amber"
-                    title="EXPORT.md B1-2 / B1-4 ke baad live hoga">ENGINE UPDATE PENDING</span
+                    class="rounded bg-nc-brand/15 px-1.5 py-0.5 text-[9px] font-bold text-nc-brand"
+                    >RECOMMENDED</span
                   >
                 </div>
                 <p class="mt-1 text-[10px] text-nc-mut-2">
-                  H.264 / H.265 / AV1, CRF, video bitrate + 2-pass tab aaenge jab backend land kare.
-                  Abhi UI ready hai, engine wiring pending.
+                  App ne best quality/settings choose ki hain. User chahe to yahan se badal sakta
+                  hai.
                 </p>
-                <div class="mt-3 grid gap-2 sm:grid-cols-2">
-                  <div class="rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-2 opacity-60">
-                    <p class="text-[10px] text-nc-mut">Codec</p>
-                    <p class="text-xs font-semibold text-nc-txt">H.264 (source family)</p>
-                  </div>
-                  <div class="rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-2 opacity-60">
-                    <p class="text-[10px] text-nc-mut">CRF / Bitrate</p>
-                    <p class="text-xs font-semibold text-nc-txt">Quality ladder (auto)</p>
-                  </div>
+                <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label class="block rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-2">
+                    <span class="text-[10px] text-nc-mut">Codec</span>
+                    <select
+                      bind:value={codecChoice}
+                      class="mt-0.5 w-full bg-transparent text-xs font-semibold text-nc-txt outline-none"
+                    >
+                      <option value="source">Source family</option>
+                      <option value="h264">H.264 — best compatibility</option>
+                      <option value="h265">H.265 — smaller file</option>
+                      <option value="av1">AV1 — newest</option>
+                    </select>
+                  </label>
+                  <label class="block rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-2">
+                    <span class="text-[10px] text-nc-mut">CRF (quality)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="51"
+                      bind:value={crf}
+                      class="mt-0.5 w-full bg-transparent text-xs font-semibold text-nc-txt outline-none"
+                    />
+                  </label>
+                  <label
+                    class="flex items-center gap-2 rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-2 text-xs text-nc-txt"
+                  >
+                    <input type="checkbox" bind:checked={twoPass} class="accent-nc-brand" />
+                    2-pass encoding
+                  </label>
+                  <label
+                    class="flex items-center gap-2 rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-2 text-xs text-nc-txt"
+                  >
+                    <input type="checkbox" bind:checked={includeAudio} class="accent-nc-brand" />
+                    Include audio
+                  </label>
                 </div>
               </section>
             {/if}
 
             {#if format === 'gif'}
-              <section class="rounded-xl border border-nc-line bg-nc-panel p-4">
-                <h3 class="mb-2 text-[10px] font-bold tracking-widest text-nc-mut">GIF</h3>
+              <section
+                class="rounded-2xl border border-nc-line/80 bg-nc-panel/80 p-4 shadow-[0_10px_30px_-24px_rgba(0,0,0,0.9)]"
+              >
+                <h3
+                  class="mb-3 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-nc-mut"
+                >
+                  <span class="h-3 w-1 rounded-full bg-nc-green"></span>
+                  GIF
+                </h3>
                 <div class="rounded-lg border border-nc-line bg-nc-panel-2 p-3">
                   <p class="text-[11px] text-nc-mut">
                     {GIF_FPS} fps · {GIF_WIDTH} px wide · looping · palette-optimised
@@ -1038,8 +1107,8 @@
                   </p>
                   {#if gifTooLong}
                     <p class="mt-2 text-[10px] text-nc-red">
-                      · Ye cut {fmtHuman(project.keptSec)} ka hai — GIF nahi ban sakta. Video ya MP3 chuna
-                      lo.
+                      · Ye cut {fmtHuman(project.keptSec)} ka hai — GIF nahi ban sakta. Video, MP3 ya
+                      WAV chuna lo.
                     </p>
                   {/if}
                 </div>
@@ -1058,37 +1127,45 @@
               </section>
             {/if}
 
-            {#if format === 'mp3'}
-              <section class="rounded-xl border border-nc-line bg-nc-panel p-4">
-                <h3 class="mb-2 text-[10px] font-bold tracking-widest text-nc-mut">
-                  AUDIO ONLY · MP3
+            {#if format === 'mp3' || format === 'wav'}
+              <section
+                class="rounded-2xl border border-nc-line/80 bg-nc-panel/80 p-4 shadow-[0_10px_30px_-24px_rgba(0,0,0,0.9)]"
+              >
+                <h3
+                  class="mb-3 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-nc-mut"
+                >
+                  <span class="h-3 w-1 rounded-full bg-nc-amber"></span>
+                  {format === 'wav' ? 'Audio only · WAV (lossless)' : 'Audio only · MP3'}
                 </h3>
                 <div class="rounded-lg border border-nc-line bg-nc-panel-2 p-3">
                   <p class="text-[11px] text-nc-mut">
-                    Music, AI voiceover, recording ya video ka dialogue — ek MP3, bilkul nahi
-                    picture.
+                    {format === 'wav'
+                      ? 'Bina compression ke 16-bit PCM — editing aur archive ke liye best.'
+                      : 'Music, AI voiceover, recording ya video ka dialogue — ek MP3, bilkul nahi picture.'}
                   </p>
                 </div>
-                <div class="mt-3 flex items-center gap-3">
-                  <span class="text-[11px] text-nc-mut">Bitrate</span>
-                  <div class="flex gap-1">
-                    {#each BITRATES as b (b)}
-                      <button
-                        type="button"
-                        onclick={() => (bitrate = b)}
-                        class="rounded-md px-2.5 py-1 font-mono text-[11px] transition-colors {bitrate ===
-                        b
-                          ? 'bg-nc-brand text-nc-bg'
-                          : 'bg-nc-panel-2 text-nc-mut hover:text-nc-txt'}">{b}k</button
+                {#if format === 'mp3'}
+                  <div class="mt-3 flex items-center gap-3">
+                    <span class="text-[11px] text-nc-mut">Bitrate</span>
+                    <div class="flex gap-1">
+                      {#each BITRATES as b (b)}
+                        <button
+                          type="button"
+                          onclick={() => (bitrate = b)}
+                          class="rounded-md px-2.5 py-1 font-mono text-[11px] transition-colors {bitrate ===
+                          b
+                            ? 'bg-nc-brand text-nc-bg'
+                            : 'bg-nc-panel-2 text-nc-mut hover:text-nc-txt'}">{b}k</button
+                        >
+                      {/each}
+                    </div>
+                    {#if estimated > 0}
+                      <span class="ml-auto font-mono text-[10px] text-nc-mut-2"
+                        >≈ {fmtSize(estimated)}</span
                       >
-                    {/each}
+                    {/if}
                   </div>
-                  {#if estimated > 0}
-                    <span class="ml-auto font-mono text-[10px] text-nc-mut-2"
-                      >≈ {fmtSize(estimated)}</span
-                    >
-                  {/if}
-                </div>
+                {/if}
                 <div class="mt-3 flex items-center gap-3">
                   <span class="text-[11px] text-nc-mut">Sample rate</span>
                   <div class="flex gap-1">
@@ -1138,8 +1215,15 @@
               </section>
             {/if}
 
-            <section class="rounded-xl border border-nc-line bg-nc-panel p-4">
-              <h3 class="mb-2 text-[10px] font-bold tracking-widest text-nc-mut">OUTPUT</h3>
+            <section
+              class="rounded-2xl border border-nc-line/80 bg-nc-panel/80 p-4 shadow-[0_10px_30px_-24px_rgba(0,0,0,0.9)]"
+            >
+              <h3
+                class="mb-3 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-nc-mut"
+              >
+                <span class="h-3 w-1 rounded-full bg-nc-brand"></span>
+                Output
+              </h3>
               <div class="flex gap-2">
                 <input
                   value={output}
@@ -1161,9 +1245,16 @@
             </section>
 
             {#if caps.logs}
-              <section class="rounded-xl border border-nc-line bg-nc-panel p-4">
+              <section
+                class="rounded-2xl border border-nc-line/80 bg-nc-panel/80 p-4 shadow-[0_10px_30px_-24px_rgba(0,0,0,0.9)]"
+              >
                 <div class="flex items-center justify-between gap-2">
-                  <h3 class="text-[10px] font-bold tracking-widest text-nc-mut">EXPORT LOG</h3>
+                  <h3
+                    class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.14em] text-nc-mut"
+                  >
+                    <span class="h-3 w-1 rounded-full bg-nc-mut"></span>
+                    Export Log
+                  </h3>
                   <button
                     type="button"
                     onclick={toggleLog}
@@ -1214,7 +1305,9 @@
             </svg>
           </span>
           <div class="min-w-0 flex-1">
-            <p class="text-[10.5px] font-semibold uppercase tracking-wider leading-tight text-nc-mut">
+            <p
+              class="text-[10.5px] font-semibold uppercase tracking-wider leading-tight text-nc-mut"
+            >
               Output Location
             </p>
             <p
@@ -1308,7 +1401,9 @@
               <span class="font-mono text-[10px] font-medium text-white/85">
                 ▸ {fmtHuman(finalSecs)} final
               </span>
-              <span class="font-mono text-[10px] font-medium uppercase tracking-wider text-white/60">
+              <span
+                class="font-mono text-[10px] font-medium uppercase tracking-wider text-white/60"
+              >
                 {formatText}
               </span>
             </div>
@@ -1335,12 +1430,20 @@
 
         <!-- status card -->
         {#if preflight && preflight.reason === 'exists' && !overwriteArmed}
-          <div class="space-y-3 rounded-2xl border border-nc-amber/40 bg-nc-amber/5 p-4">
-            <div class="flex items-center gap-2">
-              <span class="grid h-8 w-8 place-items-center rounded-lg bg-nc-amber/15 text-nc-amber">
+          <div
+            class="relative overflow-hidden rounded-2xl border border-nc-amber/45 bg-nc-amber/[0.07] p-4"
+          >
+            <div
+              class="pointer-events-none absolute -right-14 -top-14 h-36 w-36 rounded-full bg-nc-amber/20 blur-3xl"
+              aria-hidden="true"
+            ></div>
+            <div class="relative flex items-center gap-3">
+              <span
+                class="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/5 bg-nc-amber/15 text-nc-amber"
+              >
                 <svg
                   viewBox="0 0 24 24"
-                  class="h-4 w-4"
+                  class="h-5 w-5"
                   fill="none"
                   stroke="currentColor"
                   stroke-width="2"
@@ -1353,20 +1456,22 @@
                 >
               </span>
               <div class="min-w-0 flex-1">
-                <p class="text-xs font-bold text-nc-amber">File already exists</p>
-                <p class="truncate text-[10px] text-nc-mut" title={output}>
+                <p class="text-[13px] font-extrabold tracking-tight text-nc-amber">
+                  File already exists
+                </p>
+                <p class="truncate font-mono text-[11px] text-nc-mut" title={output}>
                   {output.split(/[\\/]/).pop()}
                 </p>
               </div>
             </div>
-            <div class="flex gap-2">
+            <div class="relative mt-3.5 flex gap-2">
               <button
                 type="button"
                 onclick={() => {
                   overwriteArmed = true;
                   run(true);
                 }}
-                class="flex-1 rounded-lg bg-nc-brand py-2 text-[11px] font-bold text-nc-bg hover:brightness-110"
+                class="flex-1 rounded-xl bg-gradient-to-r from-nc-amber to-[#c98f36] py-3 text-[12.5px] font-bold text-nc-bg shadow-[0_10px_24px_-14px_rgba(224,169,79,0.9)] transition hover:brightness-110"
                 >Overwrite &amp; Export</button
               >
               <button
@@ -1375,7 +1480,7 @@
                   preflight = null;
                   chooseOutput();
                 }}
-                class="rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-2 text-[11px] text-nc-mut hover:text-nc-txt"
+                class="rounded-xl border border-nc-line/80 bg-nc-panel/70 px-4 py-3 text-[12.5px] font-semibold text-nc-mut transition-colors hover:border-nc-brand/50 hover:text-nc-txt"
                 >Change location</button
               >
             </div>
@@ -1389,7 +1494,9 @@
               aria-hidden="true"
             ></div>
             <div class="relative flex items-center gap-3">
-              <span class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-nc-brand/15 text-nc-brand">
+              <span
+                class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-nc-brand/15 text-nc-brand"
+              >
                 <svg
                   viewBox="0 0 24 24"
                   class="h-4.5 w-4.5 animate-spin"
@@ -1485,7 +1592,9 @@
             {/if}
             <p class="mt-1 break-all font-mono text-[10px] text-nc-mut-2">{result.output}</p>
             {#if warnings.length}
-              <ul class="mt-2 space-y-1 rounded-lg border border-nc-red/30 bg-nc-red/8 p-2 text-left text-[10px] text-nc-red">
+              <ul
+                class="mt-2 space-y-1 rounded-lg border border-nc-red/30 bg-nc-red/8 p-2 text-left text-[10px] text-nc-red"
+              >
                 {#each warnings as w (w)}<li>· {w}</li>{/each}
               </ul>
             {/if}
@@ -1570,7 +1679,9 @@
             </div>
 
             {#if !canRun}
-              <p class="relative mt-3 rounded-lg border border-nc-line/60 bg-nc-panel/60 px-3 py-2 text-[11px] leading-relaxed text-nc-mut-2">
+              <p
+                class="relative mt-3 rounded-lg border border-nc-line/60 bg-nc-panel/60 px-3 py-2 text-[11px] leading-relaxed text-nc-mut-2"
+              >
                 {#if segments.length === 0}Kuch bacha hi nahi — sab cut hai.
                 {:else if format === 'gif' && gifTooLong}GIF sirf {GIF_MAX_SECS}s tak ka hai.
                 {:else if multiClip && !isTauri()}Multi-clip export desktop app me chalta hai.

@@ -21,7 +21,7 @@
   import { watchWordSelection, wordCount, type WordSelection } from '../../word-selection';
   import { wordCutPreview } from '../../stores/wordCutPreview.svelte';
   import { settings } from '../../stores/settings.svelte';
-  import { tokenizeLine } from '../../word-cut';
+  import { spokenPartsFor } from '../../spoken-word';
 
   /** The import dialog is mounted only while it is open (zero-RAM isolation). */
   let importing = $state(false);
@@ -369,29 +369,10 @@
     return hit && t <= hit.endSec ? hit.id : null;
   });
 
-  /**
-   * Split one row into plain and spoken pieces.
-   *
-   * The line stays a single text node string when the playhead is elsewhere —
-   * the virtual list renders ~30 rows and re-rendering their text on every
-   * `timeupdate` would be wasted work. Only the live row is tokenised, and
-   * `tokenizeLine` is the same pairing the word-cut uses, so punctuation,
-   * Devanagari matras and Whisper's split/merged words all line up.
-   */
-  function spokenParts(line: TranscriptLine): Array<{ text: string; spoken: boolean }> {
-    if (line.id !== spokenLineId) return [{ text: line.text, spoken: false }];
-    const tokens = tokenizeLine(line.text, line.words, line.startSec, line.endSec);
-    if (!tokens.length) return [{ text: line.text, spoken: false }];
-    const t = player.currentTime;
-    const out: Array<{ text: string; spoken: boolean }> = [];
-    let at = 0;
-    for (const tok of tokens) {
-      if (tok.from > at) out.push({ text: line.text.slice(at, tok.from), spoken: false });
-      out.push({ text: tok.text, spoken: t >= tok.startSec && t < tok.endSec });
-      at = tok.to;
-    }
-    if (at < line.text.length) out.push({ text: line.text.slice(at), spoken: false });
-    return out;
+  /** Only the live row is tokenised; the shared helper keeps both surfaces in
+   *  lockstep and guarantees the pieces rejoin to the exact source string. */
+  function spokenParts(line: TranscriptLine) {
+    return spokenPartsFor(line, player.currentTime, spokenLineId);
   }
 
   const cursorPos = $derived.by(() => {
@@ -1013,7 +994,7 @@
                   byte-identical to `line.text` and word selection keeps its
                   character offsets.
                 -->{#if part.spoken}<b
-                    class="rounded-[3px] bg-nc-brand/25 px-[1px] font-bold text-nc-txt"
+                    class="t9-spoken-word rounded-[3px] px-[1px] font-bold"
                     data-spoken-word>{part.text}</b
                   >{:else}{part.text}{/if}{/each}
             </span>
@@ -1522,3 +1503,23 @@
 {#if importing}
   <TranscriptImport onclose={() => (importing = false)} />
 {/if}
+
+<style>
+  /* Spoken word under the playhead: warm, quiet, legible. The glow is a
+     halo, not a highlighter — it never hides the letters or steals focus. */
+  .t9-spoken-word {
+    color: #ffdcae;
+    background: rgba(224, 169, 79, 0.14);
+    box-shadow: inset 0 0 0 1px rgba(224, 169, 79, 0.28);
+    text-shadow:
+      0 0 5px rgba(224, 169, 79, 0.5),
+      0 0 11px rgba(224, 169, 79, 0.22);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .t9-spoken-word {
+      transition:
+        color 140ms ease-out,
+        background 140ms ease-out;
+    }
+  }
+</style>

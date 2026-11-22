@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   BITRATES,
+  CONTAINERS,
+  RECOMMENDED_EXPORT,
   GIF_MAX_SECS,
   RESOLUTIONS,
   SAMPLE_RATES,
@@ -9,6 +11,7 @@ import {
   defaultFileName,
   estimateGifBytes,
   estimateMp3Bytes,
+  estimateWavBytes,
   formatPreset,
   formatValueLabel,
   frameRateLabel,
@@ -24,6 +27,7 @@ test('the format table carries the extension FFmpeg needs', () => {
   assert.equal(formatPreset('video').ext, 'mp4');
   assert.equal(formatPreset('gif').ext, 'gif');
   assert.equal(formatPreset('mp3').ext, 'mp3');
+  assert.equal(formatPreset('wav').ext, 'wav');
 });
 
 test('the resolution table is Clipchamp’s list, in order', () => {
@@ -58,6 +62,7 @@ test('the default file name follows the format', () => {
   assert.equal(defaultFileName('My Clip', 'video'), 'My Clip (cut).mp4');
   assert.equal(defaultFileName('My Clip', 'gif'), 'My Clip.gif');
   assert.equal(defaultFileName('My Clip', 'mp3'), 'My Clip (audio).mp3');
+  assert.equal(defaultFileName('My Clip', 'wav'), 'My Clip (audio).wav');
   assert.equal(defaultFileName('', 'mp3'), 't9-editor-lit (audio).mp3');
 });
 
@@ -136,4 +141,25 @@ test('eta is null until there is something to extrapolate', () => {
 test('clock formatting pads seconds', () => {
   assert.equal(fmtClock(65), '1:05');
   assert.equal(fmtClock(3661), '1:01:01');
+});
+
+test('containers cover the advanced video formats', () => {
+  assert.deepEqual(
+    CONTAINERS.map((c) => c.id),
+    ['mp4', 'mkv', 'mov', 'webm']
+  );
+  assert.equal(formatPreset('video').ext, RECOMMENDED_EXPORT.container);
+});
+
+test('recommended defaults are top quality but editable values', () => {
+  assert.equal(RECOMMENDED_EXPORT.crf, 18);
+  assert.equal(RECOMMENDED_EXPORT.codec, 'h264');
+  assert.equal(RECOMMENDED_EXPORT.bitrate, 320);
+  assert.equal(RECOMMENDED_EXPORT.sampleRate, 48000);
+  assert.equal(RECOMMENDED_EXPORT.includeAudio, true);
+});
+
+test('wav estimate is 16-bit PCM, not the video guess', () => {
+  assert.equal(estimateWavBytes(10, 48000, 2), 1_920_000);
+  assert.equal(estimateWavBytes(0, 48000, 2), 0);
 });
