@@ -165,20 +165,19 @@ describe('browser keys — the Firefox map', () => {
     for (const combo of [
       ev('l', { ctrlKey: true }),
       ev('d', { altKey: true }),
-      // The user's own chord: Ctrl+K became the command palette, so Alt+K is
-      // how the address bar (and its search) is reached now.
-      ev('k', { altKey: true })
+      // Firefox's own search chord: Ctrl+K focuses the address bar. The
+      // palette moved to Alt+K so the two never fight on any screen.
+      ev('k', { ctrlKey: true })
     ]) {
       dispatchBrowserKey(asEvt(combo), deps);
       assert.equal(calls.at(-1)!.action, 'focusUrlbar');
     }
-    // Ctrl+K is the command palette EVERYWHERE now: the browser map must not
+    // Alt+K is the command palette EVERYWHERE now: the browser map must not
     // claim it, or the shell's palette branch could never run inside the
-    // browser ("ctrl + k not work aal jagah"). Ctrl+L / Alt+D keep the
-    // address bar, which is Firefox's own pair.
+    // browser. Ctrl+K stays Firefox's search key, as the table above asserts.
     const before = calls.length;
-    assert.equal(dispatchBrowserKey(asEvt(ev('k', { ctrlKey: true })), deps), false);
-    assert.equal(calls.length, before, 'Ctrl+K must not resolve to a browser action');
+    assert.equal(dispatchBrowserKey(asEvt(ev('k', { altKey: true })), deps), false);
+    assert.equal(calls.length, before, 'Alt+K must not resolve to a browser action');
   });
 
   it('page: bookmark, panels, save, print, source, zoom', () => {

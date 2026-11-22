@@ -123,7 +123,9 @@ export const BINDINGS: Entry[] = [
   // Alt+K is the user's own chord: Ctrl+K is the app-wide command palette, so
   // the address-bar search needed a key that does not fight it. Ctrl+L / Alt+D
   // stay (Firefox's own two), Alt+K sits beside them.
-  B('focusUrlbar', ['ctrl+l', 'alt+d', 'alt+k', 'ctrl+e', 'f6'], true),
+  // Firefox uses Ctrl+K for the search/address bar. Alt+K is the app-wide
+  // command palette, so it must never be consumed here.
+  B('focusUrlbar', ['ctrl+l', 'alt+d', 'ctrl+k', 'ctrl+e', 'f6'], true),
   // ── page & panels ───────────────────────────────────────────────────────
   B('downloads', ['ctrl+j', 'ctrl+shift+y'], true),
   B('history', ['ctrl+h', 'ctrl+shift+h']),
@@ -298,12 +300,10 @@ export const BROWSER_GROUPS: Array<{ title: string; rows: BrowserSheetRow[] }> =
       { keys: 'Ctrl + F5  /  Ctrl + Shift + R', action: 'Cache ke bina reload' },
       { keys: 'Esc', action: 'Stop — loading spinner roko' },
       { keys: 'Alt + Home', action: 'Speed dial (home page)' },
-      // Ctrl+K deliberately ABSENT: it is the command palette on every
-      // screen now, so listing it here would be a promise the browser does
-      // not keep ("jaha se user samjh sake ki kya hai kya nahi"). Alt+K is
-      // the address-bar/search key instead.
+      // Alt+K deliberately ABSENT: it is the command palette on every
+      // screen. Ctrl+K is Firefox's own search key and stays here.
       {
-        keys: 'Ctrl + L  /  Alt + D  /  Alt + K  /  Ctrl + E',
+        keys: 'Ctrl + L  /  Alt + D  /  Ctrl + K  /  Ctrl + E',
         action: 'Address bar fokus (search)'
       }
     ]

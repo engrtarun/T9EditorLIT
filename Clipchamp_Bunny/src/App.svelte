@@ -420,12 +420,11 @@
     // typing rules (it stands down for editing chords).
     if (browserOpen && dispatchBrowserKey(e, browserDeps)) return;
 
-    // Command palette — Ctrl+K EVERYWHERE. It used to mean "focus the address
-    // bar" inside the browser, which is exactly the inconsistency reported
-    // ("ctrl + k not work aal jagah … ctrl+k ux not good"): the same chord
-    // did a different thing depending on the screen. Firefox's own address
-    // bar keys (Ctrl+L, Alt+D) keep their meaning in the map above.
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+    // Command palette — Alt+K EVERYWHERE. Ctrl+K belongs to Firefox's search
+    // (the address bar) inside the browser, so the palette takes the other K
+    // chord and works on Home, Studio and Browser alike — one meaning on every
+    // screen, no conflict with the browser's own search key.
+    if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
       e.preventDefault();
       layout.commandPaletteOpen = !layout.commandPaletteOpen;
       return;

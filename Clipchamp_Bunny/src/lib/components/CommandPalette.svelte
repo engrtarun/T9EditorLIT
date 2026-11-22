@@ -17,6 +17,8 @@
   import { project } from '../stores/project.svelte';
   import { toast } from '../stores/toast.svelte';
   import { appearance } from '../stores/appearance.svelte';
+  import { browser } from '../stores/browser.svelte';
+  import { downloads } from '../stores/downloads.svelte';
   import { defaultDbPath, loadProjects } from '../ipc';
   import type { RustProject } from '../ipc';
   import { fly, fade } from 'svelte/transition';
@@ -124,6 +126,27 @@
       }
     },
     {
+      id: 'browse-history',
+      label: 'Browsing history',
+      hint: 'Ctrl+H',
+      group: 'Browser',
+      run: () => {
+        app.openBrowser(app.view);
+        browser.historyOpen = true;
+        close();
+      }
+    },
+    {
+      id: 'browse-downloads',
+      label: 'Downloads',
+      hint: 'Ctrl+J',
+      group: 'Browser',
+      run: () => {
+        downloads.open = true;
+        close();
+      }
+    },
+    {
       id: 'motion',
       label: appearance.motion === 'reduced' ? 'Turn motion on' : 'Turn motion off',
       hint: 'Accessibility',
@@ -162,7 +185,58 @@
     }))
   );
 
-  const allCommands = $derived([...baseCommands, ...projectCommands]);
+  /** Open tabs — jump straight to one from any screen. */
+  const tabCommands = $derived<Cmd[]>(
+    browser.tabs.map((t) => ({
+      id: `tab-${t.id}`,
+      label: t.title || t.url,
+      hint: t.pinned ? 'Pinned tab' : 'Open tab',
+      group: 'Open tabs',
+      run: () => {
+        browser.select(t.id);
+        app.openBrowser(app.view);
+        close();
+      }
+    }))
+  );
+
+  /** Visited pages (exact URL + time) — open again from the palette. */
+  const historyCommands = $derived<Cmd[]>(
+    browser.historyLog.map((h) => ({
+      id: `hist-${h.url}`,
+      label: h.title || h.url,
+      hint: new Date(h.at).toLocaleString(),
+      group: 'History',
+      run: () => {
+        app.openBrowser(app.view);
+        browser.navigate(h.url);
+        browser.historyOpen = false;
+        close();
+      }
+    }))
+  );
+
+  /** Active downloads — one click opens the panel. */
+  const downloadCommands = $derived<Cmd[]>(
+    downloads.items.map((d) => ({
+      id: `dl-${d.id}`,
+      label: d.filename,
+      hint: 'Download',
+      group: 'Downloads',
+      run: () => {
+        downloads.open = true;
+        close();
+      }
+    }))
+  );
+
+  const allCommands = $derived([
+    ...baseCommands,
+    ...tabCommands,
+    ...projectCommands,
+    ...historyCommands,
+    ...downloadCommands
+  ]);
 
   function isTauri(): boolean {
     return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -303,6 +377,7 @@
           aria-label="Command search"
           autocomplete="off"
           spellcheck="false"
+          onkeydown={onKey}
         />
         <kbd class="rounded border border-nc-line bg-nc-bg px-1.5 py-0.5 text-[10px] text-nc-mut"
           >Esc</kbd
@@ -318,10 +393,11 @@
           {#each filtered as cmd, i (cmd.id)}
             <button
               type="button"
-              class="flex w-full items-center gap-3 px-4 py-2 text-left text-[13px] transition-colors
+              class="pal-row flex w-full items-center gap-3 px-4 py-2 text-left text-[13px] transition-colors
                      {i === active
                 ? 'bg-nc-brand/15 text-nc-txt'
                 : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
+              style="animation-delay: {Math.min(i, 12) * 16}ms"
               onmouseenter={() => (active = i)}
               onclick={() => cmd.run()}
             >
@@ -338,8 +414,31 @@
         class="flex items-center justify-between border-t border-nc-line px-4 py-2 text-[10px] text-nc-mut-2"
       >
         <span>↑↓ navigate · Enter run · Esc close</span>
-        <span>Ctrl+K to open</span>
+        <span>Alt+K to open</span>
       </div>
     </div>
   </div>
 {/if}
+
+<style>
+  /* Rows cascade in with the browser's own quick easing; each one is a few
+     milliseconds behind the last so the list reads as one gesture. */
+  .pal-row {
+    animation: pal-row-in 220ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  }
+  @keyframes pal-row-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pal-row {
+      animation: none;
+    }
+  }
+</style>

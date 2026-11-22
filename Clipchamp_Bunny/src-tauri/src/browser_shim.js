@@ -638,7 +638,7 @@
     ['alt+home', 'goHome', 0, false],
     ['ctrl+l', 'focusUrlbar', 0, true],
     ['alt+d', 'focusUrlbar', 0, true],
-    ['alt+k', 'focusUrlbar', 0, true],
+    ['ctrl+k', 'focusUrlbar', 0, true],
     ['ctrl+e', 'focusUrlbar', 0, true],
     ['f6', 'focusUrlbar', 0, true],
     ['ctrl+j', 'downloads', 0, true],

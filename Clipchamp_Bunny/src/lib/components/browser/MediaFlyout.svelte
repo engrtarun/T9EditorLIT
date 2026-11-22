@@ -28,6 +28,7 @@
    * Rust remembers the rect across the idle destroy and the app restart.
    */
   import { onMount } from 'svelte';
+  import { fade } from 'svelte/transition';
   import BrandMark from '../dashboard/BrandMark.svelte';
   import {
     browserMediaAction,
@@ -49,6 +50,8 @@
   let artFailed = $state('');
   /** Pinned: the card stays on screen instead of hiding after 5 s. */
   let pinned = $state(false);
+  /** The > chevron expands the "which tab is making noise" detail. */
+  let expanded = $state(false);
 
   let basePos = 0;
   let baseAt = 0;
@@ -285,31 +288,8 @@
 
         <span class="mx-1 h-4 w-px shrink-0 bg-nc-line" aria-hidden="true"></span>
 
-        <!-- X — dismiss the card now (Rust hides + destroys the window);
-             the next transport transition brings it back. -->
-        <button
-          type="button"
-          onclick={() => void mediaFlyoutClose()}
-          class="grid h-7 w-7 place-items-center rounded-full text-nc-mut transition-colors hover:bg-[#c42b1c] hover:text-white"
-          title="Close"
-          aria-label="Close media card"
-        >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-          >
-            <path d="M6 6l12 12M18 6L6 18" />
-          </svg>
-        </button>
-
-        <!-- Pin — X ke right, so the card survives opening other apps instead
-             of hiding after 5 s. Pinned state is remembered across the idle
-             destroy and an app restart. -->
+        <!-- Pin — X ke LEFT. Pinned state is remembered across the idle
+             destroy and an app restart, so the card never hides after 5 s. -->
         <button
           type="button"
           onclick={togglePin}
@@ -339,7 +319,73 @@
             {/if}
           </svg>
         </button>
+
+        <!-- X — dismiss the card now (Rust hides + destroys the window);
+             the next transport transition brings it back. -->
+        <button
+          type="button"
+          onclick={() => void mediaFlyoutClose()}
+          class="grid h-7 w-7 place-items-center rounded-full text-nc-mut transition-colors hover:bg-[#c42b1c] hover:text-white"
+          title="Close"
+          aria-label="Close media card"
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          >
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+
+        <!-- > — X ke right. Multi-tab me audio chal raha ho to notification
+             khud hide ho jati hai; ye chevron card ko expand karke tab details
+             aur "keep open" dikhata hai. -->
+        <button
+          type="button"
+          onclick={() => (expanded = !expanded)}
+          class="grid h-7 w-7 place-items-center rounded-full text-nc-mut transition-colors hover:bg-nc-panel-2 hover:text-nc-txt"
+          title={expanded ? 'Details chhupao' : 'Audio kis tab se aa raha hai — detail dikhao'}
+          aria-label="Toggle media details"
+          aria-expanded={expanded}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="transition-transform duration-200 {expanded ? 'rotate-90' : ''}"
+          >
+            <path d="m9 5 7 7-7 7" />
+          </svg>
+        </button>
       </div>
+
+      {#if expanded}
+        <div
+          class="flex items-center justify-between gap-2 border-t border-white/10 px-4 py-1.5 text-[10px] text-white/60"
+          transition:fade={{ duration: 120 }}
+        >
+          <span class="truncate">
+            {playing ? 'Audio chal raha hai' : 'Media paused'} · tab {snap?.tab ?? '—'}
+          </span>
+          <button
+            type="button"
+            class="shrink-0 rounded px-1.5 py-0.5 text-nc-brand hover:bg-white/10"
+            onclick={() => void mediaFlyoutPin(true).then((v) => (pinned = v))}
+          >
+            Keep open
+          </button>
+        </div>
+      {/if}
     </div>
 
     <!-- Row 2: 02:22 ─────────●──────── 18:11 — the whole reason this
