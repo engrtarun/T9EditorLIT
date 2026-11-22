@@ -377,6 +377,19 @@ class ProjectStore {
   private previewStop: (() => void) | null = null;
 
   /**
+   * Which `preparePreview` call is allowed to write state.
+   *
+   * Opening another project mid-build must not let the old build finish into
+   * the new project: FFmpeg can take minutes, so by the time it returns the
+   * user may be looking at a different file entirely. Every `await` below
+   * re-checks this number, and a stale call returns without touching `preview`
+   * or `media.url`. Without it, project A's proxy URL would land on project B's
+   * `<video>` (a black frame, because the durations differ) and A's cancel
+   * error would overwrite B's "preparing" bar with a red failure card.
+   */
+  private previewGen = 0;
+
+  /**
    * Decide how the preview plays this source, and build a proxy if needed.
    *
    * Never blocks the load: the probe, waveform, filmstrip and transcription
@@ -385,6 +398,9 @@ class ProjectStore {
    * it — a half-written MP4 would show a black frame with a duration of zero.
    */
   private async preparePreview(path: string) {
+    const gen = ++this.previewGen;
+    const current = () => gen === this.previewGen;
+
     this.previewStop?.();
     this.previewStop = null;
     void cancelPreviewProxy();
@@ -402,9 +418,10 @@ class ProjectStore {
     } catch {
       // A plan that cannot be read is not a broken file. Keep the source and
       // let the <video> try — its own error state is the honest report.
-      this.preview = { kind: 'native', pct: 0, note: '', proxyPath: null };
+      if (current()) this.preview = { kind: 'native', pct: 0, note: '', proxyPath: null };
       return;
     }
+    if (!current()) return;
 
     if (plan.kind === 'native') {
       this.preview = { kind: 'native', pct: 0, note: plan.reason, proxyPath: null };
@@ -418,15 +435,23 @@ class ProjectStore {
     }
 
     this.preview = { kind: 'preparing', pct: 0, note: plan.reason, proxyPath: null };
-    this.previewStop = await onPreviewProgress((p) => {
-      if (this.preview.kind === 'preparing') this.preview.pct = p.pct;
+    const stop = await onPreviewProgress((p) => {
+      if (current() && this.preview.kind === 'preparing') this.preview.pct = p.pct;
     });
+    if (!current()) {
+      stop();
+      return;
+    }
+    this.previewStop = stop;
 
     try {
       const made = await buildPreviewProxy(path);
+      if (!current()) return;
       this.useProxy(made);
       this.preview = { kind: 'ready', pct: 100, note: plan.reason, proxyPath: made };
     } catch (e) {
+      // A cancel we asked for ourselves is not a failure to report.
+      if (!current()) return;
       this.preview = {
         kind: 'failed',
         pct: 0,
@@ -434,8 +459,8 @@ class ProjectStore {
         proxyPath: null
       };
     } finally {
-      this.previewStop?.();
-      this.previewStop = null;
+      stop();
+      if (this.previewStop === stop) this.previewStop = null;
     }
   }
 

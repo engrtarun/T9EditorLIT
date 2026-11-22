@@ -128,6 +128,17 @@ fn proxy_path(app: &tauri::AppHandle, path: &Path) -> Result<PathBuf, String> {
     Ok(proxy_dir(app)?.join(format!("{}.mp4", source_key(path)?)))
 }
 
+/// One proxy build at a time, process-wide.
+///
+/// Two FFmpeg encodes fighting for the same i3 is exactly the stall this app
+/// avoids, and two builds of the *same* source would write the same temporary
+/// file and hand the rename a corrupted MP4 — which the cache would then serve
+/// forever, because it only asks `is_file()`.
+fn build_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 fn parse_rate(text: &str) -> Option<f64> {
     let (num, den) = text.split_once('/')?;
     let num: f64 = num.parse().ok()?;
@@ -620,6 +631,13 @@ fn build_blocking(app: &tauri::AppHandle, path: &str) -> Result<String, String> 
     }
 
     let target = proxy_path(app, &source)?;
+    // Cached? Then nothing to do — checked again under the lock below, because
+    // another build may have finished while this one waited.
+    if target.is_file() {
+        return Ok(target.to_string_lossy().into_owned());
+    }
+
+    let _guard = build_lock().lock().unwrap_or_else(|poison| poison.into_inner());
     if target.is_file() {
         return Ok(target.to_string_lossy().into_owned());
     }
@@ -627,33 +645,48 @@ fn build_blocking(app: &tauri::AppHandle, path: &str) -> Result<String, String> 
     let media = probe(&source)?;
     let plan = decide(&media, None);
 
-    match plan.kind.as_str() {
-        "native" => {
-            // Nothing to build — the caller should keep the source's own URL.
-            return Ok(source.to_string_lossy().into_owned());
-        }
-        "remux" => {
-            emit(app, 0.0, "remux");
-            remux(
-                app,
-                &source,
-                &target,
-                media
-                    .audio
-                    .as_deref()
-                    .map(|a| PLAYABLE_AUDIO.contains(&a))
-                    .unwrap_or(true),
-                media.seconds,
-            )?;
-        }
-        _ => {
-            transcode(app, &source, &target, &media)?;
-        }
+    if plan.kind == "native" {
+        // Nothing to build — the caller should keep the source's own URL.
+        return Ok(source.to_string_lossy().into_owned());
     }
 
-    if !target.is_file() {
+    // The cancel flag is process-wide and survives the job that set it. Clear
+    // it here, before either path, or the first remux after any cancelled
+    // build would be killed the instant FFmpeg starts.
+    cancel_flag().store(false, Ordering::SeqCst);
+
+    // Written under a temporary name and renamed only when FFmpeg exits 0.
+    //
+    // A crash, a Task Manager kill or a cancel at the wrong moment otherwise
+    // leaves a truncated MP4 behind, and `is_file()` above would happily serve
+    // it forever: the preview would show a black frame with a bogus duration
+    // and no error, on every open, with no way for the user to tell why.
+    let tmp = target.with_extension("part.mp4");
+    let _ = std::fs::remove_file(&tmp);
+
+    let built = if plan.kind == "remux" {
+        emit(app, 0.0, "remux");
+        let audio_copy = media
+            .audio
+            .as_deref()
+            .map(|a| PLAYABLE_AUDIO.contains(&a))
+            .unwrap_or(true);
+        remux(app, &source, &tmp, audio_copy, media.seconds)
+    } else {
+        transcode(app, &source, &tmp, &media)
+    };
+
+    if let Err(e) = built {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if !tmp.is_file() {
+        let _ = std::fs::remove_file(&tmp);
         return Err("the preview proxy was not written".to_string());
     }
+
+    std::fs::rename(&tmp, &target)
+        .map_err(|e| format!("could not store the preview proxy: {e}"))?;
     emit(app, 100.0, "done");
     Ok(target.to_string_lossy().into_owned())
 }
