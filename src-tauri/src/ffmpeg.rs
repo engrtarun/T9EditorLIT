@@ -88,7 +88,7 @@ pub fn read_last_export_log() -> Option<String> {
 
 /// Append one line, rotating at 200 KB so the file never becomes a second
 /// unbounded buffer. Rotation writes `export-<ts>.log.1` and replaces it.
-fn log_line(line: &str) {
+pub fn log_line(line: &str) {
     let Ok(mut guard) = export_log().lock() else {
         return;
     };
