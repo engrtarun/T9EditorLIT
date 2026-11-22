@@ -649,6 +649,7 @@ mod tests {
             },
             &work
         ));
+    }
     #[test]
     fn pin_value_only_one_means_pinned() {
         assert!(pin_value("1"));
