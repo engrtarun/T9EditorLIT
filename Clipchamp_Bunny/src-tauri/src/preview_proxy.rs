@@ -177,9 +177,17 @@ fn probe(path: &Path) -> Result<Source, String> {
         .cloned()
         .unwrap_or_default();
 
-    let video = streams
-        .iter()
-        .find(|s| s.get("codec_type").and_then(|c| c.as_str()) == Some("video"));
+    let video = streams.iter().find(|s| {
+        s.get("codec_type").and_then(|c| c.as_str()) == Some("video")
+            // An MP3/M4A/MKV can carry cover art as an `mjpeg` or `png` stream
+            // with `attached_pic`. Treating that as "this file has a picture"
+            // would burn a full-length encode of a still image instead of
+            // taking the audio-only path.
+            && s.get("disposition")
+                .and_then(|d| d.get("attached_pic"))
+                .and_then(|x| x.as_u64())
+                != Some(1)
+    });
     let audio = streams
         .iter()
         .find(|s| s.get("codec_type").and_then(|c| c.as_str()) == Some("audio"));
@@ -391,9 +399,8 @@ fn emit(app: &tauri::AppHandle, pct: f64, stage: &'static str) {
 fn video_filter(src: &Source) -> String {
     let w = src.width.min(PROXY_W).max(2);
     let h = src.height.min(PROXY_H).max(2);
-    let scale = format!(
-        "scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1"
-    );
+    let scale =
+        format!("scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1");
     if is_hdr(&src.transfer) {
         format!("{TONEMAP},{scale}")
     } else {
@@ -615,10 +622,7 @@ pub fn preview_plan(app: tauri::AppHandle, path: String) -> Result<PreviewPlan, 
 /// Idempotent: an existing proxy for the same key is returned without starting
 /// FFmpeg, so reopening a project never re-encodes anything.
 #[tauri::command]
-pub async fn build_preview_proxy(
-    app: tauri::AppHandle,
-    path: String,
-) -> Result<String, String> {
+pub async fn build_preview_proxy(app: tauri::AppHandle, path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || build_blocking(&app, &path))
         .await
         .map_err(|e| format!("preview proxy task failed: {e}"))?
@@ -637,7 +641,9 @@ fn build_blocking(app: &tauri::AppHandle, path: &str) -> Result<String, String> 
         return Ok(target.to_string_lossy().into_owned());
     }
 
-    let _guard = build_lock().lock().unwrap_or_else(|poison| poison.into_inner());
+    let _guard = build_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     if target.is_file() {
         return Ok(target.to_string_lossy().into_owned());
     }

@@ -42,9 +42,12 @@
    */
   let videoFailed = $state(false);
 
-  /** Hand the original file to whatever player the user has installed. */
+  /** Hand the file the user is looking at to their own player. */
   async function openInPlayer() {
-    const path = project.sourcePath;
+    // The card can be raised by the main source OR by an extra clip. Opening
+    // the main source when a clip failed would hand the user a different file
+    // than the one they just tried to watch.
+    const path = activeClip?.path || project.sourcePath;
     if (!path) return;
     const ok = await openPath(path);
     if (!ok) {
@@ -75,6 +78,17 @@
   const src = $derived(activeClip?.url ?? project.media?.url ?? '');
 
   /**
+   * The main source is being prepared for the preview surface.
+   *
+   * An extra clip has its own file and its own decoder verdict, so the main
+   * source's "preparing" card must not cover it — the clip may play perfectly
+   * while the project's own source is still encoding.
+   */
+  const mainPreviewBusy = $derived(
+    !activeClip && (project.preview.kind === 'preparing' || project.preview.kind === 'failed')
+  );
+
+  /**
    * A new source deserves a fresh verdict from the decoder. Without this, one
    * unplayable file would keep the failure card on screen for the next one.
    */
@@ -94,8 +108,15 @@
     player.attach(v);
     if (project.media && !activeClip) {
       project.media.durationSecs = isFinite(v.duration) ? v.duration : project.media.durationSecs;
-      project.media.width = v.videoWidth;
-      project.media.height = v.videoHeight;
+      // A proxy is a small stand-in, not the source's dimensions. Writing
+      // 720x404 here would silently downgrade a 1080p or 4K export: ExportMode
+      // sizes its canvas from `media.width/height`, and the sequence export
+      // letterboxes every part to that size. The proxy's picture must never
+      // become the project's idea of the source.
+      if (!project.preview.proxyPath) {
+        project.media.width = v.videoWidth;
+        project.media.height = v.videoHeight;
+      }
     }
     const want = untrack(() => player.currentTime);
     const dur = isFinite(v.duration) ? v.duration : 0;
@@ -590,7 +611,7 @@
           ></video>
         {/if}
 
-        {#if project.preview.kind === 'preparing' || project.preview.kind === 'failed' || videoFailed}
+        {#if mainPreviewBusy || videoFailed}
           <!-- The decoder cannot show this file yet — or at all. The stage says
                so with a real number and a reason, instead of a silent black
                rectangle that reads as a frozen app. The original file is still
