@@ -86,6 +86,42 @@
     }
   ];
 
+  /**
+   * Each destination gets its own colour identity — YouTube red, Shorts
+   * pink-violet, 4K amber, Custom violet — so the four cards read as four
+   * different places to publish instead of four identical gray boxes.
+   * The class strings live here as literals so Tailwind can see them.
+   */
+  const CARD_SKIN: Record<
+    string,
+    { active: string; hover: string; glow: string; icon: string }
+  > = {
+    youtube: {
+      active: 'border-[#ff4d4d]/70 bg-[#ff4d4d]/5',
+      hover: 'hover:border-[#ff4d4d]/45 hover:bg-[#ff4d4d]/5',
+      glow: 'shadow-[0_0_28px_-8px_#ff4d4d]',
+      icon: 'text-[#ff6b6b]'
+    },
+    shorts: {
+      active: 'border-[#ff3d8b]/70 bg-[#ff3d8b]/5',
+      hover: 'hover:border-[#ff3d8b]/45 hover:bg-[#ff3d8b]/5',
+      glow: 'shadow-[0_0_28px_-8px_#ff3d8b]',
+      icon: 'text-[#ff6ba8]'
+    },
+    '4k': {
+      active: 'border-nc-amber/70 bg-nc-amber/5',
+      hover: 'hover:border-nc-amber/45 hover:bg-nc-amber/5',
+      glow: 'shadow-[0_0_28px_-8px_#e0a94f]',
+      icon: 'text-nc-amber'
+    },
+    custom: {
+      active: 'border-[#7b5cff]/70 bg-[#7b5cff]/5',
+      hover: 'hover:border-[#7b5cff]/45 hover:bg-[#7b5cff]/5',
+      glow: 'shadow-[0_0_28px_-8px_#7b5cff]',
+      icon: 'text-[#9b8cff]'
+    }
+  };
+
   let format = $state<ExportFormat>('video');
   let resolution = $state<ResolutionId>(exportDefaults.resolution);
   let engine = $state<Engine>('hybrid');
@@ -553,16 +589,30 @@
   }
 </script>
 
-<div class="flex min-h-0 min-w-0 flex-1 flex-col bg-nc-bg">
+<div class="relative flex min-h-0 min-w-0 flex-1 flex-col bg-nc-bg">
+  <!-- ambient light: two soft brand glows so the screen has a light source -->
+  <div class="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+    <div
+      class="absolute -left-24 -top-32 h-96 w-96 rounded-full bg-nc-brand/16 blur-[110px]"
+    ></div>
+    <div
+      class="absolute -right-32 top-1/3 h-80 w-80 rounded-full bg-[#7b5cff]/12 blur-[110px]"
+    ></div>
+    <div class="absolute inset-0 bg-[radial-gradient(circle_at_50%_-10%,transparent,nc-bg_70%)]">
+    </div>
+  </div>
+
   <!-- header -->
-  <header class="flex shrink-0 items-start gap-3 border-b border-nc-line bg-nc-panel px-5 py-3">
+  <header
+    class="relative z-10 flex shrink-0 items-start gap-3.5 border-b border-nc-line/70 bg-nc-panel/70 px-6 py-4 backdrop-blur-sm"
+  >
     <span
-      class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-nc-brand to-[#7b5cff] text-white shadow-lg shadow-nc-brand/20"
+      class="nc-icon-tile grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-nc-brand to-[#7b5cff] text-white shadow-[0_8px_24px_-8px_rgba(77,141,255,0.8)]"
       aria-hidden="true"
     >
       <svg
         viewBox="0 0 24 24"
-        class="h-5 w-5"
+        class="h-5.5 w-5.5"
         fill="none"
         stroke="currentColor"
         stroke-width="1.8"
@@ -576,12 +626,16 @@
     </span>
     <div class="min-w-0 flex-1">
       <div class="flex flex-wrap items-center gap-2">
-        <h1 class="text-lg font-bold leading-tight">Export Video</h1>
-        <span class="rounded bg-nc-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-nc-mut">
+        <h1 class="nc-display text-xl font-extrabold tracking-tight">Export Video</h1>
+        <span
+          class="rounded-md border border-nc-line/80 bg-nc-panel-2/70 px-2 py-0.5 font-mono text-[10px] font-medium text-nc-mut"
+        >
           {segments.length} segment{segments.length === 1 ? '' : 's'}
         </span>
         {#if multiClip}
-          <span class="rounded bg-nc-brand/15 px-1.5 py-0.5 font-mono text-[10px] text-nc-brand">
+          <span
+            class="rounded-md border border-nc-brand/30 bg-nc-brand/12 px-2 py-0.5 font-mono text-[10px] font-medium text-nc-brand"
+          >
             + {extraClips.length} clip{extraClips.length === 1 ? '' : 's'}
           </span>
         {/if}
@@ -593,22 +647,27 @@
           </span>
         {/if}
       </div>
-      <p class="mt-0.5 text-[11px] text-nc-mut">Share your creativity with the world ✨</p>
-      <p class="mt-0.5 font-mono text-[10px] text-nc-mut-2">
-        FINAL {fmtHuman(finalSecs)} · CUT {fmtHuman(project.cutSec)} · RAW {fmtHuman(
-          project.durationSec
-        )}
+      <p class="mt-1 text-[12px] italic text-nc-mut">
+        Share your creativity with the world ✨
+      </p>
+      <p class="mt-1 flex items-center gap-2 font-mono text-[10px] tracking-wide text-nc-mut-2">
+        <span class="inline-block h-1 w-1 rounded-full bg-nc-green"></span>
+        FINAL {fmtHuman(finalSecs)}
+        <span class="text-nc-line-2">·</span>
+        CUT {fmtHuman(project.cutSec)}
+        <span class="text-nc-line-2">·</span>
+        RAW {fmtHuman(project.durationSec)}
       </p>
     </div>
     <button
       type="button"
       onclick={() => (historyOpen = true)}
-      class="flex shrink-0 items-center gap-1.5 rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-2 text-[11px] font-semibold text-nc-mut transition-colors hover:border-nc-brand/50 hover:text-nc-txt"
+      class="nc-hover-lift flex shrink-0 items-center gap-2 rounded-xl border border-nc-line bg-nc-panel-2/70 px-3.5 py-2.5 text-[11px] font-semibold text-nc-mut backdrop-blur transition-all hover:border-nc-brand/50 hover:text-nc-txt"
       title="Previous exports"
     >
       <svg
         viewBox="0 0 24 24"
-        class="h-3.5 w-3.5"
+        class="h-4 w-4"
         fill="none"
         stroke="currentColor"
         stroke-width="2"
@@ -623,36 +682,41 @@
     </button>
   </header>
 
-  <div class="nc-scroll min-h-0 flex-1 p-5">
-    <div class="mx-auto grid max-w-6xl gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+  <div class="nc-scroll relative z-10 min-h-0 flex-1 p-6">
+    <div class="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
       <!-- LEFT -->
-      <div class="min-w-0 space-y-4">
+      <div class="min-w-0 space-y-5">
         <!-- tabs -->
-        <div class="flex rounded-xl border border-nc-line bg-nc-panel p-1">
+        <div
+          class="nc-segmented relative flex rounded-2xl border border-nc-line/80 bg-nc-panel/60 p-1.5 backdrop-blur"
+        >
+          <span
+            class="absolute bottom-1.5 top-1.5 w-[calc(50%-0.375rem)] rounded-xl bg-gradient-to-r from-nc-brand to-[#6a5cff] shadow-[0_6px_20px_-6px_rgba(77,141,255,0.9)] transition-transform duration-300 ease-out
+            {tab === 'quick' ? 'translate-x-1.5' : 'translate-x-[calc(100%+0.75rem)]'}"
+            aria-hidden="true"
+          ></span>
           <button
             type="button"
             onclick={() => (tab = 'quick')}
-            class="flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[12px] font-semibold transition-colors
-                   {tab === 'quick'
-              ? 'bg-nc-brand text-white shadow'
-              : 'text-nc-mut hover:text-nc-txt'}"
+            aria-pressed={tab === 'quick'}
+            class="relative z-10 flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-[12.5px] font-bold transition-colors duration-200
+              {tab === 'quick' ? 'text-white' : 'text-nc-mut hover:text-nc-txt'}"
           >
-            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="currentColor" aria-hidden="true"
+            <svg viewBox="0 0 24 24" class="h-4 w-4" fill="currentColor" aria-hidden="true"
               ><path d="M13 2 4 14h6l-1 8 9-12h-6z" /></svg
             >
-            Quick Export ⚡
+            Quick Export
           </button>
           <button
             type="button"
             onclick={() => (tab = 'advanced')}
-            class="flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[12px] font-semibold transition-colors
-                   {tab === 'advanced'
-              ? 'bg-nc-brand text-white shadow'
-              : 'text-nc-mut hover:text-nc-txt'}"
+            aria-pressed={tab === 'advanced'}
+            class="relative z-10 flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-[12.5px] font-bold transition-colors duration-200
+              {tab === 'advanced' ? 'text-white' : 'text-nc-mut hover:text-nc-txt'}"
           >
             <svg
               viewBox="0 0 24 24"
-              class="h-3.5 w-3.5"
+              class="h-4 w-4"
               fill="none"
               stroke="currentColor"
               stroke-width="2"
@@ -668,87 +732,92 @@
           </button>
         </div>
 
-        <!-- preset cards -->
-        <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <!-- preset cards: each destination keeps its own colour + frame shape -->
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {#each QUICK_PRESETS as p (p.id)}
             {@const selected = activeCard === p.id}
+            {@const skin = CARD_SKIN[p.id]}
             <button
               type="button"
               onclick={() => selectPreset(p.id)}
-              class="relative flex flex-col items-start gap-2 rounded-xl border p-3 text-left transition-colors
+              aria-pressed={selected}
+              class="nc-card-in group relative flex flex-col items-stretch gap-3 overflow-hidden rounded-2xl border p-3.5 text-left transition-all duration-200
                      {selected
-                ? 'border-nc-brand bg-nc-brand/5'
-                : 'border-nc-line bg-nc-panel hover:border-nc-line-2'}"
+                ? `${skin.active} ${skin.glow}`
+                : `border-nc-line bg-nc-panel/80 hover:-translate-y-0.5 hover:border-nc-line-2 hover:shadow-lg hover:shadow-black/30 ${skin.hover}`}"
             >
-              {#if selected}
-                <span
-                  class="absolute right-2 top-2 grid h-4 w-4 place-items-center rounded-full bg-nc-brand text-white"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    class="h-2.5 w-2.5"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="3"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="m5 13 4 4L19 7" />
-                  </svg>
-                </span>
-              {/if}
-              <span class="flex h-7 items-center gap-1.5">
-                {#if p.id === 'youtube'}
-                  <span
-                    class="grid h-6 w-9 place-items-center rounded-md bg-[#ff0000] text-[9px] font-black text-white"
-                    >YT</span
-                  >
-                {:else if p.id === 'shorts'}
-                  <span
-                    class="grid h-6 w-5 place-items-center rounded-md bg-gradient-to-b from-[#ff0000] to-[#7b1fa2] text-[9px] font-black text-white"
-                    >S</span
-                  >
+              <!-- frame-shape mockup: the actual aspect ratio you are choosing -->
+              <span
+                class="relative grid h-14 w-full place-items-center rounded-lg border border-white/6 bg-black/30"
+                aria-hidden="true"
+              >
+                {#if p.id === 'shorts'}
+                  <span class="h-10 w-[22px] rounded-[5px] border-2 border-current {skin.icon}"></span>
+                {:else if p.id === 'youtube'}
+                  <span class="h-[30px] w-[52px] rounded-[5px] border-2 border-current {skin.icon}"
+                  ></span>
                 {:else if p.id === '4k'}
-                  <span
-                    class="grid h-6 w-9 place-items-center rounded-md border border-nc-amber bg-nc-amber/10 text-[9px] font-black text-nc-amber"
-                    >4K</span
-                  >
+                  <span class="h-[30px] w-[52px] rounded-[5px] border-2 border-current {skin.icon}"
+                  ></span>
                 {:else}
                   <span
-                    class="grid h-6 w-6 place-items-center rounded-md border border-nc-line-2 text-nc-mut"
+                    class="grid h-[30px] w-[52px] place-items-center rounded-[5px] border-2 border-dashed border-current {skin.icon}"
                   >
                     <svg
                       viewBox="0 0 24 24"
-                      class="h-3.5 w-3.5"
+                      class="h-4 w-4"
                       fill="none"
                       stroke="currentColor"
                       stroke-width="2"
                       stroke-linecap="round"
                       stroke-linejoin="round"
-                      aria-hidden="true"
                     >
                       <path d="m12 3 2.7 5.5 6 .9-4.3 4.2 1 6-5.4-2.8-5.4 2.8 1-6L3.3 9.4l6-.9z" />
                     </svg>
                   </span>
                 {/if}
+                {#if selected}
+                  <span
+                    class="absolute right-1.5 top-1.5 grid h-4.5 w-4.5 place-items-center rounded-full bg-nc-brand text-white shadow"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      class="h-2.5 w-2.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="3.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m5 13 4 4L19 7" />
+                    </svg>
+                  </span>
+                {/if}
               </span>
               <span class="min-w-0">
-                <span class="block text-xs font-semibold leading-tight text-nc-txt">{p.label}</span>
-                <span class="block text-[10px] leading-tight text-nc-mut">{p.note}</span>
+                <span class="block truncate text-[13px] font-bold leading-tight text-nc-txt"
+                  >{p.label}</span
+                >
+                <span
+                  class="mt-0.5 block truncate font-mono text-[10.5px] leading-tight {selected
+                    ? skin.icon
+                    : 'text-nc-mut'}">{p.note}</span
+                >
               </span>
             </button>
           {/each}
         </div>
 
         <!-- setting rows -->
-        <div class="space-y-2.5">
+        <div class="space-y-3">
           <ExportSelect
             label="Format"
             value={format}
             display={formatText}
             soon={false}
             icon={formatIcon}
+            tint="bg-nc-brand/12 text-nc-brand"
             options={FORMATS.map((f) => ({
               value: f.id,
               label: f.label,
@@ -762,6 +831,7 @@
             value={resolution}
             display={resolutionText}
             icon={monitorIcon}
+            tint="bg-[#7b5cff]/14 text-[#9b8cff]"
             options={RESOLUTIONS.map((r) => ({
               value: r.id,
               label: r.label,
@@ -779,6 +849,7 @@
             display={frameRateText}
             soon={fpsPending}
             icon={gaugeIcon}
+            tint="bg-nc-amber/12 text-nc-amber"
             options={[
               {
                 value: 'source',
@@ -794,15 +865,15 @@
             onselect={handleFps}
           />
           <div
-            class="flex items-center gap-3 rounded-xl border border-nc-line bg-nc-panel px-3 py-2.5"
+            class="nc-hover-lift flex items-center gap-3.5 rounded-2xl border border-nc-line/80 bg-nc-panel/80 px-3.5 py-3 transition-all duration-150 hover:border-nc-line-2 hover:shadow-lg hover:shadow-black/25"
           >
             <span
-              class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-nc-panel-2 text-nc-mut"
+              class="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/5 bg-nc-green/12 text-nc-green"
               aria-hidden="true"
             >
               <svg
                 viewBox="0 0 24 24"
-                class="h-4 w-4"
+                class="h-4.5 w-4.5"
                 fill="none"
                 stroke="currentColor"
                 stroke-width="1.8"
@@ -814,14 +885,17 @@
               </svg>
             </span>
             <span class="min-w-0 flex-1">
-              <span class="block text-[11px] leading-tight text-nc-mut">Include Audio</span>
-              <span class="block text-sm font-semibold leading-tight text-nc-txt">
+              <span
+                class="block text-[10.5px] font-semibold uppercase tracking-wider leading-tight text-nc-mut"
+                >Include Audio</span
+              >
+              <span class="mt-0.5 block text-[14px] font-semibold leading-tight text-nc-txt">
                 {includeAudio ? 'On' : 'Off'}
               </span>
             </span>
             {#if !caps.includeAudio && !includeAudio}
               <span
-                class="rounded bg-nc-amber/15 px-1.5 py-0.5 text-[9px] font-bold text-nc-amber"
+                class="rounded-md border border-nc-amber/30 bg-nc-amber/12 px-1.5 py-0.5 text-[9px] font-bold text-nc-amber"
                 title="Backend update (EXPORT.md B1-2) ke baad apply hoga">SOON</span
               >
             {/if}
@@ -831,13 +905,13 @@
               aria-checked={includeAudio}
               aria-label="Include Audio"
               onclick={() => (includeAudio = !includeAudio)}
-              class="relative h-6 w-11 shrink-0 rounded-full transition-colors {includeAudio
-                ? 'bg-nc-brand'
+              class="relative h-6.5 w-12 shrink-0 rounded-full transition-colors duration-200 {includeAudio
+                ? 'bg-gradient-to-r from-nc-green to-[#2fb877] shadow-[0_0_14px_-2px_#3dd68c]'
                 : 'bg-nc-panel-2'}"
             >
               <span
-                class="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform {includeAudio
-                  ? 'translate-x-5'
+                class="absolute top-0.5 h-5.5 w-5.5 rounded-full bg-white shadow transition-transform duration-200 {includeAudio
+                  ? 'translate-x-6'
                   : 'translate-x-0.5'}"
               ></span>
             </button>
@@ -1121,15 +1195,15 @@
 
         <!-- output location row -->
         <div
-          class="flex items-center gap-3 rounded-xl border border-nc-line bg-nc-panel px-3 py-2.5"
+          class="nc-hover-lift flex items-center gap-3.5 rounded-2xl border border-nc-line/80 bg-nc-panel/80 px-3.5 py-3 transition-all duration-150 hover:border-nc-line-2 hover:shadow-lg hover:shadow-black/25"
         >
           <span
-            class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-nc-panel-2 text-nc-mut"
+            class="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/5 bg-nc-amber/12 text-nc-amber"
             aria-hidden="true"
           >
             <svg
               viewBox="0 0 24 24"
-              class="h-4 w-4"
+              class="h-4.5 w-4.5"
               fill="none"
               stroke="currentColor"
               stroke-width="1.8"
@@ -1140,9 +1214,11 @@
             </svg>
           </span>
           <div class="min-w-0 flex-1">
-            <p class="text-[11px] leading-tight text-nc-mut">Output Location</p>
+            <p class="text-[10.5px] font-semibold uppercase tracking-wider leading-tight text-nc-mut">
+              Output Location
+            </p>
             <p
-              class="truncate font-mono text-xs leading-tight text-nc-txt"
+              class="mt-0.5 truncate font-mono text-[12.5px] leading-tight text-nc-txt"
               title={output || defaultOutputPath()}
             >
               {output || defaultOutputPath()}
@@ -1151,7 +1227,7 @@
           <button
             type="button"
             onclick={chooseOutput}
-            class="shrink-0 rounded-lg border border-nc-line bg-nc-panel-2 px-3 py-1.5 text-[11px] hover:border-nc-brand/50"
+            class="shrink-0 rounded-lg border border-nc-line bg-nc-panel-2 px-3.5 py-2 text-[11.5px] font-semibold text-nc-mut transition-colors hover:border-nc-brand/50 hover:text-nc-txt"
           >
             Change
           </button>
@@ -1161,7 +1237,7 @@
           <button
             type="button"
             onclick={() => (moreOpen = true)}
-            class="mx-auto flex items-center gap-1 text-[12px] font-semibold text-nc-brand hover:underline"
+            class="mx-auto flex items-center gap-2 rounded-full border border-dashed border-nc-line-2/70 bg-nc-panel/50 px-4 py-2 text-[12px] font-semibold text-nc-mut transition-colors hover:border-nc-brand/60 hover:bg-nc-brand/8 hover:text-nc-txt"
           >
             More Options
             <svg
@@ -1182,11 +1258,17 @@
 
       <!-- RIGHT -->
       <div class="space-y-4">
-        <!-- preview card -->
-        <div class="overflow-hidden rounded-2xl border border-nc-line bg-nc-panel">
-          <div class="relative w-full bg-nc-bg" style="aspect-ratio: {previewAspect}">
+        <!-- preview card: a cinema screen with a spec HUD -->
+        <div
+          class="group relative overflow-hidden rounded-2xl border border-nc-line/80 bg-nc-panel/80 shadow-[0_20px_50px_-30px_rgba(0,0,0,0.9)]"
+        >
+          <div class="relative w-full bg-black" style="aspect-ratio: {previewAspect}">
             {#if poster}
-              <img src={poster} alt="preview" class="h-full w-full object-cover opacity-80" />
+              <img
+                src={poster}
+                alt="preview"
+                class="h-full w-full object-cover opacity-90 transition-transform duration-500 group-hover:scale-[1.03]"
+              />
             {:else}
               <div class="grid h-full w-full place-items-center text-nc-mut-2">
                 <svg
@@ -1204,18 +1286,44 @@
                 </svg>
               </div>
             {/if}
+            <!-- top scrim + resolution badge -->
+            <div
+              class="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between bg-gradient-to-b from-black/70 to-transparent p-3"
+            >
+              <span
+                class="rounded-md border border-white/15 bg-black/45 px-2 py-1 font-mono text-[10px] font-bold tracking-wide text-white backdrop-blur"
+              >
+                {frame && frame.width > 0 ? `${frame.width} × ${frame.height}` : resolutionText}
+              </span>
+              <span
+                class="rounded-md border border-white/15 bg-black/45 px-2 py-1 font-mono text-[10px] font-bold tracking-wide text-white backdrop-blur"
+              >
+                {frameRateText}
+              </span>
+            </div>
+            <!-- bottom scrim + timeline chip -->
+            <div
+              class="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between bg-gradient-to-t from-black/80 to-transparent p-3"
+            >
+              <span class="font-mono text-[10px] font-medium text-white/85">
+                ▸ {fmtHuman(finalSecs)} final
+              </span>
+              <span class="font-mono text-[10px] font-medium uppercase tracking-wider text-white/60">
+                {formatText}
+              </span>
+            </div>
             <button
               type="button"
               onclick={async () => {
                 if (project.sourcePath) await openPath(project.sourcePath);
               }}
-              class="absolute left-1/2 top-1/2 grid h-14 w-14 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-white/15 text-white backdrop-blur-md transition hover:bg-white/25"
+              class="absolute left-1/2 top-1/2 grid h-16 w-16 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-white/25 bg-white/12 text-white backdrop-blur-md transition-all duration-200 hover:scale-110 hover:bg-white/25"
               title="Source kholo"
               aria-label="Play source"
             >
               <svg
                 viewBox="0 0 24 24"
-                class="h-6 w-6 translate-x-0.5"
+                class="h-7 w-7 translate-x-0.5"
                 fill="currentColor"
                 aria-hidden="true"
               >
@@ -1273,15 +1381,21 @@
             </div>
           </div>
         {:else if running}
-          <div class="space-y-3 rounded-2xl border border-nc-brand/40 bg-nc-brand/5 p-4">
-            <div class="flex items-center gap-2">
-              <span class="grid h-8 w-8 place-items-center rounded-lg bg-nc-brand/15 text-nc-brand">
+          <div
+            class="relative overflow-hidden rounded-2xl border border-nc-brand/40 bg-nc-brand/[0.06] p-4"
+          >
+            <div
+              class="pointer-events-none absolute -left-16 -top-16 h-40 w-40 rounded-full bg-nc-brand/25 blur-3xl"
+              aria-hidden="true"
+            ></div>
+            <div class="relative flex items-center gap-3">
+              <span class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-nc-brand/15 text-nc-brand">
                 <svg
                   viewBox="0 0 24 24"
-                  class="h-4 w-4 animate-spin"
+                  class="h-4.5 w-4.5 animate-spin"
                   fill="none"
                   stroke="currentColor"
-                  stroke-width="2"
+                  stroke-width="2.4"
                   stroke-linecap="round"
                   aria-hidden="true"
                 >
@@ -1289,19 +1403,29 @@
                 </svg>
               </span>
               <div class="min-w-0 flex-1">
-                <p class="text-xs font-bold text-nc-brand">{stageLabel(stage) || 'Working'}</p>
-                <p class="truncate text-[10px] text-nc-mut">{message || 'Export chal raha hai…'}</p>
+                <p class="text-[13px] font-extrabold tracking-tight text-nc-brand">
+                  {stageLabel(stage) || 'Working'}
+                </p>
+                <p class="truncate text-[11px] text-nc-mut">{message || 'Export chal raha hai…'}</p>
               </div>
-              <span class="font-mono text-lg font-bold text-nc-txt">{percent.toFixed(0)}%</span>
+              <span class="font-mono text-2xl font-extrabold tabular-nums text-nc-txt"
+                >{percent.toFixed(0)}<span class="text-sm text-nc-mut">%</span></span
+              >
             </div>
-            <div class="h-2 overflow-hidden rounded-full bg-nc-panel-2">
+            <div
+              class="relative mt-3 h-2.5 overflow-hidden rounded-full border border-white/5 bg-black/30"
+            >
               <div
-                class="h-full rounded-full bg-gradient-to-r from-nc-brand to-[#6a5cff] transition-[width] duration-200"
+                class="nc-bar h-full rounded-full bg-gradient-to-r from-nc-brand via-[#6a5cff] to-[#9b5cff] transition-[width] duration-300 ease-out"
                 style="width:{percent}%"
               ></div>
             </div>
-            <div class="flex items-center justify-between font-mono text-[10px] text-nc-mut">
-              <span>piece {pieceIndex || 1}/{pieceCount || 1}</span>
+            <div
+              class="relative mt-2.5 flex items-center justify-between font-mono text-[10.5px] text-nc-mut"
+            >
+              <span class="rounded border border-nc-line/70 bg-black/25 px-1.5 py-0.5"
+                >piece {pieceIndex || 1}/{pieceCount || 1}</span
+              >
               <span
                 >{fmtClock(elapsedSecs)} elapsed{eta !== null
                   ? ` · ${fmtClock(eta)} left`
@@ -1309,67 +1433,99 @@
               >
             </div>
             {#if speedX > 0}
-              <p class="font-mono text-[10px] text-nc-mut-2">{fmtRate(speedX)} realtime</p>
+              <p class="relative mt-1.5 font-mono text-[10px] text-nc-mut-2">
+                ⚡ {fmtRate(speedX)} realtime
+              </p>
             {/if}
             <button
               type="button"
               onclick={armCancel}
-              class="w-full rounded-lg border py-1.5 text-[11px] transition-colors
+              class="relative mt-3 w-full rounded-lg border py-2 text-[11.5px] font-semibold transition-colors
                      {cancelArmed
-                ? 'border-nc-red bg-nc-red/10 text-nc-red'
-                : 'border-nc-line text-nc-mut hover:text-nc-txt'}"
+                ? 'animate-pulse border-nc-red bg-nc-red/15 text-nc-red'
+                : 'border-nc-line/80 bg-black/20 text-nc-mut hover:border-nc-red/50 hover:text-nc-red'}"
             >
               {cancelArmed ? 'Confirm cancel? (3s)' : 'Cancel'}
             </button>
           </div>
         {:else if result}
           <div
-            class="nc-tie-edge space-y-3 rounded-2xl border border-nc-brand/40 bg-nc-brand/5 p-4 text-center"
+            class="nc-tie-edge relative overflow-hidden rounded-2xl border border-nc-green/40 bg-nc-green/[0.07] p-4 text-center"
           >
-            <p class="text-base font-bold text-nc-brand">Export complete</p>
-            <p class="text-xs text-nc-mut">
+            <div
+              class="pointer-events-none absolute -right-14 -top-14 h-36 w-36 rounded-full bg-nc-green/20 blur-3xl"
+              aria-hidden="true"
+            ></div>
+            <span
+              class="mx-auto grid h-14 w-14 place-items-center rounded-full border border-nc-green/40 bg-nc-green/15 text-nc-green"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                class="h-7 w-7"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="m5 13 4 4L19 7" />
+              </svg>
+            </span>
+            <p class="mt-2.5 text-base font-extrabold tracking-tight text-nc-green">
+              Export complete
+            </p>
+            <p class="mt-1 font-mono text-[11px] text-nc-mut">
               {result.pieceCount} piece{result.pieceCount === 1 ? '' : 's'} · {fmtSize(
                 result.sizeBytes
               )} · {fmtHuman(result.durationSecs)}
             </p>
             {#if result.encoder}
-              <p class="font-mono text-[10px] text-nc-mut-2">encoder: {result.encoder}</p>
+              <p class="mt-1 font-mono text-[10px] text-nc-mut-2">encoder: {result.encoder}</p>
             {/if}
-            <p class="break-all font-mono text-[10px] text-nc-mut-2">{result.output}</p>
+            <p class="mt-1 break-all font-mono text-[10px] text-nc-mut-2">{result.output}</p>
             {#if warnings.length}
-              <ul class="space-y-1 text-left text-[10px] text-nc-red">
+              <ul class="mt-2 space-y-1 rounded-lg border border-nc-red/30 bg-nc-red/8 p-2 text-left text-[10px] text-nc-red">
                 {#each warnings as w (w)}<li>· {w}</li>{/each}
               </ul>
             {/if}
-            <div class="flex gap-2">
+            <div class="mt-3.5 flex gap-2">
               <button
                 type="button"
                 onclick={openResult}
-                class="flex-1 rounded-lg bg-nc-brand py-2 text-[11px] font-bold text-nc-bg hover:brightness-110"
+                class="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-nc-green to-[#2fb877] py-3 text-[12.5px] font-bold text-nc-bg transition hover:brightness-110"
                 >▶ Play</button
               >
               <button
                 type="button"
                 onclick={showResult}
-                class="flex-1 rounded-lg border border-nc-line bg-nc-panel-2 py-2 text-[11px] text-nc-mut hover:text-nc-txt"
+                class="flex-1 rounded-xl border border-nc-line/80 bg-nc-panel/70 py-3 text-[12.5px] font-semibold text-nc-mut transition-colors hover:border-nc-brand/50 hover:text-nc-txt"
                 >Show in folder</button
               >
             </div>
             <button
               type="button"
               onclick={resetResult}
-              class="text-[10px] text-nc-mut-2 hover:text-nc-txt">Export again</button
+              class="mt-2.5 text-[11px] text-nc-mut-2 underline-offset-2 hover:text-nc-txt hover:underline"
+              >Export again</button
             >
           </div>
         {:else}
-          <div class="space-y-3 rounded-2xl border border-nc-line bg-nc-panel p-4">
-            <div class="flex items-center gap-3">
+          <!-- hero card: the one thing on this screen that should feel like a launch button -->
+          <div
+            class="nc-ready relative overflow-hidden rounded-2xl border border-nc-brand/30 bg-gradient-to-b from-nc-brand/[0.09] to-transparent p-4"
+          >
+            <div
+              class="pointer-events-none absolute -right-16 -top-16 h-44 w-44 rounded-full bg-nc-brand/25 blur-3xl"
+              aria-hidden="true"
+            ></div>
+            <div class="relative flex items-center gap-3.5">
               <span
-                class="grid h-10 w-10 place-items-center rounded-xl bg-nc-brand/10 text-nc-brand"
+                class="nc-pulse grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-nc-brand to-[#7b5cff] text-white shadow-[0_8px_24px_-8px_rgba(77,141,255,0.9)]"
               >
                 <svg
                   viewBox="0 0 24 24"
-                  class="h-5 w-5"
+                  class="h-6 w-6"
                   fill="none"
                   stroke="currentColor"
                   stroke-width="1.8"
@@ -1381,14 +1537,40 @@
                 </svg>
               </span>
               <div class="min-w-0 flex-1">
-                <p class="text-sm font-bold text-nc-txt">Ready to Export</p>
-                <p class="text-[11px] text-nc-mut">
-                  Estimated file size: ~ {fmtSize(estimated) || '—'}
+                <p class="text-[15px] font-extrabold tracking-tight text-nc-txt">Ready to Export</p>
+                <p class="mt-0.5 text-[11.5px] text-nc-mut">
+                  Estimated file size
+                  <span class="font-mono font-bold text-nc-brand"
+                    >~ {fmtSize(estimated) || '—'}</span
+                  >
                 </p>
               </div>
             </div>
+
+            <!-- spec strip: what you are about to render, in one glance -->
+            <div class="relative mt-3.5 flex flex-wrap gap-1.5">
+              <span
+                class="nc-chip rounded-md border border-nc-line/80 bg-nc-panel-2/70 px-2 py-1 font-mono text-[10px] font-medium text-nc-mut"
+                >{resolutionText}</span
+              >
+              <span
+                class="nc-chip rounded-md border border-nc-line/80 bg-nc-panel-2/70 px-2 py-1 font-mono text-[10px] font-medium text-nc-mut"
+                >{frameRateText}</span
+              >
+              <span
+                class="nc-chip rounded-md border border-nc-line/80 bg-nc-panel-2/70 px-2 py-1 font-mono text-[10px] font-medium uppercase text-nc-mut"
+                >{formatText}</span
+              >
+              {#if format === 'video'}
+                <span
+                  class="nc-chip rounded-md border border-nc-line/80 bg-nc-panel-2/70 px-2 py-1 font-mono text-[10px] font-medium text-nc-mut"
+                  >{includeAudio ? 'audio on' : 'no audio'}</span
+                >
+              {/if}
+            </div>
+
             {#if !canRun}
-              <p class="text-[10px] text-nc-mut-2">
+              <p class="relative mt-3 rounded-lg border border-nc-line/60 bg-nc-panel/60 px-3 py-2 text-[11px] leading-relaxed text-nc-mut-2">
                 {#if segments.length === 0}Kuch bacha hi nahi — sab cut hai.
                 {:else if format === 'gif' && gifTooLong}GIF sirf {GIF_MAX_SECS}s tak ka hai.
                 {:else if multiClip && !isTauri()}Multi-clip export desktop app me chalta hai.
@@ -1396,13 +1578,30 @@
                 {:else}Export ke liye media load karo.{/if}
               </p>
             {/if}
+
             <button
               type="button"
               onclick={() => run(false)}
               disabled={!canRun}
-              class="w-full rounded-xl bg-gradient-to-r from-nc-brand to-[#6a5cff] py-3.5 text-sm font-bold text-white shadow-lg shadow-nc-brand/20 transition hover:brightness-110 disabled:opacity-40 disabled:shadow-none"
+              class="nc-cta group/cta relative mt-3.5 flex w-full items-center justify-center gap-2.5 overflow-hidden rounded-xl bg-gradient-to-r from-nc-brand via-[#5f7bff] to-[#7b5cff] py-4 text-[14px] font-extrabold tracking-wide text-white shadow-[0_12px_32px_-12px_rgba(77,141,255,0.9)] transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110 active:translate-y-0 disabled:opacity-40 disabled:shadow-none disabled:hover:translate-y-0"
             >
-              Export Video ↑
+              <span
+                class="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/30 to-transparent transition-transform duration-700 group-hover/cta:translate-x-full"
+                aria-hidden="true"
+              ></span>
+              <svg
+                viewBox="0 0 24 24"
+                class="h-4.5 w-4.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 19V5M5 12l7-7 7 7" />
+              </svg>
+              Export Video
             </button>
           </div>
         {/if}

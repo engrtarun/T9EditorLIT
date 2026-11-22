@@ -3,13 +3,15 @@
   import { player } from '../../stores/player.svelte';
   import { layout } from '../../stores/layout.svelte';
   import { untrack } from 'svelte';
-  import { isTauri } from '../../ipc';
+  import { isTauri, pickVideos } from '../../ipc';
+  import { menu } from '../../stores/menu.svelte';
+  import { batch } from '../../stores/batch.svelte';
   import { estimateForDuration } from '../../transcript-plan';
   import { fmtShort } from '../../utils';
   import { LANGUAGES, isLanguageSwitch, languageLabel } from '../../languages';
   import { SENSITIVITIES, SENSITIVITY_LABEL, describeProfile } from '../../audio-profile';
   import type { Sensitivity } from '../../audio-profile';
-  import type { LineFlag, TranscriptLine } from '../../types';
+  import type { LineFlag, MenuItem, TranscriptLine } from '../../types';
   import ProjectHealth from './ProjectHealth.svelte';
   import ShapeStrip from './ShapeStrip.svelte';
   import RangeTranscribe from './RangeTranscribe.svelte';
@@ -23,6 +25,73 @@
 
   /** The import dialog is mounted only while it is open (zero-RAM isolation). */
   let importing = $state(false);
+
+  /**
+   * The ≡ menu on this header. Batch transcript lives here (studio only) —
+   * the Home dashboard has no batch button and the top bar is clean again.
+   */
+  const TRANSCRIPT_MENU: MenuItem[] = [
+    { id: 'import', label: 'Transcript import karo', icon: 'disk' },
+    { id: 'regenerate', label: 'Dobara transcribe karo', icon: 'spark' },
+    {
+      id: 'batch',
+      label: 'Batch transcript',
+      icon: 'plus',
+      secondary: 'Kai files, ek waqt me ek'
+    },
+    { id: 'copy', label: 'Transcript copy karo', icon: 'copy' },
+    { id: 'wrap', label: 'Word wrap on/off', icon: 'split' }
+  ];
+
+  function openTranscriptMenu(e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    menu.show(TRANSCRIPT_MENU, Math.round(r.right), Math.round(r.bottom + 4), (id) => {
+      if (id === 'import') importing = true;
+      else if (id === 'regenerate') regenerate();
+      else if (id === 'batch') void batchImport();
+      else if (id === 'copy') void copyTranscript();
+      else if (id === 'wrap') layout.toggleTranscriptWrap();
+    });
+  }
+
+  /** Same guarded action the header button uses — one source of truth. */
+  function regenerate() {
+    const ok = window.confirm(
+      `Purana transcript delete ho jayega (${project.lines.length} lines, unke cut/keep faisle bhi) aur chunk 1 se dobara Whisper par jayega — API calls phir lagengi. Aage badhein?`
+    );
+    if (ok) void project.regenerateTranscript();
+  }
+
+  /** Pick many files for the sequential batch worker (Case 4). */
+  async function batchImport() {
+    if (batch.items.length) {
+      batch.open = true;
+      batch.minimized = false;
+      return;
+    }
+    const paths = await pickVideos();
+    if (!paths.length) return;
+    const added = batch.addPaths(paths);
+    if (!added) {
+      toast.push('info', 'Ye files pehle se queue me hain');
+      return;
+    }
+    toast.push('info', `${added} file batch queue me — chalao ya list se hatao`);
+  }
+
+  async function copyTranscript() {
+    const text = project.lines.map((l) => l.text).join('\n');
+    if (!text) {
+      toast.push('info', 'Copy karne ke liye transcript khaali hai');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.push('info', 'Transcript copy ho gaya');
+    } catch {
+      toast.push('warn', 'Copy nahi ho paya');
+    }
+  }
 
   /* Virtual scroll constants — a 2-hour transcript can be 20k lines.
      Only ~30 rows ever exist in the DOM, so RAM stays flat. */
@@ -561,12 +630,7 @@
     -->
     {#if project.lines.length && isTauri()}
       <button
-        onclick={() => {
-          const ok = window.confirm(
-            `Purana transcript delete ho jayega (${project.lines.length} lines, unke cut/keep faisle bhi) aur chunk 1 se dobara Whisper par jayega — API calls phir lagengi. Aage badhein?`
-          );
-          if (ok) void project.regenerateTranscript();
-        }}
+        onclick={regenerate}
         disabled={project.planRunning}
         class="rounded border border-nc-line-2 px-1.5 py-0.5 text-[9.5px] font-medium text-nc-mut
                transition-colors hover:border-nc-red hover:text-nc-red disabled:opacity-50"
@@ -575,7 +639,30 @@
         Regenerate
       </button>
     {/if}
-    <span class="shrink-0 text-[9px] tracking-widest text-nc-mut-2">X CUT · V KEEP · ↑↓</span>
+    <!-- ≡ : transcript-wide actions, batch transcript included. Replaces the
+         old keyboard-hint span (the shortcut sheet already lists those keys). -->
+    <button
+      type="button"
+      onclick={openTranscriptMenu}
+      class="grid h-5 w-5 shrink-0 place-items-center rounded text-nc-mut transition-colors
+             hover:bg-nc-panel-2 hover:text-nc-txt"
+      title="Transcript options — batch transcript bhi yahin hai"
+      aria-label="Transcript options"
+      aria-haspopup="menu"
+    >
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        aria-hidden="true"
+      >
+        <path d="M4 6h16M4 12h16M4 18h16" />
+      </svg>
+    </button>
   </div>
 
   <!--

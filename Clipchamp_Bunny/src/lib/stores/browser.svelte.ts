@@ -69,6 +69,12 @@ const CLOSED_CAP = 20;
 const HISTORY_KEY = 't9-browser-lit.history.v1';
 /** Pinned tabs, restored as tabs on the next boot. */
 const PINS_KEY = 't9-browser-lit.pins.v1';
+/** Exact URLs the user explicitly unpinned — they must NOT auto-pin on open. */
+const UNPINNED_KEY = 't9-browser-lit.unpinned.v1';
+/** Only the last three pinned sites are remembered (the strip itself holds 9). */
+const MAX_PINNED_SITES = 3;
+/** Keep the unpin decision list bounded — it is not a second history log. */
+const UNPINNED_CAP = 24;
 /** The whole tab strip, persisted in SQLite (localStorage is only a mirror). */
 const SESSION_KEY = 't9-browser-lit.session.v1';
 
@@ -76,6 +82,8 @@ const SESSION_KEY = 't9-browser-lit.session.v1';
 interface PinnedTab {
   url: string;
   title: string;
+  /** When it was pinned — "last 3" means most recently pinned, not strip order. */
+  at?: number;
 }
 
 function loadStoredHistory(): HistoryEntry[] {
@@ -98,9 +106,14 @@ function loadStoredHistory(): HistoryEntry[] {
 function coercePins(parsed: unknown): PinnedTab[] {
   return (Array.isArray(parsed) ? parsed : [])
     .filter((p): p is PinnedTab => !!p && typeof (p as PinnedTab).url === 'string')
-    .map((p) => ({ url: p.url, title: String(p.title || hostOf(p.url)) }))
+    .map((p) => ({
+      url: p.url,
+      title: String(p.title || hostOf(p.url)),
+      at: Number(p.at) || 0
+    }))
     .filter((p) => p.url && p.url !== 'about:blank')
-    .slice(0, MAX_TABS);
+    .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
+    .slice(0, MAX_PINNED_SITES);
 }
 
 /**
@@ -277,6 +290,13 @@ class BrowserStore {
    */
   historyLog = $state<HistoryEntry[]>(loadStoredHistory());
 
+  /** The last three pinned sites with their exact URL, oldest → newest. */
+  private pinnedSites: PinnedTab[] = [];
+  /** When each live pinned tab got pinned — "last 3" is by this, not strip order. */
+  private pinnedAt = new Map<string, number>();
+  /** Exact URLs the user explicitly unpinned: never auto-pin them again. */
+  private unpinnedUrls = new Set<string>();
+
   /** The Ctrl+H panel's open state. */
   historyOpen = $state(false);
 
@@ -351,10 +371,51 @@ class BrowserStore {
   }
 
   private persistHistory(): void {
+    const payload = JSON.stringify(this.historyLog);
     try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(this.historyLog));
+      localStorage.setItem(HISTORY_KEY, payload);
     } catch {
       /* private mode / quota — this session's log still works */
+    }
+    // localStorage is only the mirror: the durable copy is SQLite `kv`, so a
+    // visit (exact URL + exact millisecond) survives a webview storage wipe.
+    void statsSet(HISTORY_KEY, payload);
+  }
+
+  /**
+   * Merge SQLite's visit log with the localStorage mirror. Same key, newest
+   * `at` wins per URL, bounded and sorted — the Ctrl+H panel then tells the
+   * truth about exact URL and time after a restart.
+   */
+  async hydrateHistory(): Promise<void> {
+    try {
+      const raw = await withDeadline(statsGet(HISTORY_KEY), 1500, null);
+      if (raw === null) {
+        void statsSet(HISTORY_KEY, JSON.stringify(this.historyLog));
+        return;
+      }
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      const disk = parsed
+        .filter((e): e is HistoryEntry => !!e && typeof (e as HistoryEntry).url === 'string')
+        .map((e) => ({
+          url: e.url,
+          title: String(e.title || hostOf(e.url)),
+          at: Number(e.at) || 0
+        }));
+      const merged = new Map<string, HistoryEntry>();
+      for (const e of [...this.historyLog, ...disk]) {
+        const prev = merged.get(e.url);
+        if (!prev || e.at > prev.at) merged.set(e.url, e);
+      }
+      this.historyLog = [...merged.values()].sort((a, b) => b.at - a.at).slice(0, HISTORY_CAP);
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(this.historyLog));
+      } catch {
+        /* private mode — the SQLite copy still wins */
+      }
+    } catch {
+      /* no bridge / corrupt row — keep whatever localStorage gave us */
     }
   }
 
@@ -724,6 +785,7 @@ class BrowserStore {
     const tab = makeTab(url || 'about:blank');
     this.tabs.push(tab);
     this.activeId = tab.id;
+    this.autoPin(tab);
     // A new-tab page is plain DOM in the shell, so the page webview that was
     // on screen has to come off it. Without this the old tab's page kept
     // painting over the speed dial: the strip said "New tab", the address bar
@@ -742,6 +804,7 @@ class BrowserStore {
     const tab = makeTab(url);
     this.tabs.push(tab);
     this.activeId = tab.id;
+    this.autoPin(tab);
     return true;
   }
 
@@ -866,6 +929,7 @@ class BrowserStore {
     target.loading = true;
     target.lastActive = Date.now();
     this.activeId = target.id;
+    this.autoPin(target);
     if (next !== 'about:blank') {
       this.push(target.id, next);
       this.logVisit(next, target.title);
@@ -913,15 +977,64 @@ class BrowserStore {
   setPinned(id: string, pinned: boolean): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab || tab.pinned === pinned) return;
+
+    if (pinned) {
+      // Three is the memory cap, not the strip cap (nine). Pinning a fourth
+      // drops the oldest pin so the remembered list never grows past three.
+      const others = this.tabs
+        .filter((t) => t.pinned && t.id !== id)
+        .sort((a, b) => (this.pinnedAt.get(a.id) ?? 0) - (this.pinnedAt.get(b.id) ?? 0));
+      while (others.length >= MAX_PINNED_SITES) {
+        const oldest = others.shift();
+        if (!oldest) break;
+        oldest.pinned = false;
+        this.pinnedAt.delete(oldest.id);
+        if (isTauri()) void browserSetPinned(oldest.id, false);
+      }
+      this.pinnedAt.set(id, Date.now());
+      // Re-pinning the same exact URL cancels a previous unpin decision.
+      this.unpinnedUrls.delete(tab.url);
+      this.persistUnpinned();
+    } else {
+      this.pinnedAt.delete(id);
+      // An explicit unpin is a decision, not just a missing pin. Remember the
+      // exact URL so opening it again does not silently re-pin it.
+      if (tab.url && tab.url !== 'about:blank') {
+        this.unpinnedUrls.add(tab.url);
+        if (this.unpinnedUrls.size > UNPINNED_CAP) {
+          const first = this.unpinnedUrls.values().next().value;
+          if (first) this.unpinnedUrls.delete(first);
+        }
+        this.persistUnpinned();
+      }
+    }
+
     tab.pinned = pinned;
     this.persistPins();
     if (isTauri()) void browserSetPinned(id, pinned);
   }
 
+  private persistUnpinned(): void {
+    const payload = JSON.stringify([...this.unpinnedUrls]);
+    try {
+      localStorage.setItem(UNPINNED_KEY, payload);
+    } catch {
+      /* private mode / quota — the SQLite copy below still wins */
+    }
+    void statsSet(UNPINNED_KEY, payload);
+  }
+
+  /**
+   * Remember the last three pinned sites verbatim (exact URL + title + when).
+   * localStorage is the synchronous mirror; SQLite is the durable half.
+   */
   private persistPins(): void {
-    const pins = this.tabs
+    const pins: PinnedTab[] = this.tabs
       .filter((t) => t.pinned && t.url && t.url !== 'about:blank')
-      .map((t) => ({ url: t.url, title: t.title }));
+      .map((t) => ({ url: t.url, title: t.title, at: this.pinnedAt.get(t.id) ?? 0 }))
+      .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
+      .slice(0, MAX_PINNED_SITES);
+    this.pinnedSites = pins;
     const payload = JSON.stringify(pins);
     try {
       localStorage.setItem(PINS_KEY, payload);
@@ -929,6 +1042,21 @@ class BrowserStore {
       /* private mode / quota — the SQLite copy below still wins */
     }
     void statsSet(PINS_KEY, payload);
+  }
+
+  /**
+   * Opening a remembered site pins it automatically — unless the user
+   * explicitly unpinned it last time. Exact URL match, capped at three.
+   */
+  private autoPin(tab: BrowserTab): void {
+    if (!tab.url || tab.url === 'about:blank' || tab.pinned) return;
+    if (this.unpinnedUrls.has(tab.url)) return;
+    if (!this.pinnedSites.some((p) => p.url === tab.url)) return;
+    if (this.tabs.filter((t) => t.pinned).length >= MAX_PINNED_SITES) return;
+    tab.pinned = true;
+    this.pinnedAt.set(tab.id, Date.now());
+    this.persistPins();
+    if (isTauri()) void browserSetPinned(tab.id, true);
   }
 
   /**
@@ -943,7 +1071,32 @@ class BrowserStore {
    * parks them awake instead of treating them as ordinary background tabs.
    */
   async restorePinned(): Promise<void> {
-    if (this.tabs.length > 0) return;
+    // Load the explicit-unpin decisions first, even when a saved session has
+    // already filled the strip — otherwise a site the user unpinned could be
+    // auto-pinned the next time it is opened.
+    try {
+      const mirror = localStorage.getItem(UNPINNED_KEY);
+      const raw = await withDeadline(statsGet(UNPINNED_KEY), 1500, null);
+      const parsed: unknown = JSON.parse(raw ?? mirror ?? '[]');
+      if (Array.isArray(parsed)) {
+        this.unpinnedUrls = new Set(parsed.filter((u): u is string => typeof u === 'string'));
+      }
+    } catch {
+      /* no bridge / corrupt row — an empty decision list is the safe default */
+    }
+    if (this.tabs.length > 0) {
+      // A persisted session already owns the strip; keep the remembered list
+      // in sync with the pins actually on screen instead of rebuilding it.
+      // Older sessions may hold more than three pins — trim them to the cap.
+      const pinned = this.tabs.filter((t) => t.pinned);
+      for (const t of pinned.slice(MAX_PINNED_SITES)) {
+        t.pinned = false;
+        if (isTauri()) void browserSetPinned(t.id, false);
+      }
+      for (const t of this.tabs) if (t.pinned) this.pinnedAt.set(t.id, Date.now());
+      this.persistPins();
+      return;
+    }
     // `null` = no pin file anywhere (a fresh install). `[]` = the user unpinned
     // everything, and that decision is respected.
     let pins: PinnedTab[] | null = null;
@@ -975,17 +1128,26 @@ class BrowserStore {
       }
       void statsSet(PINS_KEY, payload);
     }
-    if (this.tabs.length > 0 || pins.length === 0) return;
-    for (const pin of pins) {
+    // A site the user explicitly unpinned is never restored, even if an old
+    // pin file still listed it.
+    const restore = pins.filter((p) => !this.unpinnedUrls.has(p.url));
+    this.pinnedSites = restore;
+    if (this.tabs.length > 0 || restore.length === 0) {
+      this.persistPins();
+      return;
+    }
+    for (const pin of restore) {
       const tab = makeTab(pin.url);
       tab.title = pin.title || hostOf(pin.url);
       tab.pinned = true;
       this.tabs.push(tab);
       this.push(tab.id, pin.url);
+      this.pinnedAt.set(tab.id, pin.at || Date.now());
       if (isTauri()) void browserSetPinned(tab.id, true);
     }
     this.activeId = this.tabs[0].id;
     this.landOnDial();
+    this.persistPins();
   }
 
   /* ------------------------------------------------ tab session (disk) */
@@ -1226,6 +1388,7 @@ class BrowserStore {
         tab.title = hostOf(url);
         this.push(id, url);
         this.logVisit(url, tab.title);
+        this.autoPin(tab);
         if (tab.pinned) this.persistPins();
       }
     });
@@ -1251,6 +1414,7 @@ class BrowserStore {
       tab.loading = false;
       this.push(id, url);
       this.logVisit(url, tab.title);
+      this.autoPin(tab);
       if (tab.pinned) this.persistPins();
     });
 

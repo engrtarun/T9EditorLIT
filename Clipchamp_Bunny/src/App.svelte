@@ -291,6 +291,9 @@
     void browser.hydrateBookmarks().catch(() => {
       /* same */
     });
+    void browser.hydrateHistory().catch(() => {
+      /* same — exact URL + time from SQLite `kv` */
+    });
     let off: (() => void) | null = null;
     let dead = false;
     const offFullscreen = chrome.watch();
@@ -389,6 +392,25 @@
         e.preventDefault();
         return;
       }
+    }
+
+    // Ctrl+1..9 are UNIVERSAL: with any tab open they jump to that tab from
+    // Home, Studio or the browser alike (9 = last tab). They fire even while
+    // an input is focused — the browser map already allows these with the
+    // address bar focused, so every other screen must match that promise.
+    if (
+      e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !e.shiftKey &&
+      /^[1-9]$/.test(e.key) &&
+      browser.tabs.length
+    ) {
+      e.preventDefault();
+      const n = e.key === '9' ? browser.tabs.length - 1 : Number(e.key) - 1;
+      browser.selectIndex(n);
+      if (app.view !== 'browser') app.openBrowser(app.view);
+      return;
     }
 
     // In the **browser** Firefox's own key map runs FIRST — it lives in

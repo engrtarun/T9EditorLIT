@@ -31,6 +31,22 @@
   /** Playback should continue after the next clip's metadata lands. */
   let resume = false;
 
+  /**
+   * The word-cut hint shows for 3 s, then slides/fades out over 2 s using the
+   * same fast wipe easing as the browser. One shot, not a repeating blink.
+   */
+  let tipVisible = $state(true);
+  let tipLeaving = $state(false);
+  $effect(() => {
+    if (!tipVisible) return;
+    const out = setTimeout(() => (tipLeaving = true), 3000);
+    const gone = setTimeout(() => (tipVisible = false), 5000);
+    return () => {
+      clearTimeout(out);
+      clearTimeout(gone);
+    };
+  });
+
   /** The extra clip being previewed, or null while the main cut plays. */
   const activeClip = $derived(project.activeClip);
   const isImage = $derived(activeClip?.kind === 'image');
@@ -707,10 +723,12 @@
           {/if}
         </div>
 
-        {#if !stripSel}
+        {#if tipVisible && !stripSel}
           <p
             class="mx-auto mt-1 flex w-full max-w-[980px] items-center justify-end gap-1 text-[9px]
-                   text-nc-mut-2"
+                   text-nc-mut-2 transition-[opacity,transform] duration-[2000ms]
+                   ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none
+                   {tipLeaving ? 'translate-x-2 opacity-0' : 'translate-x-0 opacity-100'}"
           >
             <svg
               width="9"

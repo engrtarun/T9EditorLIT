@@ -265,7 +265,11 @@ export const BROWSER_GROUPS: Array<{ title: string; rows: BrowserSheetRow[] }> =
       { keys: 'Ctrl + Shift + T', action: 'Band kiya tab wapas' },
       { keys: 'Ctrl + Tab  /  Ctrl + PgDn', action: 'Agla tab' },
       { keys: 'Ctrl + Shift + Tab  /  Ctrl + PgUp', action: 'Pichla tab' },
-      { keys: 'Ctrl + 1 … 9', action: 'Tab n / last tab' },
+      {
+        keys: 'Ctrl + 1 … 9',
+        action: 'Tab n / last tab',
+        note: 'kahi se bhi — tab open ho to (Home, Studio, Browser)'
+      },
       { keys: 'Ctrl + Shift + PgUp / PgDn', action: 'Tab ko aage / peeche move' },
       {
         keys: 'Ctrl + Shift + P',
@@ -298,7 +302,10 @@ export const BROWSER_GROUPS: Array<{ title: string; rows: BrowserSheetRow[] }> =
       // screen now, so listing it here would be a promise the browser does
       // not keep ("jaha se user samjh sake ki kya hai kya nahi"). Alt+K is
       // the address-bar/search key instead.
-      { keys: 'Ctrl + L  /  Alt + D  /  Alt + K  /  Ctrl + E', action: 'Address bar fokus (search)' }
+      {
+        keys: 'Ctrl + L  /  Alt + D  /  Alt + K  /  Ctrl + E',
+        action: 'Address bar fokus (search)'
+      }
     ]
   },
   {
