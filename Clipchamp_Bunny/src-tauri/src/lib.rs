@@ -1679,7 +1679,6 @@ echo [%date% %time%] app did not exit; abort>>\"%LOG%\"\r\n\
 exit /b 1\r\n\
 :swap\r\n\
 if not exist \"{fresh}\" goto daemon\r\n\
-taskkill /F /IM t9cloud.exe >nul 2>&1\r\n\
 move /Y \"{live}\" \"{old}\" >nul 2>&1\r\n\
 move /Y \"{fresh}\" \"{live}\" >nul 2>&1\r\n\
 if not exist \"{live}\" move /Y \"{old}\" \"{live}\" >nul 2>&1\r\n\
@@ -1687,16 +1686,24 @@ if exist \"{live}\" del /Q \"{old}\" >nul 2>&1\r\n\
 echo [%date% %time%] app swapped>>\"%LOG%\"\r\n\
 :daemon\r\n\
 if not exist \"{daemon_fresh}\" goto start\r\n\
+call :dlbusy\r\n\
+if errorlevel 1 goto keepdaemon\r\n\
 taskkill /F /IM t9cloud.exe >nul 2>&1\r\n\
 move /Y \"{daemon_live}\" \"{daemon_old}\" >nul 2>&1\r\n\
 move /Y \"{daemon_fresh}\" \"{daemon_live}\" >nul 2>&1\r\n\
 if not exist \"{daemon_live}\" move /Y \"{daemon_old}\" \"{daemon_live}\" >nul 2>&1\r\n\
 if exist \"{daemon_live}\" del /Q \"{daemon_old}\" >nul 2>&1\r\n\
 echo [%date% %time%] daemon swapped>>\"%LOG%\"\r\n\
+goto start\r\n\
+:keepdaemon\r\n\
+echo [%date% %time%] download running; daemon kept, new daemon stays staged>>\"%LOG%\"\r\n\
 :start\r\n\
 if exist \"{live}\" start \"\" \"{live}\"\r\n\
 echo [%date% %time%] started>>\"%LOG%\"\r\n\
-exit /b 0\r\n",
+exit /b 0\r\n\
+:dlbusy\r\n\
+powershell -NoProfile -ExecutionPolicy Bypass -Command \"try{{exit [int]([bool](Invoke-RestMethod 'http://127.0.0.1:7878/v1/dl' -TimeoutSec 4 | Where-Object status -eq 'running'))}}catch{{exit 0}}\" >nul 2>&1\r\n\
+exit /b %errorlevel%\r\n",
         live = live.to_string_lossy(),
         old = old.to_string_lossy(),
         fresh = fresh.to_string_lossy(),
@@ -1993,6 +2000,8 @@ pub fn run() {
             media_flyout::media_flyout_close,
             media_flyout::media_flyout_pin,
             media_flyout::media_flyout_pinned,
+            media_flyout::media_flyout_prefs,
+            media_flyout::media_flyout_set_prefs,
         ])
         .on_window_event(|window, event| {
             if window.label() == "media-flyout" {

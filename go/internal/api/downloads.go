@@ -139,6 +139,49 @@ func (s *Server) handleDLFileDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleDLPartialDelete removes the half-written bytes of a row the user
+// deleted from the history — `<path>.part` plus its sidecar. DELETE
+// /v1/dl/partial?path=<final path>.
+//
+// It exists because the finished-file endpoint is deliberately blind to
+// `.part`: a failed download has no final file, so without this the row left
+// its gigabytes on disk while the history said "deleted".
+func (s *Server) handleDLPartialDelete(w http.ResponseWriter, r *http.Request) {
+	if s.deps.DL == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "downloader unavailable",
+		})
+		return
+	}
+	p := r.URL.Query().Get("path")
+	if p == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
+		return
+	}
+	var err error
+	for i := 0; i < 8; i++ {
+		if err = s.deps.DL.DeletePartial(p); err == nil {
+			break
+		}
+		if errors.Is(err, dl.ErrBusy) {
+			break // a live row owns these bytes; retrying cannot help
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	switch {
+	case errors.Is(err, dl.ErrBusy):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "ye download abhi chal raha hai — pehle cancel karo",
+		})
+	case err != nil:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "partial delete nahi hua (" + err.Error() + ")",
+		})
+	default:
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
 // handleDLAction is pause / resume / cancel on one row: POST
 // /v1/dl/{id}/{action}.
 func (s *Server) handleDLAction(w http.ResponseWriter, r *http.Request) {

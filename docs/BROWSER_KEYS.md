@@ -39,8 +39,8 @@ reason is written) · **⛔ not available** (with the reason).
 
 | Key                                                 | Firefox action                               | T9 browser view                                                                                                        |
 | --------------------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Alt + ← / Backspace                                 | Back                                         | ✅ store history stack                                                                                                 |
-| Alt + → / Shift + Backspace                         | Forward                                      | ✅                                                                                                                     |
+| Alt + ← / Ctrl + ← / Backspace                     | Back                                         | ✅ store history stack — works with the page focused (shim), the address bar, and mouse side button 4          |
+| Alt + → / Ctrl + → / Shift + Backspace              | Forward                                      | ✅ same three paths; mouse side button 5                                                                      |
 | F5 / Ctrl + R                                       | Reload                                       | ✅                                                                                                                     |
 | Ctrl + F5 / Ctrl + Shift + R                        | Reload, override cache                       | ✅ same forced nudge — T9 never shows a cached page from the old webview                                               |
 | Esc                                                 | Stop loading                                 | ✅ the loading spinner stops — unless a page is fullscreen, where Esc goes to the page so YouTube can leave fullscreen |

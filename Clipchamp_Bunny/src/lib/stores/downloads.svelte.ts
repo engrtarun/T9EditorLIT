@@ -24,6 +24,13 @@ const POLL_MS = 800;
 const BIG_DOWNLOAD = 1024 ** 3;
 
 /**
+ * Below this much free space the panel says "storage kam hai" even when the
+ * current file still fits. A nearly full volume deserves one warning before
+ * the next write fails, not a post-mortem after it.
+ */
+const LOW_DISK = 2 * 1024 ** 3;
+
+/**
  * What a fresh install uses until the first save. This mirrors the Rust
  * default (`dl_settings::DEFAULT_CONNECTIONS`) and the Go fallback; the daemon
  * clamps anything out of range, so a drift can never break a download.
@@ -130,6 +137,8 @@ class DownloadsStore {
   private hidden = new Set<string>();
   /** Previous status per id, so exactly one completion toast fires. */
   private lastStatus = new Map<string, string>();
+  /** Rows already warned about low disk — one warning per download. */
+  private lowDiskWarned = new Set<string>();
   private wasReachable = true;
 
   get activeCount(): number {
@@ -261,16 +270,29 @@ class DownloadsStore {
    */
   act(id: string, action: 'pause' | 'resume' | 'cancel'): void {
     if (!isTauri()) return;
-    void fetch(`${DAEMON}/v1/dl/${id}/${action}`, { method: 'POST' })
-      .then(async (res) => {
-        if (!res.ok) {
-          const body = (await res.json().catch(() => null)) as { error?: string } | null;
-          void toast.push('warn', body?.error ?? `download ${action} nahi hua`, 2600);
-          return;
-        }
-        await this.poll();
-      })
-      .catch(() => {});
+    void this.actNow(id, action);
+  }
+
+  /**
+   * The same action, awaited. The delete flow needs to know the daemon
+   * actually cancelled the row (and removed its `.part`) before it reports
+   * "disk se delete ho gayi" — a fire-and-forget cancel would make that
+   * sentence a guess.
+   */
+  async actNow(id: string, action: 'pause' | 'resume' | 'cancel'): Promise<boolean> {
+    if (!isTauri()) return false;
+    try {
+      const res = await fetch(`${DAEMON}/v1/dl/${id}/${action}`, { method: 'POST' });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        void toast.push('warn', body?.error ?? `download ${action} nahi hua`, 2600);
+        return false;
+      }
+      await this.poll();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   dismiss(id: string): void {
@@ -350,10 +372,43 @@ class DownloadsStore {
       // failed or cancelled. It is the only record that survives the daemon's
       // 15-minute prune, and it is what the panel's detail line reads.
       if (item.status !== 'running' && item.status !== 'paused') this.record(item);
+      this.warnLowDisk(item);
       this.lastStatus.set(item.id, item.status);
     }
     for (const id of [...this.lastStatus.keys()]) {
-      if (!list.some((i) => i.id === id)) this.lastStatus.delete(id);
+      if (!list.some((i) => i.id === id)) {
+        this.lastStatus.delete(id);
+        this.lowDiskWarned.delete(id);
+      }
+    }
+  }
+
+  /**
+   * One "storage kam hai" per download, the moment the numbers say so: the
+   * daemon measures the folder's free bytes on every row, and the remaining
+   * bytes are known, so the warning is a subtraction, not a guess. It fires
+   * when the file no longer fits OR when the volume itself is nearly full —
+   * the second case is the one that kills the *next* download.
+   */
+  private warnLowDisk(item: DownloadItem): void {
+    if (item.status !== 'running' || this.lowDiskWarned.has(item.id)) return;
+    const free = item.diskFreeBytes ?? 0;
+    if (free <= 0) return;
+    const need = Math.max(0, item.totalBytes - item.receivedBytes);
+    if (need <= free && free >= LOW_DISK) return;
+    this.lowDiskWarned.add(item.id);
+    const why =
+      need > free
+        ? `${item.filename} ke liye ${fmtBytes(need - free)} aur chahiye`
+        : `download folder me sirf ${fmtBytes(free)} bachi hai`;
+    toast.push('warn', `Storage kam hai — ${why}`, 9000);
+    if (this.settings.notifyDone) {
+      void appNotify(
+        'Storage kam hai',
+        `${why}. Kuch delete karo warna download beech me ruk sakta hai.`
+      ).catch(() => {
+        /* a denied notification must not break the queue */
+      });
     }
   }
 
@@ -427,6 +482,33 @@ class DownloadsStore {
     }
     try {
       const res = await fetch(`${DAEMON}/v1/dl/file?path=${encodeURIComponent(path)}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error ?? `delete refused (${res.status})`);
+      }
+      return true;
+    } catch (err) {
+      toast.push('warn', err instanceof Error ? err.message : String(err), 6000);
+      return false;
+    }
+  }
+
+  /**
+   * Delete the half-written bytes of a row that never finished —
+   * `<path>.part` plus its sidecar. A failed or cancelled download has no
+   * final file, so the finished-file endpoint would answer "already gone"
+   * while the gigabytes stayed on disk. The daemon owns the same gate as
+   * above: inside the download folder, never a live row.
+   */
+  async deletePartial(path: string): Promise<boolean> {
+    if (!isTauri()) {
+      toast.push('info', 'Dev preview: file delete sirf desktop app me hota hai');
+      return false;
+    }
+    try {
+      const res = await fetch(`${DAEMON}/v1/dl/partial?path=${encodeURIComponent(path)}`, {
         method: 'DELETE'
       });
       if (!res.ok) {

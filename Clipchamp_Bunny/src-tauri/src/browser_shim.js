@@ -627,8 +627,10 @@
     ['ctrl+shift+p', 'pinTab', 0, true],
     ['ctrl+shift+w', 'closeBrowserView', 0, true],
     ['alt+arrowleft', 'back', 0, false],
+    ['ctrl+arrowleft', 'back', 0, false],
     ['backspace', 'back', 0, false],
     ['alt+arrowright', 'forward', 0, false],
+    ['ctrl+arrowright', 'forward', 0, false],
     ['shift+backspace', 'forward', 0, false],
     ['f5', 'reload', 0, true],
     ['ctrl+r', 'reload', 0, true],
@@ -716,6 +718,22 @@
         send({ t9: 'key', action: row[1], value: row[2] });
         return;
       }
+    },
+    true
+  );
+
+  /* ── mouse side buttons: back / forward ───────────────────────────────
+   * The most natural back/forward a five-button mouse has, and Chromium
+   * inside WebView2 does nothing with those buttons on its own. `mouseup`
+   * fires once per press, so a single press cannot navigate twice.
+   */
+  window.addEventListener(
+    'mouseup',
+    (e) => {
+      if (e.button !== 3 && e.button !== 4) return;
+      e.preventDefault();
+      e.stopPropagation();
+      send({ t9: 'key', action: e.button === 3 ? 'back' : 'forward', value: 0 });
     },
     true
   );

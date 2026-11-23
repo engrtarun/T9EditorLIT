@@ -18,6 +18,24 @@
 
   const release = $derived(whatsNewFor(facts?.buildId));
 
+  /**
+   * The marker has shipped `builtAt` in two shapes: ISO-8601 with a `Z` (CI)
+   * and PowerShell's en-US `M/D/YYYY H:mm:ss` of a **UTC** DateTime (the
+   * local deploy path). The second one carries no zone, so the browser must
+   * not guess: reading it as local time showed "13:01" while the clock said
+   * 18:31 IST. Everything is rendered in the user's local time, with the raw
+   * value kept in the tooltip so the UTC fact is still there.
+   */
+  function builtLabel(raw: string): string {
+    if (!raw) return 'unknown';
+    const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})$/.exec(raw.trim());
+    const d = us
+      ? new Date(Date.UTC(+us[3], +us[1] - 1, +us[2], +us[4], +us[5], +us[6]))
+      : new Date(raw);
+    if (Number.isNaN(d.getTime())) return raw;
+    return `${d.toLocaleString()} (local)`;
+  }
+
   $effect(() => {
     if (!whatsNew.open) return;
     let dead = false;
@@ -91,7 +109,7 @@
             <dt>running</dt>
             <dd class="break-all">{facts.runningBuildId || 'unknown'}</dd>
             <dt>built</dt>
-            <dd>{facts.builtAt} · v{facts.version}</dd>
+            <dd title={facts.builtAt}>{builtLabel(facts.builtAt)} · v{facts.version}</dd>
           </dl>
         {/if}
       </header>

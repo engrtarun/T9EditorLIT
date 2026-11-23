@@ -198,6 +198,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /v1/dl/settings", s.handleDLSettingsSave)
 	s.mux.HandleFunc("POST /v1/dl/{id}/{action}", s.handleDLAction)
 	s.mux.HandleFunc("DELETE /v1/dl/file", s.handleDLFileDelete)
+	s.mux.HandleFunc("DELETE /v1/dl/partial", s.handleDLPartialDelete)
 
 	// uBlock Origin: the daemon keeps the official release unpacked and
 	// verified, the app points WebView2 at that folder.

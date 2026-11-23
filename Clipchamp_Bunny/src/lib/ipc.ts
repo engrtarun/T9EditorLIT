@@ -25,6 +25,7 @@ import type {
   BrowserUblockReply,
   DownloadSettings,
   ExportHistoryRow,
+  MediaFlyoutPrefs,
   MemoryStats,
   UsageDayRow,
   MediaInfo,
@@ -1655,6 +1656,24 @@ export function mediaFlyoutPin(pinned: boolean): Promise<boolean> {
 export function mediaFlyoutPinned(): Promise<boolean> {
   if (!isTauri()) return Promise.resolve(false);
   return invoke<boolean>('media_flyout_pinned').catch(() => false);
+}
+
+/** The media card's on/off switch and auto-hide delay. */
+export function mediaFlyoutPrefs(): Promise<MediaFlyoutPrefs> {
+  if (!isTauri()) return Promise.resolve({ enabled: true, idleSecs: 5 });
+  return invoke<MediaFlyoutPrefs>('media_flyout_prefs').catch(() => ({
+    enabled: true,
+    idleSecs: 5
+  }));
+}
+
+/** Save the media card's settings; the returned object is what was applied. */
+export function mediaFlyoutSetPrefs(enabled: boolean, idleSecs: number): Promise<MediaFlyoutPrefs> {
+  if (!isTauri()) return Promise.resolve({ enabled, idleSecs });
+  return invoke<MediaFlyoutPrefs>('media_flyout_set_prefs', { enabled, idleSecs }).catch(() => ({
+    enabled,
+    idleSecs
+  }));
 }
 
 /**

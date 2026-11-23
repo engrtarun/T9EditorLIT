@@ -10,12 +10,29 @@
   import { downloads } from '../../stores/downloads.svelte';
   import { ublock } from '../../stores/ublock.svelte';
   import { chrome } from '../../stores/chrome.svelte';
-  import { pickFolder, appNotify } from '../../ipc';
+  import { pickFolder, appNotify, mediaFlyoutPrefs, mediaFlyoutSetPrefs } from '../../ipc';
   import { toast } from '../../stores/toast.svelte';
+  import type { MediaFlyoutPrefs } from '../../types';
 
   /** Range dragging has to feel immediate; SQLite is written on release. */
   let connDraft = $state<number | null>(null);
   const connections = $derived(connDraft ?? downloads.settings.connections);
+
+  /**
+   * The "now playing" card's settings. They live in a Rust file (the card is
+   * its own window and the watchdog is a plain thread), so this is a small
+   * round trip rather than a store: the sheet always draws what Rust applied.
+   */
+  let card = $state<MediaFlyoutPrefs>({ enabled: true, idleSecs: 5 });
+
+  $effect(() => {
+    void mediaFlyoutPrefs().then((prefs) => (card = prefs));
+  });
+
+  async function saveCard(patch: Partial<MediaFlyoutPrefs>): Promise<void> {
+    const next = { ...card, ...patch };
+    card = await mediaFlyoutSetPrefs(next.enabled, next.idleSecs);
+  }
 
   async function chooseFolder(): Promise<void> {
     const dir = await pickFolder();
@@ -179,6 +196,59 @@
       Fullscreen kisi cheez ko encode ya buffer nahi karta — sirf window ka flag badalta hai. Bahar
       aane ke liye F11 dobara dabao. Fullscreen me upar mouse le jao to toolbar wapas aa jati hai;
       usme jaake Esc se toolbar chhup jati hai.
+    </p>
+  </section>
+
+  <!-- ── Media card (the "now playing" OSD) ────────────────────────────── -->
+  <section class="border-t border-nc-line/40 pt-3" aria-label="Media card settings">
+    <div class="flex flex-wrap items-baseline justify-between gap-1">
+      <span class="text-[11px] font-semibold text-nc-txt">Media card</span>
+      <span class="text-[10px] text-nc-mut-2">Video/audio chalne par corner ka card</span>
+    </div>
+
+    <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={card.enabled}
+        onclick={() => void saveCard({ enabled: !card.enabled })}
+        class="flex items-center gap-1.5 text-[11px] text-nc-mut hover:text-nc-txt"
+        title="Band karne par card nahi aayega — video chalta rahega, media keys bhi"
+      >
+        <span
+          class="relative h-3.5 w-6 rounded-full transition-colors {card.enabled
+            ? 'bg-nc-brand'
+            : 'bg-nc-line'}"
+        >
+          <span
+            class="absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-all {card.enabled
+              ? 'left-3'
+              : 'left-0.5'}"
+          ></span>
+        </span>
+        Dikhao
+      </button>
+
+      {#if card.enabled}
+        <label class="flex items-center gap-1.5 text-[11px] text-nc-mut">
+          <span>Auto-hide</span>
+          <select
+            value={String(card.idleSecs)}
+            onchange={(e) => void saveCard({ idleSecs: Number(e.currentTarget.value) })}
+            class="rounded border border-nc-line bg-nc-panel-2 px-1.5 py-0.5 text-[11px] text-nc-txt"
+            aria-label="Media card auto-hide delay"
+          >
+            <option value="5">5 s</option>
+            <option value="10">10 s</option>
+            <option value="30">30 s</option>
+            <option value="0">Kabhi nahi</option>
+          </select>
+        </label>
+      {/if}
+    </div>
+    <p class="mt-1 text-[10px] leading-snug text-nc-mut-2">
+      Card ko drag ya resize kar sakte ho; card ka pin button use karke screen par rakho. Ye setting
+      turant lagti hai — restart ki zaroorat nahi.
     </p>
   </section>
 

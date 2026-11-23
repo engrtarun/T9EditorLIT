@@ -79,6 +79,37 @@ const GEOM_FILE: &str = "media-flyout-geom.txt";
 /// must outlive the idle destroy (the window, not the preference, is what
 /// gets recycled).
 const PIN_FILE: &str = "media-flyout-pinned.txt";
+/// The user's media-card choices: `{"enabled":true,"idleSecs":5}`. A JSON
+/// file next to the pin, not a SQLite row, because the watchdog is a plain
+/// thread and the card can be asked for before the main window has finished
+/// booting — neither should wait on a database.
+const PREFS_FILE: &str = "media-flyout-prefs.json";
+
+/// The media card's two settings, and the only things the card's own page
+/// cannot know better than the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Prefs {
+    /// `false` = the card never appears. The page keeps playing and the media
+    /// keys keep working; only the popup is gone.
+    pub enabled: bool,
+    /// Seconds after the last show / seek / media key before the card leaves.
+    /// `0` = never auto-hide, the same promise the pin button makes.
+    pub idle_secs: u64,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            idle_secs: IDLE.as_secs(),
+        }
+    }
+}
+
+/// The settings cache. `None` = not read yet; the file is the source of truth
+/// and is read once, then every change goes through [`set_prefs`].
+static PREFS: Mutex<Option<Prefs>> = Mutex::new(None);
 
 /// When the flyout was last asked to appear. `None` = nothing to show; the
 /// watchdog parks (one sleeping thread, no window work) until a ping.
@@ -150,11 +181,67 @@ fn save_pin<R: tauri::Runtime>(app: &tauri::AppHandle<R>, pinned: bool) {
     }
 }
 
+/// The settings file's contents, clamped to something sane. `0` keeps its
+/// "never auto-hide" meaning; a hand-edited 99999 becomes one hour instead of
+/// parking a card for a day.
+fn clamp_prefs(mut p: Prefs) -> Prefs {
+    p.idle_secs = p.idle_secs.min(3600);
+    p
+}
+
+/// The media card's settings. The file is read once; every change after that
+/// comes through [`set_prefs`], so the watchdog never touches the disk.
+pub fn prefs<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Prefs {
+    if let Ok(slot) = PREFS.lock()
+        && let Some(p) = *slot
+    {
+        return p;
+    }
+    let loaded = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join(PREFS_FILE)).ok())
+        .and_then(|text| serde_json::from_str::<Prefs>(&text).ok())
+        .map(clamp_prefs)
+        .unwrap_or_default();
+    if let Ok(mut slot) = PREFS.lock() {
+        *slot = Some(loaded);
+    }
+    loaded
+}
+
+/// Apply and persist the card's settings. The cache flips first so the
+/// watchdog sees the new delay on its next poll (400 ms), and a switch that
+/// turned the card off takes it down at once instead of waiting for the old
+/// idle deadline.
+pub fn set_prefs<R: tauri::Runtime>(app: &tauri::AppHandle<R>, next: Prefs) -> Prefs {
+    let next = clamp_prefs(next);
+    if let Ok(mut slot) = PREFS.lock() {
+        *slot = Some(next);
+    }
+    if let Ok(dir) = app.path().app_data_dir()
+        && std::fs::create_dir_all(&dir).is_ok()
+        && let Ok(text) = serde_json::to_string(&next)
+    {
+        let _ = std::fs::write(dir.join(PREFS_FILE), text);
+    }
+    if !next.enabled {
+        hide(app);
+    }
+    next
+}
+
 /// Something worth showing happened: a play/pause transition, a fresh
 /// owner, a transport button, a seek. The window is created here the first
 /// time, positioned, and shown — without taking keyboard focus from the
 /// page.
 pub fn ping<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    // The switch is checked before anything else: a disabled card must not
+    // even create the window. A second webview is real RAM on this machine.
+    if !prefs(app).enabled {
+        return;
+    }
     touch();
     // A page reports media from inside WebMessageReceived, which already runs
     // on the UI thread. The first report calls `ensure()` -> `create()` ->
@@ -516,6 +603,24 @@ pub fn media_flyout_pinned(app: tauri::AppHandle) -> bool {
     PINNED.load(Ordering::SeqCst)
 }
 
+/// The media card's settings, for the browser's settings sheet.
+#[tauri::command]
+pub fn media_flyout_prefs(app: tauri::AppHandle) -> Prefs {
+    prefs(&app)
+}
+
+/// Save the media card's settings. Returns what was actually applied, so the
+/// sheet never draws a value the watchdog is not using.
+#[tauri::command]
+pub fn media_flyout_set_prefs(app: tauri::AppHandle, enabled: bool, idle_secs: u64) -> Prefs {
+    let applied = set_prefs(&app, Prefs { enabled, idle_secs });
+    diag(&format!(
+        "media flyout -> prefs enabled={} idle={}s",
+        applied.enabled, applied.idle_secs
+    ));
+    applied
+}
+
 /// One thread for the process: hide the card `IDLE` after the last event,
 /// unless the pointer is resting on it (which slides the deadline).
 /// Parked — a lock read and two sleeps — while nothing has ever shown.
@@ -528,7 +633,13 @@ fn watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         if !VISIBLE.load(Ordering::SeqCst) {
             continue;
         }
-        if last.elapsed() < IDLE {
+        // Read every poll, not once: the settings popover can change the
+        // delay (or turn "never hide" on) while the card is on screen.
+        let idle_secs = prefs(&app).idle_secs;
+        if idle_secs == 0 {
+            continue; // "Kabhi nahi" — X and a session clear are the exits
+        }
+        if last.elapsed() < Duration::from_secs(idle_secs) {
             continue;
         }
         if PINNED.load(Ordering::SeqCst) {

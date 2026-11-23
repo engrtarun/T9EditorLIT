@@ -426,6 +426,12 @@ export interface DownloadItem {
   startedAt?: number;
   /** Unix ms the row reached a terminal status (0 while it is still live). */
   finishedAt?: number;
+  /**
+   * Free bytes left in the download folder when this row was read. 0/absent
+   * means "the platform could not tell us" — the panel then shows no storage
+   * number instead of inventing one.
+   */
+  diskFreeBytes?: number;
 }
 
 /**
@@ -438,6 +444,19 @@ export interface DownloadSettings {
   saveDir: string;
   autoResume: boolean;
   notifyDone: boolean;
+}
+
+/**
+ * The media card's settings, mirroring `media_flyout::Prefs` in Rust.
+ *
+ * `enabled: false` means the "now playing" card never appears — the page keeps
+ * playing and the media keys keep working. `idleSecs` is how long the card
+ * stays after the last show / seek / media key; `0` means "never auto-hide",
+ * the same promise the card's pin button makes.
+ */
+export interface MediaFlyoutPrefs {
+  enabled: boolean;
+  idleSecs: number;
 }
 
 /**

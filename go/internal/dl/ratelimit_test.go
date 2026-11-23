@@ -113,16 +113,17 @@ func TestTransientErrorsKeepRetryingBeyondTheOldBudget(t *testing.T) {
 	}
 }
 
-// TestStallWatchdogEndsARowWhoseHostWentSilent: retrying a transient error
-// forever is right, waiting forever is not. A host that answers the request
-// and then never sends a byte must end as a failed row with an honest message
-// instead of a "running" bar that never moves.
-func TestStallWatchdogEndsARowWhoseHostWentSilent(t *testing.T) {
+// TestStallWatchdogKeepsTheRowAndSaysItIsWaiting: a host that answers the
+// request and then sends nothing is a hiccup, not a verdict. The row must stay
+// alive, say `network ka intezaar`, and carry on when a fresh connection gets
+// bytes — never turn into a red row the user has to babysit.
+func TestStallWatchdogKeepsTheRowAndSaysItIsWaiting(t *testing.T) {
 	prevLimit, prevEvery, prevIdle := stallLimit, stallEvery, idleTimeout
-	stallLimit, stallEvery, idleTimeout = 400*time.Millisecond, 50*time.Millisecond, time.Hour
+	stallLimit, stallEvery, idleTimeout = 300*time.Millisecond, 50*time.Millisecond, time.Hour
 	t.Cleanup(func() { stallLimit, stallEvery, idleTimeout = prevLimit, prevEvery, prevIdle })
 
 	blob := bytes.Repeat([]byte("t9"), 40<<10)
+	var gets atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead {
 			w.Header().Set("Accept-Ranges", "bytes")
@@ -130,11 +131,18 @@ func TestStallWatchdogEndsARowWhoseHostWentSilent(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		// Headers, then silence: connected, alive, and producing nothing.
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(blob)-1, len(blob)))
-		w.WriteHeader(http.StatusPartialContent)
-		w.(http.Flusher).Flush()
-		<-r.Context().Done()
+		n := gets.Add(1)
+		// The first three connections get headers and then silence — a NAT
+		// that forgot the flow, a CDN edge that stopped sending. The fourth
+		// answers normally, which is the network coming back.
+		if n <= 3 {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(blob)-1, len(blob)))
+			w.WriteHeader(http.StatusPartialContent)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		http.ServeContent(w, r, "silent.bin", time.Unix(0, 0), bytes.NewReader(blob))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -143,13 +151,36 @@ func TestStallWatchdogEndsARowWhoseHostWentSilent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	dead := waitStatus(t, m, item.ID, StatusError)
-	if !strings.Contains(dead.Error, "koi byte nahi") {
-		t.Fatalf("want the stall message, got %q", dead.Error)
+
+	sawWaiting := false
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		row := m.List()[0]
+		if row.Status == StatusError {
+			t.Fatalf("the row died instead of waiting: %q", row.Error)
+		}
+		if row.Phase == phaseWaiting {
+			sawWaiting = true
+		}
+		if row.Status == StatusDone {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	// A failed row keeps its `.part` (and the handle on it) so Retry can
-	// resume; closing it here is only so TempDir can be removed on Windows.
-	_, _ = m.Cancel(item.ID)
+	if !sawWaiting {
+		t.Fatalf("the row never said %q", phaseWaiting)
+	}
+	final := waitStatus(t, m, item.ID, StatusDone)
+	if final.ReceivedBytes != int64(len(blob)) {
+		t.Fatalf("row reports %d of %d bytes", final.ReceivedBytes, len(blob))
+	}
+	got, err := os.ReadFile(final.Path)
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if !bytes.Equal(got, blob) {
+		t.Fatalf("file differs from the source")
+	}
 }
 
 // TestResumeAfterAPermanentRefusal is the user's recovery path: the row went

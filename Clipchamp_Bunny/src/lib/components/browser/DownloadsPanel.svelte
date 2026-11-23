@@ -40,6 +40,23 @@
     return Math.min(100, Math.round((item.receivedBytes / item.totalBytes) * 100));
   }
 
+  /**
+   * How many bytes this row still needs beyond what the disk can give.
+   * `0` means it fits (or the platform could not tell us the free space, in
+   * which case guessing a shortfall would be a lie).
+   */
+  function shortBy(item: DownloadItem): number {
+    const free = item.diskFreeBytes ?? 0;
+    if (free <= 0) return 0;
+    const need = Math.max(0, item.totalBytes - item.receivedBytes);
+    return Math.max(0, need - free);
+  }
+
+  /** Free space in the download folder, as the daemon measured it. */
+  const freeBytes = $derived(
+    downloads.items.find((i) => (i.diskFreeBytes ?? 0) > 0)?.diskFreeBytes ?? 0
+  );
+
   /** The folder part of a path — what "show in folder" opens. */
   function folderOf(p: string): string {
     const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
@@ -109,8 +126,8 @@
 
   /**
    * Two-step delete: a real file does not vanish on one stray click. The
-   * first click arms the row (red for 3.5 s); the second deletes the file and
-   * the history row. The timer stops a red row from lingering as a trap.
+   * first click arms the row (a choice bar for 8 s); the second picks what
+   * goes — the history row alone, or the bytes on disk as well.
    */
   let armed = $state<string | null>(null);
   let armedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -122,23 +139,51 @@
   function armDelete(id: string): void {
     if (armedTimer) clearTimeout(armedTimer);
     armed = id;
-    armedTimer = setTimeout(() => (armed = null), 3500);
+    armedTimer = setTimeout(() => (armed = null), 8000);
   }
 
-  /** A live finished row: delete the file, then take the row off the list. */
+  /** Live terminal row, history only: the file stays where it is. */
+  function removeLiveOnly(item: DownloadItem): void {
+    armed = null;
+    downloads.dismiss(item.id);
+    toast.push('info', `${item.filename} list se hata diya — file disk par hai`, 4000);
+  }
+
+  /**
+   * Live terminal row: remove the bytes too. A done row's file is deleted by
+   * path; a failed/cancelled row only has a `.part`, and the daemon's cancel
+   * is what removes it (plus its sidecar) — asking the finished-file endpoint
+   * for a path that does not exist would report success and free nothing.
+   */
   async function removeLive(item: DownloadItem): Promise<void> {
     armed = null;
-    const gone = item.path ? await downloads.deleteFile(item.path) : true;
-    if (!gone) return; // the toast already says why (file still in use)
+    if (item.status === 'error' || item.status === 'cancelled') {
+      if (!(await downloads.actNow(item.id, 'cancel'))) return;
+    } else if (item.path) {
+      const gone = await downloads.deleteFile(item.path);
+      if (!gone) return; // the toast already says why (file still in use)
+    }
     await downloads.removeHistory(item.id, false);
     downloads.dismiss(item.id);
-    toast.push('info', `${item.filename} delete ho gayi`);
+    toast.push('info', `${item.filename} disk se delete ho gayi`);
   }
 
-  /** A row that only lives in the durable history. */
-  async function removePast(h: DownloadHistoryEntry): Promise<void> {
+  /** A row that only lives in the durable history — file untouched. */
+  async function removePastOnly(h: DownloadHistoryEntry): Promise<void> {
     armed = null;
-    await downloads.removeHistory(h.id);
+    await downloads.removeHistory(h.id, false);
+  }
+
+  /** A history row and the bytes it names (the `.part` when it never finished). */
+  async function removePastAll(h: DownloadHistoryEntry): Promise<void> {
+    armed = null;
+    if (h.status === 'done') {
+      await downloads.removeHistory(h.id, true);
+      return;
+    }
+    if (h.path && !(await downloads.deletePartial(h.path))) return;
+    await downloads.removeHistory(h.id, false);
+    toast.push('info', `${h.filename} ke adhoore bytes disk se delete ho gaye`);
   }
 </script>
 
@@ -155,6 +200,13 @@
         {#if downloads.activeCount > 0}
           <span class="rounded-full bg-nc-brand/25 px-1.5 text-nc-brand"
             >{downloads.activeCount} active</span
+          >
+        {/if}
+        {#if freeBytes > 0}
+          <span
+            class="font-normal normal-case text-nc-mut/80"
+            title="Download folder me itni jagah bachi hai (daemon ne measure ki)"
+            >{fmtSize(freeBytes)} free</span
           >
         {/if}
       </span>
@@ -315,8 +367,18 @@
                         pehle se maujood prefix dobara padha ja raha hai, phir naye bytes aage
                         badhenge">prefix dobara padh raha hai…</span
                       >
+                    {:else if item.phase === 'network ka intezaar'}
+                      <span
+                        class="text-nc-brand"
+                        title="Network se koi byte nahi aa raha. Row zinda hai aur khud
+                        reconnect karti rahegi — sirf aap pause/stop kar sakte hain."
+                        >network ka intezaar…</span
+                      >
                     {:else}
-                      {fmtSpeed(item.speedBps)} · {eta(item)} left
+                      {fmtSpeed(item.speedBps)} ·
+                      {fmtSize(Math.max(0, item.totalBytes - item.receivedBytes))} baaki · {eta(
+                        item
+                      )} left
                     {/if}
                   {:else if item.status === 'done'}
                     {fmtSize(item.totalBytes)} · done
@@ -356,6 +418,41 @@
                       >
                     {/if}
                   </span>
+                </div>
+                {#if shortBy(item) > 0}
+                  <p class="mt-1 text-[10px] leading-snug text-nc-red">
+                    Storage kam hai — {fmtSize(shortBy(item))} chhota hai. Free: {fmtSize(
+                      item.diskFreeBytes ?? 0
+                    )}.
+                  </p>
+                {/if}
+              {/if}
+
+              {#if armed === item.id}
+                <!-- The choice the user asked for: the list row alone, or the
+                     bytes on disk as well. Two explicit buttons beat a second
+                     click on a red trash can — nobody has to guess which one
+                     deletes a 20 GB file. -->
+                <div class="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px]">
+                  <span class="text-nc-mut-2">Delete:</span>
+                  <button
+                    type="button"
+                    onclick={() => removeLiveOnly(item)}
+                    class="rounded border border-nc-line px-1.5 py-0.5 text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+                    title="Sirf list/history se hatao — file disk par rahegi"
+                  >
+                    History only
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => void removeLive(item)}
+                    class="rounded border border-nc-red/60 bg-nc-red/15 px-1.5 py-0.5 text-nc-red hover:bg-nc-red/25"
+                    title={item.status === 'done'
+                      ? 'File disk se bhi delete karo'
+                      : 'Adhoore .part bytes disk se delete karo'}
+                  >
+                    File + history
+                  </button>
                 </div>
               {/if}
 
@@ -499,58 +596,58 @@
                     <path d="M21 3v6h-6" />
                   </svg>
                 </button>
-              {:else if item.status === 'done'}
-                <button
-                  type="button"
-                  onclick={() => void reveal(item)}
-                  class="grid h-6 w-6 place-items-center rounded text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-                  title="Folder me dikhao"
-                  aria-label="Show in folder"
-                >
-                  <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.8"
+              {:else if item.status === 'done' || item.status === 'error' || item.status === 'cancelled'}
+                {#if item.status === 'done'}
+                  <button
+                    type="button"
+                    onclick={() => void reveal(item)}
+                    class="grid h-6 w-6 place-items-center rounded text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+                    title="Folder me dikhao"
+                    aria-label="Show in folder"
                   >
-                    <path
-                      d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
-                    />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  onclick={() => void open(item)}
-                  class="grid h-6 w-6 place-items-center rounded text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
-                  title="File kholo"
-                  aria-label="Open file"
-                >
-                  <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.8"
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                    >
+                      <path
+                        d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => void open(item)}
+                    class="grid h-6 w-6 place-items-center rounded text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+                    title="File kholo"
+                    aria-label="Open file"
                   >
-                    <path
-                      d="M14 4h6v6M20 4l-9 9M19 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4"
-                    />
-                  </svg>
-                </button>
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                    >
+                      <path
+                        d="M14 4h6v6M20 4l-9 9M19 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4"
+                      />
+                    </svg>
+                  </button>
+                {/if}
                 <button
                   type="button"
-                  onclick={() => (armed === item.id ? void removeLive(item) : armDelete(item.id))}
+                  onclick={() => (armed === item.id ? (armed = null) : armDelete(item.id))}
                   class="grid h-6 w-6 place-items-center rounded transition-colors
                          {armed === item.id
                     ? 'bg-nc-red/25 text-nc-red ring-1 ring-nc-red/60'
                     : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
-                  title={armed === item.id
-                    ? 'Dobara click: file disk se delete hogi'
-                    : 'Delete file + history'}
-                  aria-label={armed === item.id ? 'Confirm delete' : 'Delete download'}
+                  title={armed === item.id ? 'Band karo' : 'Delete — history ya file + history'}
+                  aria-label={armed === item.id ? 'Close delete choices' : 'Delete download'}
                 >
                   <svg
                     width="12"
@@ -720,6 +817,29 @@
                     {/if}
                     · {fmtSize(h.bytes)}
                   </div>
+                  {#if armed === h.id}
+                    <div class="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px]">
+                      <span class="text-nc-mut-2">Delete:</span>
+                      <button
+                        type="button"
+                        onclick={() => void removePastOnly(h)}
+                        class="rounded border border-nc-line px-1.5 py-0.5 text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt"
+                        title="Sirf history row hatao — file disk par rahegi"
+                      >
+                        History only
+                      </button>
+                      <button
+                        type="button"
+                        onclick={() => void removePastAll(h)}
+                        class="rounded border border-nc-red/60 bg-nc-red/15 px-1.5 py-0.5 text-nc-red hover:bg-nc-red/25"
+                        title={h.status === 'done'
+                          ? 'File disk se bhi delete karo'
+                          : 'Adhoore .part bytes disk se delete karo'}
+                      >
+                        File + history
+                      </button>
+                    </div>
+                  {/if}
                 </div>
                 <span
                   class="shrink-0 text-[10px] {h.status === 'done'
@@ -728,15 +848,13 @@
                 >
                 <button
                   type="button"
-                  onclick={() => (armed === h.id ? void removePast(h) : armDelete(h.id))}
+                  onclick={() => (armed === h.id ? (armed = null) : armDelete(h.id))}
                   class="grid h-6 w-6 shrink-0 place-items-center rounded transition-colors
                          {armed === h.id
                     ? 'bg-nc-red/25 text-nc-red ring-1 ring-nc-red/60'
                     : 'text-nc-mut hover:bg-nc-panel-2 hover:text-nc-txt'}"
-                  title={armed === h.id
-                    ? 'Dobara click: file disk se delete hogi'
-                    : 'Delete file + history row'}
-                  aria-label={armed === h.id ? 'Confirm delete' : 'Delete history row'}
+                  title={armed === h.id ? 'Band karo' : 'Delete — history ya file + history'}
+                  aria-label={armed === h.id ? 'Close delete choices' : 'Delete history row'}
                 >
                   {#if armed === h.id}
                     <svg

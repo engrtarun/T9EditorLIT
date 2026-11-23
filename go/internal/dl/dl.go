@@ -62,10 +62,16 @@ const (
 	DefaultMinSegmentBytes = 8 << 20 // 8 MiB
 
 	// BufferBytes is one segment's read buffer. The pool reuses them, so the
-	// steady-state cost is segments × 64 KiB per download. (Measured, not
-	// assumed: a 64 KiB WriteAt loop writes at ~470 MB/s on this box's NVMe,
-	// well above any link this app sees, so a bigger buffer buys nothing.)
-	BufferBytes = 64 << 10
+	// steady-state cost is segments × BufferBytes per download — at the hard
+	// ceiling (32 sockets) that is 8 MiB, which the Zero-RAM rule can afford.
+	//
+	// 256 KiB instead of 64 KiB: on a 100 Mbit+ link the 64 KiB buffer meant
+	// ~200 read+WriteAt pairs a second per socket, and a Wi-Fi path that
+	// bursts (aggregation, retries) spends that budget on syscalls. The write
+	// side was never the limit (a 64 KiB WriteAt loop does ~470 MB/s on this
+	// box's NVMe); the read side was. Four times fewer wakeups per megabyte,
+	// and a stalled socket now has 256 KiB of slack before the reader parks.
+	BufferBytes = 256 << 10
 
 	// MaxRetries is no longer a budget the download dies on: a transient
 	// failure keeps retrying (that is what a multi-hour transfer needs), and
@@ -108,8 +114,15 @@ const (
 	maxItems = 50
 
 	// autoResumeMax is how many interrupted rows a daemon start picks back up
-	// on its own. One crash must not come back as a socket storm.
-	autoResumeMax = 2
+	// on its own.
+	//
+	// It used to be 2, which is how a user with three files in flight found
+	// one of them silently parked after an update restarted the daemon: the
+	// row was not paused by anybody, it just never got a worker. A row that
+	// was RUNNING when the process died is the user's intent, so it comes
+	// back. Eight is the RAM ceiling, not an opinion: 8 rows × 32 sockets ×
+	// 256 KiB = 64 MiB worst case, and the realistic case (8 × 8) is 16 MiB.
+	autoResumeMax = 8
 )
 
 // ErrNotFound is returned when an id is not in the queue.
@@ -149,6 +162,12 @@ type Item struct {
 	// without them a finished row is just a name and a size.
 	StartedAt  int64 `json:"startedAt,omitempty"`
 	FinishedAt int64 `json:"finishedAt,omitempty"`
+	// DiskFreeBytes is how much room the download folder still has, in
+	// bytes. The panel shows it next to the size of the file being fetched,
+	// so "storage kam hai" is visible before a 21 GB row dies three hours
+	// later on a full disk. 0 means the platform could not tell us — the UI
+	// says nothing rather than guessing.
+	DiskFreeBytes int64 `json:"diskFreeBytes,omitempty"`
 }
 
 // Options configure a Manager. Zero values get the defaults above.
@@ -420,6 +439,52 @@ func (m *Manager) CanDelete(path string) bool {
 	return true
 }
 
+// DeletePartial removes the partial artifacts of a download the user asked to
+// delete from storage — `<path>.part` and `<path>.part.json` — without ever
+// touching the finished file.
+//
+// The history's "file bhi delete karo" action needs this because a failed or
+// cancelled row leaves only a `.part` behind: the final path does not exist,
+// so the finished-file delete would answer "already gone" and the gigabytes
+// would stay. The same three gates as CanDelete apply: inside the download
+// folder, not owned by a running/paused row, and the caller passes the final
+// path (never a `.part`).
+func (m *Manager) DeletePartial(finalPath string) error {
+	clean := filepath.Clean(finalPath)
+	m.mu.Lock()
+	dir := m.dir
+	m.mu.Unlock()
+
+	rel, err := filepath.Rel(dir, clean)
+	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return errors.New("ye file download folder ke andar nahi hai")
+	}
+	base := filepath.Base(clean)
+	if strings.HasSuffix(base, ".part") || strings.HasSuffix(base, ".part.json") {
+		return errors.New("final path do, .part nahi")
+	}
+
+	m.mu.Lock()
+	for _, d := range m.items {
+		if d.status != StatusRunning && d.status != StatusPaused {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSuffix(d.partPath, ".part"), clean) {
+			m.mu.Unlock()
+			return ErrBusy
+		}
+	}
+	m.mu.Unlock()
+
+	var firstErr error
+	for _, p := range []string{clean + ".part", clean + ".part.json"} {
+		if rmErr := os.Remove(p); rmErr != nil && !os.IsNotExist(rmErr) && firstErr == nil {
+			firstErr = rmErr
+		}
+	}
+	return firstErr
+}
+
 // Settings is the part of the queue's configuration the app owns.
 //
 // The app stores it in SQLite and pushes it here over HTTP; the daemon never
@@ -678,6 +743,25 @@ func (m *Manager) Start(rawURL, referer string) (*Item, error) {
 	resume, dest := m.resumable(rawURL, probe)
 	if dest == "" {
 		dest = m.reservePath(name)
+	}
+
+	// Storage is checked before the first byte, not after 20 GB. A 21 GB row
+	// on a disk with 8 GB free used to run for hours and then die inside
+	// `WriteAt` with a bare "no space left" — the bytes already on disk count
+	// as spent, so only the missing part is compared with what is free.
+	if probe.total > 0 {
+		var onDisk int64
+		if st, statErr := os.Stat(dest + ".part"); statErr == nil {
+			onDisk = st.Size()
+		}
+		if need := probe.total - onDisk; need > 0 {
+			if free, ok := diskFree(filepath.Dir(dest)); ok && need > free {
+				diagf("start refused %s err=need %d free %d", parsed.Host, need, free)
+				return nil, fmt.Errorf(
+					"storage kam hai — is file ke liye %s aur chahiye, par download folder me sirf %s free hai. Kuch delete karke dobara try karo.",
+					humanBytes(need), humanBytes(free))
+			}
+		}
 	}
 
 	d := &download{
@@ -1701,25 +1785,23 @@ func (d *download) run() {
 
 	// The stall watchdog. A transient error is allowed to retry for as long as
 	// the network needs; a host that has produced no byte at all for
-	// `stallLimit` is a different thing, and the row must say so instead of
-	// spinning "running" at 0.0 MB/s until the user gives up on it.
+	// `stallLimit` gets a fresh connection and the row says it is waiting.
+	//
+	// It used to END the row after a second silent window, and that is exactly
+	// how a multi-hour transfer "band ho gaya" overnight: the link dropped for
+	// ten minutes, the row was marked `error`, and the user found a dead
+	// download in the morning. A silent socket is not an answer. Only the user
+	// pauses or cancels a row; a genuinely dead link (404/403/expired) still
+	// ends it through permanent(), which is an answer and says why.
 	//
 	// "Byte" means socket activity, not written bytes: a resume on a host that
-	// ignores Range re-reads the prefix, and counting only writes would kill
-	// that healthy connection after five minutes and restart the whole file.
-	//
-	// Before it ends the row it forces ONE fresh connection. A stalled socket
-	// (a NAT that forgot the flow, a CDN edge that stopped sending) looks
-	// exactly like a dead host from the outside, and that reconnect is the
-	// difference between "background me download band ho gaya" and a transfer
-	// that carries on. Only a second silent window - a host that is genuinely
-	// not answering - fails the row.
+	// ignores Range re-reads the prefix, and counting only writes would call
+	// that healthy connection stalled and restart the whole file.
 	go func() {
 		t := time.NewTicker(stallEvery)
 		defer t.Stop()
 		last := d.activity()
 		lastAt := time.Now()
-		reconnected := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -1728,23 +1810,24 @@ func (d *download) run() {
 				cur := d.activity()
 				if cur != last {
 					last, lastAt = cur, time.Now()
-					reconnected = false
+					d.clearPhase(phaseWaiting)
 					continue
 				}
 				if !d.isRunning() || time.Since(lastAt) <= stallLimit {
 					continue
 				}
-				if !reconnected && d.requestReconnect() {
-					reconnected = true
+				// Say it out loud instead of showing "running, 0 MB/s"
+				// forever, then force one fresh connection. Every silent
+				// window gets another one: NAT state expires, a CDN edge
+				// stops sending, Wi-Fi roams to another AP - all of those
+				// look identical from here, and all of them heal with a
+				// reconnect.
+				d.setPhase(phaseWaiting)
+				if d.requestReconnect() {
 					lastAt = time.Now()
 					d.log.Warn("download stalled, forcing a fresh connection", "id", d.id)
 					diagf("stall-reconnect id=%s", d.id)
-					continue
 				}
-				d.fail(fmt.Errorf("server se %s se koi byte nahi aa raha",
-					stallLimit.Truncate(time.Second)))
-				cancel()
-				return
 			}
 		}
 	}()
@@ -2033,13 +2116,20 @@ func (d *download) maybeSpeedUp() {
 	d.speedUp()
 }
 
-// stallLimit ends a row whose host has stopped answering entirely: no byte
-// for this long while running means nothing is coming, not that we should
-// wait forever. It is a variable so a test does not need five minutes.
+// stallLimit is how long a row may produce no socket activity before the
+// watchdog forces a fresh connection and tells the user it is waiting for the
+// network. It never ends the row: a link can be down for an hour and the
+// transfer must still be there when it comes back. It is a variable so a test
+// does not need five minutes.
 var stallLimit = 5 * time.Minute
 
 // stallEvery is how often the watchdog samples the byte counter.
 var stallEvery = 15 * time.Second
+
+// phaseWaiting is the row's own words for "no byte is arriving, I am holding
+// on". The panel renders it, so a stalled transfer explains itself instead of
+// sitting at 0 MB/s looking dead.
+const phaseWaiting = "network ka intezaar"
 
 // widenAfter is how long a single-socket transfer runs before the range
 // question is asked again. Long enough that the first megabytes prove the URL
@@ -2311,13 +2401,20 @@ func (d *download) fetchRange(ctx context.Context, seg *segment) error {
 				if remaining < want {
 					want = remaining
 				}
-				n, rerr := io.ReadFull(resp.Body, buf[:want])
+				// Read, not ReadFull: every chunk that lands must count as
+				// activity immediately. With ReadFull and a 256 KiB buffer a
+				// slow host looks silent for the whole fill, and the stall
+				// watchdog would cut a connection that is working.
+				n, rerr := resp.Body.Read(buf[:want])
 				if n > 0 {
 					d.reread.Add(int64(n))
 					lastProgress.Store(time.Now().UnixNano())
 					remaining -= int64(n)
 				}
 				if rerr != nil {
+					if errors.Is(rerr, io.EOF) && remaining > 0 {
+						return io.ErrUnexpectedEOF
+					}
 					return rerr
 				}
 			}
@@ -2566,6 +2663,17 @@ func (d *download) setPhase(p string) {
 	d.mu.Unlock()
 }
 
+// clearPhase removes `want` only if it is still what the row says, so the
+// watchdog waking up does not erase a phase another path just wrote (the
+// no-Range resume sets "resuming" from inside the read loop).
+func (d *download) clearPhase(want string) {
+	d.mu.Lock()
+	if d.phase == want {
+		d.phase = ""
+	}
+	d.mu.Unlock()
+}
+
 // activity is every byte the socket moved for this row: written bytes plus
 // the prefix that had to be read again because the server ignores Range.
 // The stall watchdog watches this, not `received` — otherwise a resume on a
@@ -2588,7 +2696,7 @@ func (d *download) snapshot() Item {
 	if !d.finishedAt.IsZero() {
 		finished = d.finishedAt.UnixMilli()
 	}
-	return Item{
+	item := Item{
 		ID:            d.id,
 		URL:           d.url,
 		Filename:      d.filename,
@@ -2604,6 +2712,14 @@ func (d *download) snapshot() Item {
 		StartedAt:     started,
 		FinishedAt:    finished,
 	}
+	// The folder's free space rides along with the row so Ctrl+J can show
+	// "21.3 GB chahiye, 161 GB free" without a second endpoint and without
+	// the panel having to know what a volume is. Cached for a second in
+	// space.go: one syscall, not one per row per poll.
+	if free, ok := diskFree(filepath.Dir(d.partPath)); ok {
+		item.DiskFreeBytes = free
+	}
+	return item
 }
 
 // ── The sidecar: what a pause, a crash or a restart must remember ───────

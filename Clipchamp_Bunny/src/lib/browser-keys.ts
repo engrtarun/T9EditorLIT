@@ -114,8 +114,8 @@ export const BINDINGS: Entry[] = [
   B('pinTab', ['ctrl+shift+p'], true),
   B('closeBrowserView', ['ctrl+shift+w'], true),
   // ── navigation ──────────────────────────────────────────────────────────
-  B('back', ['alt+arrowleft', 'backspace']),
-  B('forward', ['alt+arrowright', 'shift+backspace']),
+  B('back', ['alt+arrowleft', 'ctrl+arrowleft', 'backspace']),
+  B('forward', ['alt+arrowright', 'ctrl+arrowright', 'shift+backspace']),
   B('reload', ['f5', 'ctrl+r'], true),
   B('reload', ['ctrl+f5', 'ctrl+shift+r'], true), // force reload (same nudge, force anyway)
   B('stopLoading', ['escape']),
@@ -294,8 +294,16 @@ export const BROWSER_GROUPS: Array<{ title: string; rows: BrowserSheetRow[] }> =
   {
     title: 'Navigation',
     rows: [
-      { keys: 'Alt + ←  /  Backspace', action: 'Back' },
-      { keys: 'Alt + →  /  Shift + Backspace', action: 'Forward' },
+      {
+        keys: 'Alt + ←  /  Ctrl + ←  /  Backspace',
+        action: 'Back',
+        note: 'page par bhi · mouse ka side button 4'
+      },
+      {
+        keys: 'Alt + →  /  Ctrl + →  /  Shift + Backspace',
+        action: 'Forward',
+        note: 'page par bhi · mouse ka side button 5'
+      },
       { keys: 'F5  /  Ctrl + R', action: 'Reload' },
       { keys: 'Ctrl + F5  /  Ctrl + Shift + R', action: 'Cache ke bina reload' },
       { keys: 'Esc', action: 'Stop — loading spinner roko' },
