@@ -26,6 +26,26 @@ export interface WhatsNewRelease {
 
 export const WHATS_NEW_RELEASES: WhatsNewRelease[] = [
   {
+    buildId: 'ci-2f9a062',
+    headline: "What's New overlap fix + build identity",
+    items: [
+      {
+        title: "What's New modal ab browser page ke upar dikhega",
+        detail:
+          "Modal khulne par native browser webview 1x1 park hota hai (jaise tools/settings/help), band hone par wapas restore. Ab What's New page ke peeche nahi chhupta.",
+        reason:
+          'Child WebView2 hamesha main HTML ke upar paint karta tha, isliye DOM overlay jhup jata tha jab browser khula ho.'
+      },
+      {
+        title: 'Modal ab asli build identity dikhat hai',
+        detail:
+          'Har open par marker se staged buildId, running buildId, build time aur version padha jata hai. Koi evergreen/purana note ab nahi dikhta — unknown build par neutral state aata hai.',
+        reason:
+          'Hand-written list har build par wahi purani baatein dikhata tha (jaise YouTube default pin), jo change ke baad galat ho chuka tha. Ab notes exact build se jude hain.'
+      }
+    ]
+  },
+  {
     buildId: 'ci-0ed26d6',
     headline: 'Command palette + browser keys + media card',
     items: [

@@ -74,7 +74,14 @@
             </p>
           </div>
         </div>
-        <h2 class="mt-3 text-[15px] font-medium text-nc-brand">{release.headline}</h2>
+        {#if release}
+          <h2 class="mt-3 text-[15px] font-medium text-nc-brand">{release.headline}</h2>
+        {:else}
+          <p class="mt-3 text-[13px] leading-relaxed text-nc-mut">
+            Is build ({facts?.buildId ?? 'unknown'}) ke liye verified notes nahi hain. Exact changes
+            dekhne ke liye CI run / commit ka diff dekho.
+          </p>
+        {/if}
         {#if facts}
           <dl
             class="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[11px] text-nc-mut"
@@ -92,21 +99,28 @@
       <!-- Body -->
       <div class="flex-1 overflow-y-auto px-6 py-4">
         <div class="space-y-5">
-          {#each release.items as item, i (i)}
-            <section class="rounded-xl border border-nc-line bg-nc-panel-2/60 p-4">
-              <h3 class="flex items-start gap-2 text-[14px] font-semibold text-nc-txt">
-                <span class="mt-0.5 text-nc-brand">•</span>
-                {item.title}
-              </h3>
-              <p class="mt-1.5 text-[13px] leading-relaxed text-nc-txt/90">
-                {item.detail}
-              </p>
-              <p class="mt-2 text-[12px] leading-relaxed text-nc-mut">
-                <span class="font-semibold text-nc-brand">Reason:</span>
-                {item.reason}
-              </p>
-            </section>
-          {/each}
+          {#if release}
+            {#each release.items as item, i (i)}
+              <section class="rounded-xl border border-nc-line bg-nc-panel-2/60 p-4">
+                <h3 class="flex items-start gap-2 text-[14px] font-semibold text-nc-txt">
+                  <span class="mt-0.5 text-nc-brand">•</span>
+                  {item.title}
+                </h3>
+                <p class="mt-1.5 text-[13px] leading-relaxed text-nc-txt/90">
+                  {item.detail}
+                </p>
+                <p class="mt-2 text-[12px] leading-relaxed text-nc-mut">
+                  <span class="font-semibold text-nc-brand">Reason:</span>
+                  {item.reason}
+                </p>
+              </section>
+            {/each}
+          {:else}
+            <p class="text-[13px] leading-relaxed text-nc-mut">
+              Koi verified note nahi. Notes tabhi add hote hain jab koi change commit ke saath
+              verify ho.
+            </p>
+          {/if}
         </div>
       </div>
 
